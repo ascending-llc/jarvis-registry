@@ -1,5 +1,6 @@
-from typing import Any
+from typing import Any, NamedTuple
 
+from .client_categories import resolve_granted_scopes
 from .config import JwtTokenConfig
 from .jwt_utils import (
     InvalidTokenError,
@@ -29,11 +30,20 @@ __all__ = [
     "TOKEN_CLASS_CLAIM",
     "TOKEN_CLASS_MANAGED_AGENT",
     "TOKEN_CLASS_CRUD_SESSION",
+    "MintedManagedAgentToken",
     "mint_managed_agent_token",
+    "mint_managed_agent_token_with_scope",
     "mint_crud_session_token",
     "verify_managed_agent_token",
     "verify_crud_session_token",
 ]
+
+
+class MintedManagedAgentToken(NamedTuple):
+    """Signed managed-agent token paired with its final ceiling-constrained scope."""
+
+    token: str
+    scope: str
 
 
 def _merge_class_claims(extra_claims: dict[str, Any] | None, token_class: str, client_id: str) -> dict[str, Any]:
@@ -53,6 +63,7 @@ def mint_managed_agent_token(
     *,
     subject: str,
     client_id: str,
+    requested_scopes: str | list[str],
     expires_in_seconds: int,
     iat: int | None = None,
     extra_claims: dict[str, Any] | None = None,
@@ -63,16 +74,52 @@ def mint_managed_agent_token(
     ``"user-generated"`` for token vending, or a device-flow client). It is recorded
     as-is; the proxy verifier later rejects tokens whose ``client_id`` equals the
     registry backend's own id.
+
+    ``requested_scopes`` is intersected against ``client_id``'s category builtin max scope set
+    (``resolve_granted_scopes``) before being written to the ``scope`` claim — this is the third,
+    non-bypassable factor on top of whatever two-way (client-request ∩ user-scopes) intersection
+    the caller already performed upstream.
     """
+    return mint_managed_agent_token_with_scope(
+        config,
+        subject=subject,
+        client_id=client_id,
+        requested_scopes=requested_scopes,
+        expires_in_seconds=expires_in_seconds,
+        iat=iat,
+        extra_claims=extra_claims,
+    ).token
+
+
+def mint_managed_agent_token_with_scope(
+    config: JwtTokenConfig,
+    *,
+    subject: str,
+    client_id: str,
+    requested_scopes: str | list[str],
+    expires_in_seconds: int,
+    iat: int | None = None,
+    extra_claims: dict[str, Any] | None = None,
+) -> MintedManagedAgentToken:
+    """Mint a managed-agent JWT and expose the exact final scope written to it."""
+    if extra_claims and "scope" in extra_claims:
+        raise ValueError("extra_claims cannot override reserved JWT claims: scope")
+
+    granted_scopes = resolve_granted_scopes(client_id, requested_scopes, config)
+    claims = _merge_class_claims(extra_claims, TOKEN_CLASS_MANAGED_AGENT, client_id)
+    scope = " ".join(granted_scopes)
+    claims["scope"] = scope
+
     payload = build_jwt_payload(
         subject=subject,
         issuer=config.jwt_issuer,
         audience=config.managed_agents_audience,
         expires_in_seconds=expires_in_seconds,
         iat=iat,
-        extra_claims=_merge_class_claims(extra_claims, TOKEN_CLASS_MANAGED_AGENT, client_id),
+        extra_claims=claims,
     )
-    return encode_jwt(payload, config.jwt_private_key, kid=config.jwt_self_signed_kid)
+    token = encode_jwt(payload, config.jwt_private_key, kid=config.jwt_self_signed_kid)
+    return MintedManagedAgentToken(token=token, scope=scope)
 
 
 def mint_crud_session_token(

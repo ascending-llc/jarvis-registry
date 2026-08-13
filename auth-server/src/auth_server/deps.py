@@ -8,9 +8,11 @@ from registry_pkgs.core.oauth_state_store import OAuthStateStore
 from .container import AuthContainer
 from .core.types import AllowedProvider
 from .providers.base import AuthProvider
+from .services.client_registration_service import ClientRegistrationService
 from .services.cognito_validator_service import SimplifiedCognitoValidator
 from .services.downstream_token_service import DownstreamTokenCheckService
 from .services.server_service import ServerService
+from .services.token_grant_service import TokenGrantService
 from .services.user_service import UserService
 from .utils.config_loader import OAuth2Config
 
@@ -61,6 +63,14 @@ def get_consent_store(container: AuthContainer = Depends(get_container)) -> Cons
 
 def get_pending_consent_store(container: AuthContainer = Depends(get_container)) -> PendingConsentStore:
     return container.pending_consent_store
+
+
+def get_client_registration_service(container: AuthContainer = Depends(get_container)) -> ClientRegistrationService:
+    return container.client_registration_service
+
+
+def get_token_grant_service(container: AuthContainer = Depends(get_container)) -> TokenGrantService:
+    return container.token_grant_service
 
 
 def check_if_https(request: Request) -> bool:

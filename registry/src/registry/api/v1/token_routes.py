@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
 
-from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
+from registry_pkgs.core.jwt_tokens import mint_managed_agent_token_with_scope
 
 from ...auth.dependencies import CurrentUser
 from ...core.config import settings
@@ -76,7 +76,6 @@ async def generate_user_token(
 
         extra_claims = {
             "user_id": user_id,
-            "scope": " ".join(final_scopes),
             "groups": user_groups,
             "jti": str(uuid.uuid4()),
             "token_use": "access",
@@ -92,10 +91,11 @@ async def generate_user_token(
             token_purpose,
             settings.headless_agent_client_id,
         )
-        access_token = mint_managed_agent_token(
+        minted = mint_managed_agent_token_with_scope(
             settings.jwt_token_config,
             subject=username,
             client_id=client_id,
+            requested_scopes=final_scopes,
             expires_in_seconds=expires_in_seconds,
             iat=current_time,
             extra_claims=extra_claims,
@@ -113,10 +113,10 @@ async def generate_user_token(
         return TokenGenerateResponse(
             success=True,
             tokenData=TokenData(
-                accessToken=access_token,
+                accessToken=minted.token,
                 expiresIn=expires_in_seconds,
                 tokenType="Bearer",
-                scope=" ".join(final_scopes),
+                scope=minted.scope,
             ),
             userScopes=user_scopes,
             requestedScopes=final_scopes,

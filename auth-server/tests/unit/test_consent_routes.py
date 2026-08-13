@@ -4,6 +4,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
@@ -63,6 +64,16 @@ def _pending_payload() -> dict[str, Any]:
             "client_state": "client-state",
         },
         "resolved_scopes": ["servers-read"],
+    }
+
+
+def _redirect_error_pending_payload() -> dict[str, Any]:
+    return {
+        "flow_type": "redirect_error",
+        "redirect_uri": "http://localhost:43123/callback?existing=1",
+        "error": "invalid_client",
+        "error_description": "Unknown client_id",
+        "client_state": "client-state",
     }
 
 
@@ -249,6 +260,203 @@ def test_deny_consent_rejects_form_cookie_nonce_mismatch() -> None:
     assert response.status_code == 400
     assert response.json()["detail"] == "Invalid or expired consent request"
     assert pending_store.peek("nonce-1") is not None
+
+
+def test_redirect_error_consent_page_requires_query_and_cookie_nonce_match() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "different")
+    response = client.get(
+        "/auth/oauth2/redirect-error-consent",
+        params={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 400
+    assert "This link has expired" in response.text
+
+
+def test_redirect_error_consent_page_rejects_other_consent_payload_type() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.get(
+        "/auth/oauth2/redirect-error-consent",
+        params={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 400
+    assert "This link has expired" in response.text
+    assert pending_store.peek("nonce-1") == _pending_payload()
+
+
+def test_redirect_error_consent_page_renders_error_and_post_forms() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.get(
+        "/auth/oauth2/redirect-error-consent",
+        params={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 200
+    assert "invalid_client" in response.text
+    assert "Unknown client_id" in response.text
+    assert "http://localhost:43123/callback?existing=1" in response.text
+    assert 'action="/auth/oauth2/redirect-error-consent/approve"' in response.text
+    assert 'action="/auth/oauth2/redirect-error-consent/deny"' in response.text
+    assert '<a href="http://localhost:43123' not in response.text
+
+
+def test_approve_redirect_error_consent_redirects_to_client_once() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.post(
+        "/auth/oauth2/redirect-error-consent/approve",
+        data={"nonce": "nonce-1"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    parsed = urlparse(response.headers["location"])
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "http://localhost:43123/callback"
+    assert parse_qs(parsed.query) == {
+        "existing": ["1"],
+        "error": ["invalid_client"],
+        "error_description": ["Unknown client_id"],
+        "state": ["client-state"],
+    }
+    assert pending_store.peek("nonce-1") is None
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    replay = client.post(
+        "/auth/oauth2/redirect-error-consent/approve",
+        data={"nonce": "nonce-1"},
+    )
+    assert replay.status_code == 400
+    assert "expired" in replay.json()["detail"]
+
+
+def test_approve_redirect_error_consent_rejects_cookie_nonce_mismatch_without_consuming() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "different")
+    response = client.post(
+        "/auth/oauth2/redirect-error-consent/approve",
+        data={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 400
+    assert pending_store.peek("nonce-1") is not None
+
+
+def test_deny_redirect_error_consent_never_redirects_to_client_and_is_one_shot() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.post(
+        "/auth/oauth2/redirect-error-consent/deny",
+        data={"nonce": "nonce-1"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith(settings.registry_error_redirect)
+    assert "localhost:43123" not in response.headers["location"]
+    assert pending_store.peek("nonce-1") is None
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    replay = client.post(
+        "/auth/oauth2/redirect-error-consent/deny",
+        data={"nonce": "nonce-1"},
+    )
+    assert replay.status_code == 400
+    assert "expired" in replay.json()["detail"]
+
+
+def test_deny_redirect_error_consent_rejects_cookie_nonce_mismatch_without_consuming() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "different")
+    response = client.post(
+        "/auth/oauth2/redirect-error-consent/deny",
+        data={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 400
+    assert pending_store.peek("nonce-1") is not None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/auth/oauth2/redirect-error-consent/approve",
+        "/auth/oauth2/redirect-error-consent/deny",
+    ],
+)
+def test_redirect_error_actions_reject_other_consent_payload_without_consuming(path: str) -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.post(path, data={"nonce": "nonce-1"})
+
+    assert response.status_code == 400
+    assert "expired" in response.json()["detail"]
+    assert pending_store.peek("nonce-1") == _pending_payload()
+
+
+def test_consent_page_rejects_redirect_error_payload_without_consuming() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.get(
+        "/auth/oauth2/consent",
+        params={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 400
+    assert "This link has expired" in response.text
+    assert pending_store.peek("nonce-1") == _redirect_error_pending_payload()
+
+
+def test_approve_consent_rejects_redirect_error_payload_without_consuming() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.post(
+        "/auth/oauth2/consent/approve",
+        data={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 400
+    assert "expired" in response.json()["detail"]
+    assert pending_store.peek("nonce-1") == _redirect_error_pending_payload()
+
+
+def test_deny_consent_rejects_redirect_error_payload_without_consuming() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.post(
+        "/auth/oauth2/consent/deny",
+        data={"nonce": "nonce-1"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith(settings.registry_error_redirect)
+    assert pending_store.peek("nonce-1") == _redirect_error_pending_payload()
 
 
 @patch("auth_server.routes.oauth_flow.exchange_code_for_token")

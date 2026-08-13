@@ -141,7 +141,7 @@ def test_build_managed_agent_card_applies_all_transformations(monkeypatch: pytes
                     "scopes": {"a2a-proxy-ops": "Invoke managed A2A agents via the Jarvis Registry proxy"},
                 }
             },
-            "oauth2MetadataUrl": "https://auth-issuer.example/.well-known/oauth-authorization-server",
+            "oauth2MetadataUrl": "https://auth-issuer.example/.well-known/oauth-authorization-server/a2a",
         }
     }
     assert managed_card["security"] == [{"oauth2": ["a2a-proxy-ops"]}]

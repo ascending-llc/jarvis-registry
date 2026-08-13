@@ -6,6 +6,7 @@ export const APP_ROUTES = {
   oauthCallback: '/oauth-callback',
   device: '/device',
   consentDownstream: '/consent/downstream',
+  consentDownstreamError: '/consent/downstream-error',
   consentServer: '/consent/server',
   consentAgent: '/consent/agent',
   serverRegistry: '/server-registry',

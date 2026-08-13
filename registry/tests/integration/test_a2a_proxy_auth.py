@@ -21,7 +21,7 @@ from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 
 pytestmark = [pytest.mark.integration, pytest.mark.auth, pytest.mark.proxy]
 
-_DCR_CLIENT_ID = "mcp-client-integration-test"
+_DCR_CLIENT_ID = "a2a-client-integration-test"
 _USER_ID = "507f1f77bcf86cd799439011"
 _ORIGINAL_HAS_PERMISSION = ScopePermissionMiddleware._has_permission
 
@@ -31,10 +31,10 @@ def _mint_managed_agent_token(client_id: str, scope: str = "a2a-proxy-ops") -> s
         settings.jwt_token_config,
         subject="integration-user",
         client_id=client_id,
+        requested_scopes=scope,
         expires_in_seconds=3600,
         extra_claims={
             "user_id": _USER_ID,
-            "scope": scope,
         },
     )
 
@@ -124,8 +124,7 @@ def test_dcr_jwt_without_a2a_scope_is_rejected_before_agent_lookup(
         headers={"Authorization": f"Bearer {_mint_managed_agent_token(_DCR_CLIENT_ID, scope='agents-read')}"},
     )
 
-    assert response.status_code == 403
-    assert response.json() == {"detail": "Insufficient permissions"}
+    assert response.status_code == 401
     a2a_proxy_context.agent_service.get_agent_by_path.assert_not_awaited()
 
 

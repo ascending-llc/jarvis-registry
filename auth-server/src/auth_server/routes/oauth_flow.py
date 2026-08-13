@@ -9,16 +9,15 @@ import json
 import logging
 import secrets
 import time
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 from urllib.parse import urlencode, urlparse
 
 import httpx
-from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from pydantic import BaseModel
 
+from registry_pkgs.core.client_categories import ClientCategory
 from registry_pkgs.core.consent_store import PENDING_CONSENT_TTL_SECONDS, ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import (
     DEVICE_CODE_GRANT_TYPE,
@@ -26,7 +25,6 @@ from registry_pkgs.core.downstream_oauth import (
     normalize_user_code,
     oauth_error_payload,
 )
-from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.jwt_utils import (
     InvalidAudienceError,
     InvalidIssuerError,
@@ -37,8 +35,13 @@ from registry_pkgs.core.jwt_utils import (
     find_matching_jwk,
     get_token_kid,
 )
-from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
-from registry_pkgs.core.redirect_uri import redirect_uri_matches, validate_registration_redirect_uri
+from registry_pkgs.core.oauth_state_store import OAuthStateStoreProtocol
+from registry_pkgs.core.redirect_uri import (
+    VENDOR_BROKER_REDIRECT_URIS,
+    build_oauth_error_redirect_url,
+    is_safe_unverified_redirect_target,
+    redirect_uri_matches,
+)
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -46,17 +49,28 @@ from ..core.types import AllowedProvider, AuthProviderConfig, EntraConfig, OAuth
 from ..deps import (
     check_if_https,
     get_auth_provider,
+    get_client_registration_service,
     get_consent_store,
     get_oauth2_config,
     get_oauth_state_store,
     get_pending_consent_store,
     get_signer,
+    get_token_grant_service,
     get_user_service,
     get_validator,
 )
+from ..models.client_registration import ClientRegistrationRequest, ClientRegistrationResponse
 from ..models.device_flow import DeviceCodeResponse, DeviceTokenResponse
 from ..providers.base import AuthProvider
+from ..services.client_registration_service import ClientRegistrationError, ClientRegistrationService
 from ..services.cognito_validator_service import SimplifiedCognitoValidator
+from ..services.oauth_client_policy import (
+    is_registry_client as _is_registry_client,
+)
+from ..services.oauth_client_policy import (
+    resolve_client_metadata as _resolve_client_metadata,
+)
+from ..services.token_grant_service import TokenGrantService, validate_token_grant_request
 from ..services.user_service import UserService
 from ..utils.security_mask import (
     anonymize_ip,
@@ -73,6 +87,7 @@ from .consent_templates import (
     render_device_code_entry_page,
     render_device_denied_page,
     render_device_link_error_page,
+    render_redirect_error_consent_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +102,68 @@ JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 JWT_TOKEN_CONFIG = settings.jwt_token_config
 
 _OIDC_TOKEN_ALGORITHMS = ["RS256"]
+_REDIRECT_ERROR_CONSENT_FLOW_TYPE = "redirect_error"
+
+
+class _RedirectValidationError(NamedTuple):
+    error: str
+    error_description: str
+
+
+def _trusted_error_redirect_uris() -> frozenset[str]:
+    """Return exact redirect targets trusted independently of DCR client metadata."""
+    deployment_callback = f"{settings.jwt_issuer}/api/mcp/jarvis_registry/oauth/callback"
+    return VENDOR_BROKER_REDIRECT_URIS | {deployment_callback}
+
+
+def _peek_redirect_error_consent(
+    pending_store: PendingConsentStore,
+    nonce: str,
+) -> dict[str, Any] | None:
+    """Return a pending redirect-error request without accepting another consent payload type."""
+    pending = pending_store.peek(nonce)
+    if pending is None or pending.get("flow_type") != _REDIRECT_ERROR_CONSENT_FLOW_TYPE:
+        return None
+    return pending
+
+
+def _consume_redirect_error_consent(
+    pending_store: PendingConsentStore,
+    nonce: str,
+) -> dict[str, Any] | None:
+    """Atomically consume a redirect-error request after verifying its payload type."""
+    if _peek_redirect_error_consent(pending_store, nonce) is None:
+        return None
+
+    consumed = pending_store.consume(nonce)
+    if consumed is None or consumed.get("flow_type") != _REDIRECT_ERROR_CONSENT_FLOW_TYPE:
+        return None
+    return consumed
+
+
+def _peek_authorization_consent(
+    pending_store: PendingConsentStore,
+    nonce: str,
+) -> dict[str, Any] | None:
+    """Return a pending authorization-consent request, rejecting the redirect-error payload type."""
+    pending = pending_store.peek(nonce)
+    if pending is None or pending.get("flow_type") == _REDIRECT_ERROR_CONSENT_FLOW_TYPE:
+        return None
+    return pending
+
+
+def _consume_authorization_consent(
+    pending_store: PendingConsentStore,
+    nonce: str,
+) -> dict[str, Any] | None:
+    """Atomically consume a pending authorization-consent request, rejecting the redirect-error payload type."""
+    if _peek_authorization_consent(pending_store, nonce) is None:
+        return None
+
+    consumed = pending_store.consume(nonce)
+    if consumed is None or consumed.get("flow_type") == _REDIRECT_ERROR_CONSENT_FLOW_TYPE:
+        return None
+    return consumed
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
@@ -148,38 +225,6 @@ async def _decode_oidc_provider_token(
     raise last_issuer_error or ValueError(f"Token issuer is not trusted for provider {provider}")
 
 
-class ClientRegistrationRequest(BaseModel):
-    client_name: str | None = None
-    client_uri: str | None = None
-    redirect_uris: list[str] | None = None
-    grant_types: list[str] | None = None
-    response_types: list[str] | None = None
-    scope: str | None = None
-    contacts: list[str] | None = None
-    token_endpoint_auth_method: str = "none"
-
-
-class ClientRegistrationResponse(BaseModel):
-    client_id: str
-    client_secret: str | None
-    grant_types: list[str]
-    response_types: list[str]
-    token_endpoint_auth_method: str
-    client_id_issued_at: int
-    client_secret_expires_at: int = 0
-    client_name: str | None = None
-    client_uri: str | None = None
-    redirect_uris: list[str] | None = None
-    scope: str | None = None
-
-
-SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = frozenset({"none", "client_secret_post"})
-
-
-def _is_registry_client(client_id: str) -> bool:
-    return client_id == settings.registry_app_name
-
-
 def _is_registered_redirect_uri(client_metadata: dict[str, Any], redirect_uri: str) -> bool:
     registered_redirect_uris = client_metadata.get("redirect_uris") or []
     return any(redirect_uri_matches(redirect_uri, registered) for registered in registered_redirect_uris)
@@ -189,37 +234,20 @@ def _get_unknown_client_response() -> JSONResponse:
     return oauth_error_response("invalid_client", "Unknown client_id")
 
 
-def _validate_registration_redirect_uris(redirect_uris: list[str] | None) -> JSONResponse | None:
-    """Reject a DCR request whose redirect_uris are missing or structurally unsafe.
-
-    Returns an RFC 7591 §3.2.2 ``invalid_redirect_uri`` OAuth error response (not a ``{"detail": …}``
-    body) so spec-compliant clients (Cline, VS Code) can parse the failure; ``None`` when valid.
-    """
-    uris = redirect_uris or []
-    if not uris:
-        return oauth_error_response("invalid_redirect_uri", "at least one redirect_uri is required")
-    for uri in uris:
-        try:
-            validate_registration_redirect_uri(uri)
-        except ValueError as e:
-            return oauth_error_response("invalid_redirect_uri", str(e))
-    return None
-
-
 def _validate_known_client_for_redirect(
     client_id: str,
     redirect_uri: str,
     store: OAuthStateStoreProtocol,
-) -> JSONResponse | None:
+) -> _RedirectValidationError | None:
     if _is_registry_client(client_id):
         return None
 
     client_metadata = store.get_client(client_id)
     if client_metadata is None:
-        return _get_unknown_client_response()
+        return _RedirectValidationError("invalid_client", "Unknown client_id")
 
     if not _is_registered_redirect_uri(client_metadata, redirect_uri):
-        return oauth_error_response("invalid_request", "redirect_uri is not registered for this client")
+        return _RedirectValidationError("invalid_request", "redirect_uri is not registered for this client")
 
     return None
 
@@ -231,7 +259,7 @@ def _validate_known_client(
     if _is_registry_client(client_id):
         return None
 
-    if store.get_client(client_id) is None:
+    if _resolve_client_metadata(client_id, store) is None:
         return _get_unknown_client_response()
 
     return None
@@ -287,6 +315,7 @@ def _redirect_to_pending_consent(
     ttl_seconds: int,
     is_https: bool,
     pending_store: PendingConsentStore,
+    consent_path: str = "/oauth2/consent",
 ) -> RedirectResponse:
     """Save a pending-consent nonce and 302 to /oauth2/consent; shared tail of the device-flow and
     Authorization-Code-Grant consent detours in oauth2_callback — the only difference between
@@ -295,7 +324,7 @@ def _redirect_to_pending_consent(
     nonce = secrets.token_urlsafe(32)
     pending_store.save(nonce, pending_payload, ttl_seconds=ttl_seconds)
 
-    consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
+    consent_url = f"{_auth_server_external_url(consent_path)}?nonce={nonce}"
     response = RedirectResponse(url=consent_url, status_code=302)
     response.set_cookie(
         key=settings.oauth2_consent_nonce_cookie_name,
@@ -351,6 +380,24 @@ def _finish_oauth2_callback(
     return response
 
 
+def _redirect_error_to_client(
+    redirect_uri: str,
+    error: str,
+    error_description: str,
+    client_state: str | None,
+) -> RedirectResponse:
+    """Redirect an OAuth error to a redirect URI already established as safe."""
+    return RedirectResponse(
+        url=build_oauth_error_redirect_url(
+            redirect_uri,
+            error,
+            error_description,
+            client_state,
+        ),
+        status_code=302,
+    )
+
+
 def _finish_device_callback(
     device_code: str,
     mapped_user: dict[str, Any],
@@ -379,11 +426,13 @@ def _finish_device_denial(device_code: str, store: OAuthStateStoreProtocol) -> H
     return HTMLResponse(render_device_denied_page())
 
 
-@router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
-async def register_client(
+def _register_client_common(
     registration: ClientRegistrationRequest,
     request: Request,
-    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    client_registration_service: ClientRegistrationService,
+    *,
+    category: ClientCategory,
+    default_client_name: str,
 ) -> ClientRegistrationResponse | JSONResponse:
     try:
         logger.info(
@@ -392,77 +441,49 @@ async def register_client(
             f"token_endpoint_auth_method: {registration.token_endpoint_auth_method}."
         )
 
-        redirect_uri_error = _validate_registration_redirect_uris(registration.redirect_uris)
-        if redirect_uri_error is not None:
-            logger.warning(
-                "DCR request rejected: invalid redirect_uri. client_name=%s, redirect_uris=%s",
-                registration.client_name,
-                registration.redirect_uris,
-            )
-            return redirect_uri_error
-
-        client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
-
-        requested_auth_method = registration.token_endpoint_auth_method
-        if requested_auth_method in SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS:
-            token_endpoint_auth_method = requested_auth_method
-        else:
-            logger.warning(
-                "DCR client requested unsupported token_endpoint_auth_method=%s; substituting 'none'. client_name=%s",
-                requested_auth_method,
-                registration.client_name,
-            )
-            token_endpoint_auth_method = "none"
-
-        client_secret: str | None = None
-        if token_endpoint_auth_method == "client_secret_post":
-            client_secret = secrets.token_urlsafe(32)
-
-        grant_types = ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
-        response_types = ["code"]
-
-        issued_at = int(time.time())
-
-        client_metadata: dict[str, Any] = {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "client_id_issued_at": issued_at,
-            "client_secret_expires_at": 0,
-            "client_name": registration.client_name or "MCP Client",
-            "client_uri": registration.client_uri,
-            "redirect_uris": registration.redirect_uris or [],
-            "grant_types": grant_types,
-            "response_types": response_types,
-            "scope": registration.scope or "servers-read agents-read",
-            "token_endpoint_auth_method": token_endpoint_auth_method,
-            "contacts": registration.contacts or [],
-            "registered_at": issued_at,
-            "ip_address": request.client.host if request.client else "unknown",
-        }
-
-        store.save_client(client_id, client_metadata)
-
-        logger.info(f"Registered new OAuth client: client_id={client_id}, name={client_metadata['client_name']}")
-
-        return ClientRegistrationResponse(
-            client_id=client_id,
-            client_secret=client_secret,
-            client_id_issued_at=issued_at,
-            client_secret_expires_at=0,
-            client_name=client_metadata["client_name"],
-            client_uri=client_metadata["client_uri"],
-            redirect_uris=client_metadata["redirect_uris"],
-            grant_types=client_metadata["grant_types"],
-            response_types=client_metadata["response_types"],
-            scope=client_metadata["scope"],
-            token_endpoint_auth_method=client_metadata["token_endpoint_auth_method"],
+        return client_registration_service.register(
+            registration,
+            category=category,
+            default_client_name=default_client_name,
+            ip_address=request.client.host if request.client else "unknown",
         )
+    except ClientRegistrationError as e:
+        return oauth_error_response(e.error, e.description)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
         logger.exception("Client registration failed")
+        raise HTTPException(status_code=500, detail="Client registration failed") from e
 
-        raise HTTPException(status_code=500, detail="Client registration failed")
+
+@router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
+async def register_client(
+    registration: ClientRegistrationRequest,
+    request: Request,
+    client_registration_service: ClientRegistrationService = Depends(get_client_registration_service),
+) -> ClientRegistrationResponse | JSONResponse:
+    return _register_client_common(
+        registration,
+        request,
+        client_registration_service,
+        category=ClientCategory.MCP_DCR,
+        default_client_name="MCP Client",
+    )
+
+
+@router.post("/oauth2/register/a2a", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
+async def register_a2a_client(
+    registration: ClientRegistrationRequest,
+    request: Request,
+    client_registration_service: ClientRegistrationService = Depends(get_client_registration_service),
+) -> ClientRegistrationResponse | JSONResponse:
+    return _register_client_common(
+        registration,
+        request,
+        client_registration_service,
+        category=ClientCategory.A2A_DCR,
+        default_client_name="A2A Client",
+    )
 
 
 @router.post("/oauth2/device/code", response_model=DeviceCodeResponse, response_model_exclude_none=True)
@@ -478,7 +499,7 @@ async def device_authorization(
         if client_error is not None:
             return client_error
 
-        client_metadata = store.get_client(client_id) or {}
+        client_metadata = _resolve_client_metadata(client_id, store) or {}
         if DEVICE_CODE_GRANT_TYPE not in (client_metadata.get("grant_types") or []):
             return oauth_error_response(
                 "unauthorized_client",
@@ -595,11 +616,16 @@ async def device_verify_continue(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-async def _parse_device_token_params(request: Request) -> dict:
+async def _parse_device_token_params(request: Request) -> dict[str, Any]:
     content_type = request.headers.get("content-type", "")
 
     if content_type.startswith("application/json"):
-        body = await request.json()
+        try:
+            body = await request.json()
+        except ValueError:
+            return {"_invalid_request": "JSON body is malformed"}
+        if not isinstance(body, dict):
+            return {"_invalid_request": "JSON body must be an object"}
 
         params = {
             "grant_type": body.get("grant_type"),
@@ -679,12 +705,10 @@ async def _parse_device_token_params(request: Request) -> dict:
 @router.post("/oauth2/token", response_model=DeviceTokenResponse, response_model_exclude_none=True)
 async def device_token(
     request: Request,
-    user_service: UserService = Depends(get_user_service),
-    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
-    consent_store: ConsentStore = Depends(get_consent_store),
+    token_grant_service: TokenGrantService = Depends(get_token_grant_service),
 ):
     try:
-        return await _device_token_handler(request, user_service, store, consent_store)
+        return await _device_token_handler(request, token_grant_service)
     except HTTPException:
         raise
     except Exception:
@@ -694,251 +718,17 @@ async def device_token(
 
 async def _device_token_handler(
     request: Request,
-    user_service: UserService,
-    store: OAuthStateStoreProtocol,
-    consent_store: ConsentStore,
+    token_grant_service: TokenGrantService,
 ) -> DeviceTokenResponse | JSONResponse:
     params = await _parse_device_token_params(request)
-    grant_type: str | None = params["grant_type"]
-    device_code: str | None = params["device_code"]
-    client_id: str | None = params["client_id"]
-    client_secret: str | None = params["client_secret"]
-    code: str | None = params["code"]
-    code_verifier: str | None = params["code_verifier"]
-    refresh_token: str | None = params["refresh_token"]
-    redirect_uri: str | None = params["redirect_uri"]
+    invalid_request = params.pop("_invalid_request", None)
+    if isinstance(invalid_request, str):
+        return oauth_error_response("invalid_request", invalid_request)
 
-    if not grant_type:
-        return oauth_error_response("invalid_request", "grant_type is required")
-    if not client_id:
-        return oauth_error_response("invalid_request", "client_id is required")
-
-    logger.info("TOKEN ENDPOINT CALLED")
-    logger.info(f"grant_type: {grant_type}")
-
-    # Authorization Code Flow
-    if grant_type == "authorization_code":
-        if not code or not redirect_uri:
-            return oauth_error_response("invalid_request", "code and redirect_uri are required")
-        auth_code_data = store.get_authcode(code)
-        if not auth_code_data:
-            return oauth_error_response("invalid_grant", "authorization code not found or expired")
-        if auth_code_data["client_id"] != client_id:
-            return oauth_error_response("invalid_client", "client_id mismatch")
-        if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
-            return oauth_error_response("invalid_client", "missing or invalid client_secret")
-        if client_id != settings.registry_app_name and not store.validate_client_credentials(client_id, client_secret):
-            return oauth_error_response("invalid_client", "invalid client credentials")
-        if auth_code_data["redirect_uri"] != redirect_uri:
-            return oauth_error_response("invalid_grant", "redirect_uri mismatch")
-        current_time = int(time.time())
-        if current_time > auth_code_data["expires_at"]:
-            return oauth_error_response("invalid_grant", "authorization code expired")
-        code_challenge = auth_code_data.get("code_challenge")
-        if code_challenge:
-            if not code_verifier:
-                return oauth_error_response("invalid_request", "code_verifier required for PKCE")
-
-            method = auth_code_data.get("code_challenge_method", "S256")
-            # Compute challenge from verifier and compare with stored challenge
-            if method != "S256":
-                return oauth_error_response("invalid_request", "code_challenge_method must be S256")
-
-            computed_challenge = create_s256_code_challenge(code_verifier)
-            if computed_challenge != code_challenge:
-                return oauth_error_response("invalid_grant", "code_verifier validation failed")
-
-        auth_code_data = store.consume_authcode(code)
-        if auth_code_data is None:
-            return oauth_error_response("invalid_grant", "authorization code already used")
-
-        user_info = auth_code_data["user_info"]
-
-        # Use resolved scope from authorization code (negotiated in callback)
-        # Fall back to computing from groups for backward compatibility with old codes
-        resolved_scopes = auth_code_data.get("resolved_scope")
-        if resolved_scopes is None:
-            logger.info("No resolved_scope in auth code, computing from groups (backward compatibility)")
-            user_groups = user_info.get("groups", [])
-            resolved_scopes = (
-                map_groups_to_scopes(user_groups, settings.scopes_file_config)
-                if user_groups
-                else user_info.get("scopes", [])
-            )
-
-        # Resolve user_id from MongoDB
-        user_id = await user_service.resolve_user_id(user_info)
-
-        scope_claim = " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes
-        access_token = mint_managed_agent_token(
-            JWT_TOKEN_CONFIG,
-            subject=user_info["username"],
-            client_id=client_id,
-            expires_in_seconds=settings.oauth_access_token_expiry_seconds,
-            iat=current_time,
-            extra_claims={
-                "name": user_info.get("name"),
-                "idp_id": user_info.get("idp_id"),
-                "user_id": user_id,
-                "scope": scope_claim,
-                "groups": user_info.get("groups", []),
-                "token_use": "access",
-                "auth_provider": settings.auth_provider,
-            },
-        )
-
-        rt = secrets.token_urlsafe(32)
-        refresh_expires_at = current_time + REFRESH_TOKEN_TTL_SECONDS
-        store.save_refresh_token(
-            rt,
-            {
-                "client_id": client_id,
-                "user_info": user_info,
-                "scope": scope_claim,
-                "expires_at": refresh_expires_at,
-            },
-        )
-
-        return DeviceTokenResponse(
-            access_token=access_token,
-            token_type="Bearer",
-            expires_in=settings.oauth_access_token_expiry_seconds,
-            scope=scope_claim,
-            refresh_token=rt,
-        )
-
-    elif grant_type == "urn:ietf:params:oauth:grant-type:device_code":
-        if not device_code:
-            return oauth_error_response("invalid_request", "device_code is required")
-        device_data = store.get_device_code(device_code)
-        if not device_data:
-            return oauth_error_response("invalid_grant", "device_code not found")
-        if device_data["client_id"] != client_id:
-            return oauth_error_response("invalid_client", "client_id mismatch")
-        if not store.validate_client_credentials(client_id, client_secret):
-            return oauth_error_response("invalid_client", "invalid client credentials")
-        current_time = int(time.time())
-        if current_time > device_data["expires_at"]:
-            return oauth_error_response("expired_token", "device_code has expired")
-        if device_data["status"] == "pending":
-            return oauth_error_response("authorization_pending", "user has not yet authorized this request")
-        if device_data["status"] == "denied":
-            return oauth_error_response("access_denied", "user denied authorization")
-        if device_data["status"] != "approved":
-            return oauth_error_response("server_error", "unexpected server state", 500)
-
-        # Atomically consume the device_code so a concurrent poll can't also mint from it.
-        device_data = store.consume_device_code(device_code)
-        if device_data is None:
-            return oauth_error_response("invalid_grant", "device_code already used")
-
-        mapped_user = device_data["mapped_user"]
-        resolved_scopes = device_data["resolved_scope"]
-        if not isinstance(mapped_user, dict) or resolved_scopes is None:
-            return oauth_error_response("server_error", "approved device code is missing user context", 500)
-
-        user_id = await user_service.resolve_user_id(mapped_user)
-        scope_claim = " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes
-
-        access_token = mint_managed_agent_token(
-            JWT_TOKEN_CONFIG,
-            subject=mapped_user["username"],
-            client_id=client_id,
-            expires_in_seconds=settings.oauth_access_token_expiry_seconds,
-            iat=current_time,
-            extra_claims={
-                "name": mapped_user.get("name"),
-                "idp_id": mapped_user.get("idp_id"),
-                "user_id": user_id,
-                "scope": scope_claim,
-                "groups": mapped_user.get("groups", []),
-                "token_use": "access",
-                "auth_provider": settings.auth_provider,
-            },
-        )
-        rt = secrets.token_urlsafe(32)
-        store.save_refresh_token(
-            rt,
-            {
-                "client_id": client_id,
-                "user_info": mapped_user,
-                "scope": scope_claim,
-                "expires_at": current_time + REFRESH_TOKEN_TTL_SECONDS,
-            },
-        )
-        store.delete_user_code(device_data["user_code"])
-
-        return DeviceTokenResponse(
-            access_token=access_token,
-            token_type="Bearer",
-            expires_in=settings.oauth_access_token_expiry_seconds,
-            scope=scope_claim,
-            refresh_token=rt,
-        )
-
-    elif grant_type == "refresh_token":
-        if not refresh_token:
-            return oauth_error_response("invalid_request", "refresh_token is required")
-        refresh_token_data = store.get_refresh_token(refresh_token)
-        if not refresh_token_data:
-            return oauth_error_response("invalid_grant", "refresh token invalid or expired")
-        if refresh_token_data.get("client_id") != client_id:
-            return oauth_error_response("invalid_client", "client_id mismatch")
-        if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
-            return oauth_error_response("invalid_client", "missing or invalid client_secret")
-        if client_id != settings.registry_app_name and not store.validate_client_credentials(client_id, client_secret):
-            return oauth_error_response("invalid_client", "invalid client credentials")
-
-        user_info = refresh_token_data["user_info"]
-        user_id = await user_service.resolve_user_id(user_info)
-        if user_id and not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
-            return oauth_error_response(
-                "invalid_grant",
-                "User consent is required. Restart the authorization flow.",
-            )
-
-        now = int(time.time())
-        new_refresh_token = secrets.token_urlsafe(32)
-        new_refresh_data = {
-            "client_id": client_id,
-            "user_info": user_info,
-            "scope": refresh_token_data.get("scope", ""),
-            "expires_at": now + REFRESH_TOKEN_TTL_SECONDS,
-        }
-        rt_data = store.rotate_refresh_token(
-            old_token=refresh_token,
-            new_token=new_refresh_token,
-            new_data=new_refresh_data,
-        )
-        if rt_data is None:
-            return oauth_error_response("invalid_grant", "refresh token already used")
-
-        access_token = mint_managed_agent_token(
-            JWT_TOKEN_CONFIG,
-            subject=user_info["username"],
-            client_id=client_id,
-            expires_in_seconds=settings.oauth_access_token_expiry_seconds,
-            iat=now,
-            extra_claims={
-                "user_id": user_id,
-                "scope": rt_data.get("scope", ""),
-                "groups": user_info.get("groups", []),
-                "token_use": "access",
-                "auth_provider": settings.auth_provider,
-            },
-        )
-
-        logger.info(f"Rotated refresh token for user: {user_info['username']}")
-
-        return DeviceTokenResponse(
-            access_token=access_token,
-            token_type="Bearer",
-            expires_in=settings.oauth_access_token_expiry_seconds,
-            scope=rt_data.get("scope", ""),
-            refresh_token=new_refresh_token,
-        )
-
-    return oauth_error_response("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")
+    token_request = validate_token_grant_request(params)
+    if isinstance(token_request, JSONResponse):
+        return token_request
+    return await token_grant_service.exchange(token_request)
 
 
 @router.get("/oauth2/providers")
@@ -972,6 +762,7 @@ async def oauth2_login(
     signer: URLSafeTimedSerializer = Depends(get_signer),
     is_https: bool = Depends(check_if_https),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ):
     error_url = settings.registry_error_redirect
     try:
@@ -992,7 +783,21 @@ async def oauth2_login(
 
         client_error = _validate_known_client_for_redirect(client_id, redirect_uri, store)
         if client_error is not None:
-            return client_error
+            if is_safe_unverified_redirect_target(redirect_uri, _trusted_error_redirect_uris()):
+                return _redirect_to_pending_consent(
+                    {
+                        "flow_type": _REDIRECT_ERROR_CONSENT_FLOW_TYPE,
+                        "redirect_uri": redirect_uri,
+                        "error": client_error.error,
+                        "error_description": client_error.error_description,
+                        "client_state": state,
+                    },
+                    PENDING_CONSENT_TTL_SECONDS,
+                    is_https,
+                    pending_store,
+                    consent_path="/oauth2/redirect-error-consent",
+                )
+            return oauth_error_response(client_error.error, client_error.error_description)
 
         if code_challenge_method != "S256":
             params = {
@@ -1037,12 +842,12 @@ async def consent_page(
         if not nonce or not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
             return HTMLResponse(render_consent_error_page(), status_code=400)
 
-        pending = pending_store.peek(oauth2_consent_nonce)
+        pending = _peek_authorization_consent(pending_store, oauth2_consent_nonce)
         if pending is None:
             return HTMLResponse(render_consent_error_page(), status_code=400)
 
         client_id = pending["session_data"]["client_id"]
-        client_metadata = store.get_client(client_id) or {}
+        client_metadata = _resolve_client_metadata(client_id, store) or {}
 
         return HTMLResponse(
             render_consent_page(
@@ -1075,7 +880,7 @@ async def approve_consent(
         if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
             return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
 
-        pending = pending_store.consume(nonce)
+        pending = _consume_authorization_consent(pending_store, nonce)
         if pending is None:
             return JSONResponse(
                 {"detail": "This consent link has expired. Please retry from your MCP client."},
@@ -1126,7 +931,7 @@ async def deny_consent(
         if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
             return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
 
-        pending = pending_store.consume(nonce)
+        pending = _consume_authorization_consent(pending_store, nonce)
         if pending and pending.get("flow_type") == "device":
             response = _finish_device_denial(pending["device_code"], store)
             response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
@@ -1141,6 +946,103 @@ async def deny_consent(
     except Exception:
         logger.exception("Error denying OAuth2 consent")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/oauth2/redirect-error-consent", response_class=HTMLResponse)
+async def redirect_error_consent_page(
+    nonce: str | None = None,
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> HTMLResponse:
+    try:
+        if not nonce or not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return HTMLResponse(render_consent_error_page(), status_code=400)
+
+        pending = _peek_redirect_error_consent(pending_store, oauth2_consent_nonce)
+        if pending is None:
+            return HTMLResponse(render_consent_error_page(), status_code=400)
+
+        return HTMLResponse(
+            render_redirect_error_consent_page(
+                redirect_uri=pending["redirect_uri"],
+                error=pending["error"],
+                error_description=pending["error_description"],
+                nonce=oauth2_consent_nonce,
+                approve_action=_auth_server_route_path("/oauth2/redirect-error-consent/approve"),
+                deny_action=_auth_server_route_path("/oauth2/redirect-error-consent/deny"),
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error rendering redirect-error consent page")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.post("/oauth2/redirect-error-consent/approve")
+async def approve_redirect_error_consent(
+    nonce: str = Form(...),
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> Response:
+    try:
+        if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
+
+        pending = _consume_redirect_error_consent(pending_store, nonce)
+        if pending is None:
+            return JSONResponse(
+                {"detail": "This link has expired. Please retry from your MCP client."},
+                status_code=400,
+            )
+
+        response = _redirect_error_to_client(
+            pending["redirect_uri"],
+            pending["error"],
+            pending["error_description"],
+            pending.get("client_state"),
+        )
+        response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error approving redirect-error consent")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.post("/oauth2/redirect-error-consent/deny")
+async def deny_redirect_error_consent(
+    nonce: str = Form(...),
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> Response:
+    try:
+        if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
+
+        pending = _consume_redirect_error_consent(pending_store, nonce)
+        if pending is None:
+            return JSONResponse(
+                {"detail": "This link has expired. Please retry from your MCP client."},
+                status_code=400,
+            )
+
+        params = {
+            "error": "access_denied",
+            "error_description": "User declined to relay this error to the MCP client",
+        }
+        response = RedirectResponse(
+            url=f"{settings.registry_error_redirect}?{urlencode(params)}",
+            status_code=302,
+        )
+        response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error denying redirect-error consent")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @router.get("/oauth2/callback/{provider}")
@@ -1283,17 +1185,12 @@ async def oauth2_callback(
                     response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                     return response
 
-                error_params = {
-                    "error": "invalid_scope",
-                    "error_description": "Requested scopes are not available for this user",
-                }
-                client_state = session_data.get("client_state")
-                if client_state:
-                    error_params["state"] = client_state
-
-                client_redirect_uri = session_data["client_redirect_uri"]
-                redirect_url = f"{client_redirect_uri}?{urlencode(error_params)}"
-                response = RedirectResponse(url=redirect_url, status_code=302)
+                response = _redirect_error_to_client(
+                    session_data["client_redirect_uri"],
+                    "invalid_scope",
+                    "Requested scopes are not available for this user",
+                    session_data.get("client_state"),
+                )
                 response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                 return response
 
@@ -1307,8 +1204,10 @@ async def oauth2_callback(
             logger.info(f"No scope requested, using default user scopes: {resolved_scopes}")
 
         if is_device_flow:
-            assert isinstance(device_code, str)
-            assert device_data is not None
+            if not isinstance(device_code, str) or device_data is None:
+                response = HTMLResponse(render_device_link_error_page(), status_code=400)
+                response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+                return response
             client_id = device_data["client_id"]
             user_id = mapped_user.get("user_id")
             if (

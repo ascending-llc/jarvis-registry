@@ -15,8 +15,18 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi.testclient import TestClient
 
 from auth_server.core.config import settings
-from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
+from auth_server.deps import (
+    get_auth_provider,
+    get_oauth2_config,
+    get_oauth_state_store,
+    get_signer,
+    get_token_grant_service,
+    get_user_service,
+)
 from auth_server.server import app
+from auth_server.services.token_grant_service import TokenGrantService
+from registry_pkgs.core import client_categories
+from registry_pkgs.core.client_categories import ClientCategory
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS as REFRESH_TOKEN_EXPIRY_SECONDS
 from tests.conftest import test_consent_store
@@ -41,9 +51,15 @@ def mock_user_service():
 
 @pytest.fixture
 def test_client_with_user_service(mock_user_service):
-    """Create test client with user_service dependency override."""
+    """Create test client with a TokenGrantService built around the mock user_service.
+
+    /oauth2/token only depends on get_token_grant_service now, so overriding get_user_service
+    directly here would never reach it (that override is only load-bearing for oauth2_callback).
+    """
     app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-    app.dependency_overrides[get_user_service] = lambda: mock_user_service
+    app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+        mock_user_service, test_oauth_state_store, test_consent_store
+    )
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
@@ -90,11 +106,11 @@ class TestAccessTokenScoping:
     ):
         """Test that when no scope is requested, user receives their default scopes."""
         # Setup mocks
-        default_scopes = ["servers-read", "agents-read", "servers-write"]
+        default_scopes = ["mcp-proxy-ops"]
         mock_map_groups.return_value = default_scopes
 
         # Create authorization code without resolved_scope (backward compatibility)
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         redirect_uri = "https://example.com/callback"
         auth_code, user_info = self._create_mock_callback_state(client_id, redirect_uri, requested_scope=None)
 
@@ -126,13 +142,13 @@ class TestAccessTokenScoping:
     ):
         """Test that when client requests a subset of user scopes, intersection is returned."""
         # Setup mocks
-        default_scopes = ["servers-read", "agents-read", "servers-write", "agents-write"]
+        default_scopes = ["mcp-proxy-ops", "servers-read"]
         mock_map_groups.return_value = default_scopes
 
         # Simulate callback flow with requested scope
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         redirect_uri = "https://example.com/callback"
-        requested_scopes = ["servers-read", "agents-read"]  # Subset
+        requested_scopes = ["mcp-proxy-ops"]  # Subset allowed by the MCP client ceiling
 
         # Create authorization code with resolved_scope (negotiated in callback)
         auth_code, user_info = self._create_mock_callback_state(client_id, redirect_uri)
@@ -157,10 +173,14 @@ class TestAccessTokenScoping:
         access_token = token_data["access_token"]
         jwt_payload = decode_jwt_unverified(access_token)
 
-        # Should contain only requested scopes (intersection)
-        assert jwt_payload["scope"] == " ".join(requested_scopes)
-        assert "servers-write" not in jwt_payload["scope"]
-        assert "agents-write" not in jwt_payload["scope"]
+        expected_scope = " ".join(requested_scopes)
+        refresh_token_data = refresh_tokens_storage[token_data["refresh_token"]]
+
+        # JWT, response, and persisted refresh scope must describe the same grant.
+        assert jwt_payload["scope"] == expected_scope
+        assert token_data["scope"] == expected_scope
+        assert refresh_token_data["scope"] == expected_scope
+        assert "servers-read" not in jwt_payload["scope"]
 
     @patch("auth_server.routes.oauth_flow.get_token_kid")
     @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
@@ -437,11 +457,11 @@ class TestAccessTokenScoping:
     ):
         """Test that old authorization codes without resolved_scope still work."""
         # Setup mocks
-        default_scopes = ["servers-read"]
+        default_scopes = ["mcp-proxy-ops"]
         mock_map_groups.return_value = default_scopes
 
         # Create authorization code WITHOUT resolved_scope field (old format)
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         redirect_uri = "https://example.com/callback"
         auth_code, user_info = self._create_mock_callback_state(client_id, redirect_uri)
 
@@ -480,7 +500,7 @@ class TestRefreshTokenRotation:
         """Test that using a refresh token generates a new refresh token."""
 
         # Setup initial refresh token
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
@@ -493,7 +513,7 @@ class TestRefreshTokenRotation:
         refresh_tokens_storage[old_refresh_token] = {
             "client_id": client_id,
             "user_info": user_info,
-            "scope": "servers-read agents-read",
+            "scope": "mcp-proxy-ops",
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
@@ -527,10 +547,41 @@ class TestRefreshTokenRotation:
         new_token_data = refresh_tokens_storage[new_refresh_token]
         assert new_token_data["client_id"] == client_id
         assert new_token_data["user_info"] == user_info
-        assert new_token_data["scope"] == "servers-read agents-read"
+        assert new_token_data["scope"] == "mcp-proxy-ops"
 
         # Verify expiry is extended
         assert new_token_data["expires_at"] > current_time + 1209500  # Close to 14 days
+
+    def test_refresh_token_is_not_rotated_when_access_token_minting_fails(
+        self,
+        test_client_with_user_service: TestClient,
+        clear_device_storage,
+    ):
+        client_id = "mcp-client-user-gen"
+        old_refresh_token = secrets.token_urlsafe(32)
+        refresh_tokens_storage[old_refresh_token] = {
+            "client_id": client_id,
+            "user_info": {"username": "test_user", "groups": ["jarvis-registry-admin"]},
+            "scope": "mcp-proxy-ops",
+            "expires_at": int(time.time()) + REFRESH_TOKEN_EXPIRY_SECONDS,
+        }
+
+        with patch(
+            "auth_server.services.token_grant_service.mint_managed_agent_token_with_scope",
+            side_effect=RuntimeError("signer unavailable"),
+        ):
+            response = test_client_with_user_service.post(
+                f"{API_PREFIX}/oauth2/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": old_refresh_token,
+                    "client_id": client_id,
+                },
+            )
+
+        assert response.status_code == 500
+        assert old_refresh_token in refresh_tokens_storage
+        assert list(refresh_tokens_storage) == [old_refresh_token]
 
     def test_refresh_token_requires_client_consent(
         self,
@@ -539,7 +590,7 @@ class TestRefreshTokenRotation:
         mock_user_service,
     ):
         """Existing refresh tokens must not mint new access tokens until the user consents."""
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
         user_info = {
@@ -550,7 +601,7 @@ class TestRefreshTokenRotation:
         refresh_tokens_storage[old_refresh_token] = {
             "client_id": client_id,
             "user_info": user_info,
-            "scope": "servers-read agents-read",
+            "scope": "mcp-proxy-ops",
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
@@ -581,7 +632,7 @@ class TestRefreshTokenRotation:
         clear_device_storage,
     ):
         """A prior consent record allows refresh-token rotation to continue."""
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
         user_info = {
@@ -592,7 +643,7 @@ class TestRefreshTokenRotation:
         refresh_tokens_storage[old_refresh_token] = {
             "client_id": client_id,
             "user_info": user_info,
-            "scope": "servers-read agents-read",
+            "scope": "mcp-proxy-ops",
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
         test_consent_store.default_client_consent = False
@@ -618,7 +669,7 @@ class TestRefreshTokenRotation:
         """Test that after rotation, old refresh token is invalidated."""
 
         # Setup initial refresh token
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
@@ -631,7 +682,7 @@ class TestRefreshTokenRotation:
         refresh_tokens_storage[old_refresh_token] = {
             "client_id": client_id,
             "user_info": user_info,
-            "scope": "servers-read",
+            "scope": "mcp-proxy-ops",
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
@@ -664,7 +715,7 @@ class TestRefreshTokenRotation:
     def test_refresh_token_rotation_chain(self, test_client_with_user_service: TestClient, clear_device_storage):
         """Test that refresh tokens can be rotated multiple times in a chain."""
 
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         current_time = int(time.time())
 
         user_info = {
@@ -678,7 +729,7 @@ class TestRefreshTokenRotation:
         refresh_tokens_storage[rt1] = {
             "client_id": client_id,
             "user_info": user_info,
-            "scope": "servers-read",
+            "scope": "mcp-proxy-ops",
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
@@ -718,8 +769,8 @@ class TestRefreshTokenRotation:
     def test_refresh_token_scope_preserved(self, test_client_with_user_service: TestClient, clear_device_storage):
         """Test that scope is preserved when rotating refresh tokens."""
 
-        client_id = "test-client"
-        original_scope = "servers-read agents-read servers-write"
+        client_id = "mcp-client-user-gen"
+        original_scope = "mcp-proxy-ops"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
@@ -762,6 +813,60 @@ class TestRefreshTokenRotation:
         jwt_payload = decode_jwt_unverified(access_token)
         assert jwt_payload["scope"] == original_scope
 
+    def test_refresh_token_scope_is_narrowed_by_current_ceiling(
+        self,
+        test_client_with_user_service: TestClient,
+        clear_device_storage,
+    ):
+        """A tightened client ceiling applies immediately and remains narrowed across rotations."""
+        client_id = "mcp-client-user-gen"
+        user_info = {
+            "username": "test_user",
+            "email": "test@example.com",
+            "groups": ["jarvis-registry-admin"],
+        }
+        current_refresh_token = secrets.token_urlsafe(32)
+        refresh_tokens_storage[current_refresh_token] = {
+            "client_id": client_id,
+            "user_info": user_info,
+            "scope": "mcp-proxy-ops",
+            "expires_at": int(time.time()) + REFRESH_TOKEN_EXPIRY_SECONDS,
+        }
+
+        first_response = test_client_with_user_service.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={"grant_type": "refresh_token", "refresh_token": current_refresh_token, "client_id": client_id},
+        )
+        assert first_response.status_code == 200
+        assert first_response.json()["scope"] == "mcp-proxy-ops"
+        current_refresh_token = first_response.json()["refresh_token"]
+
+        original_policy = client_categories.get_client_policy(ClientCategory.MCP_DCR)
+        assert original_policy is not None
+        tightened_policy = client_categories.ClientPolicy(
+            category=ClientCategory.MCP_DCR,
+            allowed_grant_types=original_policy.allowed_grant_types,
+            max_scopes=frozenset(),
+            client_id_prefix=original_policy.client_id_prefix,
+            default_scope=original_policy.default_scope,
+        )
+        with patch.dict(client_categories._CLIENT_POLICIES, {ClientCategory.MCP_DCR: tightened_policy}):
+            for _ in range(2):
+                response = test_client_with_user_service.post(
+                    f"{API_PREFIX}/oauth2/token",
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": current_refresh_token,
+                        "client_id": client_id,
+                    },
+                )
+                assert response.status_code == 200
+                token_data = response.json()
+                current_refresh_token = token_data["refresh_token"]
+                assert decode_jwt_unverified(token_data["access_token"])["scope"] == ""
+                assert token_data["scope"] == ""
+                assert refresh_tokens_storage[current_refresh_token]["scope"] == ""
+
     def test_refresh_token_invalid_token(self, test_client_with_user_service: TestClient, clear_device_storage):
         """Test that using an invalid refresh token returns error."""
         response = test_client_with_user_service.post(
@@ -780,7 +885,7 @@ class TestRefreshTokenRotation:
     def test_refresh_token_expired(self, test_client_with_user_service: TestClient, clear_device_storage):
         """Test that expired refresh token is rejected and removed."""
 
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         expired_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
@@ -788,7 +893,7 @@ class TestRefreshTokenRotation:
         refresh_tokens_storage[expired_refresh_token] = {
             "client_id": client_id,
             "user_info": {"username": "test_user", "email": "test@example.com", "groups": []},
-            "scope": "servers-read",
+            "scope": "mcp-proxy-ops",
             "expires_at": current_time - 1,  # Expired
         }
 
@@ -885,13 +990,13 @@ class TestScopingAndRotationIntegration:
         self, mock_map_groups, test_client_with_user_service: TestClient, clear_device_storage
     ):
         """Test that refreshing a scoped access token preserves the negotiated scope."""
-        default_scopes = ["servers-read", "agents-read", "servers-write", "agents-write"]
+        default_scopes = ["mcp-proxy-ops", "servers-read"]
         mock_map_groups.return_value = default_scopes
 
         # Simulate authorization code flow with scoped token
-        client_id = "test-client"
+        client_id = "mcp-client-user-gen"
         redirect_uri = "https://example.com/callback"
-        negotiated_scopes = ["servers-read", "agents-read"]  # Subset requested by client
+        negotiated_scopes = ["mcp-proxy-ops"]  # Subset allowed by the MCP client ceiling
 
         # Create authorization code with resolved scope
         auth_code = secrets.token_urlsafe(32)
@@ -960,8 +1065,7 @@ class TestScopingAndRotationIntegration:
         access_token_2 = refresh_data["access_token"]
         jwt_payload_2 = decode_jwt_unverified(access_token_2)
         assert jwt_payload_2["scope"] == " ".join(negotiated_scopes)
-        assert "servers-write" not in jwt_payload_2["scope"]
-        assert "agents-write" not in jwt_payload_2["scope"]
+        assert "servers-read" not in jwt_payload_2["scope"]
 
         # Verify new refresh token was issued
         refresh_token_2 = refresh_data["refresh_token"]

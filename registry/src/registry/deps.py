@@ -25,6 +25,7 @@ from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.oauth.token_service import TokenService
 from .services.search.service import SearchService
 from .services.server_service import ServerServiceV1
+from .services.skill_service import SkillService
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_service import WorkflowService
@@ -60,6 +61,10 @@ def get_group_service(container: RegistryContainer = Depends(get_container)) -> 
 
 def get_acl_service(container: RegistryContainer = Depends(get_container)) -> ACLService:
     return container.acl_service
+
+
+def get_skill_service(container: RegistryContainer = Depends(get_container)) -> SkillService:
+    return container.skill_service
 
 
 def get_token_service(container: RegistryContainer = Depends(get_container)) -> TokenService:
