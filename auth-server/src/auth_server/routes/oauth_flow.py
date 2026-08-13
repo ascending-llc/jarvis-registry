@@ -87,6 +87,8 @@ from .consent_templates import (
     render_device_code_entry_page,
     render_device_denied_page,
     render_device_link_error_page,
+    render_device_scope_error_page,
+    render_device_server_error_page,
     render_redirect_error_consent_page,
 )
 
@@ -417,12 +419,27 @@ def _finish_device_callback(
     return HTMLResponse(render_device_approved_page())
 
 
-def _finish_device_denial(device_code: str, store: OAuthStateStoreProtocol) -> HTMLResponse:
+def _finish_device_failure(
+    device_code: str,
+    status: str,
+    store: OAuthStateStoreProtocol,
+    *,
+    error_description: str | None = None,
+) -> None:
+    """Mark a device code as terminally failed so token polling returns the real error."""
     device_data = store.get_device_code(device_code)
-    if device_data is not None:
-        updated = dict(device_data)
-        updated["status"] = "denied"
-        store.update_device_code(device_code, updated)
+    if device_data is None or device_data["status"] != "pending":
+        return
+
+    updated = dict(device_data)
+    updated["status"] = status
+    if error_description is not None:
+        updated["error_description"] = error_description
+    store.update_device_code(device_code, updated)
+
+
+def _finish_device_denial(device_code: str, store: OAuthStateStoreProtocol) -> HTMLResponse:
+    _finish_device_failure(device_code, "denied", store)
     return HTMLResponse(render_device_denied_page())
 
 
@@ -1062,6 +1079,8 @@ async def oauth2_callback(
     is_https: bool = Depends(check_if_https),
 ):
     error_url = settings.registry_error_redirect
+    is_device_flow = False
+    device_code: str | None = None
 
     try:
         if error is not None:
@@ -1081,6 +1100,10 @@ async def oauth2_callback(
                 content={"detail": "OAuth session expired"},
                 headers={"WWW-Authenticate": f'Bearer realm="{settings.jarvis_realm}"'},
             )
+
+        is_device_flow = session_data.get("flow_type") == "device"
+        session_device_code = session_data.get("device_code")
+        device_code = session_device_code if is_device_flow and isinstance(session_device_code, str) else None
 
         # Decode internal state from temp session to compare client_state
         internal_state = session_data.get("state")
@@ -1152,8 +1175,6 @@ async def oauth2_callback(
 
         mapped_user["provider"] = provider
 
-        is_device_flow = session_data.get("flow_type") == "device"
-        device_code = session_data.get("device_code") if is_device_flow else None
         device_data = store.get_device_code(device_code) if isinstance(device_code, str) else None
         if is_device_flow and (device_data is None or device_data["status"] != "pending"):
             response = HTMLResponse(render_device_link_error_page(), status_code=400)
@@ -1181,7 +1202,14 @@ async def oauth2_callback(
                     f"requested={requested_scopes}, available={default_user_scopes}"
                 )
                 if is_device_flow:
-                    response = HTMLResponse(render_device_link_error_page(), status_code=400)
+                    if isinstance(device_code, str):
+                        _finish_device_failure(
+                            device_code,
+                            "scope_denied",
+                            store,
+                            error_description="Requested scopes are not available for this user",
+                        )
+                    response = HTMLResponse(render_device_scope_error_page(), status_code=400)
                     response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                     return response
 
@@ -1251,6 +1279,20 @@ async def oauth2_callback(
 
     except Exception:
         logger.exception(f"Error in OAuth2 callback for {provider}")
+
+        if is_device_flow and isinstance(device_code, str):
+            try:
+                _finish_device_failure(
+                    device_code,
+                    "failed",
+                    store,
+                    error_description="Unexpected error during sign-in",
+                )
+            except Exception:
+                logger.exception("Failed to mark device_code as failed after callback error")
+            response = HTMLResponse(render_device_server_error_page(), status_code=500)
+            response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+            return response
 
         return RedirectResponse(url=f"{error_url}?error=oauth2_callback_failed", status_code=302)
 

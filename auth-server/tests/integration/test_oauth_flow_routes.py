@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_token_grant_service, get_user_service
+from auth_server.routes.consent_templates import render_device_server_error_page
 from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
 from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
@@ -1036,6 +1037,99 @@ class TestDeviceFlowRoutes:
 @pytest.mark.device_flow
 class TestDeviceFlowCallbackAndConsent:
     """Tests for the real IdP callback and client consent gate in device flow."""
+
+    def test_device_callback_exception_is_terminal(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        _configure_oauth2(test_client)
+        _configure_auth_provider(test_client)
+        _configure_user_service(test_client)
+        data = _start_device_flow(test_client, scope="servers-read")
+        verify_response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/verify",
+            data={"user_code": data["user_code"]},
+            follow_redirects=False,
+        )
+        session_cookie = verify_response.cookies.get("oauth2_temp_session")
+        assert session_cookie is not None
+
+        state_param = _extract_state_from_temp_session(session_cookie)
+        with patch(
+            "auth_server.routes.oauth_flow.exchange_code_for_token",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("provider unavailable"),
+        ):
+            test_client.cookies.set("oauth2_temp_session", session_cookie)
+            callback_response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "provider-code", "state": state_param},
+                follow_redirects=False,
+            )
+
+        token_response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "mcp-client-test",
+            },
+        )
+
+        assert callback_response.status_code == 500
+        assert callback_response.text == render_device_server_error_page()
+        assert device_codes_storage[data["device_code"]]["status"] == "failed"
+        assert device_codes_storage[data["device_code"]]["error_description"] == "Unexpected error during sign-in"
+        assert token_response.status_code == 500
+        assert token_response.json()["error"] == "server_error"
+        assert token_response.json()["error_description"] == "Unexpected error during sign-in"
+
+    def test_device_callback_exception_preserves_terminal_status(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        _configure_oauth2(test_client)
+        _configure_auth_provider(test_client)
+        _configure_user_service(test_client)
+        data = _start_device_flow(test_client, scope="servers-read")
+        verify_response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/verify",
+            data={"user_code": data["user_code"]},
+            follow_redirects=False,
+        )
+        session_cookie = verify_response.cookies.get("oauth2_temp_session")
+        assert session_cookie is not None
+
+        device_codes_storage[data["device_code"]]["status"] = "denied"
+        state_param = _extract_state_from_temp_session(session_cookie)
+        with patch(
+            "auth_server.routes.oauth_flow.exchange_code_for_token",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("provider unavailable"),
+        ):
+            test_client.cookies.set("oauth2_temp_session", session_cookie)
+            callback_response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "provider-code", "state": state_param},
+                follow_redirects=False,
+            )
+
+        token_response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "mcp-client-test",
+            },
+        )
+
+        assert callback_response.status_code == 500
+        assert device_codes_storage[data["device_code"]]["status"] == "denied"
+        assert "error_description" not in device_codes_storage[data["device_code"]]
+        assert token_response.status_code == 400
+        assert token_response.json()["error"] == "access_denied"
 
     def test_device_callback_with_prior_consent_marks_device_approved(
         self,

@@ -266,8 +266,17 @@ class TokenGrantService:
             return _oauth_error("authorization_pending", "user has not yet authorized this request")
         if device_data["status"] == "denied":
             return _oauth_error("access_denied", "user denied authorization")
+        if device_data["status"] == "scope_denied":
+            return _oauth_error(
+                "invalid_scope",
+                device_data.get("error_description") or "Requested scopes are not available for this user",
+            )
         if device_data["status"] != "approved":
-            return _oauth_error("server_error", "unexpected server state", 500)
+            return _oauth_error(
+                "server_error",
+                device_data.get("error_description") or "unexpected server state",
+                500,
+            )
 
         device_data = self._store.consume_device_code(request.device_code)
         if device_data is None:
