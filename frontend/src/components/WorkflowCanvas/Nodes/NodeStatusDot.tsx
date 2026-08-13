@@ -9,7 +9,7 @@ export const NodeStatusDot: React.FC<NodeStatusDotProps> = ({ colorClass, isRunn
   <div
     aria-hidden={isRunning ? undefined : true}
     role={isRunning ? 'status' : undefined}
-    className={`node-dot ${colorClass}${isRunning ? ' workflow-status-running workflow-status-pulse' : ''}`}
+    className={`node-dot ${colorClass}${isRunning ? ' workflow-status-running workflow-status-ripple' : ''}`}
   >
     {isRunning && <span className='sr-only'>Running</span>}
   </div>

@@ -42,11 +42,12 @@ const RunRow: React.FC<{ run: RunEntry; onClick: (run: RunEntry) => void; isSele
   >
     <div
       className={`w-[7px] h-[7px] rounded-full shrink-0 mt-[3px]${
-        run.status === 'live' ? ' workflow-status-pulse' : ''
+        run.status === 'live' ? ' workflow-status-ripple' : ''
       }`}
       style={{
+        color: RUN_COLORS[run.status],
         background: RUN_COLORS[run.status],
-        boxShadow: RUN_GLOWS[run.status] ? `0 0 0 2px ${RUN_GLOWS[run.status]}` : 'none',
+        boxShadow: run.status !== 'live' && RUN_GLOWS[run.status] ? `0 0 0 2px ${RUN_GLOWS[run.status]}` : 'none',
       }}
     />
     <div className='flex-1 min-w-0'>
