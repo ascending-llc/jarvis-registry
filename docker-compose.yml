@@ -251,77 +251,8 @@ services:
     profiles:
       - full
 
-  # PostgreSQL database for Keycloak
-  keycloak-db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: keycloak
-      POSTGRES_USER: keycloak
-      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
-    volumes:
-      - keycloak_db_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U keycloak" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    profiles:
-      - disabled
-
-  # Keycloak Identity Provider
-  keycloak:
-    image: quay.io/keycloak/keycloak:latest
-    command: start-dev  # Use 'start' for production with proper SSL
-    environment:
-      # Database configuration
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
-      KC_DB_USERNAME: keycloak
-      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
-
-      # Admin credentials
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-
-      # HTTP configuration
-      KC_HTTP_ENABLED: 'true'
-      KC_HTTP_PORT: 8080
-      KC_HOSTNAME_STRICT: 'false'
-      KC_HOSTNAME_STRICT_HTTPS: 'false'
-      KC_PROXY: edge  # Running behind nginx
-
-      # Frontend URL for external JWT issuer
-      KC_FRONTEND_URL: ${KEYCLOAK_EXTERNAL_URL:-http://localhost:8080}
-
-      # Features
-      KC_FEATURES: token-exchange,admin-api
-
-      # Logging
-      KC_LOG_LEVEL: INFO
-
-    ports:
-      - "8080:8080"
-    depends_on:
-      keycloak-db:
-        condition: service_healthy
-    volumes:
-      - ./keycloak/themes:/opt/keycloak/themes
-      - ./keycloak/providers:/opt/keycloak/providers
-      - ./keycloak/import:/opt/keycloak/data/import
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8080/health/ready" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    profiles:
-      - disabled
-
 volumes:
   ssl_data:
-  keycloak_db_data:
   mongodb-data:
     driver: local
   mongodb-config:

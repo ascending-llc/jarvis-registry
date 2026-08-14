@@ -1,5 +1,0 @@
-{
-  "server_name": "Invalid Server",
-  "description": "Missing required fields",
-  "proxy_pass_url": "not-a-valid-url"
-}

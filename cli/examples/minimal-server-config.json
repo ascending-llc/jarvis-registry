@@ -1,7 +1,0 @@
-{
-  "server_name": "Minimal MCP Server",
-  "description": "A minimal server configuration with only required fields",
-  "path": "/minimal-server",
-  "proxy_pass_url": "http://minimal-server:9001/",
-  "supported_transports": ["streamable-http"]
-}
