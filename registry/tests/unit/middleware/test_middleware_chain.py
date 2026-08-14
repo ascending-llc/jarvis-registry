@@ -36,11 +36,17 @@ def _widgets_scopes_config(monkeypatch: pytest.MonkeyPatch) -> None:
         settings,
         "scopes_config",
         {
-            "widgets-read": [
-                {"endpoint": "/widgets", "method": "GET"},
-                {"endpoint": "/widgets/disconnect", "method": "GET"},
-            ],
-            "widgets-write": [{"endpoint": "/widgets", "method": "POST"}],
+            "widgets-read": {
+                "description": "",
+                "actions": [
+                    {"endpoint": "/widgets", "method": "GET"},
+                    {"endpoint": "/widgets/disconnect", "method": "GET"},
+                ],
+            },
+            "widgets-write": {
+                "description": "",
+                "actions": [{"endpoint": "/widgets", "method": "POST"}],
+            },
         },
     )
 

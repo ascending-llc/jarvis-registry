@@ -28,6 +28,14 @@ from registry.middleware.rbac import (
 _original_has_permission = ScopePermissionMiddleware._has_permission
 
 
+def _action_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Wrap synthetic scope action lists in the production scopes.yml shape."""
+    return {
+        name: value if name == "group_mappings" else {"description": "", "actions": value}
+        for name, value in config.items()
+    }
+
+
 @pytest.fixture(autouse=True)
 def restore_rbac_for_rbac_tests(monkeypatch):
     """Restore original RBAC behavior for these specific tests."""
@@ -174,12 +182,14 @@ class TestRuleSpecificity:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "test-scope": [
-                {"endpoint": "/servers/{server_id}", "method": "GET"},
-                {"endpoint": "/servers/stats", "method": "GET"},
-            ]
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "test-scope": [
+                    {"endpoint": "/servers/{server_id}", "method": "GET"},
+                    {"endpoint": "/servers/stats", "method": "GET"},
+                ]
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -193,13 +203,15 @@ class TestRuleSpecificity:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "test-scope": [
-                {"endpoint": "/a/{x}/{y}/{z}", "method": "GET"},
-                {"endpoint": "/a/{x}", "method": "GET"},
-                {"endpoint": "/a/{x}/{y}", "method": "GET"},
-            ]
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "test-scope": [
+                    {"endpoint": "/a/{x}/{y}/{z}", "method": "GET"},
+                    {"endpoint": "/a/{x}", "method": "GET"},
+                    {"endpoint": "/a/{x}/{y}", "method": "GET"},
+                ]
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -213,13 +225,15 @@ class TestRuleSpecificity:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "test-scope": [
-                {"endpoint": "/a", "method": "GET"},
-                {"endpoint": "/a/b/c", "method": "GET"},
-                {"endpoint": "/a/b", "method": "GET"},
-            ]
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "test-scope": [
+                    {"endpoint": "/a", "method": "GET"},
+                    {"endpoint": "/a/b/c", "method": "GET"},
+                    {"endpoint": "/a/b", "method": "GET"},
+                ]
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -238,10 +252,12 @@ class TestPermissionChecking:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
-            "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
+                "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -255,10 +271,12 @@ class TestPermissionChecking:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
-            "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
+                "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -272,10 +290,12 @@ class TestPermissionChecking:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
-            "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
+                "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -291,10 +311,12 @@ class TestPermissionChecking:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
-            "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
+                "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -308,9 +330,11 @@ class TestPermissionChecking:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "servers-read": [{"endpoint": "/servers", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-read": [{"endpoint": "/servers", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -324,9 +348,11 @@ class TestPermissionChecking:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "servers-read": [{"endpoint": "/servers", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-read": [{"endpoint": "/servers", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -340,9 +366,11 @@ class TestPermissionChecking:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "servers-write": [{"endpoint": "/servers", "method": "*"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-write": [{"endpoint": "/servers", "method": "*"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -356,9 +384,13 @@ class TestPermissionChecking:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "mcp-proxy-ops": [{"endpoint": "/proxy/{full_path:path}", "method": "GET,POST,PUT,DELETE,PATCH,OPTIONS"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "mcp-proxy-ops": [
+                    {"endpoint": "/proxy/{full_path:path}", "method": "GET,POST,PUT,DELETE,PATCH,OPTIONS"}
+                ],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         middleware = ScopePermissionMiddleware(app=MagicMock())
@@ -424,10 +456,12 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
-            "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
+                "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -445,10 +479,12 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
-            "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
+                "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -466,10 +502,12 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
-            "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
+                "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -487,9 +525,11 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "servers-read": [{"endpoint": "/servers", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-read": [{"endpoint": "/servers", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         # Don't add auth middleware - request won't be authenticated
@@ -507,9 +547,11 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "servers-read": [{"endpoint": "/servers", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-read": [{"endpoint": "/servers", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -527,10 +569,12 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "servers-read": [{"endpoint": "/servers", "method": "GET"}],
-            "agents-read": [{"endpoint": "/agents", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-read": [{"endpoint": "/servers", "method": "GET"}],
+                "agents-read": [{"endpoint": "/agents", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -548,9 +592,11 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "servers-read": [{"endpoint": "*", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-read": [{"endpoint": "*", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -569,9 +615,11 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "agents-read": [{"endpoint": "/agents/{path}", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "agents-read": [{"endpoint": "/agents/{path}", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -596,9 +644,11 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "servers-share": [{"endpoint": "/permissions/mcpServer/{resource_id}", "method": "PUT"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-share": [{"endpoint": "/permissions/mcpServer/{resource_id}", "method": "PUT"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -622,9 +672,11 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "agents-share": [{"endpoint": "/permissions/agent/{resource_id}", "method": "PUT"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "agents-share": [{"endpoint": "/permissions/agent/{resource_id}", "method": "PUT"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -648,9 +700,11 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "federations-share": [{"endpoint": "/permissions/federation/{resource_id}", "method": "PUT"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "federations-share": [{"endpoint": "/permissions/federation/{resource_id}", "method": "PUT"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -682,10 +736,12 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "group_mappings": {"jarvis-registry-user": ["servers-read"]},
-            "servers-read": [{"endpoint": "/servers", "method": "GET"}],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "group_mappings": {"jarvis-registry-user": ["servers-read"]},
+                "servers-read": [{"endpoint": "/servers", "method": "GET"}],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         # Mock the group mapping function
@@ -716,16 +772,18 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "workflows-read": [
-                {"endpoint": "/workflows", "method": "GET"},
-                {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
-                {"endpoint": "/workflows/{workflow_id}/runs", "method": "GET"},
-                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}", "method": "GET"},
-                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/status", "method": "GET"},
-                {"endpoint": "/workflows/{workflow_id}/versions", "method": "GET"},
-            ],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "workflows-read": [
+                    {"endpoint": "/workflows", "method": "GET"},
+                    {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
+                    {"endpoint": "/workflows/{workflow_id}/runs", "method": "GET"},
+                    {"endpoint": "/workflows/{workflow_id}/runs/{run_id}", "method": "GET"},
+                    {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/status", "method": "GET"},
+                    {"endpoint": "/workflows/{workflow_id}/versions", "method": "GET"},
+                ],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -756,16 +814,18 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "workflows-read": [
-                {"endpoint": "/workflows", "method": "GET"},
-                {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
-            ],
-            "workflows-write": [
-                {"endpoint": "/workflows", "method": "POST"},
-                {"endpoint": "/workflows/{workflow_id}", "method": "PUT,DELETE"},
-            ],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "workflows-read": [
+                    {"endpoint": "/workflows", "method": "GET"},
+                    {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
+                ],
+                "workflows-write": [
+                    {"endpoint": "/workflows", "method": "POST"},
+                    {"endpoint": "/workflows/{workflow_id}", "method": "PUT,DELETE"},
+                ],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -802,19 +862,21 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "workflows-read": [
-                {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
-            ],
-            "workflows-control": [
-                {"endpoint": "/workflows/{workflow_id}/runs", "method": "POST"},
-                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/pause", "method": "POST"},
-                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/resume", "method": "POST"},
-                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/cancel", "method": "POST"},
-                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/retry", "method": "POST"},
-                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/approve", "method": "POST"},
-            ],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "workflows-read": [
+                    {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
+                ],
+                "workflows-control": [
+                    {"endpoint": "/workflows/{workflow_id}/runs", "method": "POST"},
+                    {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/pause", "method": "POST"},
+                    {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/resume", "method": "POST"},
+                    {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/cancel", "method": "POST"},
+                    {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/retry", "method": "POST"},
+                    {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/approve", "method": "POST"},
+                ],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()
@@ -845,15 +907,17 @@ class TestIntegrationScenarios:
 
         mock_settings = MagicMock()
         mock_settings.api_version = "v1"
-        mock_settings.scopes_config = {
-            "workflows-read": [
-                {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
-            ],
-            "workflows-control": [
-                {"endpoint": "/workflows/{workflow_id}/runs", "method": "POST"},
-                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/approve", "method": "POST"},
-            ],
-        }
+        mock_settings.scopes_config = _action_config(
+            {
+                "workflows-read": [
+                    {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
+                ],
+                "workflows-control": [
+                    {"endpoint": "/workflows/{workflow_id}/runs", "method": "POST"},
+                    {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/approve", "method": "POST"},
+                ],
+            }
+        )
         monkeypatch.setattr(rbac_module, "settings", mock_settings)
 
         app = self._build_app()

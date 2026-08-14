@@ -83,6 +83,8 @@ group_mappings:
     - skills-read
 
 servers-read:
+  description: "View registered MCP servers, their tools, and connection status."
+  actions:
   - action: list_servers
     method: GET
     endpoint: /servers
@@ -97,6 +99,8 @@ servers-read:
     endpoint: /servers/{server_id}/tools
 
 servers-write:
+  description: "Register, modify, delete, enable/disable, and refresh MCP servers."
+  actions:
   - action: register_service
     method: POST
     endpoint: /servers
@@ -114,6 +118,8 @@ servers-write:
     endpoint: /servers/{server_id}/refresh
 
 agents-read:
+  description: "View registered A2A agents, their skills, health, and ratings, and discover agents by capability."
+  actions:
   - action: list_agents
     method: GET
     endpoint: /agents
@@ -140,6 +146,8 @@ agents-read:
     endpoint: /agents/.well-known/agent-cards
 
 agents-write:
+  description: "Register, modify, delete, enable/disable, and refresh A2A agents, and sync their well-known agent cards."
+  actions:
   - action: create_agent
     method: POST
     endpoint: /agents
@@ -160,6 +168,8 @@ agents-write:
     endpoint: /agents/{agent_id}/wellknown
 
 federations-read:
+  description: "View federated registries and their sync jobs."
+  actions:
   # Federation read scopes only allow access to federation read endpoints.
   # Resource-level visibility is still filtered by ACL at runtime.
   - action: list_federations
@@ -173,6 +183,8 @@ federations-read:
     endpoint: /federations/{federation_id}/jobs/{job_id}
 
 federations-write:
+  description: "Create, update, sync, and delete federated registry connections."
+  actions:
   # Federation write scopes allow create/update/sync/delete endpoints.
   # Update/sync/delete still require resource-level ACL permissions such as EDIT/DELETE.
   - action: create_federation
@@ -189,6 +201,8 @@ federations-write:
     endpoint: /federations/{federation_id}/sync
 
 federations-share:
+  description: "Manage who else has access to a federation you own."
+  actions:
   # Federation share only manages ACL on the federation resource itself.
   # It does not cascade to synced MCP servers or A2A agents under that federation.
   # Child resources remain independently shareable through `servers-share` and `agents-share`.
@@ -197,6 +211,8 @@ federations-share:
     endpoint: /permissions/federation/{resource_id}
 
 servers-share:
+  description: "Manage who else has access to an MCP server you own."
+  actions:
   # MCP servers stay independently shareable even when they were created by federation sync.
   # Sharing a federation does not imply sharing any `/permissions/mcpServer/{resource_id}` ACL.
   - action: share_service
@@ -204,6 +220,8 @@ servers-share:
     endpoint: /permissions/mcpServer/{resource_id}
 
 agents-share:
+  description: "Manage who else has access to an A2A agent you own."
+  actions:
   # A2A agents stay independently shareable even when they were created by federation sync.
   # Sharing a federation does not imply sharing any `/permissions/agent/{resource_id}` ACL.
   - action: share_agent
@@ -211,6 +229,8 @@ agents-share:
     endpoint: /permissions/agent/{resource_id}
 
 user-read:
+  description: "View your own account info and the registry version, generate personal access tokens, search the registry, and manage your MCP server connections and OAuth authorizations."
+  actions:
   - action: get_user_info
     method: GET
     endpoint: /auth/me
@@ -304,6 +324,8 @@ user-read:
     endpoint: /mcp/oauth/token/{server_id}
 
 acl-read:
+  description: "View who has access to a given server, agent, federation, or workflow."
+  actions:
   # Generic ACL read APIs are also used for federation resources via resource_type=federation.
   - action: search_principals
     method: GET
@@ -313,12 +335,16 @@ acl-read:
     endpoint: /permissions/{resource_type}/{resource_id}
 
 acl-write:
+  description: "Change who has access to a given server, agent, federation, or workflow."
+  actions:
   # Generic ACL write APIs are also used for federation resources via resource_type=federation.
   - action: update_resource_permissions
     method: PUT
     endpoint: /permissions/{resource_type}/{resource_id}
 
 system-ops:
+  description: "View registry-wide server statistics and administrative tokens."
+  actions:
   - action: get_server_stats
     method: GET
     endpoint: /servers/stats
@@ -327,6 +353,8 @@ system-ops:
     endpoint: /admin/tokens
 
 mcp-proxy-ops:
+  description: "Act on your behalf to connect to and call tools on your registered MCP servers."
+  actions:
   - action: delete_session
     method: DELETE
     endpoint: /proxy/sessions/{server_id}
@@ -338,11 +366,15 @@ mcp-proxy-ops:
     endpoint: /proxy/server/{path}
 
 a2a-proxy-ops:
+  description: "Act on your behalf to invoke your registered A2A agents."
+  actions:
   - action: proxy_to_a2a
     method: GET,POST,PUT,DELETE
     endpoint: /proxy/a2a/{path}
 
 workflows-read:
+  description: "View workflows and their run history, versions, and node-level execution details."
+  actions:
   # Read-only access to workflow run status. Granted to all roles including read-only.
   - action: get_run_status
     method: GET
@@ -373,6 +405,8 @@ workflows-read:
     endpoint: /workflows/{workflow_id}/runs/{run_id}/nodes/{node_run_id}
 
 workflows-control:
+  description: "Trigger, pause, resume, cancel, retry, approve, and replay workflow runs."
+  actions:
   # Write directives to live or finished workflow runs. Requires workflows-read.
   - action: trigger_workflow_run
     method: POST
@@ -399,8 +433,9 @@ workflows-control:
     method: POST
     endpoint: /workflows/{workflow_id}/runs/{run_id}/replay
 
-
 workflows-write:
+  description: "Create, update, delete, and enable/disable workflows."
+  actions:
   - action: create_workflow
     method: POST
     endpoint: /workflows
@@ -418,11 +453,15 @@ workflows-write:
     endpoint: /workflows/{workflow_id}/runs
 
 workflows-share:
+  description: "Manage who else has access to a workflow you own."
+  actions:
   - action: share_workflow
     method: PUT
     endpoint: /permissions/workflow/{resource_id}
 
 skills-read:
+  description: "View skills and their content and files."
+  actions:
   - action: list_skills
     method: GET
     endpoint: /skills
@@ -437,6 +476,8 @@ skills-read:
     endpoint: /skills/{skill_id}/files/{path}
 
 skills-write:
+  description: "Create, update, delete, and enable/disable skills."
+  actions:
   - action: create_skill
     method: POST
     endpoint: /skills
