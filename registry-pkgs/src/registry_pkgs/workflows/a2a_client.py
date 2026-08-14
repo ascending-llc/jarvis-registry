@@ -25,6 +25,7 @@ from a2a.types import (
 )
 from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
+from opentelemetry.propagate import inject
 
 from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.core.config import JwtSigningConfig
@@ -448,6 +449,10 @@ async def call_a2a(
         headers = build_headers(agent, jwt_config=jwt_config)
     else:
         headers = _extra_call_headers(agent)
+    try:
+        inject(headers)
+    except Exception:
+        logger.warning("Failed to inject trace context into A2A request headers", exc_info=True)
     context = ClientCallContext(
         state={
             "http_kwargs": {

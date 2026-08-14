@@ -27,11 +27,13 @@ from mcp.types import (
 from registry.mcpgw.tools.agent import AgentMessageInput
 from registry.mcpgw.tracing import (
     _TRACE_MODEL_FIELDS,
+    DiscoveryKind,
     _build_agent_trace_input,
     _build_tool_trace_input,
     _extract_caller_identity,
     _serialize_trace_value,
     trace_agent_execution,
+    trace_discovery,
     trace_tool_execution,
 )
 
@@ -334,7 +336,11 @@ async def test_tool_trace_records_caller_target_and_complete_io() -> None:
     attributes = tracer.start_as_current_span.call_args.kwargs["attributes"]
     input_calls = [call for call in span.set_attribute.call_args_list if call.args[0] == "langfuse.observation.input"]
     input_value = json.loads(input_calls[0].args[1])
-    assert span_name == "registry.mcp.tool.execute"
+    assert span_name == "mcp.tool.execute"
+    assert attributes["langfuse.observation.type"] == "tool"
+    assert attributes["langfuse.trace.name"] == "McpRun"
+    assert attributes["langfuse.trace.tags"] == ["registry", "mcp"]
+    assert attributes["langfuse.trace.metadata.app"] == "registry"
     assert attributes["langfuse.user.id"] == "507f1f77bcf86cd799439011"
     assert attributes["langfuse.trace.metadata.username"] == "kelvin"
     assert attributes["langfuse.trace.metadata.oauthClientId"] == "mcp-client-123"
@@ -396,6 +402,7 @@ async def test_tool_trace_omits_unavailable_caller_attributes() -> None:
     assert "langfuse.trace.metadata.authSource" not in attributes
     assert "langfuse.trace.metadata.mcpClientName" not in attributes
     assert "langfuse.trace.metadata.mcpClientVersion" not in attributes
+    assert attributes["langfuse.trace.tags"] == ["registry", "mcp"]
     assert all(value is not None and value != "" for value in attributes.values())
 
 
@@ -420,6 +427,82 @@ def test_caller_identity_failure_is_logged_without_request_data(caplog: pytest.L
 @pytest.mark.unit
 @pytest.mark.telemetry
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("discovery_kind", "expected_span_name", "expected_trace_name", "expected_tool_name", "expected_tags"),
+    [
+        ("mcp", "mcp.discovery", "McpDiscovery", "discover_servers", ["registry", "mcp", "discovery"]),
+        ("a2a", "a2a.discovery", "AgentDiscovery", "discover_agents", ["registry", "agent", "discovery"]),
+    ],
+)
+async def test_discovery_trace_records_caller_search_and_results(
+    discovery_kind: DiscoveryKind,
+    expected_span_name: str,
+    expected_trace_name: str,
+    expected_tool_name: str,
+    expected_tags: list[str],
+) -> None:
+    results = [{"entity_type": "tool", "server_id": "server-123", "tool_name": "search"}]
+
+    @trace_discovery
+    async def discover(ctx, query, top_n, search_type, type_list, kind):
+        return results
+
+    span = MagicMock()
+    span.is_recording.return_value = True
+    with patch("registry.mcpgw.tracing._TRACER") as tracer:
+        tracer.start_as_current_span.return_value = nullcontext(span)
+        returned = await discover(_make_ctx(), "search tools", 3, "hybrid", ["tool"], discovery_kind)
+
+    assert returned is results
+    (span_name,) = tracer.start_as_current_span.call_args.args
+    attributes = tracer.start_as_current_span.call_args.kwargs["attributes"]
+    assert span_name == expected_span_name
+    assert attributes["langfuse.observation.type"] == "tool"
+    assert attributes["langfuse.trace.name"] == expected_trace_name
+    assert attributes["langfuse.trace.tags"] == expected_tags
+    assert attributes["langfuse.trace.metadata.app"] == "registry"
+    assert attributes["mcp.tool.name"] == expected_tool_name
+    assert attributes["registry.operation.type"] == f"{discovery_kind}_discovery"
+    input_call = next(
+        call for call in span.set_attribute.call_args_list if call.args[0] == "langfuse.observation.input"
+    )
+    output_call = next(
+        call for call in span.set_attribute.call_args_list if call.args[0] == "langfuse.observation.output"
+    )
+    assert json.loads(input_call.args[1]) == {
+        "query": "search tools",
+        "search_type": "hybrid",
+        "top_n": 3,
+        "type_list": ["tool"],
+    }
+    assert json.loads(output_call.args[1]) == results
+    span.set_attribute.assert_any_call("registry.operation.success", True)
+
+
+@pytest.mark.unit
+@pytest.mark.telemetry
+@pytest.mark.asyncio
+async def test_discovery_trace_preserves_search_failure() -> None:
+    error = RuntimeError("search unavailable")
+
+    @trace_discovery
+    async def discover(ctx, query, top_n, search_type, type_list, kind):
+        raise error
+
+    span = MagicMock()
+    span.is_recording.return_value = True
+    with patch("registry.mcpgw.tracing._TRACER") as tracer:
+        tracer.start_as_current_span.return_value = nullcontext(span)
+        with pytest.raises(RuntimeError) as exc_info:
+            await discover(_make_ctx(), "search tools", 3, "hybrid", ["tool"], "mcp")
+
+    assert exc_info.value is error
+    span.set_attribute.assert_any_call("registry.operation.success", False)
+
+
+@pytest.mark.unit
+@pytest.mark.telemetry
+@pytest.mark.asyncio
 async def test_agent_trace_marks_error_result_as_failure() -> None:
     result = CallToolResult(content=[TextContent(type="text", text="denied")], isError=True)
     message = AgentMessageInput(parts=[TextPart(kind="text", text="run")])
@@ -435,7 +518,13 @@ async def test_agent_trace_marks_error_result_as_failure() -> None:
         returned = await execute("agent-123", message, _make_ctx())
 
     assert returned is result
+    (span_name,) = tracer.start_as_current_span.call_args.args
     attributes = tracer.start_as_current_span.call_args.kwargs["attributes"]
+    assert span_name == "a2a.agent.execute"
+    assert attributes["langfuse.observation.type"] == "agent"
+    assert attributes["langfuse.trace.name"] == "AgentRun"
+    assert attributes["langfuse.trace.tags"] == ["registry", "agent"]
+    assert attributes["langfuse.trace.metadata.app"] == "registry"
     assert attributes["registry.operation.type"] == "a2a_agent"
     assert attributes["a2a.agent.id"] == "agent-123"
     input_call = next(

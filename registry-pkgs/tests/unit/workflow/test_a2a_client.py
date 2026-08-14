@@ -733,6 +733,54 @@ async def test_call_a2a_does_not_build_credentials_itself():
     build_headers_spy.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_call_a2a_injects_current_trace_context_into_request_headers():
+    agent = _make_agent()
+    mock_factory, mock_client = _mock_client([_msg("ok")])
+
+    async def headers_provider(_: A2AAgent) -> dict[str, str]:
+        return {"Authorization": "Bearer test-token"}
+
+    def inject_trace_context(headers: dict[str, str]) -> None:
+        headers["traceparent"] = "00-00000000000000000000000000000001-0000000000000001-01"
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client.inject", side_effect=inject_trace_context) as mock_inject,
+    ):
+        result = await call_a2a(agent, "test", headers_provider=headers_provider)
+
+    assert result.success is True
+    send_context = mock_client.send_message.call_args.kwargs["context"]
+    headers = send_context.state["http_kwargs"]["headers"]
+    assert headers == {
+        "Authorization": "Bearer test-token",
+        "traceparent": "00-00000000000000000000000000000001-0000000000000001-01",
+    }
+    mock_inject.assert_called_once_with(headers)
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_continues_when_trace_context_injection_fails(caplog: pytest.LogCaptureFixture):
+    agent = _make_agent()
+    mock_factory, mock_client = _mock_client([_msg("ok")])
+
+    async def headers_provider(_: A2AAgent) -> dict[str, str]:
+        return {"Authorization": "Bearer test-token"}
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client.inject", side_effect=RuntimeError("propagator unavailable")),
+        caplog.at_level("WARNING", logger="registry_pkgs.workflows.a2a_client"),
+    ):
+        result = await call_a2a(agent, "test", headers_provider=headers_provider)
+
+    assert result.success is True
+    send_context = mock_client.send_message.call_args.kwargs["context"]
+    assert send_context.state["http_kwargs"]["headers"] == {"Authorization": "Bearer test-token"}
+    assert "Failed to inject trace context into A2A request headers" in caplog.text
+
+
 def test_extra_call_headers_returns_agentcore_session_header_only():
     agent = _make_agent()
     agent.federationMetadata = make_agentcore_a2a_metadata()
