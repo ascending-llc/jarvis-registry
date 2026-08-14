@@ -17,7 +17,7 @@ from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from registry_pkgs.core.client_categories import ClientCategory
+from registry_pkgs.core.client_categories import ClientCategory, resolve_granted_scopes
 from registry_pkgs.core.consent_store import PENDING_CONSENT_TTL_SECONDS, ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import (
     DEVICE_CODE_GRANT_TYPE,
@@ -42,7 +42,7 @@ from registry_pkgs.core.redirect_uri import (
     is_safe_unverified_redirect_target,
     redirect_uri_matches,
 )
-from registry_pkgs.core.scopes import map_groups_to_scopes
+from registry_pkgs.core.scopes import get_scope_description, map_groups_to_scopes
 
 from ..core.config import settings
 from ..core.types import AllowedProvider, AuthProviderConfig, EntraConfig, OAuth2Config
@@ -865,6 +865,12 @@ async def consent_page(
 
         client_id = pending["session_data"]["client_id"]
         client_metadata = _resolve_client_metadata(client_id, store) or {}
+        granted_scopes = resolve_granted_scopes(
+            client_id,
+            pending.get("resolved_scopes") or [],
+            settings.jwt_token_config,
+        )
+        scopes = [(name, get_scope_description(name, settings.scopes_file_config)) for name in granted_scopes]
 
         return HTMLResponse(
             render_consent_page(
@@ -873,6 +879,7 @@ async def consent_page(
                 redirect_uri=pending["session_data"].get("client_redirect_uri"),
                 ip_address=client_metadata.get("ip_address"),
                 registered_at=client_metadata.get("registered_at"),
+                scopes=scopes,
                 nonce=oauth2_consent_nonce,
                 approve_action=_auth_server_route_path("/oauth2/consent/approve"),
                 deny_action=_auth_server_route_path("/oauth2/consent/deny"),
@@ -1740,7 +1747,7 @@ def validate_server_tool_access(server_name: str, method: str, tool_name: str, u
         # Check each user scope to see if it grants access
         for scope in user_scopes:
             logger.info(f"--- Checking scope: '{scope}' ---")
-            scope_config = settings.scopes_config.get(scope, [])
+            scope_config = settings.scopes_config.get(scope, {})
 
             if not scope_config:
                 logger.info(f"Scope '{scope}' not found in configuration")
@@ -1748,9 +1755,8 @@ def validate_server_tool_access(server_name: str, method: str, tool_name: str, u
 
             logger.info(f"Scope '{scope}' config: {scope_config}")
 
-            # The scope_config is directly a list of server configurations
-            # since the permission type is already encoded in the scope name
-            for server_config in scope_config:
+            scope_actions = scope_config.get("actions", []) if isinstance(scope_config, dict) else []
+            for server_config in scope_actions:
                 logger.info(f"  Examining server config: {server_config}")
                 server_config_name = server_config.get("server")
                 logger.info(f"  Server name in config: '{server_config_name}' vs requested: '{server_name}'")

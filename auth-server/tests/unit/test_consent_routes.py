@@ -164,6 +164,34 @@ def test_consent_page_renders_client_metadata_and_post_forms() -> None:
     assert 'action="/auth/oauth2/consent/deny"' in response.text
     assert "Redirects to" in response.text
     assert "https://client.example.com/callback" in response.text
+    assert '<table class="scopes">' not in response.text
+
+
+def test_consent_page_renders_only_ceiling_filtered_scopes() -> None:
+    client, oauth_store, _, pending_store = _client()
+    oauth_store.save_client(
+        "mcp-client-test",
+        {
+            "client_id": "mcp-client-test",
+            "client_name": "MCP Test Client",
+        },
+    )
+    payload = _pending_payload()
+    payload["session_data"]["client_id"] = "mcp-client-test"
+    payload["resolved_scopes"] = ["servers-read", "mcp-proxy-ops"]
+    pending_store.save("nonce-mcp", payload)
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-mcp")
+    response = client.get(
+        "/auth/oauth2/consent",
+        params={"nonce": "nonce-mcp"},
+    )
+
+    assert response.status_code == 200
+    assert '<table class="scopes">' in response.text
+    assert "<code>mcp-proxy-ops</code>" in response.text
+    assert "Act on your behalf to connect to and call tools on your registered MCP servers." in response.text
+    assert "servers-read" not in response.text
 
 
 def test_consent_page_omits_redirect_uri_for_device_flow() -> None:

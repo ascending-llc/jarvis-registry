@@ -117,3 +117,9 @@ def filter_known_groups(groups: list[str], config: ScopesConfig) -> list[str]:
     """
     group_mappings = load_scopes_config(config).get("group_mappings", {})
     return [group for group in groups if group in group_mappings]
+
+
+def get_scope_description(scope_name: str, config: ScopesConfig) -> str | None:
+    """Return the lay-person description for a scope, or None if the scope or field is absent."""
+    scope_entry = load_scopes_config(config).get(scope_name)
+    return scope_entry.get("description") if isinstance(scope_entry, dict) else None

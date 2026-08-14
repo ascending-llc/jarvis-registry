@@ -10,6 +10,7 @@ def test_consent_page_escapes_attacker_controlled_client_metadata() -> None:
         redirect_uri='https://evil.example/"><script>alert(1)</script>',
         ip_address="<img src=x onerror=alert(1)>",
         registered_at=1_700_000_000,
+        scopes=[],
         nonce='nonce"><script>alert(1)</script>',
         approve_action="/auth/oauth2/consent/approve",
         deny_action="/auth/oauth2/consent/deny",
@@ -35,12 +36,35 @@ def test_consent_page_omits_redirect_uri_when_none() -> None:
         redirect_uri=None,
         ip_address=None,
         registered_at=None,
+        scopes=[],
         nonce="test-nonce",
         approve_action="/auth/oauth2/consent/approve",
         deny_action="/auth/oauth2/consent/deny",
     )
 
     assert "Redirects to" not in html
+    assert '<table class="scopes">' not in html
+
+
+def test_consent_page_renders_escaped_scope_table() -> None:
+    html = render_consent_page(
+        client_name="Test App",
+        client_uri=None,
+        redirect_uri=None,
+        ip_address=None,
+        registered_at=None,
+        scopes=[("scope<script>", "Allow <b>everything</b>"), ("scope-without-description", None)],
+        nonce="test-nonce",
+        approve_action="/auth/oauth2/consent/approve",
+        deny_action="/auth/oauth2/consent/deny",
+    )
+
+    assert '<table class="scopes">' in html
+    assert "<th>Permission</th><th>What it allows</th>" in html
+    assert "<code>scope&lt;script&gt;</code>" in html
+    assert "Allow &lt;b&gt;everything&lt;/b&gt;" in html
+    assert "<script>" not in html
+    assert ">None<" not in html
 
 
 def test_redirect_error_consent_page_escapes_attacker_controlled_values() -> None:

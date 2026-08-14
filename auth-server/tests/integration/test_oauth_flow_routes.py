@@ -1297,6 +1297,33 @@ class TestDeviceFlowCallbackAndConsent:
         assert response.status_code == 200
         assert "Jarvis Registry CLI" in response.text
         assert "Unknown application" not in response.text
+        assert "<code>skills-read</code>" in response.text
+        assert "View skills and their content and files." in response.text
+
+    def test_consent_page_shows_only_mcp_client_ceiling_scope(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        nonce = "mcp-consent-nonce"
+        test_pending_consent_store.save(
+            nonce,
+            {
+                "flow_type": "device",
+                "device_code": "dummy-device-code",
+                "mapped_user": {"user_id": "user-123"},
+                "resolved_scopes": ["servers-read", "mcp-proxy-ops"],
+                "session_data": {"client_id": "mcp-client-test"},
+            },
+        )
+
+        test_client.cookies.set("oauth2_consent_nonce", nonce)
+        response = test_client.get(f"{API_PREFIX}/oauth2/consent", params={"nonce": nonce})
+
+        assert response.status_code == 200
+        assert "<code>mcp-proxy-ops</code>" in response.text
+        assert "Act on your behalf to connect to and call tools on your registered MCP servers." in response.text
+        assert "servers-read" not in response.text
 
 
 def _extract_state_from_temp_session(session_cookie: str) -> str:
