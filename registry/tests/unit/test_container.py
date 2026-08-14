@@ -71,6 +71,27 @@ class TestWorkflowRunnerModelSelection:
 
 
 @pytest.mark.unit
+@patch("registry.container.httpx.AsyncClient")
+def test_a2a_httpx_client_pool_limits_come_from_settings(mock_async_client):
+    """Long A2A reads hold pooled connections for the whole call, so the pool size must
+    stay settings-tunable rather than hardcoded."""
+    settings = _make_settings()
+    settings.a2a_max_connections = 777  # sentinels, not the defaults, so pass-through is unambiguous
+    settings.a2a_max_keepalive_connections = 13
+    container = RegistryContainer(
+        settings=settings,
+        db_client=MagicMock(),
+        redis_client=MagicMock(),
+    )
+
+    _ = container.a2a_httpx_client
+
+    limits = mock_async_client.call_args.kwargs["limits"]
+    assert limits.max_connections == 777
+    assert limits.max_keepalive_connections == 13
+
+
+@pytest.mark.unit
 def test_skill_service_is_app_scoped_and_uses_shared_acl_service():
     container = _make_container(_make_settings())
 

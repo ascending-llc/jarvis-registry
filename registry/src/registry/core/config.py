@@ -170,6 +170,12 @@ class Settings(JarvisBaseSettings):
     asor_access_token: str | None = None
     asor_client_credentials: str | None = None
 
+    # ==================== A2A HTTP Client ====================
+    # A2A calls hold a pooled connection for their whole duration, so concurrent
+    # connections scale with hold time (Little's Law) — sized for the A2A task budget.
+    a2a_max_connections: int = 500
+    a2a_max_keepalive_connections: int = 20
+
     # ==================== Model Validation ====================
 
     @model_validator(mode="after")

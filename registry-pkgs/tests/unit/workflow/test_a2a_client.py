@@ -1,3 +1,5 @@
+import asyncio
+import time
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,10 +30,13 @@ from registry_pkgs.testing.federation_metadata import (
     make_azure_foundry_metadata,
 )
 from registry_pkgs.workflows.a2a_client import (
+    _A2A_HARD_TIMEOUT_SECONDS,
+    _A2A_JWT_TTL_SECONDS,
     _A2A_TASK_BUDGET_SECONDS,
     A2ACallResult,
     _ensure_a2a_result_fields,
     _extra_call_headers,
+    _poll_until_terminal,
     build_headers,
     call_a2a,
 )
@@ -377,12 +382,76 @@ async def test_call_a2a_polling_timeout_returns_failure():
     with (
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
         patch("registry_pkgs.workflows.a2a_client.asyncio.sleep", new_callable=AsyncMock),
-        patch("registry_pkgs.workflows.a2a_client.time.monotonic", side_effect=lambda: next(monotonic_values)),
+        # Patch the module binding, not time.monotonic: asyncio's loop clock is monotonic.
+        patch("registry_pkgs.workflows.a2a_client.monotonic", side_effect=lambda: next(monotonic_values)),
     ):
         result = await call_a2a(agent, "test")
 
     assert result.success is False
     assert "polling timed out" in result.error
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_hard_timeout_bounds_a_still_streaming_send():
+    """A send that keeps streaming is cancelled at the hard timeout with a usable error.
+
+    The httpx read timeout only bounds the gap between reads and the poll loop never runs,
+    so this is the one ceiling that applies. Also guards the empty-message trap:
+    asyncio.timeout raises a bare TimeoutError the broad handler would surface as ``""``.
+    """
+    agent = _make_agent()
+
+    async def never_finishing_stream(*_args, **_kwargs):
+        await asyncio.sleep(10)
+        yield (_task(TaskState.completed), None)
+
+    mock_client = MagicMock()
+    mock_client.send_message = MagicMock(side_effect=never_finishing_stream)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_factory = MagicMock()
+    mock_factory.create = MagicMock(return_value=mock_client)
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client._A2A_HARD_TIMEOUT_SECONDS", 0.05),
+    ):
+        result = await call_a2a(agent, "test")
+
+    assert result.success is False
+    assert "hard timeout" in result.error
+    assert "0.05" in result.error
+
+
+@pytest.mark.asyncio
+async def test_poll_until_terminal_honors_an_already_expired_caller_deadline():
+    """The deadline is absolute and caller-owned, so sending and polling share one budget.
+
+    Polling must abort against a deadline that has already passed rather than starting a
+    fresh budget of its own — otherwise the effective ceiling is double the advertised
+    one (send gets a full budget, then polling gets another).
+    """
+    mock_client = MagicMock()
+    mock_client.get_task = AsyncMock()
+
+    with pytest.raises(TimeoutError, match="polling timed out"):
+        await _poll_until_terminal(
+            mock_client,
+            "task-1",
+            context=MagicMock(),
+            deadline=time.monotonic() - 1.0,
+        )
+
+    mock_client.get_task.assert_not_awaited()
+
+
+def test_timeout_constants_stay_ordered():
+    """budget < hard timeout < JWT TTL.
+
+    Collapsing the first gap makes the poll loop's per-task error unreachable — the outer
+    cancellation always wins the race. Closing the second revives the mid-flight 401.
+    """
+    assert _A2A_TASK_BUDGET_SECONDS < _A2A_HARD_TIMEOUT_SECONDS < _A2A_JWT_TTL_SECONDS
 
 
 # ── call_a2a: error/empty paths ──────────────────────────────────────────────

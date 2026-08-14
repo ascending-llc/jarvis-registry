@@ -353,7 +353,10 @@ class RegistryContainer:
         return httpx.AsyncClient(
             timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            limits=httpx.Limits(
+                max_connections=self.settings.a2a_max_connections,
+                max_keepalive_connections=self.settings.a2a_max_keepalive_connections,
+            ),
         )
 
     @cached_property

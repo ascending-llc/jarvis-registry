@@ -254,3 +254,12 @@ class TestSettings:
         settings = Settings(_env_file=None)
 
         assert settings.workflow_llm_model_id == _GOVERNANCE_SONNET_AIP_ARN
+
+
+@pytest.mark.unit
+@pytest.mark.core
+def test_a2a_pool_defaults_are_sized_for_hour_long_calls() -> None:
+    """A2A calls hold a pooled connection for up to the task budget, so the default pool
+    must be far above httpx's own 100."""
+    assert Settings.model_fields["a2a_max_connections"].default == 500
+    assert Settings.model_fields["a2a_max_keepalive_connections"].default == 20
