@@ -103,6 +103,47 @@ class SkillService:
         self.acl_service = acl_service
         self.user_service = user_service
 
+    @staticmethod
+    def _deduplicate_by_name(
+        skills_with_permissions: list[tuple[Skill, ResourcePermissions]],
+        user_id: PydanticObjectId,
+    ) -> list[tuple[Skill, ResourcePermissions]]:
+        by_name: dict[str, list[tuple[Skill, ResourcePermissions]]] = {}
+        for item in skills_with_permissions:
+            by_name.setdefault(item[0].name, []).append(item)
+
+        result: list[tuple[Skill, ResourcePermissions]] = []
+        for name, group in by_name.items():
+            if len(group) == 1:
+                result.append(group[0])
+                continue
+
+            owned = [item for item in group if item[0].author == user_id]
+            duplicate_ids = [str(item[0].id) for item in group]
+
+            if owned:
+                winner = owned[0]
+                logger.warning(
+                    "Skill name '%s' has %d duplicates (ids=%s); keeping author-matched skill id=%s for user %s",
+                    name,
+                    len(group),
+                    duplicate_ids,
+                    str(winner[0].id),
+                    str(user_id),
+                )
+                result.append(winner)
+            else:
+                logger.error(
+                    "Skill name '%s' has %d duplicates (ids=%s) but none "
+                    "authored by user %s; excluding all from response",
+                    name,
+                    len(group),
+                    duplicate_ids,
+                    str(user_id),
+                )
+
+        return result
+
     async def list_skills(
         self,
         user_id: Optional[str],
@@ -135,7 +176,8 @@ class SkillService:
             resource_ids=resource_ids,
         )
         logger.debug("list_skills: returned %d ACL-filtered skills", len(skills))
-        return [(skill, permissions[skill.id]) for skill in skills if skill.id is not None]
+        paired = [(skill, permissions[skill.id]) for skill in skills if skill.id is not None]
+        return self._deduplicate_by_name(paired, object_user_id)
 
     async def get_skill(
         self,
