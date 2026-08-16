@@ -147,11 +147,7 @@ export const WORKFLOW_RUN_STATUSES = [
 
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 
-export const TERMINAL_RUN_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set([
-  'completed',
-  'failed',
-  'cancelled',
-]);
+export const TERMINAL_RUN_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set(['completed', 'failed', 'cancelled']);
 
 export const isWorkflowRunStatus = (value: unknown): value is WorkflowRunStatus =>
   typeof value === 'string' && (WORKFLOW_RUN_STATUSES as readonly string[]).includes(value);
@@ -193,12 +189,24 @@ export interface GetWorkflowRunsListRequest {
   perPage?: number;
 }
 
+export const NODE_RUN_STATUSES = [
+  'pending',
+  'running',
+  'awaiting_approval',
+  'completed',
+  'failed',
+  'skipped',
+  'cancelled',
+] as const;
+
+export type NodeRunStatus = (typeof NODE_RUN_STATUSES)[number];
+
 export interface NodeRun {
   id: string;
   workflowRunId: string;
   nodeId: string;
   nodeName: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'cancelled';
+  status: NodeRunStatus;
   attempt: number;
   inputSnapshot?: Record<string, any> | null;
   outputSnapshot?: Record<string, any> | null;
@@ -231,11 +239,22 @@ export interface GetWorkflowRunsListResponse {
 
 export type GetWorkflowRunDetailResponse = WorkflowRun;
 
+export interface NodeRunSummary {
+  nodeId: string;
+  nodeName: string;
+  status: NodeRunStatus;
+  attempt: number;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  error?: string | null;
+}
+
 export interface WorkflowRunStatusResponse {
   runId: string;
   workflowId: string;
   status: WorkflowRunStatus;
   pendingRequirements: StepRequirementSummary[];
+  nodeRuns: NodeRunSummary[];
 }
 
 export interface ResolveRequirementRequest {

@@ -18,10 +18,8 @@ export const useCanvasMutations = ({
   setNodes,
   setEdges,
   setSelected,
-  setPanelCollapsed,
   generateNodeId,
   generateEdgeId,
-  onChange,
   isReadOnly,
 }: {
   nodes: WorkflowNode[];
@@ -29,10 +27,8 @@ export const useCanvasMutations = ({
   setNodes: React.Dispatch<React.SetStateAction<WorkflowNode[]>>;
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   setSelected: React.Dispatch<React.SetStateAction<WorkflowNode | null>>;
-  setPanelCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
   generateNodeId: () => string;
   generateEdgeId: () => string;
-  onChange?: () => void;
   isReadOnly: boolean;
 }) => {
   const onNodeDataChange = useCallback(
@@ -40,9 +36,8 @@ export const useCanvasMutations = ({
       if (isReadOnly) return;
       setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n)));
       setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, ...patch } } : prev));
-      onChange?.();
     },
-    [isReadOnly, setNodes, setSelected, onChange],
+    [isReadOnly, setNodes, setSelected],
   );
 
   const onDeleteNode = useCallback(
@@ -53,7 +48,6 @@ export const useCanvasMutations = ({
         setNodes(prev => prev.filter(n => n.id !== nodeId));
         setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
         setSelected(null);
-        onChange?.();
         return;
       }
 
@@ -62,7 +56,6 @@ export const useCanvasMutations = ({
         setNodes([{ id: `add_${Date.now()}`, type: 'add', position: { x: 0, y: 0 }, data: { label: '' } }]);
         setEdges([]);
         setSelected(null);
-        onChange?.();
         return;
       }
 
@@ -110,21 +103,8 @@ export const useCanvasMutations = ({
       setNodes(validatedNodes);
       setEdges(nextEdges);
       setSelected(null);
-      onChange?.();
     },
-    [
-      nodes,
-      edges,
-      setNodes,
-      setEdges,
-      setSelected,
-      setPanelCollapsed,
-      generateNodeId,
-      generateEdgeId,
-      onChange,
-      DASHED_EDGE,
-      isReadOnly,
-    ],
+    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, DASHED_EDGE, isReadOnly],
   );
 
   const onDeleteEdges = useCallback(
@@ -166,10 +146,9 @@ export const useCanvasMutations = ({
 
         setNodes(validatedNodes);
         setEdges(nextEdges);
-        onChange?.();
       }
     },
-    [nodes, edges, setNodes, setEdges, generateNodeId, generateEdgeId, onChange, isReadOnly],
+    [nodes, edges, setNodes, setEdges, generateNodeId, generateEdgeId, isReadOnly],
   );
 
   const onDynamicBranchesChange = useCallback(
@@ -188,14 +167,11 @@ export const useCanvasMutations = ({
         setSelected(prev =>
           prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev,
         );
-        onChange?.();
         return;
       }
 
       const N = nextBranches.length;
       const handleOffsetY = (i: number): number => (i - (N - 1) / 2) * BRANCH_SPACING;
-
-      onChange?.();
 
       if (nextBranches.length > prevBranches.length) {
         const newIdx = N - 1;
@@ -301,7 +277,7 @@ export const useCanvasMutations = ({
         );
       }
     },
-    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, onChange, isReadOnly],
+    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, isReadOnly],
   );
 
   const onParallelBranchesChange = useCallback(
@@ -321,7 +297,6 @@ export const useCanvasMutations = ({
   const onPick = useCallback(
     (pendingAddId: string, category: 'agent' | 'mcp' | 'logic', item: PickerItem | LogicStep) => {
       if (isReadOnly) return;
-      onChange?.();
 
       const nodeType = CATEGORY_TYPE[category](item);
       const newId = generateNodeId();
@@ -436,7 +411,7 @@ export const useCanvasMutations = ({
 
       setSelected(newNode);
     },
-    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, onChange, isReadOnly],
+    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, isReadOnly],
   );
 
   return {

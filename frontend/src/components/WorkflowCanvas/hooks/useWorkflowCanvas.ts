@@ -8,23 +8,15 @@ import { useCanvasSelection } from './useCanvasSelection';
 export const useWorkflowCanvas = (
   initialNodes?: WorkflowNode[],
   initialEdges?: Edge[],
-  onChange?: () => void,
   onOpenNodePicker?: (nodeId: string) => void,
   isReadOnly = false,
 ) => {
   // 1. Core nodes & edges state
   const { nodes, setNodes, edges, setEdges, onNodesChange, onEdgesChange, onConnect, isValidConnection } =
-    useCanvasNodes(initialNodes, initialEdges, onChange, isReadOnly);
+    useCanvasNodes(initialNodes, initialEdges, isReadOnly);
 
   // 2. Layout & ID generation
-  const { generateNodeId, generateEdgeId, runLayout } = useCanvasLayout(
-    nodes,
-    edges,
-    setNodes,
-    setEdges,
-    onChange,
-    isReadOnly,
-  );
+  const { generateNodeId, generateEdgeId, runLayout } = useCanvasLayout(nodes, edges, setNodes, setEdges, isReadOnly);
 
   // 3. Selection & Panel state
   const { selectedNode, setSelected, panelCollapsed, setPanelCollapsed, onNodeClick, onPaneClick, clearSelection } =
@@ -38,10 +30,8 @@ export const useWorkflowCanvas = (
       setNodes,
       setEdges,
       setSelected,
-      setPanelCollapsed,
       generateNodeId,
       generateEdgeId,
-      onChange,
       isReadOnly,
     });
 

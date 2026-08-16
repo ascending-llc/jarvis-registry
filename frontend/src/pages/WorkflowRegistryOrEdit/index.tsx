@@ -20,10 +20,21 @@ import SERVICES from '@/services';
 import type { WorkflowNode as ApiWorkflowNode, Workflow } from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import { useActiveWorkflowRun } from './hooks/useActiveWorkflowRun';
+import { useWorkflowDraftGuard } from './hooks/useWorkflowDraftGuard';
 import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
 
 type MutatingAction = 'idle' | 'saving' | 'triggering' | 'deleting';
+
+const _getDetailErrorMessage = (error: unknown): string => {
+  if (!error || typeof error !== 'object' || !('detail' in error)) return 'Failed to fetch workflow';
+  const detail = error.detail;
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
+    return detail.message;
+  }
+  return 'Failed to fetch workflow';
+};
 
 const WorkflowRegistryOrEdit: React.FC = () => {
   // ── 1. Context & Routing ─────────────────────────────────────────────────────────
@@ -37,58 +48,37 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
   const isEditMode = !!id;
   const canControlWorkflow = user?.scopes?.includes('workflows-control') === true;
-  const canTriggerWorkflow = isEditMode && canControlWorkflow;
   const canvasRef = useRef<WorkflowCanvasRef>(null);
   const triggeringRef = useRef(false);
+  const detailRequestGenerationRef = useRef(0);
 
   // ── 2. Resource State ────────────────────────────────────────────────────────────
   const [workflow, setWorkflow] = useState<Partial<Workflow> | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailLoadError, setDetailLoadError] = useState<string | null>(null);
+  const isExistingDetailReady = !isEditMode || workflow?.id === id;
+  const currentWorkflow = workflow?.id === id || (!isEditMode && workflow?.id === undefined) ? workflow : null;
+  const existingDetailUnavailable = isEditMode && (loadingDetail || !isExistingDetailReady || !!detailLoadError);
+  const canTriggerWorkflow = isEditMode && canControlWorkflow;
 
   // ── 3. Mutating Action (State Machine) ─────────────────────────────────────────
   const [mutatingAction, setMutatingAction] = useState<MutatingAction>('idle');
 
   // ── 4. Dirty Checking & UI State ───────────────────────────────────────────────
-  const [_hasChanges, _setHasChanges] = useState(false);
-  const hasChangesRef = useRef(false);
-  const setHasChanges = (val: boolean) => {
-    hasChangesRef.current = val;
-    _setHasChanges(val);
-  };
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
-  const canShareWorkflow = isEditMode && workflow?.permissions?.SHARE === true;
+  const canShareWorkflow = isEditMode && isExistingDetailReady && workflow?.permissions?.SHARE === true;
   const activeWorkflowRun = useActiveWorkflowRun(id ?? undefined, message => showToast(message, 'error'));
 
   useEffect(() => {
     if (activeWorkflowRun.isLocked) setTriggerModalOpen(false);
   }, [activeWorkflowRun.isLocked]);
 
-  // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
-  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
-    if (isReadOnly) return false;
-    const currentUrl = currentLocation.pathname + currentLocation.search;
-    const nextUrl = nextLocation.pathname + nextLocation.search;
-    return hasChangesRef.current && currentUrl !== nextUrl;
-  });
-
-  useEffect(() => {
-    if (isReadOnly) return;
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (hasChangesRef.current) {
-        e.preventDefault();
-        e.returnValue = '';
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isReadOnly]);
-
   // ── Side Effects: Save shortcut (Cmd+S / Ctrl+S) ───────────────────────────────
   useEffect(() => {
-    if (isReadOnly || mutatingAction !== 'idle') return;
+    if (isReadOnly || mutatingAction !== 'idle' || existingDetailUnavailable) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
@@ -97,28 +87,46 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isReadOnly, mutatingAction]);
+  }, [existingDetailUnavailable, isReadOnly, mutatingAction]);
 
   // ── Fetch Initial Data ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (id) getDetail(id);
-    else {
+    const requestGeneration = ++detailRequestGenerationRef.current;
+
+    if (id) {
+      setWorkflow(null);
+      setDetailLoadError(null);
+      setLoadingDetail(true);
+      getDetail(id, requestGeneration);
+    } else {
+      setLoadingDetail(false);
+      setDetailLoadError(null);
       setWorkflow({
         name: searchParams.get('name') ?? 'New Workflow',
         description: '',
       });
     }
+
+    return () => {
+      if (detailRequestGenerationRef.current === requestGeneration) {
+        detailRequestGenerationRef.current += 1;
+      }
+    };
   }, [id, searchParams]);
 
-  const getDetail = async (workflowId: string) => {
-    setLoadingDetail(true);
+  const getDetail = async (workflowId: string, requestGeneration: number) => {
     try {
       const data = await SERVICES.WORKFLOW.getWorkflowDetail(workflowId);
+      if (detailRequestGenerationRef.current !== requestGeneration) return;
+      setDetailLoadError(null);
       setWorkflow(data);
-    } catch (error: any) {
-      showToast(error?.detail?.message || 'Failed to fetch workflow', 'error');
+    } catch (error: unknown) {
+      if (detailRequestGenerationRef.current !== requestGeneration) return;
+      const message = _getDetailErrorMessage(error);
+      setDetailLoadError(message);
+      showToast(message, 'error');
     } finally {
-      setLoadingDetail(false);
+      if (detailRequestGenerationRef.current === requestGeneration) setLoadingDetail(false);
     }
   };
 
@@ -137,6 +145,35 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     }
   }, [isEditMode, workflow]);
 
+  const { discardChanges, isDirty, markSaved } = useWorkflowDraftGuard({
+    canvasRef,
+    workflow,
+    resourceKey: id ?? undefined,
+    isReadOnly,
+    initialNodes: initialCanvas.nodes,
+    initialEdges: initialCanvas.edges,
+  });
+
+  // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    if (isReadOnly) return false;
+    const currentUrl = currentLocation.pathname + currentLocation.search;
+    const nextUrl = nextLocation.pathname + nextLocation.search;
+    return isDirty() && currentUrl !== nextUrl;
+  });
+
+  useEffect(() => {
+    if (isReadOnly) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty()) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty, isReadOnly]);
+
   useEffect(() => {
     if (initialCanvas.error) showToast(initialCanvas.error, 'error');
   }, [initialCanvas.error, showToast]);
@@ -148,6 +185,10 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     viewport: { x: number; y: number; zoom: number },
   ) => {
     if (isReadOnly) return;
+    if (existingDetailUnavailable) {
+      showToast(detailLoadError ?? 'Workflow details are not ready', 'error');
+      return;
+    }
     const canvasValidationError = validateCanvasNodes(nodes, edges);
     if (canvasValidationError) {
       showToast(canvasValidationError, 'error');
@@ -180,23 +221,31 @@ const WorkflowRegistryOrEdit: React.FC = () => {
 
     try {
       if (isEditMode && id) {
-        const updated = await SERVICES.WORKFLOW.updateWorkflow(id, {
+        const submittedMetadata = {
           name: workflow?.name,
           description: workflow?.description,
+        };
+        const updated = await SERVICES.WORKFLOW.updateWorkflow(id, {
+          ...submittedMetadata,
           nodes: validatedNodes,
           canvas: { viewport },
         });
         handleWorkflowUpdate(id, { nodeCount: updated.numNodes ?? validatedNodes.length, name: workflow?.name });
-        setHasChanges(false);
+        markSaved(submittedMetadata, nodes, edges, workflow);
+        setWorkflow(current => (current === workflow && current ? { ...current, ...submittedMetadata } : current));
         showToast('Workflow updated successfully!', 'success');
       } else {
-        await SERVICES.WORKFLOW.createWorkflow({
+        const submittedMetadata = {
           name: workflow?.name?.trim() || 'New Workflow',
           description: workflow?.description?.trim() || undefined,
+        };
+        await SERVICES.WORKFLOW.createWorkflow({
+          ...submittedMetadata,
           nodes: validatedNodes,
           canvas: { viewport },
         });
-        setHasChanges(false);
+        markSaved(submittedMetadata, nodes, edges, workflow);
+        setWorkflow(current => (current === workflow && current ? { ...current, ...submittedMetadata } : current));
         await refreshWorkflowData();
         showToast('Workflow created successfully!', 'success');
         navigate('/?tab=workflow', { replace: true });
@@ -218,6 +267,11 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     }
     if (!id) {
       showToast('Save the workflow before triggering a run', 'error');
+      return;
+    }
+    if (existingDetailUnavailable) {
+      setTriggerModalOpen(false);
+      showToast(detailLoadError ?? 'Workflow details are not ready', 'error');
       return;
     }
     if (activeWorkflowRun.isLocked || triggeringRef.current) {
@@ -247,7 +301,6 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const handleWorkflowChange = (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => {
     if (isReadOnly) return;
     setWorkflow(prev => (prev ? { ...prev, ...patch } : prev));
-    setHasChanges(true);
   };
 
   // ── Actions: Delete workflow ─────────────────────────────────────────────────
@@ -260,7 +313,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       await SERVICES.WORKFLOW.deleteWorkflow(id);
       await refreshWorkflowData();
       showToast('Workflow deleted', 'success');
-      setHasChanges(false);
+      discardChanges();
       navigate('/?tab=workflow', { replace: true });
     } catch (error: any) {
       const msg = error?.detail?.message || 'Failed to delete workflow';
@@ -286,14 +339,14 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         {/* Title */}
         <div className='flex items-center gap-1.5 min-w-0 flex-1 mr-4'>
           <span className='text-sm font-semibold text-[var(--jarvis-text-strong)] tracking-tight truncate'>
-            {workflow?.name ?? 'New Workflow'}
+            {currentWorkflow?.name ?? (isEditMode ? 'Workflow' : 'New Workflow')}
           </span>
 
           {/* Settings button */}
           <button
             type='button'
             onClick={() => canvasRef.current?.togglePanel()}
-            disabled={loadingDetail}
+            disabled={existingDetailUnavailable}
             title='Workflow settings'
             className='flex-shrink-0 p-1 rounded-md text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)] hover:bg-[var(--jarvis-card-muted)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
           >
@@ -313,7 +366,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
               <button
                 type='button'
                 onClick={() => setShareOpen(true)}
-                disabled={loadingDetail}
+                disabled={existingDetailUnavailable}
                 title='Share workflow'
                 aria-label='Share workflow'
                 className='inline-flex items-center justify-center rounded-md border border-transparent bg-[var(--jarvis-primary-soft)] p-1.5 text-[var(--jarvis-primary-text)] hover:bg-[var(--jarvis-primary)]/20 focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50'
@@ -325,7 +378,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             {canTriggerWorkflow && (
               <button
                 onClick={() => setTriggerModalOpen(true)}
-                disabled={mutatingAction !== 'idle' || activeWorkflowRun.isLocked}
+                disabled={mutatingAction !== 'idle' || activeWorkflowRun.isLocked || existingDetailUnavailable}
                 className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
               >
                 {mutatingAction === 'triggering' ? (
@@ -340,7 +393,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             {!isReadOnly && (
               <button
                 onClick={() => canvasRef.current?.save()}
-                disabled={mutatingAction !== 'idle' || loadingDetail}
+                disabled={mutatingAction !== 'idle' || existingDetailUnavailable}
                 className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
               >
                 {mutatingAction === 'saving' ? (
@@ -357,7 +410,14 @@ const WorkflowRegistryOrEdit: React.FC = () => {
 
       {/* ── Canvas ──────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, overflow: 'hidden' }}>
-        {loadingDetail ? (
+        {isEditMode && detailLoadError ? (
+          <div className='flex h-full items-center justify-center p-8'>
+            <div className='max-w-lg rounded-lg border border-[var(--jarvis-danger)] bg-[var(--jarvis-danger-soft)] p-4 text-sm text-[var(--jarvis-danger-text)]'>
+              <div>Unable to load workflow: {detailLoadError}</div>
+              <div className='mt-2'>Reload the page to try again.</div>
+            </div>
+          </div>
+        ) : isEditMode && (loadingDetail || !isExistingDetailReady) ? (
           <div className='flex h-full items-center justify-center'>
             <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-primary)]' />
           </div>
@@ -373,9 +433,10 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             key={id ?? 'new'}
             ref={canvasRef}
             workflowId={id ?? undefined}
-            workflow={workflow}
+            workflow={currentWorkflow}
             refreshRunHistoryKey={runHistoryRefresh}
             activeWorkflowRun={activeWorkflowRun.activeRun}
+            isMonitoringActive={activeWorkflowRun.isMonitoringActive}
             refetchActiveWorkflowRun={activeWorkflowRun.refetchNow}
             initialNodes={initialCanvas.nodes}
             initialEdges={initialCanvas.edges}
@@ -386,7 +447,6 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             }}
             onWorkflowChange={handleWorkflowChange}
             onSave={handleSave}
-            onChange={() => setHasChanges(true)}
           />
         )}
       </div>
@@ -401,7 +461,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       {/* ── Delete workflow confirmation dialog ─────────────────────────────────── */}
       <DeleteWorkflowDialog
         isOpen={deleteDialogOpen}
-        workflowName={workflow?.name ?? 'New Workflow'}
+        workflowName={currentWorkflow?.name ?? 'New Workflow'}
         deleting={mutatingAction === 'deleting'}
         onCancel={() => setDeleteDialogOpen(false)}
         onConfirm={handleDeleteWorkflow}
@@ -410,15 +470,15 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       {/* ── Trigger run modal ─────────────────────────────────────────────────── */}
       <TriggerRunModal
         isOpen={triggerModalOpen}
-        workflowName={workflow?.name ?? ''}
+        workflowName={currentWorkflow?.name ?? ''}
         onClose={() => setTriggerModalOpen(false)}
         onTrigger={handleTrigger}
         triggering={mutatingAction === 'triggering'}
       />
 
-      {shareOpen && id && (
+      {shareOpen && id && isExistingDetailReady && (
         <ShareModal
-          itemName={workflow?.name ?? 'Workflow'}
+          itemName={currentWorkflow?.name ?? 'Workflow'}
           resourceId={id}
           resourceType='workflow'
           isOpen={shareOpen}

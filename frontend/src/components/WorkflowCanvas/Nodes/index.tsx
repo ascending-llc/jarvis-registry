@@ -2,7 +2,9 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import { useContext, useEffect } from 'react';
 import { CanvasActionsContext } from '../CanvasView';
+import { useWorkflowNodeRuntime } from '../runtime/WorkflowRuntimeContext';
 import { GateApprovalToolbar } from './GateApprovalToolbar';
+import { NodeStatusDot } from './NodeStatusDot';
 
 import './index.css';
 
@@ -10,6 +12,7 @@ import './index.css';
 const HANDLE_SPACING_PX = 36;
 
 interface HeaderProps {
+  nodeId: string;
   iconClass: string;
   iconLabel: string;
   title: string;
@@ -17,22 +20,24 @@ interface HeaderProps {
 }
 
 /** Shared header for all node types. */
-const Header: React.FC<HeaderProps> = ({ iconClass, iconLabel, title, dotClass }) => {
+const Header: React.FC<HeaderProps> = ({ nodeId, iconClass, iconLabel, title, dotClass }) => {
+  const { isNodeRunning } = useWorkflowNodeRuntime();
+
   return (
     <div className='node-header'>
       <div className={`node-icon ${iconClass}`}>{iconLabel}</div>
       <div className='node-title'>{title}</div>
-      <div className={`node-dot ${dotClass}`} />
+      <NodeStatusDot colorClass={dotClass} isRunning={isNodeRunning(nodeId)} />
     </div>
   );
 };
 
 /** MCP Server node. */
-export const McpNode: React.FC<NodeProps<Node<import('../types').McpNodeData>>> = ({ data, selected }) => {
+export const McpNode: React.FC<NodeProps<Node<import('../types').McpNodeData>>> = ({ id, data, selected }) => {
   return (
     <div className={`node-wrap mcp ${selected ? 'selected' : ''}`}>
       <Handle type='target' position={Position.Left} />
-      <Header iconClass='mcp' iconLabel='MCP' title={data.label} dotClass='mcp' />
+      <Header nodeId={id} iconClass='mcp' iconLabel='MCP' title={data.label} dotClass='mcp' />
       <div className='node-body'>{data.description}</div>
       <Handle type='source' position={Position.Right} />
     </div>
@@ -40,11 +45,11 @@ export const McpNode: React.FC<NodeProps<Node<import('../types').McpNodeData>>> 
 };
 
 /** A2A Agent node. */
-export const AgentNode: React.FC<NodeProps<Node<import('../types').AgentNodeData>>> = ({ data, selected }) => {
+export const AgentNode: React.FC<NodeProps<Node<import('../types').AgentNodeData>>> = ({ id, data, selected }) => {
   return (
     <div className={`node-wrap agent ${selected ? 'selected' : ''}`}>
       <Handle type='target' position={Position.Left} />
-      <Header iconClass='agent' iconLabel='A2A' title={data.label} dotClass='agent' />
+      <Header nodeId={id} iconClass='agent' iconLabel='A2A' title={data.label} dotClass='agent' />
       <div className='node-body'>{data.description}</div>
       <Handle type='source' position={Position.Right} />
     </div>
@@ -58,7 +63,7 @@ export const GateNode: React.FC<NodeProps<Node<import('../types').GateNodeData>>
       <GateApprovalToolbar gateNodeId={id} />
       <div className={`node-wrap gate ${selected ? 'selected' : ''}`}>
         <Handle type='target' position={Position.Left} />
-        <Header iconClass='gate' iconLabel='⏸' title={data.label || 'Approval Gate'} dotClass='gate' />
+        <Header nodeId={id} iconClass='gate' iconLabel='⏸' title={data.label || 'Approval Gate'} dotClass='gate' />
         <div className='node-body'>{data.description || 'Pause run for human review'}</div>
         <div className='node-footer'>
           <span className='node-badge gate font-mono'>⏸ awaiting human</span>
@@ -71,11 +76,11 @@ export const GateNode: React.FC<NodeProps<Node<import('../types').GateNodeData>>
 };
 
 /** Conditional (if / else) node with two source handles spread vertically. */
-export const CondNode: React.FC<NodeProps<Node<import('../types').CondNodeData>>> = ({ data, selected }) => {
+export const CondNode: React.FC<NodeProps<Node<import('../types').CondNodeData>>> = ({ id, data, selected }) => {
   return (
     <div className={`node-wrap cond ${selected ? 'selected' : ''}`} style={{ minHeight: HANDLE_SPACING_PX + 60 }}>
       <Handle type='target' position={Position.Left} />
-      <Header iconClass='cond' iconLabel='if' title={data.label || 'Conditional'} dotClass='cond' />
+      <Header nodeId={id} iconClass='cond' iconLabel='if' title={data.label || 'Conditional'} dotClass='cond' />
       <div className='node-body'>
         <code
           className='font-mono'
@@ -134,7 +139,7 @@ export const ParallelNode: React.FC<NodeProps<Node<import('../types').ParallelNo
   return (
     <div className={`node-wrap parallel ${selected ? 'selected' : ''}`} style={{ minHeight }}>
       <Handle type='target' position={Position.Left} />
-      <Header iconClass='parallel' iconLabel='∥' title={data.label || 'Parallel'} dotClass='parallel' />
+      <Header nodeId={id} iconClass='parallel' iconLabel='∥' title={data.label || 'Parallel'} dotClass='parallel' />
       <div className='node-body'>Fan-out — runs all branches concurrently</div>
       <div className='node-footer'>
         {branches.map((b, i) => (
@@ -175,7 +180,7 @@ export const RouterNode: React.FC<NodeProps<Node<import('../types').RouterNodeDa
   return (
     <div className={`node-wrap router ${selected ? 'selected' : ''}`} style={{ minHeight }}>
       <Handle type='target' position={Position.Left} />
-      <Header iconClass='router' iconLabel='⇄' title={data.label || 'Router'} dotClass='router' />
+      <Header nodeId={id} iconClass='router' iconLabel='⇄' title={data.label || 'Router'} dotClass='router' />
       <div className='node-body'>
         <span className='font-mono' style={{ fontSize: 10, color: 'var(--jarvis-subtle)' }}>
           switch {data.routeBy || 'session_state.severity'}
@@ -207,7 +212,7 @@ export const RouterNode: React.FC<NodeProps<Node<import('../types').RouterNodeDa
 };
 
 /** Loop node with back-edge handle. */
-export const LoopNode: React.FC<NodeProps<Node<import('../types').LoopNodeData>>> = ({ data, selected }) => {
+export const LoopNode: React.FC<NodeProps<Node<import('../types').LoopNodeData>>> = ({ id, data, selected }) => {
   return (
     <div className={`node-wrap loop ${selected ? 'selected' : ''}`}>
       <Handle type='target' position={Position.Left} />
@@ -218,7 +223,7 @@ export const LoopNode: React.FC<NodeProps<Node<import('../types').LoopNodeData>>
         id='back'
         style={{ background: 'var(--jarvis-orange)', borderColor: 'var(--jarvis-orange)' }}
       />
-      <Header iconClass='loop' iconLabel='↻' title={data.label || 'Loop'} dotClass='loop' />
+      <Header nodeId={id} iconClass='loop' iconLabel='↻' title={data.label || 'Loop'} dotClass='loop' />
       <div className='node-body'>
         Max <strong style={{ color: 'var(--jarvis-orange)' }}>{data.maxIterations || 5}</strong> iterations
         {data.exitCondition && (
@@ -250,13 +255,13 @@ export const LoopNode: React.FC<NodeProps<Node<import('../types').LoopNodeData>>
 };
 
 /** Agent Pool node. */
-export const PoolNode: React.FC<NodeProps<Node<import('../types').PoolNodeData>>> = ({ data, selected }) => {
+export const PoolNode: React.FC<NodeProps<Node<import('../types').PoolNodeData>>> = ({ id, data, selected }) => {
   const agents = Array.isArray(data.agents) ? data.agents : [];
   const remaining = 5 - agents.length;
   return (
     <div className={`node-wrap pool ${selected ? 'selected' : ''}`}>
       <Handle type='target' position={Position.Left} />
-      <Header iconClass='pool' iconLabel='◈' title={data.label || 'Agent Pool'} dotClass='pool' />
+      <Header nodeId={id} iconClass='pool' iconLabel='◈' title={data.label || 'Agent Pool'} dotClass='pool' />
       <div className='node-body'>LLM selects best-fit agent at runtime</div>
       <div className='node-footer'>
         {agents.map((a, i) => (

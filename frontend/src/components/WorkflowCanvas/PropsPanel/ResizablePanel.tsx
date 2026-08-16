@@ -125,12 +125,7 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
           </>
         )}
 
-        {!collapsed && (
-          <div className='flex-1 overflow-y-auto'>
-            <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}`}</style>
-            {children}
-          </div>
-        )}
+        {!collapsed && <div className='flex-1 overflow-y-auto'>{children}</div>}
       </div>
     </div>
   );

@@ -8,7 +8,6 @@ export const useCanvasLayout = (
   edges: Edge[],
   setNodes: React.Dispatch<React.SetStateAction<WorkflowNode[]>>,
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>,
-  onChange?: () => void,
   isReadOnly = false,
 ) => {
   const generateNodeId = useCallback(
@@ -25,8 +24,7 @@ export const useCanvasLayout = (
     const { nodes: ln, edges: le } = getLayoutedElements(nodes, edges);
     setNodes(ln);
     setEdges(le);
-    onChange?.();
-  }, [nodes, edges, setNodes, setEdges, onChange, isReadOnly]);
+  }, [nodes, edges, setNodes, setEdges, isReadOnly]);
 
   return {
     generateNodeId,
