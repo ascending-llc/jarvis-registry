@@ -84,30 +84,38 @@
 }
 
 /* Shared live-status animation for canvas nodes and run history. */
-@keyframes workflow-status-ripple {
+@keyframes workflow-status-spin {
   from {
-    opacity: 0.7;
-    transform: scale(1);
+    transform: translate(-50%, -50%) rotate(0deg);
   }
   to {
-    opacity: 0;
-    transform: scale(2.5);
+    transform: translate(-50%, -50%) rotate(360deg);
   }
 }
 
-.workflow-status-ripple {
+.workflow-status-spinner {
   position: relative;
 }
 
-.workflow-status-ripple::after {
+.workflow-status-spinner::after {
   position: absolute;
-  inset: 0;
+  top: 50%;
+  left: 50%;
+  width: calc(100% + 8px);
+  height: calc(100% + 8px);
   box-sizing: border-box;
-  border: 1px solid currentColor;
-  border-radius: inherit;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  border-radius: 50%;
   pointer-events: none;
   content: "";
-  animation: workflow-status-ripple 0.9s cubic-bezier(0.2, 0.65, 0.3, 1) infinite;
+  opacity: 0.6;
+  animation: workflow-status-spin 0.8s linear infinite;
+}
+
+.workflow-canvas-root .node-dot.workflow-status-running {
+  color: var(--jarvis-warning);
 }
 
 /* NodePicker modal animation */

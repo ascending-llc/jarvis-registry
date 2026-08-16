@@ -42,7 +42,7 @@ const RunRow: React.FC<{ run: RunEntry; onClick: (run: RunEntry) => void; isSele
   >
     <div
       className={`w-[7px] h-[7px] rounded-full shrink-0 mt-[3px]${
-        run.status === 'live' ? ' workflow-status-ripple' : ''
+        run.status === 'live' ? ' workflow-status-spinner' : ''
       }`}
       style={{
         color: RUN_COLORS[run.status],
