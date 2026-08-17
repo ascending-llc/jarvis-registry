@@ -286,7 +286,10 @@ class RegistryContainer:
     def a2a_client_registry(self) -> A2AClientRegistry:
         return A2AClientRegistry(
             agentcore_registry=self.a2a_proxy_client_registry,
-            azure_client_cache=AzureFoundryClientCache(),
+            azure_client_cache=AzureFoundryClientCache(
+                max_connections=self.settings.azure_foundry_max_connections,
+                max_keepalive_connections=self.settings.azure_foundry_max_keepalive_connections,
+            ),
         )
 
     @cached_property
@@ -353,7 +356,10 @@ class RegistryContainer:
         return httpx.AsyncClient(
             timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            limits=httpx.Limits(
+                max_connections=self.settings.a2a_max_connections,
+                max_keepalive_connections=self.settings.a2a_max_keepalive_connections,
+            ),
         )
 
     @cached_property
@@ -381,6 +387,8 @@ class RegistryContainer:
             jwt_signing_config=self.settings.jwt_signing_config,
             jwt_subject=self.settings.registry_app_name,
             jwt_expires_in_seconds=3600,
+            max_connections=self.settings.a2a_proxy_max_connections,
+            max_keepalive_connections=self.settings.a2a_proxy_max_keepalive_connections,
         )
 
     async def startup(self) -> None:

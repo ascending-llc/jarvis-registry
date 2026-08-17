@@ -6,12 +6,7 @@ import { getInitialElements } from '../fixtures';
 import type { WorkflowNode } from '../types';
 import { pruneInvalidRefs } from '../utils/dag';
 
-export const useCanvasNodes = (
-  initialNodes?: WorkflowNode[],
-  initialEdges?: Edge[],
-  onChange?: () => void,
-  isReadOnly = false,
-) => {
+export const useCanvasNodes = (initialNodes?: WorkflowNode[], initialEdges?: Edge[], isReadOnly = false) => {
   const { nodes: mockNodes, edges: mockEdges } = getInitialElements();
 
   const [nodes, setNodes, baseOnNodesChange] = useNodesState<WorkflowNode>(
@@ -30,11 +25,8 @@ export const useCanvasNodes = (
       if (nonRemoveChanges.length > 0) {
         baseOnNodesChange(nonRemoveChanges);
       }
-      if (changes.some(c => c.type !== 'select')) {
-        onChange?.();
-      }
     },
-    [baseOnNodesChange, onChange, isReadOnly],
+    [baseOnNodesChange, isReadOnly],
   );
 
   const onEdgesChange = useCallback(
@@ -47,11 +39,8 @@ export const useCanvasNodes = (
       const nextEdges = applyEdgeChanges(changes, edges);
       setEdges(nextEdges);
       setNodes(currentNodes => pruneInvalidRefs(currentNodes, nextEdges) as WorkflowNode[]);
-      if (changes.some(c => c.type !== 'select')) {
-        onChange?.();
-      }
     },
-    [edges, setEdges, setNodes, onChange, isReadOnly],
+    [edges, setEdges, setNodes, isReadOnly],
   );
 
   const isValidConnection = useCallback(
@@ -111,10 +100,8 @@ export const useCanvasNodes = (
         setEdges(nextEdges);
         setNodes(currentNodes => pruneInvalidRefs(currentNodes, nextEdges) as WorkflowNode[]);
       }
-
-      onChange?.();
     },
-    [isReadOnly, isValidConnection, edges, nodes, setEdges, setNodes, onChange],
+    [isReadOnly, isValidConnection, edges, nodes, setEdges, setNodes],
   );
 
   return {

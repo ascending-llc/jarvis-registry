@@ -57,10 +57,16 @@ class A2AProxyClientRegistry:
         jwt_signing_config: JwtSigningConfig,
         jwt_subject: str,
         jwt_expires_in_seconds: int = 3600,
+        max_connections: int = 100,
+        max_keepalive_connections: int = 20,
     ):
         self._jwt_signing_config = jwt_signing_config
         self._jwt_subject = jwt_subject
         self._expires_in_seconds = jwt_expires_in_seconds
+        self._limits = Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
+        )
 
         self._dict: dict[str, tuple[_ClientCacheConfig, AsyncClient]] = {}
 
@@ -107,7 +113,7 @@ class A2AProxyClientRegistry:
         client = AsyncClient(
             timeout=Timeout(30.0, read=60.0),
             follow_redirects=True,
-            limits=Limits(max_connections=100, max_keepalive_connections=20),
+            limits=self._limits,
             auth=auth,
         )
 

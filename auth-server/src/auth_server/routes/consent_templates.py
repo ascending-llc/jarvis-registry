@@ -18,6 +18,9 @@ _STYLE = """
   .approve { background: #4f7cff; color: white; border: none; }
   .deny { background: transparent; color: #9a9fa8; border: 1px solid #2a2e37; }
   .warning { margin-top: 20px; font-size: 12px; color: #6b7280; }
+  table.scopes { width: 100%; margin: 20px 0; border-collapse: collapse; text-align: left; font-size: 13px; }
+  table.scopes th, table.scopes td { padding: 8px 10px; border-bottom: 1px solid #2a2e37; }
+  table.scopes th { color: #9a9fa8; font-weight: 600; }
 """
 
 
@@ -46,6 +49,7 @@ def render_consent_page(
     redirect_uri: str | None,
     ip_address: str | None,
     registered_at: int | None,
+    scopes: list[tuple[str, str | None]],
     nonce: str,
     approve_action: str,
     deny_action: str,
@@ -71,6 +75,19 @@ def render_consent_page(
         meta_lines.append(line)
     meta_html = "\n    ".join(meta_lines)
 
+    scopes_html = ""
+    if scopes:
+        rows = "\n    ".join(
+            f"<tr><td><code>{html.escape(name)}</code></td><td>{html.escape(description or '')}</td></tr>"
+            for name, description in scopes
+        )
+        scopes_html = f"""<table class="scopes">
+      <thead><tr><th>Permission</th><th>What it allows</th></tr></thead>
+      <tbody>
+    {rows}
+      </tbody>
+    </table>"""
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -83,6 +100,7 @@ def render_consent_page(
   <div class="card">
     <h1><span class="app-name">{safe_name}</span> wants to access your Jarvis Registry account</h1>
     {meta_html}
+    {scopes_html}
     <p class="meta">This will let it obtain an access token to act on your behalf via the MCP gateway.</p>
     <div class="actions">
       <form method="POST" action="{safe_approve_action}" style="display:inline;">

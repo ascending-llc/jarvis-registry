@@ -94,11 +94,11 @@ class ScopePermissionMiddleware:
         rules = []
 
         # Load all scopes except group_mappings
-        for scope_name, scope_rules in config.items():
+        for scope_name, scope_config in config.items():
             if scope_name == "group_mappings":
                 continue
 
-            for rule in scope_rules:
+            for rule in scope_config["actions"]:
                 endpoint = rule.get("endpoint", "").strip()
                 method = rule.get("method", "").strip().upper()
 

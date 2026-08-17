@@ -13,6 +13,8 @@ from registry.services.skill_service import SkillService
 from registry_pkgs.models import SkillSource
 
 _USER_ID = "000000000000000000000001"
+_OTHER_USER_ID = "000000000000000000000002"
+_THIRD_USER_ID = "000000000000000000000003"
 
 
 def _make_skill(*, created_by_registry: bool = True) -> MagicMock:
@@ -207,3 +209,100 @@ async def test_create_inserts_skill_and_grants_owner(mock_skill_cls, mock_mongod
     mock_skill_cls.find_one.assert_awaited_once_with(
         {"name": "test-skill", "author": PydanticObjectId(_USER_ID), "deletedAt": None}
     )
+
+
+def _make_named_skill(name: str, author_id: str = _USER_ID) -> MagicMock:
+    skill = MagicMock()
+    skill.id = PydanticObjectId()
+    skill.name = name
+    skill.author = PydanticObjectId(author_id)
+    return skill
+
+
+_VIEW = ResourcePermissions(VIEW=True)
+
+
+def test_dedup_no_duplicates():
+    s1 = _make_named_skill("alpha")
+    s2 = _make_named_skill("beta")
+    items = [(s1, _VIEW), (s2, _VIEW)]
+
+    result = SkillService._deduplicate_by_name(items, PydanticObjectId(_USER_ID))
+
+    assert len(result) == 2
+    assert result[0][0] is s1
+    assert result[1][0] is s2
+
+
+def test_dedup_author_match_wins(caplog):
+    owned = _make_named_skill("dup", author_id=_USER_ID)
+    other = _make_named_skill("dup", author_id=_OTHER_USER_ID)
+    items = [(other, _VIEW), (owned, _VIEW)]
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="registry.services.skill_service"):
+        result = SkillService._deduplicate_by_name(items, PydanticObjectId(_USER_ID))
+
+    assert len(result) == 1
+    assert result[0][0] is owned
+    assert "WARNING" in caplog.text or any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_dedup_no_author_match_excludes_all(caplog):
+    s1 = _make_named_skill("dup", author_id=_OTHER_USER_ID)
+    s2 = _make_named_skill("dup", author_id=_THIRD_USER_ID)
+    items = [(s1, _VIEW), (s2, _VIEW)]
+
+    import logging
+
+    with caplog.at_level(logging.ERROR, logger="registry.services.skill_service"):
+        result = SkillService._deduplicate_by_name(items, PydanticObjectId(_USER_ID))
+
+    assert len(result) == 0
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+def test_dedup_mixed_unique_and_duplicate(caplog):
+    unique_a = _make_named_skill("alpha")
+    owned_dup = _make_named_skill("beta", author_id=_USER_ID)
+    other_dup = _make_named_skill("beta", author_id=_OTHER_USER_ID)
+    unique_c = _make_named_skill("gamma")
+    items = [(unique_a, _VIEW), (other_dup, _VIEW), (owned_dup, _VIEW), (unique_c, _VIEW)]
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="registry.services.skill_service"):
+        result = SkillService._deduplicate_by_name(items, PydanticObjectId(_USER_ID))
+
+    assert len(result) == 3
+    assert result[0][0] is unique_a
+    assert result[1][0] is owned_dup
+    assert result[2][0] is unique_c
+
+
+def test_dedup_preserves_order():
+    s1 = _make_named_skill("alpha", author_id=_USER_ID)
+    s2 = _make_named_skill("beta", author_id=_USER_ID)
+    s3 = _make_named_skill("gamma", author_id=_USER_ID)
+    items = [(s1, _VIEW), (s2, _VIEW), (s3, _VIEW)]
+
+    result = SkillService._deduplicate_by_name(items, PydanticObjectId(_USER_ID))
+
+    assert [r[0].name for r in result] == ["alpha", "beta", "gamma"]
+
+
+def test_dedup_three_same_name_one_owned(caplog):
+    owned = _make_named_skill("dup", author_id=_USER_ID)
+    other1 = _make_named_skill("dup", author_id=_OTHER_USER_ID)
+    other2 = _make_named_skill("dup", author_id=_THIRD_USER_ID)
+    items = [(other1, _VIEW), (owned, _VIEW), (other2, _VIEW)]
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="registry.services.skill_service"):
+        result = SkillService._deduplicate_by_name(items, PydanticObjectId(_USER_ID))
+
+    assert len(result) == 1
+    assert result[0][0] is owned
+    assert any(r.levelno == logging.WARNING for r in caplog.records)

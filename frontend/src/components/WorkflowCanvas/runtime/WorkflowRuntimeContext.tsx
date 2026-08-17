@@ -23,9 +23,14 @@ interface WorkflowRuntimeContextValue {
   refetchActiveRun: () => Promise<void>;
 }
 
+interface WorkflowNodeRuntimeContextValue {
+  isNodeRunning: (nodeId: string) => boolean;
+}
+
 interface WorkflowRuntimeProviderProps {
   workflowId?: string;
   activeRun: WorkflowRunStatusResponse | null;
+  isMonitoringActive: boolean;
   nodes: WorkflowNode[];
   edges: Edge[];
   refetchActiveRun: () => Promise<void>;
@@ -33,6 +38,18 @@ interface WorkflowRuntimeProviderProps {
 }
 
 const WorkflowRuntimeContext = createContext<WorkflowRuntimeContextValue | null>(null);
+const WorkflowNodeRuntimeContext = createContext<WorkflowNodeRuntimeContextValue | null>(null);
+
+export const getRunningNodeIds = (
+  activeRun: WorkflowRunStatusResponse | null,
+  isMonitoringActive: boolean,
+): ReadonlySet<string> => {
+  if (!activeRun || !isMonitoringActive) return new Set<string>();
+  return new Set(activeRun.nodeRuns.filter(nodeRun => nodeRun.status === 'running').map(nodeRun => nodeRun.nodeId));
+};
+
+const _getRunningNodeIdsKey = (activeRun: WorkflowRunStatusResponse | null, isMonitoringActive: boolean): string =>
+  JSON.stringify([...getRunningNodeIds(activeRun, isMonitoringActive)].sort());
 
 export const useWorkflowRuntime = (): WorkflowRuntimeContextValue => {
   const context = useContext(WorkflowRuntimeContext);
@@ -40,9 +57,16 @@ export const useWorkflowRuntime = (): WorkflowRuntimeContextValue => {
   return context;
 };
 
+export const useWorkflowNodeRuntime = (): WorkflowNodeRuntimeContextValue => {
+  const context = useContext(WorkflowNodeRuntimeContext);
+  if (!context) throw new Error('useWorkflowNodeRuntime must be used within WorkflowRuntimeProvider');
+  return context;
+};
+
 export const WorkflowRuntimeProvider: React.FC<WorkflowRuntimeProviderProps> = ({
   workflowId,
   activeRun,
+  isMonitoringActive,
   nodes,
   edges,
   refetchActiveRun,
@@ -50,6 +74,17 @@ export const WorkflowRuntimeProvider: React.FC<WorkflowRuntimeProviderProps> = (
 }) => {
   const { user } = useAuth();
   const canControlWorkflow = user?.scopes?.includes('workflows-control') === true;
+  const runningNodeIdsKey = useMemo(
+    () => _getRunningNodeIdsKey(activeRun, isMonitoringActive),
+    [activeRun?.nodeRuns, isMonitoringActive],
+  );
+  const runningNodeIds = useMemo<ReadonlySet<string>>(
+    () => new Set(JSON.parse(runningNodeIdsKey) as string[]),
+    [runningNodeIdsKey],
+  );
+
+  const isNodeRunning = useCallback((nodeId: string): boolean => runningNodeIds.has(nodeId), [runningNodeIds]);
+  const nodeRuntimeValue = useMemo<WorkflowNodeRuntimeContextValue>(() => ({ isNodeRunning }), [isNodeRunning]);
 
   const requirementByGateId = useMemo(() => {
     const result = new Map<string, StepRequirementSummary>();
@@ -108,5 +143,9 @@ export const WorkflowRuntimeProvider: React.FC<WorkflowRuntimeProviderProps> = (
     [activeRun, canControlWorkflow, getPendingConfirmation, refetchActiveRun, resolveRequirement],
   );
 
-  return <WorkflowRuntimeContext.Provider value={value}>{children}</WorkflowRuntimeContext.Provider>;
+  return (
+    <WorkflowNodeRuntimeContext.Provider value={nodeRuntimeValue}>
+      <WorkflowRuntimeContext.Provider value={value}>{children}</WorkflowRuntimeContext.Provider>
+    </WorkflowNodeRuntimeContext.Provider>
+  );
 };

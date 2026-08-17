@@ -9,7 +9,7 @@ import yaml
 
 from registry_pkgs.core import scopes
 from registry_pkgs.core.config import ScopesConfig
-from registry_pkgs.core.scopes import filter_known_groups
+from registry_pkgs.core.scopes import filter_known_groups, get_scope_description
 
 
 @pytest.fixture
@@ -20,14 +20,20 @@ def valid_scopes_config():
             "admin": ["servers-read", "servers-write"],
             "user": ["servers-read"],
         },
-        "servers-read": [
-            {"action": "list_servers", "method": "GET", "endpoint": "/servers"},
-            {"action": "get_server", "method": "GET", "endpoint": "/servers/{server_id}"},
-        ],
-        "servers-write": [
-            {"action": "create_server", "method": "POST", "endpoint": "/servers"},
-            {"action": "delete_server", "method": "DELETE", "endpoint": "/servers/{server_id}"},
-        ],
+        "servers-read": {
+            "description": "View registered MCP servers.",
+            "actions": [
+                {"action": "list_servers", "method": "GET", "endpoint": "/servers"},
+                {"action": "get_server", "method": "GET", "endpoint": "/servers/{server_id}"},
+            ],
+        },
+        "servers-write": {
+            "description": "Modify registered MCP servers.",
+            "actions": [
+                {"action": "create_server", "method": "POST", "endpoint": "/servers"},
+                {"action": "delete_server", "method": "DELETE", "endpoint": "/servers/{server_id}"},
+            ],
+        },
     }
 
 
@@ -198,8 +204,10 @@ class TestScopesConfigStructure:
         config = scopes.load_scopes_config(_scopes_config(str(temp_scopes_file)))
         for key, value in config.items():
             if key != "group_mappings":
-                assert isinstance(value, list)
-                for action in value:
+                assert isinstance(value, dict)
+                assert isinstance(value["description"], str)
+                assert isinstance(value["actions"], list)
+                for action in value["actions"]:
                     assert isinstance(action, dict)
                     assert "action" in action
                     assert "method" in action
@@ -407,3 +415,41 @@ class TestFilterKnownGroups:
         config = _scopes_config(str(temp_scopes_file))
         result = filter_known_groups(["admin", "admin"], config)
         assert result == ["admin", "admin"]
+
+
+class TestGetScopeDescription:
+    """Tests for get_scope_description function."""
+
+    def test_returns_description_for_nested_scope(self, temp_scopes_file, reset_scopes_cache):
+        config = _scopes_config(str(temp_scopes_file))
+
+        result = get_scope_description("servers-read", config)
+
+        assert result == "View registered MCP servers."
+
+    def test_returns_none_for_unknown_scope(self, temp_scopes_file, reset_scopes_cache):
+        config = _scopes_config(str(temp_scopes_file))
+
+        result = get_scope_description("unknown-scope", config)
+
+        assert result is None
+
+    def test_returns_none_for_legacy_flat_scope(self, reset_scopes_cache, tmp_path):
+        temp_path = tmp_path / "scopes.yml"
+        temp_path.write_text(
+            yaml.safe_dump(
+                {
+                    "group_mappings": {},
+                    "servers-read": [{"action": "list_servers", "method": "GET", "endpoint": "/servers"}],
+                }
+            )
+        )
+
+        result = get_scope_description("servers-read", _scopes_config(str(temp_path)))
+
+        assert result is None
+
+    def test_returns_description_from_packaged_scopes_config(self, reset_scopes_cache):
+        result = get_scope_description("servers-read", _scopes_config())
+
+        assert result == "View registered MCP servers, their tools, and connection status."

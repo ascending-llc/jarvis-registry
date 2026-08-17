@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -37,10 +37,14 @@ from registry_pkgs.models.federation_metadata import (
 
 logger = logging.getLogger(__name__)
 
-_A2A_JWT_TTL_SECONDS = 300
-_A2A_HTTP_TIMEOUT = 300
-# a2a poll timeout needs to be strictly less than _A2A_JWT_TTL_SECONDS and _A2A_HTTP_TIMEOUT
-_A2A_POLL_TIMEOUT = _A2A_HTTP_TIMEOUT * 0.6
+# Every timeout below derives from _A2A_TASK_BUDGET_SECONDS rather than being set independently:
+# each bounds a different layer: credential lifetime, transport read, hard cancellation. The shortest becomes
+# the real ceiling, failing in that layer's terms rather than as a clean task timeout. Retune via budget.
+_A2A_TASK_BUDGET_SECONDS = 3600
+_A2A_JWT_TTL_SECONDS = _A2A_TASK_BUDGET_SECONDS + 300
+_A2A_HTTP_TIMEOUT = httpx.Timeout(30.0, read=_A2A_TASK_BUDGET_SECONDS)
+# Preemptive backstop: a still-streaming send never reaches the poll loop's own check.
+_A2A_HARD_TIMEOUT_SECONDS = _A2A_TASK_BUDGET_SECONDS + 60
 
 HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
 ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
@@ -260,17 +264,17 @@ async def _poll_until_terminal(
     task_id: str,
     *,
     context: ClientCallContext,
+    deadline: float,
 ) -> Task:
     """Poll `client.get_task` until the task leaves the in-progress states.
 
     `blocking=True` is only a hint; servers may ignore it and return a
     `submitted`/`working` Task immediately. Caller-side polling is the
     documented workaround (see a2a-send-message-1.md, Bug 2). Returns the
-    final Task. Raises TimeoutError if the _A2A_POLL_TIMEOUT budget is exceeded.
+    final Task, or raises TimeoutError at `deadline` — an absolute `monotonic()`
+    value seeded before the send, so sending and polling share one budget.
     """
-    # Exponential backoff capped at 8s; total budget _A2A_POLL_TIMEOUT.
-    back_offs = (0.5, 1.0, 2.0, 4.0, 8.0)
-    deadline = time.monotonic() + _A2A_POLL_TIMEOUT
+    back_offs = (0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
     delay_iter = iter(back_offs)
     while True:
         try:
@@ -278,9 +282,9 @@ async def _poll_until_terminal(
         except StopIteration:
             delay = back_offs[-1]
 
-        remaining = deadline - time.monotonic()
+        remaining = deadline - monotonic()
         if remaining <= 0:
-            raise TimeoutError(f"polling timed out after {_A2A_POLL_TIMEOUT}s for task {task_id!r}")
+            raise TimeoutError(f"polling timed out after the {_A2A_TASK_BUDGET_SECONDS}s budget for task {task_id!r}")
         await asyncio.sleep(min(delay, remaining))
 
         task = await client.get_task(TaskQueryParams(id=task_id), context=context)
@@ -343,6 +347,8 @@ async def _call_with_open_client(
     context: ClientCallContext,
 ) -> A2ACallResult:
     """Run the three-phase consume/poll/build pipeline against an already-open client."""
+    deadline = monotonic() + _A2A_TASK_BUDGET_SECONDS
+
     # 1. drain the event stream.
     msg = text if isinstance(text, Message) else _create_message(text)
     outcome = await _consume_stream(client, msg, context=context)
@@ -360,9 +366,9 @@ async def _call_with_open_client(
     if task.status.state in _IN_PROGRESS_STATES:
         logger.debug("polling task %r from state=%s", task.id, task.status.state.value)
         try:
-            task = await _poll_until_terminal(client, task.id, context=context)
+            task = await _poll_until_terminal(client, task.id, context=context, deadline=deadline)
         except TimeoutError as exc:
-            logger.warning("polling timed out: %s", exc)
+            logger.warning("A2A call to %r: %s", agent_name, exc)
             return A2ACallResult(task=task, success=False, error=str(exc))
 
     # 3. classify the final Task
@@ -489,10 +495,21 @@ async def call_a2a(
 
         # ClientFactory.create() is annotated -> Client, but always returns BaseClient in a2a-sdk==0.3.24.
         client: BaseClient = factory.create(agent_card)  # type: ignore[assignment]
-        if httpx_client is None:
-            async with client:
+        try:
+            async with asyncio.timeout(_A2A_HARD_TIMEOUT_SECONDS) as hard_timeout:
+                if httpx_client is None:
+                    async with client:
+                        return await _call_with_open_client(client, agent_name, text, context)
                 return await _call_with_open_client(client, agent_name, text, context)
-        return await _call_with_open_client(client, agent_name, text, context)
+        except TimeoutError:
+            if not hard_timeout.expired():
+                raise  # unrelated TimeoutError; report it as itself, not as our ceiling
+            # asyncio.timeout's TimeoutError carries no message; supply one so it isn't empty.
+            logger.warning("A2A call to %r hit the %ss hard timeout", agent_name, _A2A_HARD_TIMEOUT_SECONDS)
+            return A2ACallResult(
+                success=False,
+                error=f"A2A invocation cancelled at the {_A2A_HARD_TIMEOUT_SECONDS}s hard timeout",
+            )
 
     except Exception as exc:
         logger.exception("A2A call to %r failed", agent_name)
