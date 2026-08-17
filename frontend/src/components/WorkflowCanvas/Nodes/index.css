@@ -223,30 +223,31 @@
   height: 5px;
   border-radius: 50%;
   flex-shrink: 0;
+  background: currentColor;
 }
 .node-dot.mcp {
-  background: var(--jarvis-blue);
+  color: var(--jarvis-blue);
 }
 .node-dot.agent {
-  background: var(--jarvis-primary-hover);
+  color: var(--jarvis-primary-hover);
 }
 .node-dot.gate {
-  background: var(--jarvis-warning);
+  color: var(--jarvis-warning);
 }
 .node-dot.cond {
-  background: var(--jarvis-blue);
+  color: var(--jarvis-blue);
 }
 .node-dot.parallel {
-  background: var(--jarvis-teal);
+  color: var(--jarvis-teal);
 }
 .node-dot.router {
-  background: var(--jarvis-pink);
+  color: var(--jarvis-pink);
 }
 .node-dot.loop {
-  background: var(--jarvis-orange);
+  color: var(--jarvis-orange);
 }
 .node-dot.pool {
-  background: var(--jarvis-primary-hover);
+  color: var(--jarvis-primary-hover);
 }
 
 /* ── Node body ────────────────────────────────────────────────────────────── */
