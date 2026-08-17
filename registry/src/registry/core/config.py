@@ -173,8 +173,13 @@ class Settings(JarvisBaseSettings):
     # ==================== A2A HTTP Client ====================
     # A2A calls hold a pooled connection for their whole duration, so concurrent
     # connections scale with hold time (Little's Law) — sized for the A2A task budget.
+    # Sized by how many of each exist: one shared, one per target agent, one per federation.
     a2a_max_connections: int = 500
     a2a_max_keepalive_connections: int = 20
+    a2a_proxy_max_connections: int = 100
+    a2a_proxy_max_keepalive_connections: int = 20
+    azure_foundry_max_connections: int = 300
+    azure_foundry_max_keepalive_connections: int = 20
 
     # ==================== Model Validation ====================
 

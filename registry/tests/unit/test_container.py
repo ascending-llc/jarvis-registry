@@ -92,6 +92,29 @@ def test_a2a_httpx_client_pool_limits_come_from_settings(mock_async_client):
 
 
 @pytest.mark.unit
+def test_proxy_and_azure_pools_use_their_own_settings():
+    """The proxy pool is per target agent and the Azure pool is per federation, so they are
+    sized independently. Distinct sentinels catch a cross-wired setting."""
+    settings = _make_settings()
+    settings.a2a_proxy_max_connections = 111
+    settings.a2a_proxy_max_keepalive_connections = 11
+    settings.azure_foundry_max_connections = 333
+    settings.azure_foundry_max_keepalive_connections = 33
+    container = RegistryContainer(
+        settings=settings,
+        db_client=MagicMock(),
+        redis_client=MagicMock(),
+    )
+
+    registry = container.a2a_client_registry
+
+    assert registry._agentcore_registry._limits.max_connections == 111
+    assert registry._agentcore_registry._limits.max_keepalive_connections == 11
+    assert registry._azure_client_cache._limits.max_connections == 333
+    assert registry._azure_client_cache._limits.max_keepalive_connections == 33
+
+
+@pytest.mark.unit
 def test_skill_service_is_app_scoped_and_uses_shared_acl_service():
     container = _make_container(_make_settings())
 
