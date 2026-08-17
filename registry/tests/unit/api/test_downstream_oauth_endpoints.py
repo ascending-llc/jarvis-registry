@@ -603,6 +603,12 @@ def test_get_downstream_consent_context_returns_client_metadata(
         "ip_address": "203.0.113.7",
         "registered_at": 1_700_000_000,
         "server_path": "github",
+        "scopes": [
+            {
+                "name": "mcp-proxy-ops",
+                "description": "Act on your behalf to connect to and call tools on your registered MCP servers.",
+            }
+        ],
     }
 
 

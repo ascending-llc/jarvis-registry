@@ -97,6 +97,7 @@ const ConsentDownstream: React.FC = () => {
           ipAddress={context.ip_address}
           registeredAt={context.registered_at}
           description='This will let it obtain an access token to connect to a downstream MCP server on your behalf.'
+          scopes={context.scopes}
           onApprove={handleApprove}
           onDeny={handleDeny}
           approving={approving}
