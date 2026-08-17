@@ -1,6 +1,11 @@
 import API from './api';
 import service from './request';
 
+export interface ConsentScope {
+  name: string;
+  description: string | null;
+}
+
 export interface ConsentContext {
   client_name: string;
   client_uri: string | null;
@@ -11,6 +16,7 @@ export interface ConsentContext {
   server_name?: string;
   agent_path?: string;
   agent_name?: string;
+  scopes?: ConsentScope[];
 }
 
 export interface ResolveDeviceCodeResponse {
@@ -37,9 +43,19 @@ const MOCK_DOWNSTREAM_CONTEXT: ConsentContext = {
   ip_address: '203.0.113.7',
   registered_at: Math.floor(Date.now() / 1000) - 120,
   server_path: 'github',
+  scopes: [
+    {
+      name: 'mcp-proxy-ops',
+      description: 'Act on your behalf to connect to and call tools on your registered MCP servers.',
+    },
+  ],
 };
 
-const MOCK_SERVER_CONTEXT: ConsentContext = { ...MOCK_DOWNSTREAM_CONTEXT, redirect_uri: undefined, server_name: 'GitHub' };
+const MOCK_SERVER_CONTEXT: ConsentContext = {
+  ...MOCK_DOWNSTREAM_CONTEXT,
+  redirect_uri: undefined,
+  server_name: 'GitHub',
+};
 const MOCK_AGENT_CONTEXT: ConsentContext = {
   ...MOCK_DOWNSTREAM_CONTEXT,
   redirect_uri: undefined,
