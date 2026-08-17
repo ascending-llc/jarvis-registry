@@ -40,9 +40,13 @@ class AzureEntraAuth(httpx.Auth):
 class AzureFoundryClientCache:
     """Cache one Azure-authenticated A2A client per federation."""
 
-    def __init__(self):
+    def __init__(self, *, max_connections: int = 300, max_keepalive_connections: int = 20):
         self._dict: dict[PydanticObjectId, httpx.AsyncClient] = {}
         self._locks: dict[PydanticObjectId, asyncio.Lock] = {}
+        self._limits = httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
+        )
 
     async def get_client(self, agent: A2AAgent) -> httpx.AsyncClient:
         federation_id = agent.federationRefId
@@ -73,7 +77,7 @@ class AzureFoundryClientCache:
             client = httpx.AsyncClient(
                 auth=AzureEntraAuth(auth_service),
                 timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                limits=self._limits,
             )
             self._dict[federation_id] = client
             return client
