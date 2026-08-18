@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -103,25 +104,31 @@ class SkillSyncTokenService:
     ) -> None:
         identifier = build_skill_sync_token_identifier(source_id)
         user_object_id = PydanticObjectId(user_id)
+        coros = []
         if tokens.access_token:
-            await self._upsert_token(
-                user_id=user_object_id,
-                token_type=TokenType.SKILL_SYNC_GITHUB_ACCESS,
-                identifier=identifier,
-                value=tokens.access_token,
-                expires_in=tokens.expires_in,
-                default_lifetime=_DEFAULT_ACCESS_TOKEN_LIFETIME,
+            coros.append(
+                self._upsert_token(
+                    user_id=user_object_id,
+                    token_type=TokenType.SKILL_SYNC_GITHUB_ACCESS,
+                    identifier=identifier,
+                    value=tokens.access_token,
+                    expires_in=tokens.expires_in,
+                    default_lifetime=_DEFAULT_ACCESS_TOKEN_LIFETIME,
+                )
             )
         if tokens.refresh_token:
-            refresh_expires_in = None
-            await self._upsert_token(
-                user_id=user_object_id,
-                token_type=TokenType.SKILL_SYNC_GITHUB_REFRESH,
-                identifier=identifier,
-                value=tokens.refresh_token,
-                expires_in=refresh_expires_in,
-                default_lifetime=_DEFAULT_REFRESH_TOKEN_LIFETIME,
+            coros.append(
+                self._upsert_token(
+                    user_id=user_object_id,
+                    token_type=TokenType.SKILL_SYNC_GITHUB_REFRESH,
+                    identifier=identifier,
+                    value=tokens.refresh_token,
+                    expires_in=None,
+                    default_lifetime=_DEFAULT_REFRESH_TOKEN_LIFETIME,
+                )
             )
+        if coros:
+            await asyncio.gather(*coros)
 
     async def _upsert_token(
         self,
