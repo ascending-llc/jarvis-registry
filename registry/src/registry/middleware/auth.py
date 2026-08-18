@@ -92,6 +92,7 @@ class UnifiedAuthMiddleware:
                 "/api/auth/providers",
                 "/api/auth/config",
                 f"/api/{settings.api_version}/mcp/{{server_name}}/oauth/callback",  # OAuth callback is public
+                f"/api/{settings.api_version}/skill-sync-sources/{{source_id}}/oauth/callback",
                 f"/api/{settings.api_version}/mcp/downstream/oauth/device/{{user_id}}/{{server_path:path}}",
                 f"/api/{settings.api_version}/mcp/downstream/oauth/token/{{user_id}}/{{server_path:path}}",
                 f"/api/{settings.api_version}/mcp/consent/device/resolve",
