@@ -99,7 +99,7 @@ Two environment settings keep the fleet consistent:
 
 By default, LLM instrumentation can record the full prompt and completion text as span attributes. The agent pipeline disables this so user payloads never reach any backend:
 
-- **`TRACELOOP_TRACE_CONTENT=false`** — records only metadata (model, token counts, latency) and drops prompt/completion content (`gen_ai.input.messages`, `gen_ai.output.messages`, and prompt/completion attributes).
+- **`TRACELOOP_TRACE_CONTENT=false`** — records only metadata (model, token counts, latency) and drops prompt/completion content (`gen_ai.input.messages`, `gen_ai.output.messages`, and prompt/completion attributes). Set it to `true` only in approved environments because doing so allows supported LLM instrumentations to include prompts and completions in exported telemetry spans.
 
 Content is suppressed **at the source**, so it is never transmitted to the collector — and therefore never to any downstream vendor. Token counts and model metadata are unaffected, so usage and cost views keep working. The platform metrics path carries no content by design (counts and durations only).
 
