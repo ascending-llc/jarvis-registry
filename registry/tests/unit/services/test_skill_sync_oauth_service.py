@@ -36,6 +36,7 @@ def test_authorization_url_uses_pkce_and_persists_flow() -> None:
     assert "code_challenge_method=S256" in url
     assert "state=encoded-state" in url
     flow_manager.create_flow.assert_called_once()
+    assert "include_client_secret" not in flow_manager.create_flow_metadata.call_args.kwargs
 
 
 @pytest.mark.asyncio

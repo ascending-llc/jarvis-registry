@@ -1,9 +1,8 @@
-import base64
-import hashlib
 import secrets
 from urllib.parse import urlencode
 
 import httpx
+from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
 from registry.auth.oauth.flow_state_manager import FlowStateManager
 from registry.schemas.oauth_schema import OAuthTokens
@@ -35,9 +34,8 @@ class SkillSyncOAuthService:
         user_id: str,
         redirect_uri: str,
     ) -> str:
-        code_verifier = secrets.token_urlsafe(64)
-        digest = hashlib.sha256(code_verifier.encode()).digest()
-        code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+        code_verifier = secrets.token_urlsafe(32)
+        code_challenge = create_s256_code_challenge(code_verifier)
         flow_id = f"skillsync:{user_id}:{source.id}:{secrets.token_urlsafe(8)}"
         oauth_config = {
             "client_id": source.githubAppClientId,

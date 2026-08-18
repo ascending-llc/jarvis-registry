@@ -168,7 +168,10 @@ class FlowStateManager:
             authorization_url=authorization_url,
             state=state,
             code_verifier=code_verifier,
-            client_info=self._create_client_info(oauth_config, server_path),
+            client_info=self._create_client_info(
+                oauth_config,
+                server_path,
+            ),
             metadata=self._create_oauth_metadata(oauth_config),
             resource_metadata=resource_metadata,
             mcp_client_context=mcp_client_context,
@@ -399,7 +402,11 @@ class FlowStateManager:
             logger.debug(f"Found {len(user_flows)} flows in memory for {user_id}/{server_id}")
             return user_flows
 
-    def _create_client_info(self, oauth_config: dict[str, Any], server_path: str) -> OAuthClientInformation:
+    def _create_client_info(
+        self,
+        oauth_config: dict[str, Any],
+        server_path: str,
+    ) -> OAuthClientInformation:
         """
         Build OAuth client information from server configuration
         """
@@ -417,7 +424,7 @@ class FlowStateManager:
         logger.debug(f"Client info - redirect_uris: {redirect_uris}, scopes: {scope_string}")
         return OAuthClientInformation(  # type: ignore [call-arg]
             client_id=str(oauth_config.get("client_id", "")).strip(),
-            client_secret=str(oauth_config.get("client_secret")).strip(),
+            client_secret=str(oauth_config.get("client_secret")).strip() if oauth_config.get("client_secret") else None,
             redirect_uris=redirect_uris,
             scope=scope_string,
             additional_params=oauth_config.get("additional_params"),
