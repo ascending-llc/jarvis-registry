@@ -144,8 +144,8 @@ def _set_span_attributes(span: Span, attributes: dict[str, Any]) -> None:
             return
         for key, value in _clean_attributes(attributes).items():
             span.set_attribute(key, value)
-    except Exception:
-        return
+    except Exception as exc:
+        logger.warning("Failed to set trace attributes (%s)", type(exc).__name__)
 
 
 def _extract_caller_identity(ctx: Context[ServerSession, McpAppContext]) -> dict[str, Any]:
@@ -199,6 +199,25 @@ def _caller_attributes(ctx: Context[ServerSession, McpAppContext]) -> dict[str, 
             "registry.caller.authenticated": identity.get("authenticated"),
         }
     )
+
+
+def _build_trace_attributes(
+    ctx: Context[ServerSession, McpAppContext],
+    *,
+    observation_type: str,
+    trace_name: str,
+    tags: list[str],
+    operation_type: str,
+) -> dict[str, Any]:
+    return {
+        **_caller_attributes(ctx),
+        "langfuse.observation.type": observation_type,
+        "langfuse.trace.name": trace_name,
+        "langfuse.trace.tags": tags,
+        "langfuse.trace.metadata.app": _TRACE_APP,
+        "langfuse.trace.metadata.operationType": operation_type,
+        "registry.operation.type": operation_type,
+    }
 
 
 def _trace_tags(operation: str) -> list[str]:
@@ -266,13 +285,13 @@ def trace_discovery(
         span_name, trace_name, tool_name, tag = _DISCOVERY_OPERATIONS[discovery_kind]
         operation_type = f"{discovery_kind}_discovery"
         attributes = {
-            **_caller_attributes(ctx),
-            "langfuse.observation.type": "tool",
-            "langfuse.trace.name": trace_name,
-            "langfuse.trace.tags": [*_trace_tags(tag), "discovery"],
-            "langfuse.trace.metadata.app": _TRACE_APP,
-            "langfuse.trace.metadata.operationType": operation_type,
-            "registry.operation.type": operation_type,
+            **_build_trace_attributes(
+                ctx,
+                observation_type="tool",
+                trace_name=trace_name,
+                tags=[*_trace_tags(tag), "discovery"],
+                operation_type=operation_type,
+            ),
             "mcp.tool.name": tool_name,
         }
         trace_input = {
@@ -314,13 +333,13 @@ def trace_tool_execution(
         server_id: str,
     ) -> CallToolResult:
         attributes = {
-            **_caller_attributes(ctx),
-            "langfuse.observation.type": "tool",
-            "langfuse.trace.name": _TOOL_TRACE_NAME,
-            "langfuse.trace.tags": _trace_tags("mcp"),
-            "langfuse.trace.metadata.app": _TRACE_APP,
-            "langfuse.trace.metadata.operationType": "mcp_tool",
-            "registry.operation.type": "mcp_tool",
+            **_build_trace_attributes(
+                ctx,
+                observation_type="tool",
+                trace_name=_TOOL_TRACE_NAME,
+                tags=_trace_tags("mcp"),
+                operation_type="mcp_tool",
+            ),
             "mcp.tool.name": tool_name,
             "mcp.server.id": server_id,
         }
@@ -355,13 +374,13 @@ def trace_agent_execution[AgentMessageT](
         ctx: Context[ServerSession, McpAppContext],
     ) -> CallToolResult:
         attributes = {
-            **_caller_attributes(ctx),
-            "langfuse.observation.type": "agent",
-            "langfuse.trace.name": _AGENT_TRACE_NAME,
-            "langfuse.trace.tags": _trace_tags("agent"),
-            "langfuse.trace.metadata.app": _TRACE_APP,
-            "langfuse.trace.metadata.operationType": "a2a_agent",
-            "registry.operation.type": "a2a_agent",
+            **_build_trace_attributes(
+                ctx,
+                observation_type="agent",
+                trace_name=_AGENT_TRACE_NAME,
+                tags=_trace_tags("agent"),
+                operation_type="a2a_agent",
+            ),
             "a2a.agent.id": agent_id,
         }
         with _TRACER.start_as_current_span(_AGENT_SPAN_NAME, attributes=_clean_attributes(attributes)) as span:
