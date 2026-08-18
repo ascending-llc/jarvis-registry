@@ -11,6 +11,7 @@ class RegistryResourceType(StrEnum):
     FEDERATION = "federation"
     WORKFLOW = "workflow"
     SKILL = "skill"
+    SKILL_SYNC_SOURCE = "skillSyncSource"
 
 
 class RegistryAccessRole(AccessRole):
