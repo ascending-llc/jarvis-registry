@@ -22,6 +22,7 @@ from a2a.types import (
     TransportProtocol,
 )
 from beanie import PydanticObjectId
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState, use_span
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
@@ -808,18 +809,27 @@ async def test_call_a2a_does_not_build_credentials_itself():
 async def test_call_a2a_injects_current_trace_context_into_request_headers():
     agent = _make_agent()
     mock_factory, mock_client = _mock_client([_msg("ok")])
+    provided_headers = {
+        "Authorization": "Bearer test-token",
+        "Baggage": "environment=demo",
+        "Traceparent": "00-00000000000000000000000000000002-0000000000000002-01",
+        "Tracestate": "old=value",
+    }
 
     async def headers_provider(_: A2AAgent) -> dict[str, str]:
-        return {"Authorization": "Bearer test-token"}
+        return provided_headers
 
-    def inject_trace_context(headers: dict[str, str]) -> None:
-        headers["traceparent"] = "00-00000000000000000000000000000001-0000000000000001-01"
+    span_context = SpanContext(
+        trace_id=1,
+        span_id=1,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+        trace_state=TraceState([("vendor", "state")]),
+    )
 
-    with (
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
-        patch("registry_pkgs.workflows.a2a_client.inject", side_effect=inject_trace_context) as mock_inject,
-    ):
-        result = await call_a2a(agent, "test", headers_provider=headers_provider)
+    with patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory):
+        with use_span(NonRecordingSpan(span_context), end_on_exit=False):
+            result = await call_a2a(agent, "test", headers_provider=headers_provider)
 
     assert result.success is True
     send_context = mock_client.send_message.call_args.kwargs["context"]
@@ -828,7 +838,12 @@ async def test_call_a2a_injects_current_trace_context_into_request_headers():
         "Authorization": "Bearer test-token",
         "traceparent": "00-00000000000000000000000000000001-0000000000000001-01",
     }
-    mock_inject.assert_called_once_with(headers)
+    assert provided_headers == {
+        "Authorization": "Bearer test-token",
+        "Baggage": "environment=demo",
+        "Traceparent": "00-00000000000000000000000000000002-0000000000000002-01",
+        "Tracestate": "old=value",
+    }
 
 
 @pytest.mark.asyncio
@@ -841,7 +856,10 @@ async def test_call_a2a_continues_when_trace_context_injection_fails(caplog: pyt
 
     with (
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
-        patch("registry_pkgs.workflows.a2a_client.inject", side_effect=RuntimeError("propagator unavailable")),
+        patch(
+            "registry_pkgs.workflows.a2a_client._TRACE_CONTEXT_PROPAGATOR.inject",
+            side_effect=RuntimeError("propagator unavailable"),
+        ),
         caplog.at_level("WARNING", logger="registry_pkgs.workflows.a2a_client"),
     ):
         result = await call_a2a(agent, "test", headers_provider=headers_provider)
