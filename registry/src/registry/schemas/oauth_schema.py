@@ -26,6 +26,25 @@ class MCPClientContext(TypedDict):
     server_path: str
 
 
+class ConsentScopeDisplay(BaseModel):
+    """One scope shown on a consent page, paired with its scopes.yml lay-person description."""
+
+    name: str = Field(..., description="Scope name as it appears in scopes.yml")
+    description: str | None = Field(None, description="Lay-person explanation from scopes.yml")
+
+
+class DownstreamConsentContext(BaseModel):
+    """Response body for GET /mcp/consent/downstream."""
+
+    client_name: str = Field(..., description="OAuth client display name")
+    client_uri: str | None = Field(None, description="OAuth client homepage URI")
+    redirect_uri: str | None = Field(None, description="Redirect URI the client registered")
+    ip_address: str | None = Field(None, description="IP address the client registered from")
+    registered_at: int | None = Field(None, description="Client registration timestamp")
+    server_path: str = Field(..., description="Downstream MCP server this grant connects to")
+    scopes: list[ConsentScopeDisplay] = Field(..., description="Scopes this grant will carry")
+
+
 class OAuthTokens(BaseModel):
     """OAuth tokens"""
 

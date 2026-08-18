@@ -96,6 +96,12 @@ def test_downstream_consent_context_includes_redirect_uri() -> None:
     data = response.json()
     assert data["redirect_uri"] == "https://client.example.com/callback"
     assert data["client_name"] == "External App"
+    assert data["scopes"] == [
+        {
+            "name": "mcp-proxy-ops",
+            "description": "Act on your behalf to connect to and call tools on your registered MCP servers.",
+        }
+    ]
 
 
 def test_downstream_consent_context_returns_null_redirect_uri_for_device_flow() -> None:

@@ -1,6 +1,8 @@
 import { CheckCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 
+import type { ConsentScope } from '@/services/consent';
+
 interface ConsentPromptProps {
   clientName: string;
   clientUri: string | null;
@@ -8,6 +10,7 @@ interface ConsentPromptProps {
   ipAddress: string | null;
   registeredAt: number | null;
   description: string;
+  scopes?: ConsentScope[];
   onApprove: () => void;
   onDeny: () => void;
   approving: boolean;
@@ -19,7 +22,19 @@ const ConsentPrompt: React.FC<ConsentPromptProps> & {
   Error: React.FC<{ message: string; details?: string }>;
   Success: React.FC<{ message: string; submessage?: string }>;
   Declined: React.FC<{ message: string }>;
-} = ({ clientName, clientUri, redirectUri, ipAddress, registeredAt, description, onApprove, onDeny, approving, denying }) => {
+} = ({
+  clientName,
+  clientUri,
+  redirectUri,
+  ipAddress,
+  registeredAt,
+  description,
+  scopes,
+  onApprove,
+  onDeny,
+  approving,
+  denying,
+}) => {
   const registeredLabel = registeredAt ? new Date(registeredAt * 1000).toLocaleString() : null;
   const busy = approving || denying;
 
@@ -41,6 +56,26 @@ const ConsentPrompt: React.FC<ConsentPromptProps> & {
         </p>
       )}
       <p className='text-base text-[var(--jarvis-text)] mb-6'>{description}</p>
+      {scopes && scopes.length > 0 && (
+        <table className='w-full text-left text-sm mb-6 border-collapse'>
+          <thead>
+            <tr className='text-[var(--jarvis-muted)]'>
+              <th className='py-2 pr-2 font-semibold'>Permission</th>
+              <th className='py-2 font-semibold'>What it allows</th>
+            </tr>
+          </thead>
+          <tbody>
+            {scopes.map(scope => (
+              <tr key={scope.name} className='border-t border-[var(--jarvis-card-muted)]'>
+                <td className='py-2 pr-2 align-top'>
+                  <code>{scope.name}</code>
+                </td>
+                <td className='py-2 text-[var(--jarvis-text)] align-top'>{scope.description}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
       <div className='flex gap-3'>
         <button
           type='button'

@@ -9,8 +9,11 @@ from pydantic import BaseModel
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 from registry_pkgs.core.redirect_uri import build_oauth_error_redirect_url
+from registry_pkgs.core.scopes import get_scope_description
 
 from ....auth.dependencies import CurrentUser
+from ....constants import DownstreamOAuthConstants
+from ....core.config import settings
 from ....core.session_store import SessionStore
 from ....deps import (
     get_a2a_agent_service,
@@ -21,6 +24,7 @@ from ....deps import (
     get_server_service,
     get_session_store,
 )
+from ....schemas.oauth_schema import ConsentScopeDisplay, DownstreamConsentContext
 from ....services.a2a_agent_service import A2AAgentService
 from ....services.oauth.downstream_device_service import (
     DeviceCodeNotFoundError,
@@ -94,27 +98,36 @@ async def resolve_device_code(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
-@router.get("/consent/downstream")
+@router.get("/consent/downstream", response_model=DownstreamConsentContext)
 async def get_downstream_consent_context(
     nonce: str,
     user_context: CurrentUser,
     store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-) -> dict[str, str | int | None]:
+) -> DownstreamConsentContext:
     try:
         pending = _peek_regular_consent(pending_store, nonce)
         if pending is None or pending["user_id"] != user_context["user_id"]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
 
         client_metadata = store.get_client(pending["client_id"]) or {}
-        return {
-            "client_name": client_metadata.get("client_name", "Unknown application"),
-            "client_uri": client_metadata.get("client_uri"),
-            "redirect_uri": pending.get("redirect_uri"),
-            "ip_address": client_metadata.get("ip_address"),
-            "registered_at": client_metadata.get("registered_at"),
-            "server_path": pending["server_path"],
-        }
+        return DownstreamConsentContext(
+            client_name=client_metadata.get("client_name", "Unknown application"),
+            client_uri=client_metadata.get("client_uri"),
+            redirect_uri=pending.get("redirect_uri"),
+            ip_address=client_metadata.get("ip_address"),
+            registered_at=client_metadata.get("registered_at"),
+            server_path=pending["server_path"],
+            scopes=[
+                ConsentScopeDisplay(
+                    name=DownstreamOAuthConstants.PROXY_OPS_SCOPE,
+                    description=get_scope_description(
+                        DownstreamOAuthConstants.PROXY_OPS_SCOPE,
+                        settings.scopes_file_config,
+                    ),
+                )
+            ],
+        )
     except HTTPException:
         raise
     except Exception as e:
