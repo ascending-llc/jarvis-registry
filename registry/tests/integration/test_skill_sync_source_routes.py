@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
@@ -13,6 +13,7 @@ from registry.deps import (
     get_acl_service,
     get_skill_sync_job_service,
     get_skill_sync_oauth_service,
+    get_skill_sync_service,
     get_skill_sync_source_crud_service,
     get_skill_sync_token_service,
 )
@@ -115,12 +116,16 @@ def skill_sync_route_context():
     acl_service.check_user_permission = AsyncMock(return_value=_VIEW_PERMS)
     acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(source.id)])
     acl_service.get_user_permissions_for_resource = AsyncMock(return_value=None)
+    acl_service.get_user_permissions_for_resources = AsyncMock(return_value={source.id: ResourcePermissions(VIEW=True)})
+    skill_sync_service = MagicMock()
+    skill_sync_service.create_source_with_owner_acl = AsyncMock(return_value=source)
 
     app.dependency_overrides[get_current_user] = lambda: {"user_id": USER_ID}
     app.dependency_overrides[get_skill_sync_source_crud_service] = lambda: source_service
     app.dependency_overrides[get_skill_sync_job_service] = lambda: job_service
     app.dependency_overrides[get_skill_sync_token_service] = lambda: token_service
     app.dependency_overrides[get_skill_sync_oauth_service] = lambda: oauth_service
+    app.dependency_overrides[get_skill_sync_service] = lambda: skill_sync_service
     app.dependency_overrides[get_acl_service] = lambda: acl_service
 
     with TestClient(app) as client:
@@ -132,18 +137,17 @@ def skill_sync_route_context():
             job_service=job_service,
             token_service=token_service,
             oauth_service=oauth_service,
+            skill_sync_service=skill_sync_service,
             acl_service=acl_service,
         )
 
 
-def test_sync_without_token_returns_authorization_url(skill_sync_route_context) -> None:
-    response = skill_sync_route_context.client.post(f"/skill-sync-sources/{skill_sync_route_context.source.id}/sync")
-    assert response.status_code == 200
-    assert response.json() == {
-        "job": None,
-        "needsAuthorization": True,
-        "authorizeUrl": "https://github.com/login/oauth/authorize?state=test",
-    }
+def test_sync_returns_501_without_creating_job(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync")
+    assert response.status_code == 501
+    assert response.json()["detail"] == "Skill sync execution is not available yet"
+    ctx.job_service.create_job.assert_not_awaited()
 
 
 def test_job_polling_is_scoped_to_source(skill_sync_route_context) -> None:
@@ -180,6 +184,8 @@ def test_list_sources_returns_paged(skill_sync_route_context) -> None:
     assert body["pagination"]["total"] == 1
     assert len(body["sources"]) == 1
     assert body["sources"][0]["owner"] == "octocat"
+    ctx.acl_service.get_user_permissions_for_resources.assert_awaited_once()
+    ctx.acl_service.get_user_permissions_for_resource.assert_not_awaited()
 
 
 def test_list_sources_empty(skill_sync_route_context) -> None:
@@ -198,54 +204,64 @@ def test_get_job_not_found(skill_sync_route_context) -> None:
     assert response.status_code == 404
 
 
-def test_oauth_initiate_redirects(skill_sync_route_context) -> None:
+def test_oauth_initiate_returns_501(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
     response = ctx.client.get(
         f"/skill-sync-sources/{ctx.source.id}/oauth/initiate",
         follow_redirects=False,
     )
-    assert response.status_code == 307
-    assert "github.com/login/oauth/authorize" in response.headers["location"]
+    assert response.status_code == 501
 
 
-def _mock_mongodb():
-    """Patch MongoDB.get_client to return a fake async session + transaction context."""
-
-    class FakeTx:
-        async def __aenter__(self):
-            return None
-
-        async def __aexit__(self, *a):
-            pass
-
-    class FakeSession:
-        async def start_transaction(self):
-            return FakeTx()
-
-    class FakeSessionCtx:
-        async def __aenter__(self):
-            return FakeSession()
-
-        async def __aexit__(self, *a):
-            pass
-
-    mock_client = MagicMock()
-    mock_client.start_session = MagicMock(return_value=FakeSessionCtx())
-    return patch(
-        "registry.api.v1.skill_sync.skill_sync_source_routes.MongoDB.get_client",
-        return_value=mock_client,
-    )
-
-
-def test_sync_with_token_returns_job(skill_sync_route_context) -> None:
+def test_create_source_delegates_transaction_to_service(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
-    ctx.token_service.resolve_access_token = AsyncMock(return_value="ghp_token123")
-    with _mock_mongodb():
-        response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync")
-    assert response.status_code == 202
-    body = response.json()
-    assert body["job"] is not None
-    assert body["needsAuthorization"] is False
+    payload = {
+        "displayName": "Skills",
+        "owner": "octocat",
+        "repo": "skills",
+        "paths": ["skills"],
+        "githubAppClientId": "client",
+        "githubAppClientSecret": "secret",
+    }
+    response = ctx.client.post("/skill-sync-sources", json=payload)
+    assert response.status_code == 201
+    ctx.skill_sync_service.create_source_with_owner_acl.assert_awaited_once()
+    ctx.source_service.create_source.assert_not_called()
+
+
+def test_delete_returns_501_without_creating_job(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    response = ctx.client.delete(f"/skill-sync-sources/{ctx.source.id}")
+    assert response.status_code == 501
+    ctx.job_service.create_job.assert_not_awaited()
+
+
+def test_update_with_sync_returns_501_without_modifying_source(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    response = ctx.client.put(
+        f"/skill-sync-sources/{ctx.source.id}",
+        json={"displayName": "Renamed", "syncAfterUpdate": True},
+    )
+    assert response.status_code == 501
+    ctx.source_service.update_source.assert_not_awaited()
+
+
+def test_list_sources_maps_acl_runtime_error_to_500(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.acl_service.get_user_permissions_for_resources = AsyncMock(side_effect=RuntimeError("acl unavailable"))
+    response = ctx.client.get("/skill-sync-sources")
+    assert response.status_code == 500
+
+
+def test_oauth_callback_redirects_when_sync_is_unavailable(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    response = ctx.client.get(
+        f"/skill-sync-sources/{ctx.source.id}/oauth/callback?code=code&state=state",
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    assert "error=sync_unavailable" in response.headers["location"]
+    ctx.oauth_service.exchange_callback.assert_not_called()
 
 
 def test_acl_forbidden_returns_403(skill_sync_route_context) -> None:

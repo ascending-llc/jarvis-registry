@@ -3,7 +3,6 @@ from typing import Any
 
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
-from pydantic import BaseModel
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry.utils.crypto_utils import encrypt_value, is_encrypted
@@ -100,7 +99,7 @@ class SkillSyncSourceCrudService:
         items = await finder.sort("-updatedAt").skip((page - 1) * page_size).limit(page_size).to_list()
         return items, total
 
-    async def get_recent_jobs(self, source_id: PydanticObjectId, limit: int = 10) -> list[BaseModel]:
+    async def get_recent_jobs(self, source_id: PydanticObjectId, limit: int = 10) -> list[SkillSyncJob]:
         return await SkillSyncJob.find({"sourceId": source_id}).sort("-createdAt").limit(limit).to_list()
 
     async def update_source(

@@ -56,6 +56,7 @@ from .services.server_service import ServerServiceV1
 from .services.skill_service import SkillService
 from .services.skill_sync_job_service import SkillSyncJobService
 from .services.skill_sync_oauth_service import SkillSyncOAuthService
+from .services.skill_sync_service import SkillSyncService
 from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .services.skill_sync_token_service import SkillSyncTokenService
 from .services.user_service import UserService
@@ -377,6 +378,10 @@ class RegistryContainer:
     @cached_property
     def skill_sync_source_crud_service(self) -> SkillSyncSourceCrudService:
         return SkillSyncSourceCrudService()
+
+    @cached_property
+    def skill_sync_service(self) -> SkillSyncService:
+        return SkillSyncService(self.skill_sync_source_crud_service)
 
     @cached_property
     def skill_sync_job_service(self) -> SkillSyncJobService:

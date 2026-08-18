@@ -2,19 +2,13 @@ import logging
 import math
 from urllib.parse import urlencode
 
-import httpx
 from beanie import PydanticObjectId
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 from fastapi.responses import RedirectResponse
 
-from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import (
-    RoleBits,
-    SkillSyncJobType,
     SkillSyncStateMachine,
-    SkillSyncTriggerType,
 )
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.skill_sync_job import SkillSyncJob
@@ -25,7 +19,7 @@ from ....core.config import settings
 from ....deps import (
     get_acl_service,
     get_skill_sync_job_service,
-    get_skill_sync_oauth_service,
+    get_skill_sync_service,
     get_skill_sync_source_crud_service,
     get_skill_sync_token_service,
 )
@@ -44,9 +38,11 @@ from ....schemas.skill_sync_api_schemas import (
     SkillSyncTriggerResponse,
 )
 from ....services.access_control_service import ACLService
-from ....services.skill_sync_service import run_skill_sync_background
+from ....services.skill_sync_service import (
+    SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
+    SkillSyncService,
+)
 from ....services.skill_sync_token_service import SkillSyncTokenService
-from ....utils.crypto_utils import decrypt_value
 
 logger = logging.getLogger(__name__)
 
@@ -118,25 +114,9 @@ async def _to_detail_response(
     permissions: ResourcePermissions | None = None,
 ) -> SkillSyncSourceDetailResponse:
     recent_jobs = await source_service.get_recent_jobs(source.id)
+    base = _to_list_response(source, permissions)
     return SkillSyncSourceDetailResponse(
-        id=str(source.id),
-        providerType=source.providerType,
-        displayName=source.displayName,
-        description=source.description,
-        tags=source.tags,
-        owner=source.owner,
-        repo=source.repo,
-        ref=source.ref,
-        paths=source.paths,
-        skillDiscoveryDepth=source.skillDiscoveryDepth,
-        status=source.status,
-        syncStatus=source.syncStatus,
-        syncMessage=source.syncMessage,
-        stats=SkillSyncSourceStatsResponse.model_validate(source.stats),
-        lastSync=_to_last_sync_response(source.lastSync),
-        permissions=permissions,
-        createdAt=source.createdAt,
-        updatedAt=source.updatedAt,
+        **base.model_dump(),
         githubAppClientId=source.githubAppClientId,
         hasClientSecret=bool(source.githubAppClientSecretEncrypted),
         recentJobs=[_to_job_response(job) for job in recent_jobs],
@@ -152,81 +132,32 @@ async def _required_source(source_id: str, source_service) -> SkillSyncSource:
     return source
 
 
-async def _create_job(
-    *,
-    source: SkillSyncSource,
-    user_id: str,
-    job_type: SkillSyncJobType,
-    trigger_type: SkillSyncTriggerType,
-    source_service,
-    job_service,
-) -> SkillSyncJob:
-    """Create a sync job and transition the source status atomically in one transaction."""
-    snapshot = {"owner": source.owner, "repo": source.repo, "ref": source.ref, "paths": source.paths}
-    async with MongoDB.get_client().start_session() as mongo_session:
-        async with await mongo_session.start_transaction():
-            job = await job_service.create_job(
-                source_id=source.id,
-                job_type=job_type,
-                trigger_type=trigger_type,
-                triggered_by=user_id,
-                request_snapshot=snapshot,
-                session=mongo_session,
-            )
-            if job_type == SkillSyncJobType.DELETE_SYNC:
-                await source_service.mark_deleting(source, session=mongo_session)
-            else:
-                await source_service.mark_sync_pending(source, session=mongo_session)
-    return job
-
-
-def _schedule_placeholder(
-    background_tasks: BackgroundTasks, source: SkillSyncSource, job: SkillSyncJob, services
-) -> None:
-    source_service, job_service = services
-    background_tasks.add_task(
-        run_skill_sync_background,
-        source_id=str(source.id),
-        job_id=str(job.id),
-        source_service=source_service,
-        job_service=job_service,
-    )
-
-
 @router.post("", response_model=SkillSyncSourceDetailResponse, status_code=http_status.HTTP_201_CREATED)
 async def create_source(
     data: SkillSyncSourceCreateRequest,
     user_context: CurrentUser,
     source_service=Depends(get_skill_sync_source_crud_service),
+    skill_sync_service: SkillSyncService = Depends(get_skill_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     user_str_id = str(user_context["user_id"])
     user_object_id = PydanticObjectId(user_context["user_id"])
     try:
-        async with MongoDB.get_client().start_session() as mongo_session:
-            async with await mongo_session.start_transaction():
-                source = await source_service.create_source(
-                    display_name=data.displayName,
-                    description=data.description,
-                    tags=data.tags,
-                    owner=data.owner,
-                    repo=data.repo,
-                    ref=data.ref,
-                    paths=data.paths,
-                    skill_discovery_depth=data.skillDiscoveryDepth,
-                    github_app_client_id=data.githubAppClientId,
-                    github_app_client_secret=data.githubAppClientSecret,
-                    created_by=user_str_id,
-                    session=mongo_session,
-                )
-                await acl_service.grant_permission(
-                    principal_type=PrincipalType.USER,
-                    principal_id=user_object_id,
-                    resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
-                    resource_id=source.id,
-                    perm_bits=RoleBits.OWNER,
-                    session=mongo_session,
-                )
+        source = await skill_sync_service.create_source_with_owner_acl(
+            display_name=data.displayName,
+            description=data.description,
+            tags=data.tags,
+            owner=data.owner,
+            repo=data.repo,
+            ref=data.ref,
+            paths=data.paths,
+            skill_discovery_depth=data.skillDiscoveryDepth,
+            github_app_client_id=data.githubAppClientId,
+            github_app_client_secret=data.githubAppClientSecret,
+            created_by=user_str_id,
+            principal_id=user_object_id,
+            acl_service=acl_service,
+        )
         return await _to_detail_response(
             source,
             source_service,
@@ -264,14 +195,12 @@ async def list_sources(
             page_size=per_page,
             accessible_source_ids=accessible_ids,
         )
-        responses = []
-        for source in items:
-            permissions = await acl_service.get_user_permissions_for_resource(
-                user_id=user_object_id,
-                resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
-                resource_id=source.id,
-            )
-            responses.append(_to_list_response(source, permissions))
+        permissions_by_id = await acl_service.get_user_permissions_for_resources(
+            user_id=user_object_id,
+            resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
+            resource_ids=[source.id for source in items],
+        )
+        responses = [_to_list_response(source, permissions_by_id[source.id]) for source in items]
         return SkillSyncSourcePagedResponse(
             sources=responses,
             pagination=PaginationMetadata(
@@ -317,9 +246,7 @@ async def update_source(
     source_id: str,
     data: SkillSyncSourceUpdateRequest,
     user_context: CurrentUser,
-    background_tasks: BackgroundTasks,
     source_service=Depends(get_skill_sync_source_crud_service),
-    job_service=Depends(get_skill_sync_job_service),
     token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -335,29 +262,16 @@ async def update_source(
         )
         if not SkillSyncStateMachine.can_update(source.status):
             raise HTTPException(http_status.HTTP_409_CONFLICT, detail="Skill sync source cannot be updated")
+        if data.syncAfterUpdate:
+            raise HTTPException(
+                status_code=http_status.HTTP_501_NOT_IMPLEMENTED,
+                detail=SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
+            )
         changes = data.model_dump(exclude_unset=True, exclude={"syncAfterUpdate"})
         credentials_changed = "githubAppClientId" in changes or "githubAppClientSecret" in changes
         source = await source_service.update_source(source, changes, updated_by=user_str_id)
         if credentials_changed:
             await token_service.delete_source_tokens(source.id)
-        if data.syncAfterUpdate:
-            access_token = await token_service.resolve_access_token(
-                user_id=user_str_id,
-                source_id=source.id,
-                client_id=source.githubAppClientId,
-                client_secret=decrypt_value(source.githubAppClientSecretEncrypted),
-            )
-            if access_token is None:
-                raise HTTPException(http_status.HTTP_409_CONFLICT, detail="GitHub authorization is required")
-            job = await _create_job(
-                source=source,
-                user_id=user_str_id,
-                job_type=SkillSyncJobType.CONFIG_RESYNC,
-                trigger_type=SkillSyncTriggerType.MANUAL,
-                source_service=source_service,
-                job_service=job_service,
-            )
-            _schedule_placeholder(background_tasks, source, job, (source_service, job_service))
         return await _to_detail_response(source, source_service, permissions)
     except HTTPException:
         raise
@@ -372,14 +286,11 @@ async def update_source(
 async def delete_source(
     source_id: str,
     user_context: CurrentUser,
-    background_tasks: BackgroundTasks,
     source_service=Depends(get_skill_sync_source_crud_service),
-    job_service=Depends(get_skill_sync_job_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
         user_object_id = PydanticObjectId(user_context["user_id"])
-        user_str_id = str(user_context["user_id"])
         source = await _required_source(source_id, source_service)
         await acl_service.check_user_permission(
             user_id=user_object_id,
@@ -387,16 +298,10 @@ async def delete_source(
             resource_id=source.id,
             required_permission="DELETE",
         )
-        job = await _create_job(
-            source=source,
-            user_id=user_str_id,
-            job_type=SkillSyncJobType.DELETE_SYNC,
-            trigger_type=SkillSyncTriggerType.MANUAL,
-            source_service=source_service,
-            job_service=job_service,
+        raise HTTPException(
+            status_code=http_status.HTTP_501_NOT_IMPLEMENTED,
+            detail=SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
         )
-        _schedule_placeholder(background_tasks, source, job, (source_service, job_service))
-        return SkillSyncDeleteResponse(sourceId=str(source.id), jobId=str(job.id), status="deleting")
     except HTTPException:
         raise
     except ValueError as exc:
@@ -410,18 +315,11 @@ async def delete_source(
 async def sync_source(
     source_id: str,
     user_context: CurrentUser,
-    request: Request,
-    response: Response,
-    background_tasks: BackgroundTasks,
     source_service=Depends(get_skill_sync_source_crud_service),
-    job_service=Depends(get_skill_sync_job_service),
-    token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
-    oauth_service=Depends(get_skill_sync_oauth_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
         user_object_id = PydanticObjectId(user_context["user_id"])
-        user_str_id = str(user_context["user_id"])
         source = await _required_source(source_id, source_service)
         await acl_service.check_user_permission(
             user_id=user_object_id,
@@ -429,32 +327,10 @@ async def sync_source(
             resource_id=source.id,
             required_permission="EDIT",
         )
-        token = await token_service.resolve_access_token(
-            user_id=user_str_id,
-            source_id=source.id,
-            client_id=source.githubAppClientId,
-            client_secret=decrypt_value(source.githubAppClientSecretEncrypted),
+        raise HTTPException(
+            status_code=http_status.HTTP_501_NOT_IMPLEMENTED,
+            detail=SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
         )
-        if token is None:
-            redirect_uri = str(request.url_for("skill_sync_oauth_callback", source_id=str(source.id)))
-            authorize_url = oauth_service.create_authorization_url(
-                source=source,
-                user_id=user_str_id,
-                redirect_uri=redirect_uri,
-            )
-            response.status_code = http_status.HTTP_200_OK
-            return SkillSyncTriggerResponse(needsAuthorization=True, authorizeUrl=authorize_url)
-        job = await _create_job(
-            source=source,
-            user_id=user_str_id,
-            job_type=SkillSyncJobType.FULL_SYNC,
-            trigger_type=SkillSyncTriggerType.MANUAL,
-            source_service=source_service,
-            job_service=job_service,
-        )
-        _schedule_placeholder(background_tasks, source, job, (source_service, job_service))
-        response.status_code = http_status.HTTP_202_ACCEPTED
-        return SkillSyncTriggerResponse(job=_to_job_response(job))
     except HTTPException:
         raise
     except ValueError as exc:
@@ -468,14 +344,11 @@ async def sync_source(
 async def initiate_skill_sync_oauth(
     source_id: str,
     user_context: CurrentUser,
-    request: Request,
     source_service=Depends(get_skill_sync_source_crud_service),
-    oauth_service=Depends(get_skill_sync_oauth_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
         user_object_id = PydanticObjectId(user_context["user_id"])
-        user_str_id = str(user_context["user_id"])
         source = await _required_source(source_id, source_service)
         await acl_service.check_user_permission(
             user_id=user_object_id,
@@ -483,13 +356,9 @@ async def initiate_skill_sync_oauth(
             resource_id=source.id,
             required_permission="EDIT",
         )
-        redirect_uri = str(request.url_for("skill_sync_oauth_callback", source_id=str(source.id)))
-        return RedirectResponse(
-            oauth_service.create_authorization_url(
-                source=source,
-                user_id=user_str_id,
-                redirect_uri=redirect_uri,
-            )
+        raise HTTPException(
+            status_code=http_status.HTTP_501_NOT_IMPLEMENTED,
+            detail=SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
         )
     except HTTPException:
         raise
@@ -501,15 +370,10 @@ async def initiate_skill_sync_oauth(
 @router.get("/{source_id}/oauth/callback", name="skill_sync_oauth_callback")
 async def skill_sync_oauth_callback(
     source_id: str,
-    request: Request,
-    background_tasks: BackgroundTasks,
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
     source_service=Depends(get_skill_sync_source_crud_service),
-    job_service=Depends(get_skill_sync_job_service),
-    oauth_service=Depends(get_skill_sync_oauth_service),
-    acl_service: ACLService = Depends(get_acl_service),
 ):
     error_redirect = (
         f"{settings.registry_client_url}/skill-sync-sources/{source_id}?{urlencode({'error': 'auth_failed'})}"
@@ -517,33 +381,13 @@ async def skill_sync_oauth_callback(
     if error or not code or not state:
         return RedirectResponse(error_redirect)
     try:
-        source = await _required_source(source_id, source_service)
-        redirect_uri = str(request.url_for("skill_sync_oauth_callback", source_id=str(source.id)))
-        user_id = await oauth_service.exchange_callback(
-            source=source,
-            code=code,
-            state=state,
-            redirect_uri=redirect_uri,
-        )
-        await acl_service.check_user_permission(
-            user_id=PydanticObjectId(user_id),
-            resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
-            resource_id=source.id,
-            required_permission="EDIT",
-        )
-        job = await _create_job(
-            source=source,
-            user_id=user_id,
-            job_type=SkillSyncJobType.FULL_SYNC,
-            trigger_type=SkillSyncTriggerType.OAUTH_CALLBACK,
-            source_service=source_service,
-            job_service=job_service,
-        )
-        _schedule_placeholder(background_tasks, source, job, (source_service, job_service))
+        await _required_source(source_id, source_service)
         return RedirectResponse(
-            f"{settings.registry_client_url}/skill-sync-sources/{source_id}?{urlencode({'syncTriggered': 'true'})}"
+            f"{settings.registry_client_url}/skill-sync-sources/{source_id}?{urlencode({'error': 'sync_unavailable'})}"
         )
-    except (HTTPException, httpx.HTTPError, ValueError):
+    except HTTPException:
+        return RedirectResponse(error_redirect)
+    except Exception:
         logger.exception("GitHub OAuth callback failed for skill sync source %s", source_id)
         return RedirectResponse(error_redirect)
 
