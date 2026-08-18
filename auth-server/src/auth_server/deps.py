@@ -9,7 +9,6 @@ from .container import AuthContainer
 from .core.types import AllowedProvider
 from .providers.base import AuthProvider
 from .services.client_registration_service import ClientRegistrationService
-from .services.cognito_validator_service import SimplifiedCognitoValidator
 from .services.downstream_token_service import DownstreamTokenCheckService
 from .services.server_service import ServerService
 from .services.token_grant_service import TokenGrantService
@@ -31,10 +30,6 @@ def get_user_service(container: AuthContainer = Depends(get_container)) -> UserS
 
 def get_downstream_token_check(container: AuthContainer = Depends(get_container)) -> DownstreamTokenCheckService:
     return container.downstream_token_check
-
-
-def get_validator(container: AuthContainer = Depends(get_container)) -> SimplifiedCognitoValidator:
-    return container.validator
 
 
 def get_oauth2_config(container: AuthContainer = Depends(get_container)) -> OAuth2Config:
