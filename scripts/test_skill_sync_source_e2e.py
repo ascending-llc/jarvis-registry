@@ -3,7 +3,6 @@ End-to-end test for Skill Sync Source CRUD + sync + OAuth APIs.
 
 Env vars:
     COOKIE                    Session cookie (required)
-    CSRF                      CSRF token (auto-extracted from COOKIE if missing)
     GITHUB_CLIENT_ID          GitHub App OAuth client ID (required)
     GITHUB_CLIENT_SECRET      GitHub App client secret (required)
     BASE_URL                  Registry base URL (default: http://localhost)
@@ -341,16 +340,26 @@ class SkillSyncE2E:
             _result("SYNC job status", job.get("status") in ("pending", "running"))
             self._poll_job(sid, job["id"], label="SYNC")
 
-    def _poll_job(self, source_id: str, job_id: str, label: str = "JOB", max_wait: int = 60) -> dict | None:
+    def _poll_job(
+        self,
+        source_id: str,
+        job_id: str,
+        label: str = "JOB",
+        max_wait: int = 60,
+        allow_404: bool = False,
+    ) -> dict | None:
         start = time.time()
         while time.time() - start < max_wait:
             r = self.client.get(f"{self.api}/{source_id}/jobs/{job_id}")
+            if r.status_code in (403, 404) and allow_404:
+                _result(f"{label} job done (source deleted)", True, f"status={r.status_code} (expected)")
+                return None
             if r.status_code != 200:
                 _result(f"{label} poll job → 200", False, f"status={r.status_code}")
                 return None
             job = r.json()
             status = job.get("status")
-            if status in ("completed", "failed"):
+            if status in ("success", "partial_success", "failed"):
                 _result(f"{label} job finished", True, f"status={status}, phase={job.get('phase')}")
                 return job
             time.sleep(2)
@@ -369,7 +378,7 @@ class SkillSyncE2E:
             _result(
                 "OAUTH initiate → GitHub authorize URL",
                 "github.com" in location and "oauth" in location.lower(),
-                f"location={location[:100]}",
+                f"location={location}",
             )
 
     def test_oauth_callback_missing_params(self) -> None:
@@ -419,7 +428,7 @@ class SkillSyncE2E:
         _result("DELETE status=deleting", body.get("status") == "deleting")
 
         if body.get("jobId"):
-            self._poll_job(sid, body["jobId"], label="DELETE")
+            self._poll_job(sid, body["jobId"], label="DELETE", allow_404=True)
 
         self.created_ids.remove(sid)
 
