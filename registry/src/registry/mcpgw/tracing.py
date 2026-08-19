@@ -7,7 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from functools import wraps
-from typing import Any
+from typing import Any, Literal
 
 from a2a.types import DataPart, FilePart, FileWithBytes, FileWithUri, TextPart
 from mcp.server.fastmcp import Context
@@ -31,8 +31,17 @@ from .core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
 
-_TOOL_SPAN_NAME = "registry.mcp.tool.execute"
-_AGENT_SPAN_NAME = "registry.a2a.agent.execute"
+DiscoveryKind = Literal["mcp", "a2a"]
+
+_TOOL_SPAN_NAME = "mcp.tool.execute"
+_TOOL_TRACE_NAME = "McpRun"
+_AGENT_SPAN_NAME = "a2a.agent.execute"
+_AGENT_TRACE_NAME = "AgentRun"
+_DISCOVERY_OPERATIONS = {
+    "mcp": ("mcp.discovery", "McpDiscovery", "discover_servers", "mcp"),
+    "a2a": ("a2a.discovery", "AgentDiscovery", "discover_agents", "agent"),
+}
+_TRACE_APP = "registry"
 _TRACER = trace.get_tracer("registry.mcpgw")
 _RAW_PYTHON_BYTES_OMITTED = "[RAW PYTHON BYTES OMITTED]"
 _TRACE_MODEL_FIELDS: dict[type[BaseModel], tuple[str, ...]] = {
@@ -119,10 +128,14 @@ def _serialize_trace_value(value: Any) -> str:
     return json.dumps(serialized, ensure_ascii=False, separators=(",", ":"))
 
 
-def _clean_attributes(attributes: dict[str, Any]) -> dict[str, bool | int | float | str]:
-    return {
-        key: value for key, value in attributes.items() if isinstance(value, (bool, int, float, str)) and value != ""
-    }
+def _clean_attributes(attributes: dict[str, Any]) -> dict[str, bool | int | float | str | list[str]]:
+    cleaned: dict[str, bool | int | float | str | list[str]] = {}
+    for key, value in attributes.items():
+        if (isinstance(value, (bool, int, float, str)) and value != "") or (
+            isinstance(value, list) and value and all(isinstance(item, str) and item != "" for item in value)
+        ):
+            cleaned[key] = value
+    return cleaned
 
 
 def _set_span_attributes(span: Span, attributes: dict[str, Any]) -> None:
@@ -131,8 +144,8 @@ def _set_span_attributes(span: Span, attributes: dict[str, Any]) -> None:
             return
         for key, value in _clean_attributes(attributes).items():
             span.set_attribute(key, value)
-    except Exception:
-        return
+    except Exception as exc:
+        logger.warning("Failed to set trace attributes (%s)", type(exc).__name__)
 
 
 def _extract_caller_identity(ctx: Context[ServerSession, McpAppContext]) -> dict[str, Any]:
@@ -188,6 +201,29 @@ def _caller_attributes(ctx: Context[ServerSession, McpAppContext]) -> dict[str, 
     )
 
 
+def _build_trace_attributes(
+    ctx: Context[ServerSession, McpAppContext],
+    *,
+    observation_type: str,
+    trace_name: str,
+    tags: list[str],
+    operation_type: str,
+) -> dict[str, Any]:
+    return {
+        **_caller_attributes(ctx),
+        "langfuse.observation.type": observation_type,
+        "langfuse.trace.name": trace_name,
+        "langfuse.trace.tags": tags,
+        "langfuse.trace.metadata.app": _TRACE_APP,
+        "langfuse.trace.metadata.operationType": operation_type,
+        "registry.operation.type": operation_type,
+    }
+
+
+def _trace_tags(operation: str) -> list[str]:
+    return [_TRACE_APP, operation]
+
+
 def _set_serialized_attribute(
     span: Span,
     key: str,
@@ -214,16 +250,68 @@ def _set_serialized_attribute(
             logger.warning("Failed to record trace attribute error event for %s", key, exc_info=True)
 
 
-def _record_result(span: Span, result: CallToolResult) -> None:
+def _record_result(span: Span, result: CallToolResult) -> bool:
     success = result.isError is not True
     _set_serialized_attribute(span, "langfuse.observation.output", result)
-    _set_span_attributes(span, {"registry.operation.success": success})
     if success:
-        return
+        return True
     try:
         span.set_status(Status(StatusCode.ERROR, "MCP operation returned an error result"))
     except Exception:
-        return
+        pass
+    return False
+
+
+def trace_discovery(
+    func: Callable[
+        [Context[ServerSession, McpAppContext], str, int, str, list[str], DiscoveryKind],
+        Awaitable[list[dict[str, Any]]],
+    ],
+) -> Callable[
+    [Context[ServerSession, McpAppContext], str, int, str, list[str], DiscoveryKind],
+    Awaitable[list[dict[str, Any]]],
+]:
+    """Trace one Registry MCP or A2A capability discovery operation."""
+
+    @wraps(func)
+    async def wrapper(
+        ctx: Context[ServerSession, McpAppContext],
+        query: str,
+        top_n: int,
+        search_type: str,
+        type_list: list[str],
+        discovery_kind: DiscoveryKind,
+    ) -> list[dict[str, Any]]:
+        span_name, trace_name, tool_name, tag = _DISCOVERY_OPERATIONS[discovery_kind]
+        operation_type = f"{discovery_kind}_discovery"
+        attributes = {
+            **_build_trace_attributes(
+                ctx,
+                observation_type="tool",
+                trace_name=trace_name,
+                tags=[*_trace_tags(tag), "discovery"],
+                operation_type=operation_type,
+            ),
+            "mcp.tool.name": tool_name,
+        }
+        trace_input = {
+            "query": query,
+            "search_type": search_type,
+            "top_n": top_n,
+            "type_list": type_list,
+        }
+        with _TRACER.start_as_current_span(span_name, attributes=_clean_attributes(attributes)) as span:
+            _set_serialized_attribute(span, "langfuse.observation.input", trace_input)
+            success = False
+            try:
+                results = await func(ctx, query, top_n, search_type, type_list, discovery_kind)
+                _set_serialized_attribute(span, "langfuse.observation.output", results)
+                success = True
+                return results
+            finally:
+                _set_span_attributes(span, {"registry.operation.success": success})
+
+    return wrapper
 
 
 def trace_tool_execution(
@@ -245,11 +333,13 @@ def trace_tool_execution(
         server_id: str,
     ) -> CallToolResult:
         attributes = {
-            **_caller_attributes(ctx),
-            "langfuse.observation.type": "span",
-            "langfuse.trace.name": _TOOL_SPAN_NAME,
-            "langfuse.trace.metadata.operationType": "mcp_tool",
-            "registry.operation.type": "mcp_tool",
+            **_build_trace_attributes(
+                ctx,
+                observation_type="tool",
+                trace_name=_TOOL_TRACE_NAME,
+                tags=_trace_tags("mcp"),
+                operation_type="mcp_tool",
+            ),
             "mcp.tool.name": tool_name,
             "mcp.server.id": server_id,
         }
@@ -259,9 +349,13 @@ def trace_tool_execution(
                 "langfuse.observation.input",
                 projection=lambda: _build_tool_trace_input(tool_name, server_id, arguments),
             )
-            result = await func(ctx, tool_name, arguments, server_id)
-            _record_result(span, result)
-            return result
+            success = False
+            try:
+                result = await func(ctx, tool_name, arguments, server_id)
+                success = _record_result(span, result)
+                return result
+            finally:
+                _set_span_attributes(span, {"registry.operation.success": success})
 
     return wrapper
 
@@ -284,11 +378,13 @@ def trace_agent_execution[AgentMessageT](
         ctx: Context[ServerSession, McpAppContext],
     ) -> CallToolResult:
         attributes = {
-            **_caller_attributes(ctx),
-            "langfuse.observation.type": "span",
-            "langfuse.trace.name": _AGENT_SPAN_NAME,
-            "langfuse.trace.metadata.operationType": "a2a_agent",
-            "registry.operation.type": "a2a_agent",
+            **_build_trace_attributes(
+                ctx,
+                observation_type="agent",
+                trace_name=_AGENT_TRACE_NAME,
+                tags=_trace_tags("agent"),
+                operation_type="a2a_agent",
+            ),
             "a2a.agent.id": agent_id,
         }
         with _TRACER.start_as_current_span(_AGENT_SPAN_NAME, attributes=_clean_attributes(attributes)) as span:
@@ -297,8 +393,12 @@ def trace_agent_execution[AgentMessageT](
                 "langfuse.observation.input",
                 projection=lambda: _build_agent_trace_input(agent_id, message),
             )
-            result = await func(agent_id, message, ctx)
-            _record_result(span, result)
-            return result
+            success = False
+            try:
+                result = await func(agent_id, message, ctx)
+                success = _record_result(span, result)
+                return result
+            finally:
+                _set_span_attributes(span, {"registry.operation.success": success})
 
     return wrapper

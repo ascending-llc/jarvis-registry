@@ -12,16 +12,19 @@ from ...auth.dependencies import UserContextDict
 from ...core.exceptions import InternalServerException
 from ...services.search.service import SearchRequest
 from ..core.types import McpAppContext
+from ..tracing import DiscoveryKind, trace_discovery
 
 logger = logging.getLogger(__name__)
 
 
+@trace_discovery
 async def _run_search(
     ctx: Context[ServerSession, McpAppContext],
     query: str,
     top_n: int,
     search_type: str,
     type_list: list[str],
+    discovery_kind: DiscoveryKind,
 ) -> list[dict[str, Any]]:
     logger.info("🔍 Searching type_list=%s query='%s' top_n=%d", type_list, query, top_n)
     try:
@@ -104,7 +107,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         fit, ask the user to clarify. If none fit, refine the query or call with
         query='' top_n=20 to survey all capabilities — then group mentally by server_name
         and retry with that server name in the query to get exact identifiers."""
-        return await _run_search(ctx, query, top_n, "hybrid", type_list)
+        return await _run_search(ctx, query, top_n, "hybrid", type_list, "mcp")
 
     async def discover_agents(
         ctx: Context[ServerSession, McpAppContext],
@@ -159,7 +162,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         result fits, delegate to it. If multiple agents plausibly fit, ask the user
         which domain they prefer. If none fit, broaden the query or call with
         query='' top_n=20 to survey all registered agents."""
-        return await _run_search(ctx, query, top_n, "hybrid", type_list)
+        return await _run_search(ctx, query, top_n, "hybrid", type_list, "a2a")
 
     return [
         ("discover_servers", discover_servers),
