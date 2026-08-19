@@ -9,7 +9,7 @@
 
 ## Definition
 
-An <strong>MCP Gateway</strong> is the proxy that sits between MCP clients and a cluster of MCP servers. It authenticates the caller. It evaluates per-tool policy. It logs the invocation. It holds the enterprise credential so the user never pastes a token. The MCP spec does not define the role; it grew up in production during 2025. The category went public in Q4 2025 when AWS Bedrock AgentCore Gateway went GA on October 13, 2025 <a href="#cite-1" class="cite-ref">[1]</a>. Nobody asked for the pattern. Everyone running more than three servers ended up building it anyway.
+An <strong>MCP Gateway</strong> is the proxy that sits between MCP clients and a cluster of MCP servers. It authenticates the caller. It evaluates per-tool policy. It logs the invocation. It holds the enterprise credential so the user never pastes a token. The MCP spec does not define the role; it grew up in production during 2025. The category went public in Q4 2025 when Amazon Bedrock AgentCore Gateway went GA on October 13, 2025 <a href="#cite-1" class="cite-ref">[1]</a>. Nobody asked for the pattern. Everyone running more than three servers ended up building it anyway.
 
 ## Why the category exists
 
@@ -25,7 +25,7 @@ The serious options divide into three tiers: hyperscaler-native, network-edge, a
 
 | Vendor | Tier | What ships |
 | --- | --- | --- |
-| AWS Bedrock AgentCore Gateway | Hyperscaler | GA October 13, 2025. Zero-code MCP tool creation from Lambda and OpenAPI; ingress + egress auth; Semantic Tool Selection; 1-click integrations with Salesforce, Slack, Jira, Asana, Zendesk. |
+| Amazon Bedrock AgentCore Gateway | Hyperscaler | GA October 13, 2025. Zero-code MCP tool creation from Lambda and OpenAPI; ingress + egress auth; Semantic Tool Selection; 1-click integrations with Salesforce, Slack, Jira, Asana, Zendesk. |
 | Cloudflare MCP Server Portals | Network edge | Runs MCP traffic across Cloudflare's global points-of-presence. Collapses many servers into two portal tools, and Cloudflare reports 99.9% token reduction via its Code Mode work [3]. |
 | Kong Enterprise MCP Gateway | Independent (API-gateway extension) | API gateway that added MCP support; v3.14 added A2A (Agent-to-Agent) support in April 2026. Natural fit for teams already running Kong [4]. |
 | Composio | Independent (integration-led) | 500+ pre-built SaaS integrations exposed as MCP. Strong on breadth; weaker on RBAC and compliance audit trails than governance-first options [5]. |
@@ -69,7 +69,7 @@ Past three servers in the same environment, almost always yes. Centralized per-t
 
 **Q: Which MCP gateway should I use in 2026?**
 
-Shortest honest answer: whichever one procurement can get through fastest. In practice that means the gateway from the cloud you already buy from. Two cloud-native defaults. AWS Bedrock AgentCore Gateway (GA October 13, 2025) and Cloudflare MCP Server Portals. The independent shortlist. Kong. Composio. Bifrost. Zuplo. Lunar.dev. Portkey. Then run every candidate through five questions: policy-as-code API, credential brokering, per-tool observability, egress enforcement, and what happens when the target is itself a federated MCP server. Four of five is shippable. Five of five is rare.
+Shortest honest answer: whichever one procurement can get through fastest. In practice that means the gateway from the cloud you already buy from. Two cloud-native defaults. Amazon Bedrock AgentCore Gateway (GA October 13, 2025) and Cloudflare MCP Server Portals. The independent shortlist. Kong. Composio. Bifrost. Zuplo. Lunar.dev. Portkey. Then run every candidate through five questions: policy-as-code API, credential brokering, per-tool observability, egress enforcement, and what happens when the target is itself a federated MCP server. Four of five is shippable. Five of five is rare.
 
 **Q: Is an MCP gateway the same as an API gateway?**
 

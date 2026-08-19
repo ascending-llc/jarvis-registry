@@ -13,10 +13,10 @@ Jarvis Registry supports common MCP clients and coding assistants through the sa
 - VS Code
 - Cursor
 - Claude Desktop
-- Chatgpt
-- Micosoft Copilot
-- AWS Kiro
-- AWS QuickSuite
+- ChatGPT
+- Microsoft Copilot
+- Kiro
+- Amazon Quick Suite
 
 All of them connect to the same registry endpoint pattern and then receive only the resources the user is allowed to access.
 

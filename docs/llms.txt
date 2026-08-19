@@ -4,7 +4,7 @@
 
 Jarvis Registry solves the hardest problem in enterprise AI adoption: giving AI copilots and autonomous agents governed access to internal tools and data — without fragmented integrations, scattered credentials, or security blind spots.
 
-It sits between your AI clients (Cursor, Claude Desktop, GitHub Copilot, VS Code, AWS Kiro) and your enterprise MCP servers and A2A agents. Every request is authenticated against your Identity Provider (Keycloak, Amazon Cognito, or Microsoft Entra ID) and checked against fine-grained ACL policies before a single tool is invoked.
+It sits between your AI clients (Cursor, Claude Desktop, GitHub Copilot, VS Code, Kiro) and your enterprise MCP servers and A2A agents. Every request is authenticated against your Identity Provider (Keycloak, Amazon Cognito, or Microsoft Entra ID) and checked against fine-grained ACL policies before a single tool is invoked.
 
 **Publisher:** ASCENDING Inc — https://ascendingdc.com/jarvis-ai/
 **GitHub:** https://github.com/ascending-llc/jarvis-registry

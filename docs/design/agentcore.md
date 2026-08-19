@@ -125,13 +125,13 @@ cat > .agentcore-params << 'EOF'
 # AgentCore Gateway Authentication Parameters
 COGNITO_TOKEN_URL="<YOUR_COGNITO_TOKEN_URL>"  # Example: https://us-east-1XXXXXXXX.auth.us-east-1.amazoncognito.com/oauth2/token
 CLIENT_ID="<YOUR_CLIENT_ID>"                   # Example: 7kqi2l0n47mnfmhfapsf29ch4h
-CLIENT_SECRET="<YOUR_CLIENT_SECRET>"           # Get from AWS Cognito Console
+CLIENT_SECRET="<YOUR_CLIENT_SECRET>"           # Get from Amazon Cognito console
 SCOPE="<YOUR_SCOPE>"                           # Example: default-m2m-resource-server-XXXXXXXX/read
 EOF
 ```
 
 **To find your Client Secret:**
-1. Go to AWS Cognito Console
+1. Go to Amazon Cognito console
 2. Find the User Pool with prefix `customersupport-`
 3. Navigate to App Integration → App clients
 4. Click on your app client

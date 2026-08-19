@@ -29,7 +29,7 @@ flowchart LR
     subgraph IdP["🔐 Identity Provider (IdP)"]
         direction TB
         Entra["Entra ID"]
-        Cognito["AWS Cognito"]
+        Cognito["Amazon Cognito"]
     end
 
     %% ===== Kubernetes Cluster =====
@@ -136,7 +136,7 @@ The following drivers must be installed into the existing cluster to enable load
 | Driver / Add-on | Delivery | Purpose |
 |---|---|---|
 | **AWS Load Balancer Controller** | Helm Release | Provisions and manages AWS ALBs from Kubernetes Ingress resources. Requires IRSA. |
-| **AWS EBS CSI Driver** | EKS Managed Add-on | Enables dynamic EBS-backed Persistent Volume provisioning. Required for MongoDB and Weaviate. Requires IRSA. |
+| **Amazon EBS CSI driver** | EKS Managed Add-on | Enables dynamic EBS-backed Persistent Volume provisioning. Required for MongoDB and Weaviate. Requires IRSA. |
 | **Amazon CloudWatch Observability** | EKS Managed Add-on *(optional)* | Forwards container logs and metrics to CloudWatch. Requires IRSA. |
 
 > ⚠️ The EBS CSI Driver and CloudWatch add-ons must have their IRSA role configured **before** the add-on is activated. Verify IRSA is attached in the EKS Console → Add-ons tab.
@@ -296,7 +296,7 @@ These pods are the same on both platforms:
 
 ### AWS (EKS)
 
-After the Helm chart is deployed, the **ALB DNS name** is available in the AWS EC2 Console → Load Balancers.
+After the Helm chart is deployed, the **ALB DNS name** is available in the Amazon EC2 console → Load Balancers.
 
 1. Provide the client with the **ALB DNS name**
 2. Client creates a **CNAME record** pointing their domain → ALB DNS name

@@ -23,7 +23,7 @@ The OpenTelemetry GenAI Semantic Conventions define a minimum span shape for any
 
 ## The vendor landscape in April 2026
 
-Three platforms pulled away from the pack in 2026. LangSmith, the LangChain team's official platform. Arize AI, with the open-source Phoenix next to it. Braintrust, evaluation-first <a href="#cite-5" class="cite-ref">[5]</a>. Datadog added native OpenTelemetry GenAI Semantic Convention support in v1.37 and pulled LLM workloads into its existing APM footprint without asking <a href="#cite-6" class="cite-ref">[6]</a>. AWS Bedrock AgentCore Observability launched in 2025. Telemetry out in OpenTelemetry-compatible format, integrable with CloudWatch, Datadog, LangSmith, and Langfuse <a href="#cite-7" class="cite-ref">[7]</a>.
+Three platforms pulled away from the pack in 2026. LangSmith, the LangChain team's official platform. Arize AI, with the open-source Phoenix next to it. Braintrust, evaluation-first <a href="#cite-5" class="cite-ref">[5]</a>. Datadog added native OpenTelemetry GenAI Semantic Convention support in v1.37 and pulled LLM workloads into its existing APM footprint without asking <a href="#cite-6" class="cite-ref">[6]</a>. Amazon Bedrock AgentCore Observability launched in 2025. Telemetry out in OpenTelemetry-compatible format, integrable with CloudWatch, Datadog, LangSmith, and Langfuse <a href="#cite-7" class="cite-ref">[7]</a>.
 
 The honest read in April 2026. LangSmith wins if you live inside LangChain and LangGraph. Arize Phoenix wins if OpenTelemetry neutrality matters or your team has platform engineers to spare. Braintrust wins if evaluations should drive deployment. Nobody has obviously won across every use case. The per-span pricing unit is still unsettled, which means the category keeps moving for another two quarters.
 
@@ -75,7 +75,7 @@ Three platforms pulled away from the pack in April 2026. LangSmith. Arize AI (wi
 
 Six metrics do most of the work. Tool-call success rate, per tool. Latency by phase (retrieval, reasoning, tool, generation). Eval-suite pass rate per model and prompt change. User-reported failure rate, tied to trace IDs. Token usage per session, because that is the line-item on the cloud bill. Continuous agent-quality scores on correctness, helpfulness, safety, and goal success. Anything missing from that list and you are running log search, not observability.
 
-**Q: Does AWS Bedrock AgentCore include observability?**
+**Q: Does Amazon Bedrock AgentCore include observability?**
 
 Yes. AgentCore Observability ships as a built-in component of the Bedrock AgentCore service. Telemetry goes out in OpenTelemetry-compatible format. Token usage, latency, session duration, and error rates surface in Amazon CloudWatch dashboards. Integrations are first-class with Datadog, LangSmith, and Langfuse. The one thing AWS does not sell here is an evaluation platform, so Braintrust or Phoenix sits beside it in most serious deployments.
 
@@ -87,7 +87,7 @@ Yes. AgentCore Observability ships as a built-in component of the Bedrock AgentC
 4. **Uptrace** — OpenTelemetry for AI Systems: LLM and Agent Observability (2026) — https://uptrace.dev/blog/opentelemetry-ai-systems [accessed 2026-04-17] *(Practitioner walkthrough of OTel GenAI conventions and multi-agent tracing.)* { #cite-4 }
 5. **Medium (Anudeep)** — LangSmith vs Arize vs Braintrust: The Definitive 2026 Comparison — https://anudeepsri.medium.com/langsmith-vs-arize-vs-braintrust-e397e4728a76 [accessed 2026-04-17] *(March 2026 side-by-side of the three leading observability platforms.)* { #cite-5 }
 6. **Datadog** — Datadog LLM Observability natively supports OpenTelemetry GenAI Semantic Conventions — https://www.datadoghq.com/blog/llm-otel-semantic-convention/ [accessed 2026-04-17] *(Datadog v1.37 native OTel GenAI support.)* { #cite-6 }
-7. **AWS** — Get started with AgentCore Observability — https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-get-started.html [accessed 2026-04-17] *(AWS Bedrock AgentCore Observability; CloudWatch integration; quality metrics.)* { #cite-7 }
+7. **AWS** — Get started with AgentCore Observability — https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-get-started.html [accessed 2026-04-17] *(Amazon Bedrock AgentCore Observability; CloudWatch integration; quality metrics.)* { #cite-7 }
 8. **W3C** — Trace Context: W3C Recommendation — https://www.w3.org/TR/trace-context/ [accessed 2026-04-17] *(W3C standard for propagating trace context across HTTP services.)* { #cite-8 }
 9. **Arize AI** — Phoenix: open-source LLM observability — https://phoenix.arize.com/ [accessed 2026-04-17] *(Open-source observability platform using OpenInference on OTLP.)* { #cite-9 }
 

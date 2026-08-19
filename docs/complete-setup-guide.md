@@ -1,9 +1,9 @@
 # Complete Setup Guide: MCP Gateway & Registry from Scratch
 
-This guide provides a comprehensive, step-by-step walkthrough for setting up the MCP Gateway & Registry on a fresh AWS EC2 instance. Perfect for first-time users who want to get the system running from zero.
+This guide provides a comprehensive, step-by-step walkthrough for setting up the MCP Gateway & Registry on a fresh Amazon EC2 instance. Perfect for first-time users who want to get the system running from zero.
 
 ## Table of Contents
-1. [AWS EC2 Instance Setup](#1-aws-ec2-instance-setup)
+1. [Amazon EC2 Instance Setup](#1-amazon-ec2-instance-setup)
 2. [Initial System Configuration](#2-initial-system-configuration)
 3. [Installing Prerequisites](#3-installing-prerequisites)
 4. [Cloning and Configuring the Project](#4-cloning-and-configuring-the-project)
@@ -16,11 +16,11 @@ This guide provides a comprehensive, step-by-step walkthrough for setting up the
 
 ---
 
-## 1. AWS EC2 Instance Setup
+## 1. Amazon EC2 Instance Setup
 
 ### Launch EC2 Instance
 
-1. **Log into AWS Console** and navigate to EC2
+1. **Log into the AWS Management Console** and navigate to EC2
 2. **Click "Launch Instance"** and configure:
    - **Name**: `mcp-gateway-server`
    - **AMI**: Ubuntu Server 24.04 LTS (or latest Ubuntu LTS)
@@ -1256,7 +1256,7 @@ This deployment method:
 
 ## Summary
 
-You now have a fully functional MCP Gateway & Registry running on your AWS EC2 instance! The system is ready to:
+You now have a fully functional MCP Gateway & Registry running on your Amazon EC2 instance! The system is ready to:
 
 - Authenticate AI agents and human users through Keycloak
 - Provide centralized access to MCP servers

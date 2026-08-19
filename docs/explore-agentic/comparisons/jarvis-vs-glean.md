@@ -59,7 +59,7 @@ Jarvis is an agent platform and MCP gateway. Retrieval is one capability among s
 | Regulated industry, strict governance at platform layer | Jarvis |
 | Mid-market, $150K+ floor is prohibitive | Jarvis |
 | Procurement team requires Leader-quadrant placement | Glean |
-| Private AWS VPC deployment required | Jarvis |
+| Private Amazon VPC deployment required | Jarvis |
 
 ## FAQ
 
@@ -79,7 +79,7 @@ Jarvis. Jarvis Registry is a first-class MCP gateway in GA today. Glean added MC
 
 Not quite. Glean was named an Emerging Leader in Gartner's November 17, 2025 eMQ for Generative AI Knowledge Management Apps <a href="#cite-5" class="cite-ref">[5]</a>. eMQ is the Emerging Market Quadrant, not a classic Magic Quadrant (a distinction most RFPs miss). Jarvis is not placed in analyst quadrants as of April 2026.
 
-**Q: Can Jarvis or Glean be deployed in a private AWS VPC?**
+**Q: Can Jarvis or Glean be deployed in a private Amazon VPC?**
 
 Jarvis yes. Glean no. Jarvis offers private AWS deployment for regulated workloads. Glean is SaaS-first; the deployment model is the multi-tenant Glean cloud. If the security model requires data residency inside a customer-controlled VPC, Jarvis is the architectural match.
 

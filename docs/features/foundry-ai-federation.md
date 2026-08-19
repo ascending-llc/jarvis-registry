@@ -67,5 +67,5 @@ Security enforcement (authentication, RBAC, ACL) remains consistent for federate
 - [Workflow Orchestration](workflow-orchestration.md) — How Foundry agents participate in multi-agent, MCP, and skill workflows
 - [A2A Agent Registry](a2a-registry.md) — Sharing and lifecycle for agent resources
 - [Registry Endpoint](registry-endpoint.md) — How clients discover and invoke federated resources
-- [AgentCore Federation](agentcore-federation.md) — Federation from AWS AgentCore Runtime
+- [AgentCore Federation](agentcore-federation.md) — Federation from Amazon Bedrock AgentCore Runtime
 - [Federation Guide](../design/federation.md) — Detailed federation architecture and workflow

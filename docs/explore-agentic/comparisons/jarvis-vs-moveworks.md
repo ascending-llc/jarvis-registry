@@ -48,7 +48,7 @@ Three categories, plainly:
 Three categories where we have the stronger story:
 
 - **MCP-native gateway.** Jarvis Registry is a first-class MCP gateway in GA. Moveworks has an MCP explainer on its blog <a href="#cite-4" class="cite-ref">[4]</a> and selective support in its agent builder, but the product was built on closed connectors pre-acquisition. If your architecture bet is that MCP (released by Anthropic on November 25, 2024 <a href="#cite-5" class="cite-ref">[5]</a> and donated to the Linux Foundation on December 9, 2025) becomes the interoperability layer for enterprise AI (ours is), Jarvis is already shipped. See our [MCP pillar](../pillars/mcp.md) for the long version.
-- **Multi-LLM and cloud-neutral.** Jarvis routes across OpenAI, Anthropic, AWS Bedrock, Google Gemini, and DeepSeek. Moveworks' alignment with ServiceNow's model strategy narrows that surface. Procurement teams that have rejected Azure-locked Copilot or Gemini-only Agentspace bring the same critique to ServiceNow's stack. Cloud-neutral is the default for Jarvis.
+- **Multi-LLM and cloud-neutral.** Jarvis routes across OpenAI, Anthropic, Amazon Bedrock, Google Gemini, and DeepSeek. Moveworks' alignment with ServiceNow's model strategy narrows that surface. Procurement teams that have rejected Azure-locked Copilot or Gemini-only Agentspace bring the same critique to ServiceNow's stack. Cloud-neutral is the default for Jarvis.
 - **Transparent mid-market pricing.** Our AWS Marketplace and Azure Marketplace listings are public: Basic $1,500/mo, Pro $2,500/mo, Enterprise custom <a href="#cite-3" class="cite-ref">[3]</a>. All flat-fee regardless of seat count. Third-party data on Moveworks reports $100–$200 per user per year with annual contract values from $150K to $1M+ depending on headcount <a href="#cite-6" class="cite-ref">[6]</a>. ServiceNow's separate AI pricing is tiered and quote-based, with Pro Plus and Enterprise Plus commanding 25-40% premiums over standard Pro <a href="#cite-7" class="cite-ref">[7]</a>. For mid-market organisations without a seven-figure platform budget, that price gap is the entire evaluation.
 
 ## Jarvis vs Moveworks pricing: the numbers on paper
@@ -99,7 +99,7 @@ Jarvis. Jarvis Registry is a first-class MCP gateway in GA today. Moveworks has 
 
 No, as of April 2026. Moveworks GovCloud cleared FedRAMP Moderate on February 25, 2026 <a href="#cite-2" class="cite-ref">[2]</a>. For federal workloads that need FedRAMP Moderate today, Moveworks has the shorter path. That gap closes when we get the authorization; it has not closed yet.
 
-**Q: Can Jarvis be deployed privately in my AWS VPC?**
+**Q: Can Jarvis be deployed privately in my Amazon VPC?**
 
 Yes. Jarvis offers private AWS deployment for regulated workloads. Moveworks is SaaS-only (with GovCloud for public sector). If the security model requires data inside a customer-controlled VPC, Jarvis is the architectural match and Moveworks is not.
 

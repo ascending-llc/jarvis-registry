@@ -40,7 +40,7 @@ Step 1 (fetch data)
 
 ## Next Steps
 
-- [AgentCore Federation](agentcore-federation.md) — Importing AWS AgentCore agents for use in workflows
+- [AgentCore Federation](agentcore-federation.md) — Importing Amazon Bedrock AgentCore agents for use in workflows
 - [Azure AI Foundry Federation](foundry-ai-federation.md) — Importing Azure AI Foundry agents for use in workflows
 - [Skill Gateway](skill-gateway.md) — How skills are resolved at workflow runtime
 - [MCP Gateway](mcp-gateway.md) — Tool and resource access within workflow steps

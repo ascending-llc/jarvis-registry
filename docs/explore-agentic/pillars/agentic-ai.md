@@ -19,14 +19,14 @@ This pillar walks the category from the definition down to the runtimes. The use
 
 - An agent is a loop that observes, reasons, acts, and can replan without a human click. Everything else is a workflow with a language model attached.
 - Gartner estimates only about 130 of the thousands of self-described agentic vendors are real; over 40% of agentic AI projects will be cancelled by end of 2027 on cost, unclear value, or inadequate risk controls <a href="#cite-1" class="cite-ref">[1]</a>.
-- The runtime field consolidated in 2025. LangGraph 1.0 (Oct 2025), AWS Strands Agents 1.0 (July 15, 2025), Microsoft Agent Framework public preview (Oct 1, 2025) and 1.0 GA (April 3, 2026), OpenAI Agents SDK (March 2025), and CrewAI now cover roughly every serious enterprise procurement <a href="#cite-3" class="cite-ref">[3]</a><a href="#cite-4" class="cite-ref">[4]</a><a href="#cite-5" class="cite-ref">[5]</a>.
+- The runtime field consolidated in 2025. LangGraph 1.0 (Oct 2025), Strands Agents 1.0 (July 15, 2025), Microsoft Agent Framework public preview (Oct 1, 2025) and 1.0 GA (April 3, 2026), OpenAI Agents SDK (March 2025), and CrewAI now cover roughly every serious enterprise procurement <a href="#cite-3" class="cite-ref">[3]</a><a href="#cite-4" class="cite-ref">[4]</a><a href="#cite-5" class="cite-ref">[5]</a>.
 - Agents are earning their keep in bounded, evidence-rich workflows. Salesforce's own Agentforce deployment handled 1.5M+ support cases and generated $1.7M of new sales pipeline in year one <a href="#cite-6" class="cite-ref">[6]</a>.
 - Guardian agents (AI systems that supervise other AI systems) will hold 10-15% of the agentic market by 2030 per Gartner <a href="#cite-7" class="cite-ref">[7]</a>. The category is real; the marketing around it is still early.
 
 ## Stats
 
 - **~130 / thousands** — real agentic vendors vs. claimants (Gartner, Jun 2025) *(Anushree Verma, Gartner Sr Director Analyst, on agent washing. Source [1].)*
-- **Jul 15, 2025** — AWS Strands Agents 1.0 shipped *(Production-ready multi-agent orchestration with Swarms, Graphs, Agents-as-Tools, Handoffs. Source [4].)*
+- **Jul 15, 2025** — Strands Agents 1.0 shipped *(Production-ready multi-agent orchestration with Swarms, Graphs, Agents-as-Tools, Handoffs. Source [4].)*
 - **Apr 3, 2026** — Microsoft Agent Framework 1.0 GA *(AutoGen + Semantic Kernel convergence; public preview was October 1, 2025. Source [5].)*
 - **10-15% by 2030** — guardian-agent share of agentic market *(Gartner's June 11, 2025 prediction. Source [7].)*
 
@@ -42,7 +42,7 @@ The tell that matters in a procurement meeting is simpler than the taxonomy sugg
 
 ## 02. The runtime field consolidated faster than expected
 
-As of April 2026, five runtimes cover most serious enterprise procurement. <strong>LangGraph</strong> is the LangChain team's stateful graph runtime; its 1.0 release landed in October 2025 and the LangGraph Platform is generally available for long-running deployments, with nearly 400 companies running agents on it through beta <a href="#cite-3" class="cite-ref">[3]</a>. <strong>AWS Strands Agents</strong> shipped 1.0 on July 15, 2025 with four orchestration patterns (Swarms, Graphs, Agents-as-Tools, Handoffs) and model-agnostic support across Bedrock, Anthropic, Ollama, Meta, and LiteLLM providers <a href="#cite-4" class="cite-ref">[4]</a>.
+As of April 2026, five runtimes cover most serious enterprise procurement. <strong>LangGraph</strong> is the LangChain team's stateful graph runtime; its 1.0 release landed in October 2025 and the LangGraph Platform is generally available for long-running deployments, with nearly 400 companies running agents on it through beta <a href="#cite-3" class="cite-ref">[3]</a>. <strong>Strands Agents</strong> shipped 1.0 on July 15, 2025 with four orchestration patterns (Swarms, Graphs, Agents-as-Tools, Handoffs) and model-agnostic support across Bedrock, Anthropic, Ollama, Meta, and LiteLLM providers <a href="#cite-4" class="cite-ref">[4]</a>.
 
 <strong>Microsoft Agent Framework</strong> entered public preview on October 1, 2025 and shipped 1.0 GA on April 3, 2026, explicitly the convergence of AutoGen and Semantic Kernel into one SDK, with A2A and MCP interop baked in <a href="#cite-5" class="cite-ref">[5]</a>. <strong>OpenAI's Agents SDK</strong> launched in March 2025 alongside the Responses API, which the company now recommends over Chat Completions for new work; the older Assistants API is deprecated with a sunset date of August 26, 2026 <a href="#cite-8" class="cite-ref">[8]</a>. <strong>CrewAI</strong> is the independent holdout; its AMP suite and Flows architecture power a claimed 1.4 billion agentic automations at customers including PwC, IBM, Capgemini, and NVIDIA <a href="#cite-9" class="cite-ref">[9]</a>.
 
@@ -53,7 +53,7 @@ Worth noticing: the hyperscalers converged on open-source SDKs with commercial r
 | Runtime | Backing org | Milestone | Strength |
 | --- | --- | --- | --- |
 | LangGraph | LangChain | 1.0 Oct 2025; Platform GA | Stateful graphs, durable execution, strong OSS community |
-| AWS Strands Agents | AWS Open Source | 1.0 GA Jul 15, 2025 | Model-agnostic, native Bedrock AgentCore integration |
+| Strands Agents | AWS Open Source | 1.0 GA Jul 15, 2025 | Model-agnostic, native Bedrock AgentCore integration |
 | Microsoft Agent Framework | Microsoft | Preview Oct 1, 2025; 1.0 GA Apr 3, 2026 | AutoGen + Semantic Kernel, .NET + Python, MCP/A2A |
 | OpenAI Agents SDK | OpenAI | Mar 2025; Responses API default | Built-in web_search, file_search, computer_use, MCP |
 | CrewAI + AMP | CrewAI Inc. | Enterprise-GA; on-prem + cloud | Role-based multi-agent, explicit enterprise tenancy |
@@ -114,7 +114,7 @@ An agent is a loop. Observe, reason, act, revise the plan mid-run when new infor
 
 **Q: Which agent runtimes should an enterprise team evaluate in 2026?**
 
-Five names cover most procurement. LangGraph. AWS Strands Agents. Microsoft Agent Framework. OpenAI Agents SDK. CrewAI. LangGraph 1.0 shipped in October 2025 with the Platform GA behind it <a href="#cite-3" class="cite-ref">[3]</a>. Strands hit 1.0 on July 15, 2025 with four orchestration patterns (Swarms, Graphs, Agents-as-Tools, Handoffs) <a href="#cite-4" class="cite-ref">[4]</a>. Microsoft Agent Framework went to public preview October 1, 2025 and reached 1.0 GA on April 3, 2026; the convergence of AutoGen and Semantic Kernel into one SDK <a href="#cite-5" class="cite-ref">[5]</a>. OpenAI's Agents SDK launched March 2025 alongside the Responses API, now the default for new work <a href="#cite-8" class="cite-ref">[8]</a>. CrewAI is the independent holdout, still the procurement winner where role-based multi-agent on-prem is the requirement <a href="#cite-9" class="cite-ref">[9]</a>. The pattern we see most: one framework per cloud, federate the rest via MCP.
+Five names cover most procurement. LangGraph. Strands Agents. Microsoft Agent Framework. OpenAI Agents SDK. CrewAI. LangGraph 1.0 shipped in October 2025 with the Platform GA behind it <a href="#cite-3" class="cite-ref">[3]</a>. Strands hit 1.0 on July 15, 2025 with four orchestration patterns (Swarms, Graphs, Agents-as-Tools, Handoffs) <a href="#cite-4" class="cite-ref">[4]</a>. Microsoft Agent Framework went to public preview October 1, 2025 and reached 1.0 GA on April 3, 2026; the convergence of AutoGen and Semantic Kernel into one SDK <a href="#cite-5" class="cite-ref">[5]</a>. OpenAI's Agents SDK launched March 2025 alongside the Responses API, now the default for new work <a href="#cite-8" class="cite-ref">[8]</a>. CrewAI is the independent holdout, still the procurement winner where role-based multi-agent on-prem is the requirement <a href="#cite-9" class="cite-ref">[9]</a>. The pattern we see most: one framework per cloud, federate the rest via MCP.
 
 **Q: What is agent washing and how do I spot it?**
 

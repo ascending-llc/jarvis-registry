@@ -10,7 +10,7 @@ This is the purpose of RFC 2616 §13.5.1's hop-by-hop header list. Most proxies 
 
 ## The Specific Instance (AgentCore A2A → Jarvis Registry → Nginx)
 
-### Upstream behavior: AWS AgentCore A2A runtime
+### Upstream behavior: Amazon Bedrock AgentCore A2A runtime
 
 AgentCore's A2A path routes through a streaming runtime. That runtime unconditionally adds `Transfer-Encoding: chunked` to **all** outbound responses — including complete `application/json` responses that already have a `Content-Length` header and a fully-buffered body.
 

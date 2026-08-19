@@ -84,7 +84,7 @@ Copilot Studio. Four reasons in a row. Native M365 integration. Entra identity. 
 
 **Q: Which one is better for multi-LLM routing?**
 
-Jarvis. Jarvis routes across OpenAI, Anthropic, AWS Bedrock, Google Gemini, and DeepSeek. Copilot Studio runs GPT-5 by default and added Claude in September 2025 <a href="#cite-3" class="cite-ref">[3]</a>. All Azure-hosted. That is the ceiling.
+Jarvis. Jarvis routes across OpenAI, Anthropic, Amazon Bedrock, Google Gemini, and DeepSeek. Copilot Studio runs GPT-5 by default and added Claude in September 2025 <a href="#cite-3" class="cite-ref">[3]</a>. All Azure-hosted. That is the ceiling.
 
 **Q: Can Copilot Studio be deployed outside Azure?**
 

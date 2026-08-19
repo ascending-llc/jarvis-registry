@@ -24,11 +24,11 @@ The Registry is the compliance enforcement layer — not just a catalog. Both MC
 
 **Platform-native runtime federation:**
 
-Jarvis Registry federates agents across AWS AgentCore Runtime, Azure AI Foundry Agent Service, and self-hosted A2A runtimes in a single searchable catalog. Each platform makes different choices around transport, AgentCard discovery paths, and auth prerequisites that break standard A2A assumptions — the Registry stores those per-runtime differences and surfaces them to callers, so no custom client code is needed per target platform. Agents from all three origins are discoverable, routable, and governed by the same ACL policies through the same gateway.
+Jarvis Registry federates agents across Amazon Bedrock AgentCore Runtime, Azure AI Foundry Agent Service, and self-hosted A2A runtimes in a single searchable catalog. Each platform makes different choices around transport, AgentCard discovery paths, and auth prerequisites that break standard A2A assumptions — the Registry stores those per-runtime differences and surfaces them to callers, so no custom client code is needed per target platform. Agents from all three origins are discoverable, routable, and governed by the same ACL policies through the same gateway.
 
 - **Azure AI Foundry Federation**: Import and govern agents hosted on Azure AI Foundry — handling non-standard AgentCard discovery paths, Entra ID RBAC prerequisites, and HTTP+JSON transport constraints automatically. Any MCP client or A2A orchestrator can invoke Foundry agents through Jarvis Registry without platform-specific client code. [Watch the demo →](https://ascendingdc.com/jarvis-ai/videos/azure-ai-foundry-federation-with-jarvis-registry-access-governed-agents-from-any-interface/?autoplay=1)
 
-- **AWS AgentCore Federation**: Import and govern agents deployed on AWS AgentCore Runtime — resolving pre-configured JWTAuthorizer requirements, Bedrock-native transport constraints, and per-agent credential mapping. Orchestrators reach AgentCore agents through the same governed gateway as every other registered agent. [Watch the demo →](https://ascendingdc.com/jarvis-ai/videos/aws-agentcore-federation-with-jarvis-registry-access-governed-agents-from-any-interface/?autoplay=1)
+- **Amazon Bedrock AgentCore Federation**: Import and govern agents deployed on Amazon Bedrock AgentCore Runtime — resolving pre-configured JWTAuthorizer requirements, Bedrock-native transport constraints, and per-agent credential mapping. Orchestrators reach AgentCore agents through the same governed gateway as every other registered agent. [Watch the demo →](https://ascendingdc.com/jarvis-ai/videos/aws-agentcore-federation-with-jarvis-registry-access-governed-agents-from-any-interface/?autoplay=1)
 
 ---
 
@@ -52,7 +52,7 @@ Single authenticated entry point for AI copilots and MCP-compatible clients — 
 Single authenticated entry point for A2A agents — handling skill discovery, transport negotiation, and security scanning centrally so callers need no platform-specific client code per target runtime.
 
 - **Agent & Skill Discovery**: Resolves registered A2A agents and their skills by capability, tags, and spec version — callers query the gateway to find the right agent for a task without knowing which runtime hosts it or which transport it speaks
-- **Transport Negotiation**: Supports JSON-RPC 2.0 over HTTP (primary inter-agent transport, compatible with AWS AgentCore and standard A2A clients) and HTTP+JSON for agents on standard web stacks (ALB, API Gateway, Azure Front Door) — the gateway reads per-agent transport constraints from the Registry and routes accordingly; transport mismatches are caught before the request is forwarded
+- **Transport Negotiation**: Supports JSON-RPC 2.0 over HTTP (primary inter-agent transport, compatible with Amazon Bedrock AgentCore and standard A2A clients) and HTTP+JSON for agents on standard web stacks (ALB, API Gateway, Azure Front Door) — the gateway reads per-agent transport constraints from the Registry and routes accordingly; transport mismatches are caught before the request is forwarded
 - **Security Scanning**: Registered agents are scanned for security issues on registration — misconfigured CORS policies, missing auth declarations, and overly permissive skill scopes are flagged before the agent is made discoverable
 - **Registry-Driven Enforcement**: Routing, rate limiting, and ACL policy are derived from Registry metadata, not hardcoded gateway config; policy changes take effect immediately without gateway redeployment
 
@@ -74,7 +74,7 @@ The Skill Gateway is the organization-wide control plane for AI skills — manag
 Visibility and control over complex, multi-agent operations — across agents registered on different runtimes (AgentCore, Azure Foundry, or self-hosted).
 
 - **Orchestrator–Worker Model**: Orchestrator agents delegate tasks to worker agents through the same secure gateway, with consistent auth and ACL applied at every hop
-- **Cross-Runtime Coordination**: Route agent tasks across agents hosted on AWS AgentCore, Azure AI Foundry, or any A2A-compliant runtime — the Registry holds the transport and auth metadata needed to reach each one correctly
+- **Cross-Runtime Coordination**: Route agent tasks across agents hosted on Amazon Bedrock AgentCore, Azure AI Foundry, or any A2A-compliant runtime — the Registry holds the transport and auth metadata needed to reach each one correctly
 - **Centralized Workflow Visibility**: Track which agents are running, what tools they invoked, which transport was used, and what outcomes they produced
 - **Consistent Policy Enforcement**: ACL and RBAC apply uniformly across orchestrated workflows — no policy gaps between the orchestrator and its workers
 

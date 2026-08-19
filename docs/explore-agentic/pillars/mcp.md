@@ -21,7 +21,7 @@ This pillar is the working version of the field map. It covers the four roles in
 - 97 million monthly SDK downloads and over 10,000 active servers as of December 2025, per Anthropic and the Linux Foundation announcement <a href="#cite-4" class="cite-ref">[4]</a>.
 - Donated to the Agentic AI Foundation under the Linux Foundation on December 9, 2025. Co-founded by Anthropic, Block, and OpenAI; backed by Google, Microsoft, AWS, Cloudflare, and Bloomberg.
 - The OAuth 2.1 authorization model became fully usable for enterprise deployments in the November 2025 spec revision (PKCE mandatory, Client ID Metadata Documents) and tightened in March 2026 with mandatory RFC 8707 resource indicators <a href="#cite-3" class="cite-ref">[3]</a>.
-- AWS Bedrock AgentCore went GA on October 13, 2025, with MCP server targets and an open-source AgentCore MCP server in nine regions <a href="#cite-5" class="cite-ref">[5]</a>. Microsoft Foundry MCP Server is in preview at mcp.ai.azure.com, Entra-authenticated <a href="#cite-6" class="cite-ref">[6]</a>.
+- Amazon Bedrock AgentCore went GA on October 13, 2025, with MCP server targets and an open-source AgentCore MCP server in nine regions <a href="#cite-5" class="cite-ref">[5]</a>. Microsoft Foundry MCP Server is in preview at mcp.ai.azure.com, Entra-authenticated <a href="#cite-6" class="cite-ref">[6]</a>.
 
 ## Stats
 
@@ -69,7 +69,7 @@ If you are evaluating MCP servers from third parties, the short due-diligence li
 
 Every platform team with more than three MCP servers ends up building or buying a gateway. The reasons are unexciting: per-tool authorization, a single point at which to log every call, a centralized rate-limit, and a hard boundary at which to enforce egress rules. The MCP spec does not require a gateway. Production deployment patterns do.
 
-The vendor list grew quickly. AWS Bedrock AgentCore Gateway became GA on October 13, 2025, in nine regions, and now connects to MCP servers as named targets <a href="#cite-5" class="cite-ref">[5]</a>. Cloudflare's MCP Server Portals consolidate authorized servers behind a single endpoint <a href="#cite-7" class="cite-ref">[7]</a>. The independent landscape includes Kong, Composio, Bifrost, and Zuplo, plus a long tail of in-house gateways at companies that started before the products existed. Most options shipped between September 2025 and Q1 2026. Assume the comparison shifts every quarter.
+The vendor list grew quickly. Amazon Bedrock AgentCore Gateway became GA on October 13, 2025, in nine regions, and now connects to MCP servers as named targets <a href="#cite-5" class="cite-ref">[5]</a>. Cloudflare's MCP Server Portals consolidate authorized servers behind a single endpoint <a href="#cite-7" class="cite-ref">[7]</a>. The independent landscape includes Kong, Composio, Bifrost, and Zuplo, plus a long tail of in-house gateways at companies that started before the products existed. Most options shipped between September 2025 and Q1 2026. Assume the comparison shifts every quarter.
 
 - **Tool-level authorization, written as policy** — Which users, under which conditions, can invoke which tools on which servers. Versioned, reviewable, expressed as code (Cedar in AgentCore's case).
 - **Credential brokering** — The gateway holds the Snowflake PAT, the Jira token, the SharePoint secret. The user never sees them; the model never receives them in clear text.
@@ -96,11 +96,11 @@ Since December 9, 2025, MCP is governed by the Agentic AI Foundation (AAIF), a d
 
 **Q: How does MCP authentication and authorization work?**
 
-An MCP server acts as an OAuth 2.1 resource server; the MCP client is an OAuth 2.1 client making requests on behalf of the user. As of the March 15, 2026 spec revision, three things are mandatory: PKCE on every client, Protected Resource Metadata under RFC 9728, and resource indicators under RFC 8707 to prevent token mis-redemption between tools <a href="#cite-3" class="cite-ref">[3]</a>. Both AWS AgentCore Gateway and Microsoft Foundry MCP Server align to this spec rather than implementing custom auth.
+An MCP server acts as an OAuth 2.1 resource server; the MCP client is an OAuth 2.1 client making requests on behalf of the user. As of the March 15, 2026 spec revision, three things are mandatory: PKCE on every client, Protected Resource Metadata under RFC 9728, and resource indicators under RFC 8707 to prevent token mis-redemption between tools <a href="#cite-3" class="cite-ref">[3]</a>. Both Amazon Bedrock AgentCore Gateway and Microsoft Foundry MCP Server align to this spec rather than implementing custom auth.
 
 **Q: Do I need an MCP gateway?**
 
-Once you operate more than three MCP servers in the same environment, the answer is almost always yes. Gateways centralize per-tool authorization, log every tool call, broker enterprise credentials so the user never pastes tokens into prompts, and enforce egress rules for regulated data. AWS Bedrock AgentCore Gateway (GA October 13, 2025) <a href="#cite-5" class="cite-ref">[5]</a> and Cloudflare MCP Server Portals <a href="#cite-7" class="cite-ref">[7]</a> are the two cloud-native options. Independent vendors include Kong, Composio, Bifrost, and Zuplo.
+Once you operate more than three MCP servers in the same environment, the answer is almost always yes. Gateways centralize per-tool authorization, log every tool call, broker enterprise credentials so the user never pastes tokens into prompts, and enforce egress rules for regulated data. Amazon Bedrock AgentCore Gateway (GA October 13, 2025) <a href="#cite-5" class="cite-ref">[5]</a> and Cloudflare MCP Server Portals <a href="#cite-7" class="cite-ref">[7]</a> are the two cloud-native options. Independent vendors include Kong, Composio, Bifrost, and Zuplo.
 
 **Q: How is MCP different from RAG?**
 
