@@ -16,8 +16,9 @@
    wait between attempts, capped at ``backoff_max_seconds``.  Directives are
    checked before every attempt so the run can be paused or cancelled mid-retry.
 
-4. **Attempt persistence** — ``NodeRun.attempt`` is incremented and written to
-   MongoDB at the start of each attempt so the UI always reflects the latest try.
+4. **Attempt/result persistence** — ``NodeRun.attempt`` is written at the start
+   of each attempt, and the terminal outcome is written as soon as the final
+   attempt finishes so later steps never leave a completed node looking active.
 
 Node-level HITL (confirmation / user_input / output_review / iteration review)
 is handled by agno's native ``HumanReview`` configuration — agno's execution
@@ -42,6 +43,7 @@ from registry_pkgs.models.enums import NodeRunStatus, WorkflowDirective, Workflo
 from registry_pkgs.models.workflow import NodeRun, StepConfig, WorkflowRun
 from registry_pkgs.workflows.control.queue import DirectiveQueue
 from registry_pkgs.workflows.hitl import PendingDirectiveProjection
+from registry_pkgs.workflows.types import is_skip_tolerated_failure
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +130,7 @@ def with_control(
                     node_name,
                     preview,
                 )
+                await _record_attempt_result(run_id, node_id, node_name, step_config, result)
                 return result
 
             # 4. Handle failure
@@ -145,6 +148,7 @@ def with_control(
                 continue
 
             logger.warning("Node %r: all %d attempt(s) failed, last error: %s", node_name, max_attempts, result.error)
+            await _record_attempt_result(run_id, node_id, node_name, step_config, result)
             return result
 
         return StepOutput(content="", success=False, error="Max retries exceeded")
@@ -290,6 +294,47 @@ async def _record_attempt_start(
         node_run.started_at = datetime.now(UTC)
     await node_run.save()
     logger.debug("NodeRun %s (%r) attempt=%d recorded", node_id, node_name, attempt)
+
+
+async def _record_attempt_result(
+    run_id: str,
+    node_id: str,
+    node_name: str,
+    step_config: StepConfig | None,
+    result: StepOutput,
+) -> None:
+    """Best-effort persistence of a node's terminal outcome when execution finishes.
+
+    The later WorkflowRunSyncer pass enriches the same record with snapshots and
+    media. A write failure here must not turn an already-completed external
+    executor call into a workflow failure; the batch sync remains the fallback.
+    """
+    try:
+        run_oid = PydanticObjectId(run_id)
+        node_run = await NodeRun.find_one(
+            NodeRun.workflow_run_id == run_oid,
+            NodeRun.node_id == node_id,
+        )
+        if node_run is None:
+            node_run = NodeRun(workflow_run_id=run_oid, node_id=node_id, node_name=node_name)
+
+        if result.success:
+            node_run.status = NodeRunStatus.COMPLETED
+        elif is_skip_tolerated_failure(result.success, step_config):
+            node_run.status = NodeRunStatus.SKIPPED
+        else:
+            node_run.status = NodeRunStatus.FAILED
+        node_run.finished_at = datetime.now(UTC)
+        node_run.error = result.error
+        await node_run.save()
+        logger.debug("NodeRun %s (%r) finished eagerly → %s", node_id, node_name, node_run.status)
+    except Exception:
+        logger.exception(
+            "[run=%s] failed to persist eager terminal status for node %s (%r); batch sync will retry",
+            run_id,
+            node_id,
+            node_name,
+        )
 
 
 async def _update_run_control_state(
