@@ -577,6 +577,34 @@ async def test_tool_trace_marks_cancellation_and_reraises() -> None:
         "server_id": "server-123",
         "tool_name": "search",
     }
+    span.set_attribute.assert_any_call("registry.operation.success", False)
+
+
+@pytest.mark.unit
+@pytest.mark.telemetry
+@pytest.mark.asyncio
+async def test_agent_trace_marks_cancellation_and_reraises() -> None:
+    message = AgentMessageInput(parts=[TextPart(kind="text", text="run")])
+
+    @trace_agent_execution
+    async def execute(agent_id, message, ctx):
+        raise asyncio.CancelledError
+
+    span = MagicMock()
+    span.is_recording.return_value = True
+    with patch("registry.mcpgw.tracing._TRACER") as tracer:
+        tracer.start_as_current_span.return_value = nullcontext(span)
+        with pytest.raises(asyncio.CancelledError):
+            await execute("agent-123", message, _make_ctx())
+
+    input_call = next(
+        call for call in span.set_attribute.call_args_list if call.args[0] == "langfuse.observation.input"
+    )
+    assert json.loads(input_call.args[1]) == {
+        "agent_id": "agent-123",
+        "message": {"parts": [{"kind": "text", "text": "run"}]},
+    }
+    span.set_attribute.assert_any_call("registry.operation.success", False)
 
 
 @pytest.mark.unit

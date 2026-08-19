@@ -250,16 +250,16 @@ def _set_serialized_attribute(
             logger.warning("Failed to record trace attribute error event for %s", key, exc_info=True)
 
 
-def _record_result(span: Span, result: CallToolResult) -> None:
+def _record_result(span: Span, result: CallToolResult) -> bool:
     success = result.isError is not True
     _set_serialized_attribute(span, "langfuse.observation.output", result)
-    _set_span_attributes(span, {"registry.operation.success": success})
     if success:
-        return
+        return True
     try:
         span.set_status(Status(StatusCode.ERROR, "MCP operation returned an error result"))
     except Exception:
-        return
+        pass
+    return False
 
 
 def trace_discovery(
@@ -349,9 +349,13 @@ def trace_tool_execution(
                 "langfuse.observation.input",
                 projection=lambda: _build_tool_trace_input(tool_name, server_id, arguments),
             )
-            result = await func(ctx, tool_name, arguments, server_id)
-            _record_result(span, result)
-            return result
+            success = False
+            try:
+                result = await func(ctx, tool_name, arguments, server_id)
+                success = _record_result(span, result)
+                return result
+            finally:
+                _set_span_attributes(span, {"registry.operation.success": success})
 
     return wrapper
 
@@ -389,8 +393,12 @@ def trace_agent_execution[AgentMessageT](
                 "langfuse.observation.input",
                 projection=lambda: _build_agent_trace_input(agent_id, message),
             )
-            result = await func(agent_id, message, ctx)
-            _record_result(span, result)
-            return result
+            success = False
+            try:
+                result = await func(agent_id, message, ctx)
+                success = _record_result(span, result)
+                return result
+            finally:
+                _set_span_attributes(span, {"registry.operation.success": success})
 
     return wrapper
