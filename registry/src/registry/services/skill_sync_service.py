@@ -144,20 +144,23 @@ class SkillSyncService:
         if access_token is None:
             return None, True
 
-        source = await self._source_crud_service.mark_sync_pending(source)
-        job = await self._job_service.create_job(
-            source_id=source.id,
-            job_type=SkillSyncJobType.FULL_SYNC,
-            trigger_type=trigger_type,
-            triggered_by=user_id,
-            request_snapshot={
-                "owner": source.owner,
-                "repo": source.repo,
-                "ref": source.ref,
-                "paths": source.paths,
-                "skillDiscoveryDepth": source.skillDiscoveryDepth,
-            },
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                source = await self._source_crud_service.mark_sync_pending(source, session=mongo_session)
+                job = await self._job_service.create_job(
+                    source_id=source.id,
+                    job_type=SkillSyncJobType.FULL_SYNC,
+                    trigger_type=trigger_type,
+                    triggered_by=user_id,
+                    request_snapshot={
+                        "owner": source.owner,
+                        "repo": source.repo,
+                        "ref": source.ref,
+                        "paths": source.paths,
+                        "skillDiscoveryDepth": source.skillDiscoveryDepth,
+                    },
+                    session=mongo_session,
+                )
         _fire_background(self._run_sync(source, job, user_id, access_token))
         return job, False
 
@@ -167,14 +170,17 @@ class SkillSyncService:
         source: SkillSyncSource,
         user_id: str,
     ) -> SkillSyncJob:
-        source = await self._source_crud_service.mark_deleting(source)
-        job = await self._job_service.create_job(
-            source_id=source.id,
-            job_type=SkillSyncJobType.DELETE_SYNC,
-            trigger_type=SkillSyncTriggerType.MANUAL,
-            triggered_by=user_id,
-            request_snapshot={"action": "delete"},
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                source = await self._source_crud_service.mark_deleting(source, session=mongo_session)
+                job = await self._job_service.create_job(
+                    source_id=source.id,
+                    job_type=SkillSyncJobType.DELETE_SYNC,
+                    trigger_type=SkillSyncTriggerType.MANUAL,
+                    triggered_by=user_id,
+                    request_snapshot={"action": "delete"},
+                    session=mongo_session,
+                )
         _fire_background(self._run_delete(source, job, user_id))
         return job
 
@@ -266,10 +272,7 @@ class SkillSyncService:
                 finishedAt=job.finishedAt,
                 commitSha=commit_sha,
             )
-            source.stats = SkillSyncSourceStats(
-                skillCount=len(live_skills),
-                fileCount=apply_summary.filesCreated + apply_summary.filesUpdated,
-            )
+            source.stats = await self._build_source_stats(live_skills)
             await source.save()
 
         except GitHubDownloadError as exc:
@@ -448,6 +451,12 @@ class SkillSyncService:
                 )
 
         return summary
+
+    @staticmethod
+    async def _build_source_stats(live_skills: list[Skill]) -> SkillSyncSourceStats:
+        skill_ids = [skill.id for skill in live_skills]
+        file_count = await SkillFile.find({"skillId": {"$in": skill_ids}}).count() if skill_ids else 0
+        return SkillSyncSourceStats(skillCount=len(live_skills), fileCount=file_count)
 
     async def _create_skill(
         self,

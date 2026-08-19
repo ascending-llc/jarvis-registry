@@ -276,6 +276,8 @@ async def update_source(
             )
             if needs_auth:
                 return SkillSyncTriggerResponse(needsAuthorization=True)
+            if job is not None:
+                return SkillSyncTriggerResponse(job=_to_job_response(job))
         return await _to_detail_response(source, source_service, permissions)
     except HTTPException:
         raise
@@ -345,6 +347,8 @@ async def sync_source(
             trigger_type=SkillSyncTriggerType.MANUAL,
         )
         if needs_auth:
+            return SkillSyncTriggerResponse(needsAuthorization=True)
+        if job is None:
             return SkillSyncTriggerResponse(needsAuthorization=True)
         return SkillSyncTriggerResponse(job=_to_job_response(job))
     except HTTPException:

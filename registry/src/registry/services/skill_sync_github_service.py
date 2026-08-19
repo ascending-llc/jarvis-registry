@@ -1,7 +1,9 @@
 import io
 import logging
+import re
 import tarfile
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -14,6 +16,7 @@ MAX_EXTRACTED_SIZE = 500 * 1024 * 1024
 MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024
 
 _GITHUB_API_BASE = "https://api.github.com"
+_FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 class GitHubDownloadError(Exception):
@@ -115,19 +118,23 @@ class SkillSyncGitHubService:
 
 def _extract_commit_sha(response: httpx.Response) -> str:
     for hist in reversed(response.history):
-        url_path = str(hist.headers.get("location", ""))
-        parts = url_path.rstrip("/").rsplit("/", 1)
-        if len(parts) == 2 and len(parts[1]) == 40:
-            return parts[1]
+        location = str(hist.headers.get("location", ""))
+        candidate = urlsplit(location).path.rstrip("/").rsplit("/", 1)[-1]
+        if _is_full_commit_sha(candidate):
+            return candidate.lower()
     content_disp = response.headers.get("content-disposition", "")
     for part in content_disp.split(";"):
         part = part.strip()
         if part.startswith("filename="):
             filename = part.split("=", 1)[1].strip('"')
             sha_part = filename.rsplit("-", 1)[-1].replace(".tar.gz", "")
-            if len(sha_part) >= 7:
-                return sha_part
+            if _is_full_commit_sha(sha_part):
+                return sha_part.lower()
     return "unknown"
+
+
+def _is_full_commit_sha(value: str) -> bool:
+    return bool(_FULL_COMMIT_SHA_RE.fullmatch(value))
 
 
 def _extract_from_tar(
