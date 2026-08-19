@@ -294,6 +294,59 @@ class TestWorkflowPersistence:
         assert save_kwargs == {"session": None}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "terminal_status",
+        [
+            NodeRunStatus.COMPLETED,
+            NodeRunStatus.FAILED,
+            NodeRunStatus.SKIPPED,
+            NodeRunStatus.CANCELLED,
+        ],
+    )
+    async def test_upsert_node_run_preserves_terminal_outcome_but_enriches_snapshot(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        terminal_status: NodeRunStatus,
+    ):
+        saved: list[tuple[NodeRun, dict]] = []
+        original_finished_at = datetime(2026, 8, 18, 10, 30, tzinfo=UTC)
+        existing = NodeRun.model_construct(
+            workflow_run_id=PydanticObjectId(),
+            node_id="node-1",
+            node_name="fetch",
+            attempt=1,
+            status=terminal_status,
+            output_snapshot={"content": "old"},
+            finished_at=original_finished_at,
+            error="original outcome",
+        )
+
+        async def fake_find_one(*args, **kwargs):
+            return existing
+
+        async def fake_save(self, **kwargs):
+            saved.append((self, kwargs))
+
+        monkeypatch.setattr(NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(NodeRun, "node_id", _FieldExpr("node_id"), raising=False)
+        monkeypatch.setattr(NodeRun, "find_one", fake_find_one)
+        monkeypatch.setattr(NodeRun, "save", fake_save)
+
+        sync = _sync_with_fake_run()
+        sync._node_by_name = {
+            "fetch": WorkflowNode(id="node-1", name="fetch", executor_key="tool", step_objective="fetch data")
+        }
+
+        await sync._upsert_node_run(StepOutput(step_name="fetch", content="new", success=True))
+
+        assert existing.status == terminal_status
+        assert existing.finished_at == original_finished_at
+        assert existing.error == "original outcome"
+        assert existing.output_snapshot == {"content": "new"}
+        assert existing.attempt == 1
+        assert saved == [(existing, {"session": None})]
+
+    @pytest.mark.asyncio
     async def test_upsert_node_run_passes_session_to_find_and_save(self, monkeypatch: pytest.MonkeyPatch):
         saved = []
         find_one_calls = []
