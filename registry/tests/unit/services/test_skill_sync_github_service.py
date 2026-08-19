@@ -1,5 +1,6 @@
 import io
 import tarfile
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import httpx
@@ -40,6 +41,9 @@ class _FakeResponse:
         self.headers = headers or {}
         self.history = history or []
 
+    async def aiter_bytes(self):
+        yield self.content
+
 
 def _make_redirect_history(sha: str) -> list:
     return [
@@ -50,6 +54,29 @@ def _make_redirect_history(sha: str) -> list:
     ]
 
 
+def _make_streaming_client(response: _FakeResponse) -> AsyncMock:
+    client = AsyncMock(spec=httpx.AsyncClient)
+
+    @asynccontextmanager
+    async def _stream(*args, **kwargs):
+        yield response
+
+    client.stream = _stream
+    return client
+
+
+def _make_streaming_error_client(exc: Exception) -> AsyncMock:
+    client = AsyncMock(spec=httpx.AsyncClient)
+
+    @asynccontextmanager
+    async def _stream(*args, **kwargs):
+        raise exc
+        yield  # noqa: RUF027  # pragma: no cover
+
+    client.stream = _stream
+    return client
+
+
 # ── download_tarball ──────────────────────────────────────────
 
 
@@ -57,22 +84,17 @@ def _make_redirect_history(sha: str) -> list:
 async def test_download_tarball_success():
     tarball = _make_tarball({"skills/hello.md": b"# Hello"})
     sha = "a" * 40
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.return_value = _FakeResponse(
-        content=tarball,
-        history=_make_redirect_history(sha),
-    )
+    resp = _FakeResponse(content=tarball, history=_make_redirect_history(sha))
+    client = _make_streaming_client(resp)
     service = SkillSyncGitHubService(client)
     result_bytes, commit_sha = await service.download_tarball(owner="org", repo="repo", ref="main", access_token="tok")
     assert result_bytes == tarball
     assert commit_sha == sha
-    client.get.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_download_tarball_auth_failed():
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.return_value = _FakeResponse(status_code=401)
+    client = _make_streaming_client(_FakeResponse(status_code=401))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="bad")
@@ -81,8 +103,7 @@ async def test_download_tarball_auth_failed():
 
 @pytest.mark.asyncio
 async def test_download_tarball_forbidden():
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.return_value = _FakeResponse(status_code=403)
+    client = _make_streaming_client(_FakeResponse(status_code=403))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="bad")
@@ -91,8 +112,7 @@ async def test_download_tarball_forbidden():
 
 @pytest.mark.asyncio
 async def test_download_tarball_rate_limited():
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.return_value = _FakeResponse(status_code=429)
+    client = _make_streaming_client(_FakeResponse(status_code=429))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
@@ -101,8 +121,7 @@ async def test_download_tarball_rate_limited():
 
 @pytest.mark.asyncio
 async def test_download_tarball_not_found():
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.return_value = _FakeResponse(status_code=404)
+    client = _make_streaming_client(_FakeResponse(status_code=404))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
@@ -111,8 +130,7 @@ async def test_download_tarball_not_found():
 
 @pytest.mark.asyncio
 async def test_download_tarball_server_error():
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.return_value = _FakeResponse(status_code=500)
+    client = _make_streaming_client(_FakeResponse(status_code=500))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
@@ -121,8 +139,7 @@ async def test_download_tarball_server_error():
 
 @pytest.mark.asyncio
 async def test_download_tarball_too_large():
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.return_value = _FakeResponse(content=b"x" * (MAX_TARBALL_SIZE + 1))
+    client = _make_streaming_client(_FakeResponse(content=b"x" * (MAX_TARBALL_SIZE + 1)))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
@@ -131,8 +148,7 @@ async def test_download_tarball_too_large():
 
 @pytest.mark.asyncio
 async def test_download_tarball_network_error():
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.get.side_effect = httpx.ConnectError("connection refused")
+    client = _make_streaming_error_client(httpx.ConnectError("connection refused"))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")

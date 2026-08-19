@@ -41,52 +41,56 @@ class SkillSyncGitHubService:
         ref: str,
         access_token: str,
     ) -> tuple[bytes, str]:
+        """Stream-download a GitHub tarball, enforcing MAX_TARBALL_SIZE during transfer."""
         url = f"{_GITHUB_API_BASE}/repos/{owner}/{repo}/tarball/{ref}"
+        headers = {
+            "Authorization": f"token {access_token}",
+            "Accept": "application/vnd.github+json",
+        }
         try:
-            response = await self._http_client.get(
-                url,
-                headers={
-                    "Authorization": f"token {access_token}",
-                    "Accept": "application/vnd.github+json",
-                },
-                follow_redirects=True,
-            )
+            async with self._http_client.stream("GET", url, headers=headers, follow_redirects=True) as response:
+                if response.status_code in (401, 403):
+                    raise GitHubDownloadError(
+                        f"GitHub authentication failed (HTTP {response.status_code})",
+                        SkillSyncJobErrorCode.GITHUB_AUTH_FAILED,
+                    )
+                if response.status_code == 429:
+                    raise GitHubDownloadError(
+                        "GitHub API rate limit exceeded",
+                        SkillSyncJobErrorCode.GITHUB_RATE_LIMITED,
+                    )
+                if response.status_code == 404:
+                    raise GitHubDownloadError(
+                        f"Repository {owner}/{repo} ref {ref} not found",
+                        SkillSyncJobErrorCode.GITHUB_NOT_FOUND,
+                    )
+                if response.status_code >= 400:
+                    raise GitHubDownloadError(
+                        f"GitHub API returned HTTP {response.status_code}",
+                        SkillSyncJobErrorCode.DOWNLOAD_FAILED,
+                    )
+
+                chunks: list[bytes] = []
+                total_size = 0
+                async for chunk in response.aiter_bytes():
+                    total_size += len(chunk)
+                    if total_size > MAX_TARBALL_SIZE:
+                        raise GitHubDownloadError(
+                            f"Tarball size exceeds limit {MAX_TARBALL_SIZE}",
+                            SkillSyncJobErrorCode.DOWNLOAD_TOO_LARGE,
+                        )
+                    chunks.append(chunk)
+
+                tarball_bytes = b"".join(chunks)
+                commit_sha = _extract_commit_sha(response)
+                return tarball_bytes, commit_sha
+        except GitHubDownloadError:
+            raise
         except httpx.HTTPError as exc:
             raise GitHubDownloadError(
                 f"GitHub API request failed: {exc}",
                 SkillSyncJobErrorCode.DOWNLOAD_FAILED,
             ) from exc
-
-        if response.status_code in (401, 403):
-            raise GitHubDownloadError(
-                f"GitHub authentication failed (HTTP {response.status_code})",
-                SkillSyncJobErrorCode.GITHUB_AUTH_FAILED,
-            )
-        if response.status_code == 429:
-            raise GitHubDownloadError(
-                "GitHub API rate limit exceeded",
-                SkillSyncJobErrorCode.GITHUB_RATE_LIMITED,
-            )
-        if response.status_code == 404:
-            raise GitHubDownloadError(
-                f"Repository {owner}/{repo} ref {ref} not found",
-                SkillSyncJobErrorCode.GITHUB_NOT_FOUND,
-            )
-        if response.status_code >= 400:
-            raise GitHubDownloadError(
-                f"GitHub API returned HTTP {response.status_code}",
-                SkillSyncJobErrorCode.DOWNLOAD_FAILED,
-            )
-
-        tarball_bytes = response.content
-        if len(tarball_bytes) > MAX_TARBALL_SIZE:
-            raise GitHubDownloadError(
-                f"Tarball size {len(tarball_bytes)} exceeds limit {MAX_TARBALL_SIZE}",
-                SkillSyncJobErrorCode.DOWNLOAD_TOO_LARGE,
-            )
-
-        commit_sha = _extract_commit_sha(response)
-        return tarball_bytes, commit_sha
 
     def extract_files(
         self,
@@ -95,6 +99,7 @@ class SkillSyncGitHubService:
         paths: list[str],
         max_depth: int,
     ) -> list[DiscoveredFile]:
+        """In-memory extraction filtered by paths + depth, with decompression bomb guard."""
         try:
             tar_io = io.BytesIO(tarball_bytes)
             with tarfile.open(fileobj=tar_io, mode="r:gz") as tar:
