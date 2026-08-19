@@ -20,6 +20,20 @@ _DEFAULT_ACCESS_TOKEN_LIFETIME = timedelta(days=3650)
 _DEFAULT_REFRESH_TOKEN_LIFETIME = timedelta(days=365)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _as_utc_naive(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _is_unexpired(expires_at: datetime, now: datetime) -> bool:
+    return _as_utc_naive(expires_at) > now
+
+
 def build_skill_sync_token_identifier(source_id: str | PydanticObjectId) -> str:
     return f"skillsync:{source_id}"
 
@@ -46,8 +60,8 @@ class SkillSyncTokenService:
                 "identifier": identifier,
             }
         )
-        now = datetime.now(UTC)
-        if access is not None and access.expiresAt > now:
+        now = _utc_now()
+        if access is not None and _is_unexpired(access.expiresAt, now):
             return decrypt_value(access.token)
 
         refresh = await Token.find_one(
@@ -140,7 +154,7 @@ class SkillSyncTokenService:
         expires_in: int | None,
         default_lifetime: timedelta,
     ) -> None:
-        expires_at = datetime.now(UTC) + (timedelta(seconds=expires_in) if expires_in else default_lifetime)
+        expires_at = _utc_now() + (timedelta(seconds=expires_in) if expires_in else default_lifetime)
         query: dict[str, Any] = {"userId": user_id, "type": token_type.value, "identifier": identifier}
         token = await Token.find_one(query)
         if token is None:
