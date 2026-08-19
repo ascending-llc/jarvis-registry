@@ -18,6 +18,8 @@ from registry_pkgs.models.enums import (
     SkillSyncJobStateMachine,
     SkillSyncJobStatus,
     SkillSyncJobType,
+    SkillSyncSkillErrorCode,
+    SkillSyncSourceStatus,
     SkillSyncStateMachine,
     SkillSyncStatus,
     SkillSyncTriggerType,
@@ -30,6 +32,7 @@ from registry_pkgs.models.skill_sync_job import (
 )
 from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSourceLastSync, SkillSyncSourceStats
 
+from ..utils.crypto_utils import decrypt_value
 from .access_control_service import ACLService
 from .skill_sync_discovery_service import DiscoveredSkill, DiscoveryResult, SkillSyncDiscoveryService
 from .skill_sync_github_service import GitHubDownloadError, SkillSyncGitHubService
@@ -39,9 +42,26 @@ from .skill_sync_token_service import SkillSyncTokenService
 
 logger = logging.getLogger(__name__)
 
-SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL = "Skill sync execution is not available yet"
-
 _REGISTRY_FILE_SOURCE = "registry"
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _on_background_done(task: asyncio.Task) -> None:
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Background sync task failed: %s", exc, exc_info=exc)
+
+
+def _fire_background(coro) -> asyncio.Task:
+    """Create a GC-safe background task with exception logging."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_on_background_done)
+    return task
 
 
 class SkillSyncService:
@@ -110,13 +130,13 @@ class SkillSyncService:
         source: SkillSyncSource,
         user_id: str,
         trigger_type: SkillSyncTriggerType,
-        client_id: str,
-        client_secret: str,
     ) -> tuple[SkillSyncJob | None, bool]:
+        """Resolve OAuth token, create a job, and launch background sync. Returns (job, needs_auth)."""
+        client_secret = decrypt_value(source.githubAppClientSecretEncrypted)
         access_token = await self._token_service.resolve_access_token(
             user_id=user_id,
             source_id=source.id,
-            client_id=client_id,
+            client_id=source.githubAppClientId,
             client_secret=client_secret,
         )
         if access_token is None:
@@ -136,7 +156,7 @@ class SkillSyncService:
                 "skillDiscoveryDepth": source.skillDiscoveryDepth,
             },
         )
-        asyncio.create_task(self._run_sync(source, job, user_id, access_token))
+        _fire_background(self._run_sync(source, job, user_id, access_token))
         return job, False
 
     async def delete_source_with_skills(
@@ -153,7 +173,7 @@ class SkillSyncService:
             triggered_by=user_id,
             request_snapshot={"action": "delete"},
         )
-        asyncio.create_task(self._run_delete(source, job, user_id))
+        _fire_background(self._run_delete(source, job, user_id))
         return job
 
     async def _run_sync(
@@ -163,6 +183,7 @@ class SkillSyncService:
         user_id: str,
         access_token: str,
     ) -> None:
+        """Full sync pipeline: download → extract → discover → apply → finalize."""
         try:
             job.status = SkillSyncJobStateMachine.transition_to_syncing(job.status)
             job.phase = SkillSyncJobPhase.DOWNLOADING
@@ -235,8 +256,12 @@ class SkillSyncService:
                 finishedAt=job.finishedAt,
                 commitSha=commit_sha,
             )
+            # Query actual live counts — summary arithmetic undercounts when individual skills fail
+            live_skill_count = await Skill.find(
+                {"source": SkillSource.GITHUB, "sourceMetadata.sourceId": str(source.id), "deletedAt": None}
+            ).count()
             source.stats = SkillSyncSourceStats(
-                skillCount=apply_summary.skillsCreated + apply_summary.skillsUpdated,
+                skillCount=live_skill_count,
                 fileCount=apply_summary.filesCreated + apply_summary.filesUpdated,
             )
             await source.save()
@@ -268,6 +293,7 @@ class SkillSyncService:
         job: SkillSyncJob,
         user_id: str,
     ) -> None:
+        """Soft-delete all skills + files + ACL for a source, then mark source as deleted."""
         try:
             job.status = SkillSyncJobStateMachine.transition_to_syncing(job.status)
             job.phase = SkillSyncJobPhase.APPLYING
@@ -283,10 +309,17 @@ class SkillSyncService:
             deleted_skills = 0
             deleted_files = 0
             for skill in existing_skills:
-                file_result = await SkillFile.find({"skillId": skill.id}).delete()
-                deleted_files += file_result.deleted_count if file_result else 0
-                skill.deletedAt = now
-                await skill.save()
+                async with MongoDB.get_client().start_session() as session:
+                    async with await session.start_transaction():
+                        file_result = await SkillFile.find({"skillId": skill.id}).delete(session=session)
+                        deleted_files += file_result.deleted_count if file_result else 0
+                        skill.deletedAt = now
+                        await skill.save(session=session)
+                        await self._acl_service.delete_acl_entries_for_resource(
+                            resource_type=RegistryResourceType.SKILL.value,
+                            resource_id=skill.id,
+                            session=session,
+                        )
                 deleted_skills += 1
 
             await self._acl_service.delete_acl_entries_for_resource(
@@ -301,7 +334,7 @@ class SkillSyncService:
             )
             await self._finalize_job(job, SkillSyncJobStatus.SUCCESS, SkillSyncJobPhase.COMPLETED)
 
-            source.status = "deleted"
+            source.status = SkillSyncSourceStatus.DELETED
             source.syncStatus = SkillSyncStatus.SUCCESS
             source.deletedAt = now
             source.stats = SkillSyncSourceStats(skillCount=0, fileCount=0)
@@ -333,6 +366,7 @@ class SkillSyncService:
         user_id: str,
         commit_sha: str,
     ) -> SkillSyncApplySummary:
+        """Diff discovered skills against existing DB state: create / update / soft-delete."""
         source_id_str = str(source.id)
         user_object_id = PydanticObjectId(user_id)
         summary = SkillSyncApplySummary()
@@ -340,9 +374,15 @@ class SkillSyncService:
         existing_skills = await Skill.find(
             {"source": SkillSource.GITHUB, "sourceMetadata.sourceId": source_id_str, "deletedAt": None}
         ).to_list()
-        existing_by_upstream: dict[str, Skill] = {
-            s.sourceMetadata.get("upstreamId", ""): s for s in existing_skills if s.sourceMetadata
-        }
+        existing_by_upstream: dict[str, Skill] = {}
+        for s in existing_skills:
+            if not s.sourceMetadata:
+                continue
+            upstream_id = s.sourceMetadata.get("upstreamId")
+            if not upstream_id:
+                logger.warning("Skill %s missing upstreamId in sourceMetadata, skipping from sync matching", s.id)
+                continue
+            existing_by_upstream[upstream_id] = s
 
         discovered_upstream_ids = {s.upstream_id for s in discovery.skills}
         now = datetime.now(UTC)
@@ -350,19 +390,26 @@ class SkillSyncService:
         for upstream_id, existing_skill in existing_by_upstream.items():
             if upstream_id not in discovered_upstream_ids:
                 try:
-                    await SkillFile.find({"skillId": existing_skill.id}).delete()
-                    existing_skill.deletedAt = now
-                    await existing_skill.save()
+                    async with MongoDB.get_client().start_session() as session:
+                        async with await session.start_transaction():
+                            await SkillFile.find({"skillId": existing_skill.id}).delete(session=session)
+                            existing_skill.deletedAt = now
+                            await existing_skill.save(session=session)
+                            await self._acl_service.delete_acl_entries_for_resource(
+                                resource_type=RegistryResourceType.SKILL.value,
+                                resource_id=existing_skill.id,
+                                session=session,
+                            )
                     summary.skillsDeleted += 1
                 except Exception as exc:
-                    logger.warning("Failed to delete skill %s: %s", existing_skill.id, exc)
+                    logger.exception("Failed to delete skill %s: %s", existing_skill.id, exc)
                     summary.skillsFailed += 1
 
         for discovered in discovery.skills:
             try:
                 existing = existing_by_upstream.get(discovered.upstream_id)
                 if existing:
-                    await self._update_skill(existing, discovered, source, commit_sha, user_id, now)
+                    await self._update_skill(existing, discovered, source, commit_sha, now)
                     summary.skillsUpdated += 1
                     file_counts = await self._sync_skill_files(existing.id, discovered, now)
                     summary.filesUpdated += file_counts[0]
@@ -381,10 +428,8 @@ class SkillSyncService:
                     file_counts = await self._sync_skill_files(new_skill.id, discovered, now)
                     summary.filesCreated += file_counts[0] + file_counts[1]
             except Exception as exc:
-                logger.warning("Failed to apply skill %s: %s", discovered.upstream_id, exc)
+                logger.exception("Failed to apply skill %s: %s", discovered.upstream_id, exc)
                 summary.skillsFailed += 1
-                from registry_pkgs.models.enums import SkillSyncSkillErrorCode
-
                 job.skillErrors.append(
                     SkillSyncSkillError(
                         skillPath=discovered.upstream_id,
@@ -406,6 +451,7 @@ class SkillSyncService:
         user_id: str,
         now: datetime,
     ) -> Skill:
+        """Insert a new Skill + owner ACL entry in one transaction."""
         skill = Skill(
             name=discovered.name,
             displayTitle=discovered.display_title,
@@ -437,14 +483,17 @@ class SkillSyncService:
             createdAt=now,
             updatedAt=now,
         )
-        await skill.insert()
-        await self._acl_service.grant_permission(
-            principal_type=PrincipalType.USER,
-            principal_id=author_id,
-            resource_type=RegistryResourceType.SKILL.value,
-            resource_id=skill.id,
-            perm_bits=RoleBits.OWNER,
-        )
+        async with MongoDB.get_client().start_session() as session:
+            async with await session.start_transaction():
+                await skill.insert(session=session)
+                await self._acl_service.grant_permission(
+                    principal_type=PrincipalType.USER,
+                    principal_id=author_id,
+                    resource_type=RegistryResourceType.SKILL.value,
+                    resource_id=skill.id,
+                    perm_bits=RoleBits.OWNER,
+                    session=session,
+                )
         return skill
 
     async def _update_skill(
@@ -453,7 +502,6 @@ class SkillSyncService:
         discovered: DiscoveredSkill,
         source: SkillSyncSource,
         commit_sha: str,
-        user_id: str,
         now: datetime,
     ) -> None:
         existing.displayTitle = discovered.display_title
@@ -485,50 +533,53 @@ class SkillSyncService:
         discovered: DiscoveredSkill,
         now: datetime,
     ) -> tuple[int, int, int]:
+        """Sync auxiliary files for one skill within a single transaction."""
         existing_files = await SkillFile.find({"skillId": skill_id}).to_list()
         existing_by_path: dict[str, SkillFile] = {f.relativePath: f for f in existing_files}
         discovered_paths = set()
         updated = 0
         created = 0
-
-        for df in discovered.files:
-            rel_path = df.relative_path
-            discovered_paths.add(rel_path)
-            mime_type = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
-            is_binary = not _is_text_content(df.content)
-            text_content = df.content.decode("utf-8", errors="replace") if not is_binary else None
-
-            if rel_path in existing_by_path:
-                ef = existing_by_path[rel_path]
-                ef.content = text_content
-                ef.body = df.content if is_binary else None
-                ef.mimeType = mime_type
-                ef.bytes = df.size
-                ef.isBinary = is_binary
-                ef.updatedAt = now
-                await ef.save()
-                updated += 1
-            else:
-                sf = SkillFile(
-                    skillId=skill_id,
-                    relativePath=rel_path,
-                    source=_REGISTRY_FILE_SOURCE,
-                    mimeType=mime_type,
-                    bytes=df.size,
-                    content=text_content,
-                    body=df.content if is_binary else None,
-                    isBinary=is_binary,
-                    createdAt=now,
-                    updatedAt=now,
-                )
-                await sf.insert()
-                created += 1
-
         deleted = 0
-        for path, ef in existing_by_path.items():
-            if path not in discovered_paths:
-                await ef.delete()
-                deleted += 1
+
+        async with MongoDB.get_client().start_session() as session:
+            async with await session.start_transaction():
+                for df in discovered.files:
+                    rel_path = df.relative_path
+                    discovered_paths.add(rel_path)
+                    mime_type = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
+                    is_binary = not _is_text_content(df.content)
+                    text_content = df.content.decode("utf-8", errors="replace") if not is_binary else None
+
+                    if rel_path in existing_by_path:
+                        ef = existing_by_path[rel_path]
+                        ef.content = text_content
+                        ef.body = df.content if is_binary else None
+                        ef.mimeType = mime_type
+                        ef.bytes = df.size
+                        ef.isBinary = is_binary
+                        ef.updatedAt = now
+                        await ef.save(session=session)
+                        updated += 1
+                    else:
+                        sf = SkillFile(
+                            skillId=skill_id,
+                            relativePath=rel_path,
+                            source=_REGISTRY_FILE_SOURCE,
+                            mimeType=mime_type,
+                            bytes=df.size,
+                            content=text_content,
+                            body=df.content if is_binary else None,
+                            isBinary=is_binary,
+                            createdAt=now,
+                            updatedAt=now,
+                        )
+                        await sf.insert(session=session)
+                        created += 1
+
+                for path, ef in existing_by_path.items():
+                    if path not in discovered_paths:
+                        await ef.delete(session=session)
+                        deleted += 1
 
         return updated, created, deleted
 

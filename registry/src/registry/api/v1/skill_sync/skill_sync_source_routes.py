@@ -43,7 +43,6 @@ from ....services.access_control_service import ACLService
 from ....services.skill_sync_oauth_service import SkillSyncOAuthService
 from ....services.skill_sync_service import SkillSyncService
 from ....services.skill_sync_token_service import SkillSyncTokenService
-from ....utils.crypto_utils import decrypt_value
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +241,7 @@ async def get_source(
         raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
 
 
-@router.put("/{source_id}", response_model=SkillSyncSourceDetailResponse)
+@router.put("/{source_id}", response_model=SkillSyncSourceDetailResponse | SkillSyncTriggerResponse)
 async def update_source(
     source_id: str,
     data: SkillSyncSourceUpdateRequest,
@@ -274,8 +273,6 @@ async def update_source(
                 source=source,
                 user_id=user_str_id,
                 trigger_type=SkillSyncTriggerType.MANUAL,
-                client_id=source.githubAppClientId,
-                client_secret=decrypt_value(source.githubAppClientSecretEncrypted),
             )
             if needs_auth:
                 return SkillSyncTriggerResponse(needsAuthorization=True)
@@ -346,8 +343,6 @@ async def sync_source(
             source=source,
             user_id=user_str_id,
             trigger_type=SkillSyncTriggerType.MANUAL,
-            client_id=source.githubAppClientId,
-            client_secret=decrypt_value(source.githubAppClientSecretEncrypted),
         )
         if needs_auth:
             return SkillSyncTriggerResponse(needsAuthorization=True)
@@ -418,13 +413,13 @@ async def skill_sync_oauth_callback(
             state=state,
             redirect_uri=redirect_uri,
         )
-        await sync_service.trigger_sync(
+        _job, needs_auth = await sync_service.trigger_sync(
             source=source,
             user_id=user_id,
             trigger_type=SkillSyncTriggerType.OAUTH_CALLBACK,
-            client_id=source.githubAppClientId,
-            client_secret=decrypt_value(source.githubAppClientSecretEncrypted),
         )
+        if needs_auth:
+            return RedirectResponse(error_redirect)
         success_redirect = (
             f"{settings.registry_client_url}/skill-sync-sources/{source_id}?{urlencode({'status': 'syncing'})}"
         )
