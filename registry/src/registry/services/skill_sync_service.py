@@ -24,7 +24,8 @@ from registry_pkgs.models.enums import (
     SkillSyncStatus,
     SkillSyncTriggerType,
 )
-from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_access_role import RegistryAccessRole, RegistryResourceType
+from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.skill_sync_job import (
     SkillSyncApplySummary,
     SkillSyncJob,
@@ -42,7 +43,8 @@ from .skill_sync_token_service import SkillSyncTokenService
 
 logger = logging.getLogger(__name__)
 
-_REGISTRY_FILE_SOURCE = "registry"
+_GITHUB_SYNC_FILE_SOURCE = "github-sync"
+_ACL_INHERIT_BATCH_SIZE = 500
 
 _background_tasks: set[asyncio.Task] = set()
 
@@ -240,6 +242,14 @@ class SkillSyncService:
             )
             job.applySummary = apply_summary
 
+            live_skills = await Skill.find(
+                {"source": SkillSource.GITHUB, "sourceMetadata.sourceId": str(source.id), "deletedAt": None}
+            ).to_list()
+            try:
+                await self._inherit_source_acl_to_skills(source, [s.id for s in live_skills])
+            except Exception:
+                logger.exception("ACL inheritance failed for source %s, continuing", source.id)
+
             has_errors = bool(job.skillErrors) or apply_summary.skillsFailed > 0
             final_status = SkillSyncJobStatus.PARTIAL_SUCCESS if has_errors else SkillSyncJobStatus.SUCCESS
             await self._finalize_job(job, final_status, SkillSyncJobPhase.COMPLETED)
@@ -256,12 +266,8 @@ class SkillSyncService:
                 finishedAt=job.finishedAt,
                 commitSha=commit_sha,
             )
-            # Query actual live counts — summary arithmetic undercounts when individual skills fail
-            live_skill_count = await Skill.find(
-                {"source": SkillSource.GITHUB, "sourceMetadata.sourceId": str(source.id), "deletedAt": None}
-            ).count()
             source.stats = SkillSyncSourceStats(
-                skillCount=live_skill_count,
+                skillCount=len(live_skills),
                 fileCount=apply_summary.filesCreated + apply_summary.filesUpdated,
             )
             await source.save()
@@ -384,7 +390,7 @@ class SkillSyncService:
                 continue
             existing_by_upstream[upstream_id] = s
 
-        discovered_upstream_ids = {s.upstream_id for s in discovery.skills}
+        discovered_upstream_ids = {f"{source_id_str}:{s.upstream_id}" for s in discovery.skills}
         now = datetime.now(UTC)
 
         for upstream_id, existing_skill in existing_by_upstream.items():
@@ -407,7 +413,8 @@ class SkillSyncService:
 
         for discovered in discovery.skills:
             try:
-                existing = existing_by_upstream.get(discovered.upstream_id)
+                full_upstream_id = f"{source_id_str}:{discovered.upstream_id}"
+                existing = existing_by_upstream.get(full_upstream_id)
                 if existing:
                     await self._update_skill(existing, discovered, source, commit_sha, now)
                     summary.skillsUpdated += 1
@@ -467,12 +474,16 @@ class SkillSyncService:
             authorName="GitHub Sync",
             source=SkillSource.GITHUB,
             sourceMetadata={
+                "provider": "github",
                 "sourceId": str(source.id),
-                "upstreamId": discovered.upstream_id,
+                "upstreamId": f"{source.id}:{discovered.upstream_id}",
+                "skillPath": discovered.upstream_id,
                 "owner": source.owner,
                 "repo": source.repo,
                 "ref": source.ref,
                 "commitSha": commit_sha,
+                "syncedAt": now.isoformat(),
+                "syncStatus": "synced",
             },
             path=discovered.upstream_id,
             tags=discovered.tags,
@@ -522,6 +533,8 @@ class SkillSyncService:
             "owner": source.owner,
             "repo": source.repo,
             "ref": source.ref,
+            "syncedAt": now.isoformat(),
+            "syncStatus": "synced",
         }
         existing.version = (existing.version or 0) + 1
         existing.updatedAt = now
@@ -564,7 +577,7 @@ class SkillSyncService:
                         sf = SkillFile(
                             skillId=skill_id,
                             relativePath=rel_path,
-                            source=_REGISTRY_FILE_SOURCE,
+                            source=_GITHUB_SYNC_FILE_SOURCE,
                             mimeType=mime_type,
                             bytes=df.size,
                             content=text_content,
@@ -582,6 +595,84 @@ class SkillSyncService:
                         deleted += 1
 
         return updated, created, deleted
+
+    async def _inherit_source_acl_to_skills(
+        self,
+        source: SkillSyncSource,
+        skill_ids: list[PydanticObjectId],
+    ) -> None:
+        """INSERT-only ACL inheritance: propagate source ACL entries to child skills.
+
+        For each (skill, principal) pair without an existing ACL entry, insert one
+        with the same permission bits. Never overwrites existing grants.
+        """
+        if not skill_ids:
+            return
+
+        source_acl_entries = await RegistryAclEntry.find(
+            {
+                "resourceType": RegistryResourceType.SKILL_SYNC_SOURCE,
+                "resourceId": source.id,
+                "principalType": {"$ne": PrincipalType.PUBLIC},
+                "principalId": {"$ne": None},
+            },
+        ).to_list()
+        if not source_acl_entries:
+            return
+
+        existing_acl_entries = await RegistryAclEntry.find(
+            {
+                "resourceType": RegistryResourceType.SKILL,
+                "resourceId": {"$in": skill_ids},
+            },
+        ).to_list()
+
+        existing_index: set[tuple[str, str]] = {
+            (str(entry.resourceId), str(entry.principalId)) for entry in existing_acl_entries
+        }
+
+        skill_roles = await RegistryAccessRole.find(
+            {"resourceType": RegistryResourceType.SKILL},
+        ).to_list()
+        role_by_bits: dict[int, PydanticObjectId] = {r.permBits: r.id for r in skill_roles}
+
+        now = datetime.now(UTC)
+        new_entries: list[RegistryAclEntry] = []
+        for skill_id in skill_ids:
+            for src_entry in source_acl_entries:
+                if not src_entry.principalId:
+                    continue
+                if (str(skill_id), str(src_entry.principalId)) in existing_index:
+                    continue
+                new_entries.append(
+                    RegistryAclEntry(
+                        principalType=src_entry.principalType,
+                        principalId=src_entry.principalId,
+                        resourceType=RegistryResourceType.SKILL,
+                        resourceId=skill_id,
+                        roleId=role_by_bits.get(src_entry.permBits),
+                        permBits=src_entry.permBits,
+                        grantedAt=now,
+                        createdAt=now,
+                        updatedAt=now,
+                    )
+                )
+
+        if not new_entries:
+            logger.debug("No new ACL entries to inherit for source %s", source.id)
+            return
+
+        for i in range(0, len(new_entries), _ACL_INHERIT_BATCH_SIZE):
+            batch = new_entries[i : i + _ACL_INHERIT_BATCH_SIZE]
+            await RegistryAclEntry.insert_many(batch, ordered=False)
+
+        logger.info(
+            "ACL inheritance completed: source=%s source_acl=%d skills=%d inherited=%d",
+            source.id,
+            len(source_acl_entries),
+            len(skill_ids),
+            len(new_entries),
+        )
 
     @staticmethod
     async def _finalize_job(
