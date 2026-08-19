@@ -121,7 +121,7 @@ async def seed_access_roles(collection, session):
             "__v": 0,
         },
         {
-            "accessRoleId": "skillSyncSource_viewer",
+            "accessRoleId": "skill_sync_source_viewer",
             "resourceType": "skillSyncSource",
             "name": "com_ui_skill_sync_source_role_viewer",
             "description": "com_ui_skill_sync_source_viewer_desc",
@@ -131,7 +131,7 @@ async def seed_access_roles(collection, session):
             "__v": 0,
         },
         {
-            "accessRoleId": "skillSyncSource_editor",
+            "accessRoleId": "skill_sync_source_editor",
             "resourceType": "skillSyncSource",
             "name": "com_ui_skill_sync_source_role_editor",
             "description": "com_ui_skill_sync_source_editor_desc",
@@ -141,7 +141,7 @@ async def seed_access_roles(collection, session):
             "__v": 0,
         },
         {
-            "accessRoleId": "skillSyncSource_owner",
+            "accessRoleId": "skill_sync_source_owner",
             "resourceType": "skillSyncSource",
             "name": "com_ui_skill_sync_source_role_owner",
             "description": "com_ui_skill_sync_source_owner_desc",

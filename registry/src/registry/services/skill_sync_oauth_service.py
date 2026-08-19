@@ -39,7 +39,6 @@ class SkillSyncOAuthService:
         flow_id = f"skillsync:{user_id}:{source.id}:{secrets.token_urlsafe(8)}"
         oauth_config = {
             "client_id": source.githubAppClientId,
-            "client_secret": decrypt_value(source.githubAppClientSecretEncrypted),
             "redirect_uri": redirect_uri,
             "authorization_url": _GITHUB_AUTHORIZE_URL,
             "token_url": _GITHUB_TOKEN_URL,
@@ -55,17 +54,16 @@ class SkillSyncOAuthService:
             oauth_config=oauth_config,
             flow_id=flow_id,
         )
-        authorization_url = f"{_GITHUB_AUTHORIZE_URL}?{
-            urlencode(
-                {
-                    'client_id': source.githubAppClientId,
-                    'redirect_uri': redirect_uri,
-                    'state': metadata.state,
-                    'code_challenge': code_challenge,
-                    'code_challenge_method': 'S256',
-                }
-            )
-        }"
+        params = urlencode(
+            {
+                "client_id": source.githubAppClientId,
+                "redirect_uri": redirect_uri,
+                "state": metadata.state,
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
+            }
+        )
+        authorization_url = f"{_GITHUB_AUTHORIZE_URL}?{params}"
         metadata.authorization_url = authorization_url
         self._flow_state_manager.create_flow(flow_id, str(source.id), user_id, code_verifier, metadata)
         return authorization_url

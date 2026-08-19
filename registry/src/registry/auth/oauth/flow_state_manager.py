@@ -410,13 +410,12 @@ class FlowStateManager:
         """
         Build OAuth client information from server configuration
         """
-        base_url = settings.registry_client_url
-        if base_url.endswith("/"):
-            base_url = base_url.removesuffix("/")
-
-        # Ensure server_path starts with / for proper URL construction
-        normalized_path = server_path if server_path.startswith("/") else f"/{server_path}"
-        redirect_uri = f"{base_url}/api/v1/mcp{normalized_path}/oauth/callback"
+        if oauth_config.get("redirect_uri"):
+            redirect_uri = oauth_config["redirect_uri"]
+        else:
+            base_url = settings.registry_client_url.rstrip("/")
+            normalized_path = server_path if server_path.startswith("/") else f"/{server_path}"
+            redirect_uri = f"{base_url}/api/v1/mcp{normalized_path}/oauth/callback"
 
         redirect_uris = [redirect_uri]
 

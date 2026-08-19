@@ -15,7 +15,7 @@ class SkillSyncSourceStats(BaseModel):
 
 
 class SkillSyncSourceLastSync(BaseModel):
-    jobId: object
+    jobId: str
     status: SkillSyncJobStatus
     startedAt: datetime | None = None
     finishedAt: datetime | None = None
