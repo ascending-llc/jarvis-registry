@@ -54,6 +54,8 @@ from .services.search.service import SearchService
 from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.skill_service import SkillService
+from .services.skill_sync_discovery_service import SkillSyncDiscoveryService
+from .services.skill_sync_github_service import SkillSyncGitHubService
 from .services.skill_sync_job_service import SkillSyncJobService
 from .services.skill_sync_oauth_service import SkillSyncOAuthService
 from .services.skill_sync_service import SkillSyncService
@@ -380,8 +382,23 @@ class RegistryContainer:
         return SkillSyncSourceCrudService()
 
     @cached_property
+    def skill_sync_github_service(self) -> SkillSyncGitHubService:
+        return SkillSyncGitHubService(self.mcp_proxy_client)
+
+    @cached_property
+    def skill_sync_discovery_service(self) -> SkillSyncDiscoveryService:
+        return SkillSyncDiscoveryService()
+
+    @cached_property
     def skill_sync_service(self) -> SkillSyncService:
-        return SkillSyncService(self.skill_sync_source_crud_service)
+        return SkillSyncService(
+            source_crud_service=self.skill_sync_source_crud_service,
+            job_service=self.skill_sync_job_service,
+            token_service=self.skill_sync_token_service,
+            github_service=self.skill_sync_github_service,
+            discovery_service=self.skill_sync_discovery_service,
+            acl_service=self.acl_service,
+        )
 
     @cached_property
     def skill_sync_job_service(self) -> SkillSyncJobService:
