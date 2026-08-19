@@ -17,6 +17,7 @@ from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSou
 
 from ....auth.dependencies import CurrentUser
 from ....core.config import settings
+from ....core.telemetry_decorators import track_registry_operation
 from ....deps import (
     get_acl_service,
     get_skill_sync_job_service,
@@ -26,6 +27,7 @@ from ....deps import (
     get_skill_sync_token_service,
 )
 from ....schemas.acl_schema import ResourcePermissions
+from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....schemas.skill_sync_api_schemas import (
     SkillSyncDeleteResponse,
@@ -128,11 +130,15 @@ async def _to_detail_response(
 async def _required_source(source_id: str, source_service) -> SkillSyncSource:
     source = await source_service.get_source(source_id)
     if source is None:
-        raise HTTPException(http_status.HTTP_404_NOT_FOUND, detail="Skill sync source not found")
+        raise HTTPException(
+            http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.NOT_FOUND, "Skill sync source not found"),
+        )
     return source
 
 
 @router.post("", response_model=SkillSyncSourceDetailResponse, status_code=http_status.HTTP_201_CREATED)
+@track_registry_operation("create", resource_type="skill_sync_source")
 async def create_source(
     data: SkillSyncSourceCreateRequest,
     user_context: CurrentUser,
@@ -167,10 +173,14 @@ async def create_source(
         raise
     except Exception as exc:
         logger.exception("Failed to create skill sync source")
-        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
 
 
 @router.get("", response_model=SkillSyncSourcePagedResponse)
+@track_registry_operation("list", resource_type="skill_sync_source")
 async def list_sources(
     user_context: CurrentUser,
     syncStatus: str | None = Query(default=None),
@@ -214,10 +224,14 @@ async def list_sources(
         raise
     except Exception as exc:
         logger.exception("Failed to list skill sync sources")
-        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
 
 
 @router.get("/{source_id}", response_model=SkillSyncSourceDetailResponse)
+@track_registry_operation("read", resource_type="skill_sync_source")
 async def get_source(
     source_id: str,
     user_context: CurrentUser,
@@ -238,10 +252,14 @@ async def get_source(
         raise
     except Exception as exc:
         logger.exception("Failed to get skill sync source %s", source_id)
-        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
 
 
 @router.put("/{source_id}", response_model=SkillSyncSourceDetailResponse | SkillSyncTriggerResponse)
+@track_registry_operation("update", resource_type="skill_sync_source")
 async def update_source(
     source_id: str,
     data: SkillSyncSourceUpdateRequest,
@@ -262,7 +280,10 @@ async def update_source(
             required_permission="EDIT",
         )
         if not SkillSyncStateMachine.can_update(source.status):
-            raise HTTPException(http_status.HTTP_409_CONFLICT, detail="Skill sync source cannot be updated")
+            raise HTTPException(
+                http_status.HTTP_409_CONFLICT,
+                detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source cannot be updated"),
+            )
         changes = data.model_dump(exclude_unset=True, exclude={"syncAfterUpdate"})
         credentials_changed = "githubAppClientId" in changes or "githubAppClientSecret" in changes
         source = await source_service.update_source(source, changes, updated_by=user_str_id)
@@ -282,13 +303,20 @@ async def update_source(
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(http_status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT,
+            detail=create_error_detail(ErrorCode.CONFLICT, str(exc)),
+        ) from exc
     except Exception as exc:
         logger.exception("Failed to update skill sync source %s", source_id)
-        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
 
 
 @router.delete("/{source_id}", response_model=SkillSyncDeleteResponse, status_code=http_status.HTTP_202_ACCEPTED)
+@track_registry_operation("delete", resource_type="skill_sync_source")
 async def delete_source(
     source_id: str,
     user_context: CurrentUser,
@@ -306,7 +334,10 @@ async def delete_source(
             required_permission="DELETE",
         )
         if not SkillSyncStateMachine.can_delete(source.status):
-            raise HTTPException(http_status.HTTP_409_CONFLICT, detail="Skill sync source cannot be deleted")
+            raise HTTPException(
+                http_status.HTTP_409_CONFLICT,
+                detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source cannot be deleted"),
+            )
         job = await sync_service.delete_source_with_skills(
             source=source,
             user_id=str(user_context["user_id"]),
@@ -315,13 +346,20 @@ async def delete_source(
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(http_status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT,
+            detail=create_error_detail(ErrorCode.CONFLICT, str(exc)),
+        ) from exc
     except Exception as exc:
         logger.exception("Failed to delete skill sync source %s", source_id)
-        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
 
 
 @router.post("/{source_id}/sync", response_model=SkillSyncTriggerResponse)
+@track_registry_operation("sync", resource_type="skill_sync_source")
 async def sync_source(
     source_id: str,
     user_context: CurrentUser,
@@ -340,7 +378,10 @@ async def sync_source(
             required_permission="EDIT",
         )
         if not SkillSyncStateMachine.can_start_sync(source.syncStatus):
-            raise HTTPException(http_status.HTTP_409_CONFLICT, detail="Skill sync source already has an active sync")
+            raise HTTPException(
+                http_status.HTTP_409_CONFLICT,
+                detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source already has an active sync"),
+            )
         job, needs_auth = await sync_service.trigger_sync(
             source=source,
             user_id=user_str_id,
@@ -354,13 +395,20 @@ async def sync_source(
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(http_status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT,
+            detail=create_error_detail(ErrorCode.CONFLICT, str(exc)),
+        ) from exc
     except Exception as exc:
         logger.exception("Failed to trigger skill sync for %s", source_id)
-        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
 
 
 @router.get("/{source_id}/oauth/initiate")
+@track_registry_operation("oauth_initiate", resource_type="skill_sync_source")
 async def initiate_skill_sync_oauth(
     request: Request,
     source_id: str,
@@ -389,7 +437,10 @@ async def initiate_skill_sync_oauth(
         raise
     except Exception as exc:
         logger.exception("Failed to initiate GitHub OAuth for %s", source_id)
-        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
 
 
 @router.get("/{source_id}/oauth/callback", name="skill_sync_oauth_callback")
@@ -436,6 +487,7 @@ async def skill_sync_oauth_callback(
 
 
 @router.get("/{source_id}/jobs/{job_id}", response_model=SkillSyncJobResponse)
+@track_registry_operation("read", resource_type="skill_sync_job")
 async def get_sync_job(
     source_id: str,
     job_id: str,
@@ -455,10 +507,16 @@ async def get_sync_job(
         )
         job = await job_service.get_job(job_id, source_id=source.id)
         if job is None:
-            raise HTTPException(http_status.HTTP_404_NOT_FOUND, detail="Skill sync job not found")
+            raise HTTPException(
+                http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.NOT_FOUND, "Skill sync job not found"),
+            )
         return _to_job_response(job)
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("Failed to get skill sync job %s", job_id)
-        raise HTTPException(http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
