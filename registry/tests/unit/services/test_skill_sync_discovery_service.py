@@ -186,9 +186,6 @@ def test_empty_frontmatter_skipped():
     assert "skills/empty.md" in result.summary.skippedPaths
 
 
-# ── _parse_frontmatter ────────────────────────────────────────
-
-
 def test_parse_frontmatter_valid():
     content = "---\nname: test\ndescription: hello\n---\nBody text"
     result = _parse_frontmatter(content)
@@ -226,3 +223,28 @@ def test_discovery_summary_file_count():
     result = SkillSyncDiscoveryService().discover_skills(files)
     assert result.summary.discoveredSkillCount == 2
     assert result.summary.discoveredFileCount == 3
+
+
+def test_colocated_skills_no_shared_aux_files():
+    """Two .md skills in the same directory should NOT share auxiliary files."""
+    files = [
+        _file("skills/deploy.md", _md("deploy", "Deploy skill")),
+        _file("skills/rollback.md", _md("rollback", "Rollback skill")),
+        _file("skills/config.json", b'{"key": "value"}'),
+    ]
+    result = SkillSyncDiscoveryService().discover_skills(files)
+    assert len(result.skills) == 2
+    for skill in result.skills:
+        assert skill.files == [], f"Skill '{skill.name}' should have no aux files when colocated"
+
+
+def test_single_skill_in_dir_gets_aux_files():
+    """A sole .md skill in its directory should still get auxiliary files."""
+    files = [
+        _file("skills/deploy.md", _md("deploy", "Deploy skill")),
+        _file("skills/config.json", b'{"key": "value"}'),
+        _file("skills/template.txt", b"template"),
+    ]
+    result = SkillSyncDiscoveryService().discover_skills(files)
+    assert len(result.skills) == 1
+    assert len(result.skills[0].files) == 2

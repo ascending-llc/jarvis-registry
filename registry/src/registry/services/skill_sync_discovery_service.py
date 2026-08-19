@@ -53,6 +53,7 @@ class DiscoveryResult:
 
 class SkillSyncDiscoveryService:
     def discover_skills(self, files: list[DiscoveredFile]) -> DiscoveryResult:
+        """Scan .md files for YAML frontmatter, associate same-directory aux files per skill."""
         md_files: dict[str, DiscoveredFile] = {}
         aux_files: dict[str, list[DiscoveredFile]] = {}
 
@@ -62,6 +63,12 @@ class SkillSyncDiscoveryService:
             else:
                 parent = os.path.dirname(f.relative_path)
                 aux_files.setdefault(parent, []).append(f)
+
+        # Count .md skills per directory — aux files are only assigned when unambiguous (single skill in dir)
+        md_count_per_dir: dict[str, int] = {}
+        for path in md_files:
+            parent = os.path.dirname(path)
+            md_count_per_dir[parent] = md_count_per_dir.get(parent, 0) + 1
 
         skills: list[DiscoveredSkill] = []
         errors: list[SkillSyncSkillError] = []
@@ -123,7 +130,8 @@ class SkillSyncDiscoveryService:
             seen_names[name] = path
 
             parent_dir = os.path.dirname(path)
-            skill_files = aux_files.get(parent_dir, [])
+            # Only assign aux files when this is the sole .md skill in its directory
+            skill_files = aux_files.get(parent_dir, []) if md_count_per_dir.get(parent_dir, 0) == 1 else []
             if len(skill_files) > MAX_FILES_PER_SKILL:
                 errors.append(
                     SkillSyncSkillError(
