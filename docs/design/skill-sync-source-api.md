@@ -107,7 +107,7 @@
 - `githubAppClientSecret` is never returned in any response; `hasClientSecret` indicates whether one is stored
 
 **Error**:
-- `400` Validation error (invalid paths, bad owner/repo format, missing required fields)
+- `422` Validation error (invalid paths, bad owner/repo format, missing required fields)
 - `500` Internal server error
 
 ---
@@ -151,7 +151,7 @@
         "status": "success",
         "startedAt": "2026-08-19T10:00:00Z",
         "finishedAt": "2026-08-19T10:02:30Z",
-        "commitSha": "commit-sha-1"
+        "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "permissions": { "VIEW": true, "EDIT": true, "DELETE": false, "SHARE": false },
       "createdAt": "2026-08-19T10:30:00Z",
@@ -203,7 +203,7 @@
     "status": "success",
     "startedAt": "2026-08-19T10:00:00Z",
     "finishedAt": "2026-08-19T10:02:30Z",
-    "commitSha": "commit-sha-1"
+    "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "permissions": { "VIEW": true, "EDIT": true, "DELETE": true, "SHARE": true },
   "createdAt": "2026-08-19T10:30:00Z",
@@ -269,19 +269,59 @@
 
 **Request Fields**:
 - All create fields are accepted (same validation rules apply)
-- `syncAfterUpdate` (optional, boolean, default: `false`): When `true`, triggers a sync after the update. Currently returns `501 Not Implemented` (deferred to PR2)
+- `syncAfterUpdate` (optional, boolean, default: `false`): When `true`, triggers a sync after the update when a usable GitHub token is available; otherwise returns `needsAuthorization: true`
 
 **Behavior**:
 - Only `ACTIVE` sources can be updated (state machine guard)
 - Changing `githubAppClientId` or `githubAppClientSecret` automatically **deletes all stored OAuth tokens** for this source, forcing re-authorization on next sync
 
-**Response**: `200 OK` — returns the updated `SkillSyncSourceDetailResponse`
+**Response**: `200 OK` — when `syncAfterUpdate` is omitted or `false`, returns the updated `SkillSyncSourceDetailResponse`
+
+When `syncAfterUpdate=true` and sync starts successfully, returns `SkillSyncTriggerResponse`:
+```json
+{
+  "job": {
+    "id": "job-id-3",
+    "sourceId": "source-id-1",
+    "jobType": "full_sync",
+    "triggerType": "manual",
+    "status": "pending",
+    "phase": "queued",
+    "requestSnapshot": {
+      "owner": "new-org",
+      "repo": "new-repo",
+      "ref": "develop",
+      "paths": ["src/skills/"],
+      "skillDiscoveryDepth": 3
+    },
+    "discoverySummary": { "discoveredSkillCount": 0, "discoveredFileCount": 0, "skippedPaths": [] },
+    "applySummary": { "skillsCreated": 0, "skillsUpdated": 0, "skillsDeleted": 0, "skillsFailed": 0, "filesCreated": 0, "filesUpdated": 0, "filesDeleted": 0 },
+    "skillErrors": [],
+    "errorCode": null,
+    "error": null,
+    "startedAt": null,
+    "finishedAt": null,
+    "createdAt": "2026-08-19T10:00:00Z",
+    "updatedAt": "2026-08-19T10:00:00Z"
+  },
+  "needsAuthorization": false,
+  "authorizeUrl": null
+}
+```
+
+When authorization is required:
+```json
+{
+  "job": null,
+  "needsAuthorization": true,
+  "authorizeUrl": null
+}
+```
 
 **Error**:
 - `403` User does not have EDIT permission
 - `404` Source not found
 - `409` Source cannot be updated (status is not `ACTIVE`)
-- `501` `syncAfterUpdate=true` is not yet implemented
 - `500` Internal server error
 
 ---
@@ -290,19 +330,17 @@
 
 **Endpoint**: `DELETE /api/v1/skill-sync-sources/{source_id}`
 
-> **Status**: `501 Not Implemented` — gated until PR2 ships the sync execution engine.
-
-When implemented, this endpoint will:
+This endpoint:
 1. Transition source status to `DELETING`
-2. Create a `DELETE_SYNC` job to remove all synced skills
+2. Create a `DELETE_SYNC` job to soft-delete all synced skills and delete their auxiliary files, ACL entries, and stored GitHub tokens
 3. Return `202 Accepted` with the job ID
 
-**Response** (planned): `202 Accepted`
+**Response**: `202 Accepted`
 ```json
 {
   "sourceId": "source-id-1",
   "jobId": "job-id-2",
-  "status": "pending"
+  "status": "deleting"
 }
 ```
 
@@ -310,7 +348,6 @@ When implemented, this endpoint will:
 - `403` User does not have DELETE permission
 - `404` Source not found
 - `409` Source cannot be deleted (status is not `ACTIVE`)
-- `501` Not implemented (current)
 - `500` Internal server error
 
 ---
@@ -319,14 +356,12 @@ When implemented, this endpoint will:
 
 **Endpoint**: `POST /api/v1/skill-sync-sources/{source_id}/sync`
 
-> **Status**: `501 Not Implemented` — gated until PR2 ships the sync execution engine.
-
-When implemented, this endpoint will:
+This endpoint:
 1. Check for an existing OAuth token (access → refresh fallback)
-2. If no valid token, return `needsAuthorization: true` with `authorizeUrl`
-3. If token is valid, create a `FULL_SYNC` job and return job details
+2. If no valid token is available, return `needsAuthorization: true`
+3. If a token is valid, atomically transition the source to `pending`, create a `FULL_SYNC` job, launch background sync, and return job details
 
-**Response** (planned): `200 OK`
+**Response**: `200 OK`
 ```json
 {
   "job": {
@@ -348,7 +383,7 @@ Or when re-authorization is needed:
 {
   "job": null,
   "needsAuthorization": true,
-  "authorizeUrl": "https://github.com/login/oauth/authorize?client_id=...&state=...&code_challenge=...&code_challenge_method=S256"
+  "authorizeUrl": null
 }
 ```
 
@@ -356,7 +391,6 @@ Or when re-authorization is needed:
 - `403` User does not have EDIT permission
 - `404` Source not found
 - `409` Source already has an active sync job
-- `501` Not implemented (current)
 - `500` Internal server error
 
 ---
@@ -365,20 +399,17 @@ Or when re-authorization is needed:
 
 **Endpoint**: `GET /api/v1/skill-sync-sources/{source_id}/oauth/initiate`
 
-> **Status**: `501 Not Implemented` — gated until PR2.
-
-When implemented, this endpoint will:
+This endpoint:
 1. Generate PKCE `code_verifier` + `code_challenge` (S256 via authlib)
 2. Store OAuth flow state in FlowStateManager (Redis or memory fallback)
 3. Redirect (`307`) to `https://github.com/login/oauth/authorize` with PKCE parameters
 
-**Response** (planned): `307 Temporary Redirect`
+**Response**: `307 Temporary Redirect`
 - `Location: https://github.com/login/oauth/authorize?client_id=...&redirect_uri=...&state=...&code_challenge=...&code_challenge_method=S256`
 
 **Error**:
 - `403` User does not have EDIT permission
 - `404` Source not found
-- `501` Not implemented (current)
 - `500` Internal server error
 
 ---
@@ -398,19 +429,16 @@ This is the GitHub OAuth redirect target. It is **unauthenticated** (GitHub redi
 }
 ```
 
-**Current Behavior** (PR1):
+**Behavior**:
 - If `error` is present or `code`/`state` is missing → redirects to frontend with `error=auth_failed`
-- If source exists → redirects to frontend with `error=sync_unavailable`
 - If source not found → redirects to frontend with `error=auth_failed`
-
-**Planned Behavior** (PR2):
-1. Validate state token and consume flow from FlowStateManager
-2. Exchange `code` for tokens at `https://github.com/login/oauth/access_token` (with `code_verifier`)
-3. Store encrypted tokens (access + refresh) in MongoDB `Token` collection
-4. Redirect to frontend: `{registry_client_url}/skill-sync-sources/{source_id}?syncTriggered=true`
+- Otherwise, validates state token and consumes the stored flow from FlowStateManager
+- Exchanges `code` for tokens at `https://github.com/login/oauth/access_token` with `code_verifier`
+- Stores encrypted tokens (access + refresh) in MongoDB `tokens`
+- Triggers a `FULL_SYNC` job with `triggerType=oauth_callback`
 
 **Response**: `307 Temporary Redirect`
-- Success: `Location: {registry_client_url}/skill-sync-sources/{source_id}?syncTriggered=true`
+- Success: `Location: {registry_client_url}/skill-sync-sources/{source_id}?status=syncing`
 - Error: `Location: {registry_client_url}/skill-sync-sources/{source_id}?error=auth_failed`
 
 ---
@@ -509,8 +537,8 @@ MongoDB collection: `skill_sync_sources`
 | `status` | SkillSyncSourceStatus | Source lifecycle status |
 | `syncStatus` | SkillSyncStatus | Current sync state |
 | `syncMessage` | string \| null | Last sync error/status message |
-| `stats` | SkillSyncSourceStats | `{ skillCount, fileCount }` |
-| `lastSync` | SkillSyncSourceLastSync \| null | Last completed sync snapshot |
+| `stats` | SkillSyncSourceStats | Live synced inventory counts: `{ skillCount, fileCount }` for non-deleted GitHub skills and their auxiliary files |
+| `lastSync` | SkillSyncSourceLastSync \| null | Last completed sync snapshot; `commitSha` is either a 40-character Git commit SHA or `"unknown"` |
 | `createdBy` | string \| null | Creator user ID |
 | `updatedBy` | string \| null | Last updater user ID |
 | `createdAt` | datetime | Auto-set on insert |
@@ -655,7 +683,7 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
 7. Server stores encrypted tokens (AES-CBC) in MongoDB Token collection
 
 8. Server redirects to frontend:
-   → {registry_client_url}/skill-sync-sources/{source_id}?syncTriggered=true
+   → {registry_client_url}/skill-sync-sources/{source_id}?status=syncing
 ```
 
 ### Token Prefix Reference
@@ -706,9 +734,8 @@ All error responses follow the standard format:
 
 | Status Code | Meaning |
 |-------------|---------|
-| `400` | Validation error (invalid input) |
 | `403` | Insufficient permissions |
 | `404` | Resource not found |
 | `409` | Conflict (invalid state for operation, e.g., updating a non-ACTIVE source) |
-| `501` | Feature not yet implemented (sync execution, delete, OAuth) |
+| `422` | Validation error (invalid input) |
 | `500` | Internal server error |
