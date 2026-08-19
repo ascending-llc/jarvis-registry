@@ -262,11 +262,33 @@ def test_extract_commit_sha_from_redirect():
 
 
 def test_extract_commit_sha_from_content_disposition():
+    sha = "b" * 40
     resp = _FakeResponse(
         content=b"data",
-        headers={"content-disposition": 'attachment; filename="owner-repo-abc1234def.tar.gz"'},
+        headers={"content-disposition": f'attachment; filename="owner-repo-{sha}.tar.gz"'},
     )
-    assert _extract_commit_sha(resp) == "abc1234def"
+    assert _extract_commit_sha(resp) == sha
+
+
+def test_extract_commit_sha_rejects_tokenized_redirect():
+    resp = _FakeResponse(
+        content=b"data",
+        history=[
+            _FakeResponse(
+                status_code=302,
+                headers={"location": "https://codeload.github.com/owner/repo/legacy.tar.gz/main?token=secret-token"},
+            )
+        ],
+    )
+    assert _extract_commit_sha(resp) == "unknown"
+
+
+def test_extract_commit_sha_rejects_non_sha_filename():
+    resp = _FakeResponse(
+        content=b"data",
+        headers={"content-disposition": 'attachment; filename="owner-repo-main?token=secret-token.tar.gz"'},
+    )
+    assert _extract_commit_sha(resp) == "unknown"
 
 
 def test_extract_commit_sha_unknown():

@@ -260,8 +260,20 @@ def test_update_with_sync_triggers_sync(skill_sync_route_context) -> None:
         json={"displayName": "Renamed", "syncAfterUpdate": True},
     )
     assert response.status_code == 200
+    assert response.json()["job"]["id"] == str(ctx.job.id)
     ctx.source_service.update_source.assert_awaited_once()
     ctx.skill_sync_service.trigger_sync.assert_awaited_once()
+
+
+def test_update_with_sync_returns_needs_auth(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=(None, True))
+    response = ctx.client.put(
+        f"/skill-sync-sources/{ctx.source.id}",
+        json={"displayName": "Renamed", "syncAfterUpdate": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["needsAuthorization"] is True
 
 
 def test_list_sources_maps_acl_runtime_error_to_500(skill_sync_route_context) -> None:

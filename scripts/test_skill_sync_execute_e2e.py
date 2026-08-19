@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -43,6 +44,7 @@ DEFAULT_SYNC_PATHS = [
     "jarvis-python-fastapi-backend-practices",
     "jarvis-registry-backend-practices",
 ]
+FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 TERMINAL_JOB_STATUSES = {"success", "partial_success", "failed"}
 TOKEN_TYPES = ["skill_sync_github_access", "skill_sync_github_refresh"]
 POLL_INTERVAL_SECONDS = 2
@@ -217,6 +219,12 @@ def _missing_expected_skill_paths(summary: dict[str, Any], paths: list[str]) -> 
     return sorted(expected_paths - synced_paths)
 
 
+def _is_safe_commit_sha(value: Any) -> bool:
+    if value in (None, "unknown"):
+        return True
+    return isinstance(value, str) and bool(FULL_COMMIT_SHA_RE.fullmatch(value))
+
+
 class SkillSyncExecuteE2E:
     def __init__(self) -> None:
         cookie = os.environ.get("COOKIE", "")
@@ -352,6 +360,24 @@ class SkillSyncExecuteE2E:
         missing_paths = _missing_expected_skill_paths(after, paths)
         if missing_paths:
             raise RuntimeError(f"Sync finished but expected skill paths are missing in MongoDB: {missing_paths}")
+        unsafe_commit_values = [
+            {"path": skill.get("path"), "commitSha": skill.get("commitSha")}
+            for skill in after["skills"]
+            if not _is_safe_commit_sha(skill.get("commitSha"))
+        ]
+        if unsafe_commit_values:
+            raise RuntimeError(f"Unsafe commitSha values found in MongoDB: {unsafe_commit_values}")
+
+        source_after = self.db.skill_sync_sources.find_one({"_id": source_id}, _safe_source_projection())
+        if source_after is None:
+            raise RuntimeError(f"Source disappeared after sync: {source_id}")
+        stats = source_after.get("stats") or {}
+        if stats.get("skillCount") != after["liveSkillCount"] or stats.get("fileCount") != after["skillFileCount"]:
+            raise RuntimeError(
+                "Source stats do not match live MongoDB state: "
+                f"stats={stats}, liveSkillCount={after['liveSkillCount']}, "
+                f"skillFileCount={after['skillFileCount']}"
+            )
 
 
 def main() -> None:
