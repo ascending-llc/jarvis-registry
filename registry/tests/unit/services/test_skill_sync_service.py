@@ -46,7 +46,14 @@ async def test_create_source_with_owner_acl_uses_one_transaction(monkeypatch):
     source_service.create_source = AsyncMock(return_value=source)
     acl_service = MagicMock()
     acl_service.grant_permission = AsyncMock()
-    service = SkillSyncService(source_service)
+    service = SkillSyncService(
+        source_crud_service=source_service,
+        job_service=MagicMock(),
+        token_service=MagicMock(),
+        github_service=MagicMock(),
+        discovery_service=MagicMock(),
+        acl_service=MagicMock(),
+    )
 
     result = await service.create_source_with_owner_acl(
         display_name="Skills",

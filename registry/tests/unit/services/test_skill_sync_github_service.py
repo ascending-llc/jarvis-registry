@@ -1,0 +1,258 @@
+import io
+import tarfile
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
+
+from registry.services.skill_sync_github_service import (
+    MAX_TARBALL_SIZE,
+    GitHubDownloadError,
+    SkillSyncGitHubService,
+    _extract_commit_sha,
+    _matches_paths,
+    _strip_top_dir,
+)
+from registry_pkgs.models.enums import SkillSyncJobErrorCode
+
+
+def _make_tarball(files: dict[str, bytes], top_dir: str = "owner-repo-abc1234") -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, content in files.items():
+            full_path = f"{top_dir}/{name}"
+            info = tarfile.TarInfo(name=full_path)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    return buf.getvalue()
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        status_code: int = 200,
+        content: bytes = b"",
+        headers: dict | None = None,
+        history: list | None = None,
+    ):
+        self.status_code = status_code
+        self.content = content
+        self.headers = headers or {}
+        self.history = history or []
+
+
+def _make_redirect_history(sha: str) -> list:
+    return [
+        _FakeResponse(
+            status_code=302,
+            headers={"location": f"https://codeload.github.com/owner/repo/legacy.tar.gz/{sha}"},
+        )
+    ]
+
+
+# ── download_tarball ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_success():
+    tarball = _make_tarball({"skills/hello.md": b"# Hello"})
+    sha = "a" * 40
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = _FakeResponse(
+        content=tarball,
+        history=_make_redirect_history(sha),
+    )
+    service = SkillSyncGitHubService(client)
+    result_bytes, commit_sha = await service.download_tarball(owner="org", repo="repo", ref="main", access_token="tok")
+    assert result_bytes == tarball
+    assert commit_sha == sha
+    client.get.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_auth_failed():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = _FakeResponse(status_code=401)
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.download_tarball(owner="o", repo="r", ref="main", access_token="bad")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_forbidden():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = _FakeResponse(status_code=403)
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.download_tarball(owner="o", repo="r", ref="main", access_token="bad")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_rate_limited():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = _FakeResponse(status_code=429)
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_RATE_LIMITED
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_not_found():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = _FakeResponse(status_code=404)
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_server_error():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = _FakeResponse(status_code=500)
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.DOWNLOAD_FAILED
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_too_large():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = _FakeResponse(content=b"x" * (MAX_TARBALL_SIZE + 1))
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.DOWNLOAD_TOO_LARGE
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_network_error():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.side_effect = httpx.ConnectError("connection refused")
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.DOWNLOAD_FAILED
+
+
+# ── extract_files ─────────────────────────────────────────────
+
+
+def test_extract_files_basic():
+    tarball = _make_tarball(
+        {
+            "skills/hello.md": b"# Hello",
+            "skills/world.md": b"# World",
+            "README.md": b"# Readme",
+        }
+    )
+    service = SkillSyncGitHubService(AsyncMock())
+    files = service.extract_files(tarball, paths=["skills"], max_depth=2)
+    assert len(files) == 2
+    paths = {f.relative_path for f in files}
+    assert paths == {"skills/hello.md", "skills/world.md"}
+
+
+def test_extract_files_respects_depth():
+    tarball = _make_tarball(
+        {
+            "skills/a.md": b"a",
+            "skills/sub/b.md": b"b",
+            "skills/sub/deep/c.md": b"c",
+        }
+    )
+    service = SkillSyncGitHubService(AsyncMock())
+    files = service.extract_files(tarball, paths=["skills"], max_depth=1)
+    paths = {f.relative_path for f in files}
+    assert "skills/a.md" in paths
+    assert "skills/sub/b.md" in paths
+    assert "skills/sub/deep/c.md" not in paths
+
+
+def test_extract_files_multiple_paths():
+    tarball = _make_tarball(
+        {
+            "skills/a.md": b"a",
+            "docs/b.md": b"b",
+            "other/c.md": b"c",
+        }
+    )
+    service = SkillSyncGitHubService(AsyncMock())
+    files = service.extract_files(tarball, paths=["skills", "docs"], max_depth=2)
+    paths = {f.relative_path for f in files}
+    assert paths == {"skills/a.md", "docs/b.md"}
+
+
+def test_extract_files_skips_oversized(monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_github_service.MAX_SINGLE_FILE_SIZE", 10)
+    tarball = _make_tarball(
+        {
+            "skills/small.md": b"ok",
+            "skills/big.md": b"x" * 20,
+        }
+    )
+    service = SkillSyncGitHubService(AsyncMock())
+    files = service.extract_files(tarball, paths=["skills"], max_depth=2)
+    assert len(files) == 1
+    assert files[0].relative_path == "skills/small.md"
+
+
+def test_extract_files_decompression_bomb(monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_github_service.MAX_EXTRACTED_SIZE", 10)
+    tarball = _make_tarball(
+        {
+            "skills/a.md": b"x" * 6,
+            "skills/b.md": b"y" * 6,
+        }
+    )
+    service = SkillSyncGitHubService(AsyncMock())
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        service.extract_files(tarball, paths=["skills"], max_depth=2)
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.DECOMPRESSION_BOMB
+
+
+def test_extract_files_invalid_tarball():
+    service = SkillSyncGitHubService(AsyncMock())
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        service.extract_files(b"not a tarball", paths=["skills"], max_depth=2)
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.EXTRACTION_FAILED
+
+
+# ── helpers ───────────────────────────────────────────────────
+
+
+def test_strip_top_dir():
+    assert _strip_top_dir("owner-repo-abc1234/skills/hello.md") == "skills/hello.md"
+    assert _strip_top_dir("single") == ""
+    assert _strip_top_dir("top/") == ""
+
+
+def test_matches_paths():
+    assert _matches_paths("skills/hello.md", ["skills"], 2) is True
+    assert _matches_paths("skills/sub/hello.md", ["skills"], 2) is True
+    assert _matches_paths("other/hello.md", ["skills"], 2) is False
+    assert _matches_paths("skills/a/b/c.md", ["skills"], 1) is False
+    assert _matches_paths("skills/a/b/c.md", ["skills"], 3) is True
+
+
+def test_extract_commit_sha_from_redirect():
+    sha = "a" * 40
+    resp = _FakeResponse(content=b"data", history=_make_redirect_history(sha))
+    assert _extract_commit_sha(resp) == sha
+
+
+def test_extract_commit_sha_from_content_disposition():
+    resp = _FakeResponse(
+        content=b"data",
+        headers={"content-disposition": 'attachment; filename="owner-repo-abc1234def.tar.gz"'},
+    )
+    assert _extract_commit_sha(resp) == "abc1234def"
+
+
+def test_extract_commit_sha_unknown():
+    resp = _FakeResponse(content=b"data")
+    assert _extract_commit_sha(resp) == "unknown"
