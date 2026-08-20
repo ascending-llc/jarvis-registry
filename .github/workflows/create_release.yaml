@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       new_tag:
-        description: 'Tag to create the release for (e.g. asc1.2.3)'
+        description: "Tag to create the release for (e.g. asc1.2.3)"
         required: true
         type: string
       prev_tag:
-        description: 'Previous tag for release notes base (leave blank to auto-detect)'
+        description: "Previous tag for release notes base (leave blank to auto-detect)"
         required: false
         type: string
 
@@ -39,7 +39,7 @@ jobs:
             # Find the tag of the most recent published (non-draft) GitHub release,
             # skipping NEW_TAG itself if a release was already created for it, and
             # restricted to asc* tags so a cli-v* CLI mirror release (see
-            # cli-jarvis-registry's release.yaml) can't be picked as the diff base.
+            # jarvis-registry-cli's release.yaml) can't be picked as the diff base.
             PREV_TAG=$(gh release list \
               --exclude-drafts \
               --limit 20 \
@@ -68,7 +68,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_TAG:  ${{ inputs.new_tag }}
+          NEW_TAG: ${{ inputs.new_tag }}
           RELEASE_NOTES: ${{ steps.notes.outputs['release-notes'] }}
         run: |
           gh release create "$NEW_TAG" \
