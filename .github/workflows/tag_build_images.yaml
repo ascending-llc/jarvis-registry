@@ -39,7 +39,7 @@ jobs:
       - name: Get current version from latest tag
         id: get_version
         run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "asc0.0.0")
+          LATEST_TAG=$(git describe --tags --match 'asc*' --abbrev=0 2>/dev/null || echo "asc0.0.0")
           CURRENT_VERSION=${LATEST_TAG#asc}
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT

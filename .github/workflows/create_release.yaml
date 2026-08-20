@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       new_tag:
-        description: 'Tag to create the release for (e.g. asc1.2.3)'
+        description: "Tag to create the release for (e.g. asc1.2.3)"
         required: true
         type: string
       prev_tag:
-        description: 'Previous tag for release notes base (leave blank to auto-detect)'
+        description: "Previous tag for release notes base (leave blank to auto-detect)"
         required: false
         type: string
 
@@ -37,12 +37,14 @@ jobs:
             PREV_TAG="$PREV_TAG_INPUT"
           else
             # Find the tag of the most recent published (non-draft) GitHub release,
-            # skipping NEW_TAG itself if a release was already created for it.
+            # skipping NEW_TAG itself if a release was already created for it, and
+            # restricted to asc* tags so a cli-v* CLI mirror release (see
+            # jarvis-registry-cli's release.yaml) can't be picked as the diff base.
             PREV_TAG=$(gh release list \
               --exclude-drafts \
               --limit 20 \
               --json tagName,isDraft \
-              --jq "[.[] | select(.tagName != \"${NEW_TAG}\")][0].tagName" \
+              --jq "[.[] | select((.tagName | startswith(\"asc\")) and .tagName != \"${NEW_TAG}\")][0].tagName" \
               2>/dev/null || echo "")
           fi
           if [ -z "$PREV_TAG" ]; then
@@ -66,12 +68,15 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_TAG:  ${{ inputs.new_tag }}
+          NEW_TAG: ${{ inputs.new_tag }}
           RELEASE_NOTES: ${{ steps.notes.outputs['release-notes'] }}
         run: |
           gh release create "$NEW_TAG" \
             --title "Jarvis Registry $NEW_TAG" \
             --notes "$RELEASE_NOTES" \
             --latest
-        # Publishing this release automatically fires release-changelog.yml
-        # (on: release: types: [published]) → generates the MkDocs docs page.
+        # Changelog generation is a separate manual step: run the "Release
+        # Changelog" workflow (release_changelog.yaml, workflow_dispatch) against
+        # this tag. If auto-triggering on `release: published` is ever restored,
+        # gate it on startsWith(github.event.release.tag_name, 'asc') so it
+        # doesn't fire on cli-v* CLI mirror releases.

@@ -42,11 +42,14 @@ jobs:
           if [ -n "$INPUT_TAG" ]; then
             TAG="$INPUT_TAG"
           else
+            # --limit 20 + a startswith("asc") filter, not --limit 1, so a more
+            # recent cli-v* CLI mirror release (see create_release.yaml) can't
+            # shadow the actual latest Jarvis Registry release.
             TAG=$(gh release list \
               --exclude-drafts \
-              --limit 1 \
+              --limit 20 \
               --json tagName \
-              --jq '.[0].tagName' \
+              --jq '[.[] | select(.tagName | startswith("asc"))][0].tagName' \
               2>/dev/null || echo "")
           fi
           if [ -z "$TAG" ]; then
