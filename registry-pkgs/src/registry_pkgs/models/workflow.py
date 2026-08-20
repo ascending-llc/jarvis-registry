@@ -617,3 +617,33 @@ class WorkflowRun(Document):
     class Settings:
         name = "workflow_runs"
         indexes = ["workflow_definition_id", "status", "parent_run_id"]
+
+
+class WorkflowSchedule(Document):
+    """Recurring CRON trigger for a WorkflowDefinition."""
+
+    workflow_definition_id: PydanticObjectId
+    cron_expression: str
+    timezone: str = "UTC"
+    initial_input: dict[str, Any] | None = None
+    enabled: bool = False
+
+    next_run_at: datetime | None = None
+    locked_until: datetime | None = None
+    last_run_at: datetime | None = None
+    last_run_id: PydanticObjectId | None = None
+    last_run_status: WorkflowRunStatus | None = None
+
+    created_by: PydanticObjectId
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    class Settings:
+        name = "workflow_schedules"
+        indexes = [
+            IndexModel(
+                [("enabled", ASCENDING), ("next_run_at", ASCENDING), ("locked_until", ASCENDING)],
+                name="schedule_due_claim_idx",
+            ),
+            "workflow_definition_id",
+        ]

@@ -34,6 +34,7 @@ from registry_pkgs.models.workflow import (
     WorkflowNode,
     WorkflowNodePosition,
     WorkflowRun,
+    WorkflowSchedule,
     WorkflowVersion,
 )
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
@@ -554,6 +555,17 @@ class WorkflowService:
 
             # Delete version history
             await WorkflowVersion.find({"workflow_id": workflow.id}).delete()
+
+            schedule_filter = {"workflow_definition_id": workflow.id}
+            schedules = await WorkflowSchedule.find(schedule_filter).to_list()
+            for schedule in schedules:
+                await self._acl_service.delete_acl_entries_for_resource(
+                    resource_type=RegistryResourceType.WORKFLOW_SCHEDULE.value,
+                    resource_id=schedule.id,
+                )
+            if schedules:
+                await WorkflowSchedule.find(schedule_filter).delete()
+                logger.info("Deleted %d schedules for workflow %s", len(schedules), workflow_id)
 
             # Delete the workflow
             await workflow.delete()

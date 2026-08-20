@@ -808,9 +808,19 @@ async def test_delete_workflow_cascades_agno_sessions(monkeypatch: pytest.Monkey
         def find(*_a, **_k):
             return _DeleteQuery()
 
+    class _EmptyScheduleQuery(_DeleteQuery):
+        async def to_list(self):
+            return []
+
+    class _FakeWorkflowSchedule:
+        @staticmethod
+        def find(*_a, **_k):
+            return _EmptyScheduleQuery()
+
     monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeWorkflowRun)
     monkeypatch.setattr(workflow_service, "NodeRun", _FakeNodeRun)
     monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
+    monkeypatch.setattr(workflow_service, "WorkflowSchedule", _FakeWorkflowSchedule)
 
     class _Collection:
         async def delete_many(self, query):

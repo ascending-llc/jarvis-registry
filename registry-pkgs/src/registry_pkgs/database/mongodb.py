@@ -27,6 +27,7 @@ from ..models import (
     User,
     WorkflowDefinition,
     WorkflowRun,
+    WorkflowSchedule,
     WorkflowVersion,
 )
 
@@ -139,6 +140,7 @@ class MongoDB:
                     FederationSyncJob,
                     WorkflowDefinition,
                     WorkflowRun,
+                    WorkflowSchedule,
                     NodeRun,
                     WorkflowVersion,
                     ExtendedSkill,

@@ -10,6 +10,7 @@ class RegistryResourceType(StrEnum):
     REMOTE_AGENT = "remoteAgent"
     FEDERATION = "federation"
     WORKFLOW = "workflow"
+    WORKFLOW_SCHEDULE = "workflowSchedule"
     SKILL = "skill"
 
 
