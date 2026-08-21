@@ -42,8 +42,10 @@ from ....schemas.skill_sync_api_schemas import (
     SkillSyncTriggerResponse,
 )
 from ....services.access_control_service import ACLService
+from ....services.skill_sync_job_service import SkillSyncJobService
 from ....services.skill_sync_oauth_service import SkillSyncOAuthService
 from ....services.skill_sync_service import SkillSyncService
+from ....services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from ....services.skill_sync_token_service import SkillSyncTokenService
 
 logger = logging.getLogger(__name__)
@@ -112,7 +114,7 @@ def _to_list_response(
 
 async def _to_detail_response(
     source: SkillSyncSource,
-    source_service,
+    source_service: SkillSyncSourceCrudService,
     permissions: ResourcePermissions | None = None,
 ) -> SkillSyncSourceDetailResponse:
     recent_jobs = await source_service.get_recent_jobs(source.id)
@@ -127,7 +129,7 @@ async def _to_detail_response(
     )
 
 
-async def _required_source(source_id: str, source_service) -> SkillSyncSource:
+async def _required_source(source_id: str, source_service: SkillSyncSourceCrudService) -> SkillSyncSource:
     source = await source_service.get_source(source_id)
     if source is None:
         raise HTTPException(
@@ -142,7 +144,7 @@ async def _required_source(source_id: str, source_service) -> SkillSyncSource:
 async def create_source(
     data: SkillSyncSourceCreateRequest,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     skill_sync_service: SkillSyncService = Depends(get_skill_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -188,7 +190,7 @@ async def list_sources(
     query: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
@@ -235,7 +237,7 @@ async def list_sources(
 async def get_source(
     source_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
@@ -264,7 +266,7 @@ async def update_source(
     source_id: str,
     data: SkillSyncSourceUpdateRequest,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     sync_service: SkillSyncService = Depends(get_skill_sync_service),
     token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
     acl_service: ACLService = Depends(get_acl_service),
@@ -320,7 +322,7 @@ async def update_source(
 async def delete_source(
     source_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     sync_service: SkillSyncService = Depends(get_skill_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -363,7 +365,7 @@ async def delete_source(
 async def sync_source(
     source_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     sync_service: SkillSyncService = Depends(get_skill_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -413,7 +415,7 @@ async def initiate_skill_sync_oauth(
     request: Request,
     source_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     oauth_service: SkillSyncOAuthService = Depends(get_skill_sync_oauth_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -450,7 +452,7 @@ async def skill_sync_oauth_callback(
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     oauth_service: SkillSyncOAuthService = Depends(get_skill_sync_oauth_service),
     sync_service: SkillSyncService = Depends(get_skill_sync_service),
 ):
@@ -492,8 +494,8 @@ async def get_sync_job(
     source_id: str,
     job_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
-    job_service=Depends(get_skill_sync_job_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
+    job_service: SkillSyncJobService = Depends(get_skill_sync_job_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:

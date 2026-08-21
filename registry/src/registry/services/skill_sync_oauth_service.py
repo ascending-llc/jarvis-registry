@@ -39,7 +39,6 @@ class SkillSyncOAuthService:
         flow_id = f"skillsync:{user_id}:{source.id}:{secrets.token_urlsafe(8)}"
         oauth_config = {
             "client_id": source.githubAppClientId,
-            "redirect_uri": redirect_uri,
             "authorization_url": _GITHUB_AUTHORIZE_URL,
             "token_url": _GITHUB_TOKEN_URL,
             "scope": "",
@@ -53,6 +52,7 @@ class SkillSyncOAuthService:
             code_verifier=code_verifier,
             oauth_config=oauth_config,
             flow_id=flow_id,
+            redirect_uri=redirect_uri,
         )
         params = urlencode(
             {

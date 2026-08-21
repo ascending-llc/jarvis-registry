@@ -27,6 +27,7 @@ from registry_pkgs.models.enums import (
     SkillSyncStatus,
     SkillSyncTriggerType,
 )
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.skill_sync_job import SkillSyncApplySummary, SkillSyncDiscoverySummary
 from registry_pkgs.models.skill_sync_source import SkillSyncSourceStats
 
@@ -85,6 +86,15 @@ def _make_job(source_id, **overrides):
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+def _assert_permission_checked(ctx: SimpleNamespace, required_permission: str) -> None:
+    ctx.acl_service.check_user_permission.assert_awaited_once_with(
+        user_id=PydanticObjectId(USER_ID),
+        resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
+        resource_id=ctx.source.id,
+        required_permission=required_permission,
+    )
 
 
 @pytest.fixture
@@ -149,6 +159,7 @@ def test_sync_triggers_sync_needs_auth(skill_sync_route_context) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["needsAuthorization"] is True
+    _assert_permission_checked(ctx, "EDIT")
     ctx.skill_sync_service.trigger_sync.assert_awaited_once()
 
 
@@ -159,6 +170,7 @@ def test_sync_triggers_sync_returns_job(skill_sync_route_context) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["job"]["id"] == str(ctx.job.id)
+    _assert_permission_checked(ctx, "EDIT")
 
 
 def test_job_polling_is_scoped_to_source(skill_sync_route_context) -> None:
@@ -223,6 +235,7 @@ def test_oauth_initiate_redirects_to_github(skill_sync_route_context) -> None:
     )
     assert response.status_code == 307
     assert "github.com/login/oauth/authorize" in response.headers["location"]
+    _assert_permission_checked(ctx, "EDIT")
 
 
 def test_create_source_delegates_transaction_to_service(skill_sync_route_context) -> None:
@@ -250,6 +263,7 @@ def test_delete_returns_202_with_job(skill_sync_route_context) -> None:
     assert body["sourceId"] == str(ctx.source.id)
     assert body["jobId"] == str(ctx.job.id)
     assert body["status"] == "deleting"
+    _assert_permission_checked(ctx, "DELETE")
 
 
 def test_update_with_sync_triggers_sync(skill_sync_route_context) -> None:

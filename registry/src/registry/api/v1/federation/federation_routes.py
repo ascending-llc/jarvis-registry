@@ -41,7 +41,9 @@ from ....schemas.federation_api_schemas import (
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.access_control_service import ACLService
 from ....services.federation.a2a_client_registry import A2AClientRegistry
-from ....services.federation_sync_service import run_federation_sync_background
+from ....services.federation_crud_service import FederationCrudService
+from ....services.federation_job_service import FederationJobService
+from ....services.federation_sync_service import FederationSyncService, run_federation_sync_background
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +233,7 @@ def _to_delete_response(federation, job) -> FederationDeleteResponse:
     )
 
 
-async def _get_required_federation(federation_id: str, federation_crud_service):
+async def _get_required_federation(federation_id: str, federation_crud_service: FederationCrudService):
     federation = await federation_crud_service.get_federation(federation_id)
     if federation:
         return federation
@@ -243,7 +245,7 @@ async def _get_required_federation(federation_id: str, federation_crud_service):
 
 async def _to_detail_response(
     federation,
-    federation_crud_service,
+    federation_crud_service: FederationCrudService,
     permissions: ResourcePermissions | None = None,
 ) -> FederationDetailResponse:
     recent_jobs = await federation_crud_service.get_recent_jobs(federation.id, limit=10)
@@ -284,7 +286,7 @@ def _raise_conflict(message: str) -> None:
 async def create_federation(
     data: FederationCreateRequest,
     user_context: CurrentUser,
-    federation_crud_service=Depends(get_federation_crud_service),
+    federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     """
@@ -341,7 +343,7 @@ async def list_federations(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
     pageSize: int | None = Query(default=None, ge=1, le=100, include_in_schema=False),
-    federation_crud_service=Depends(get_federation_crud_service),
+    federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     """
@@ -402,7 +404,7 @@ async def list_federations(
 async def get_federation(
     federation_id: str,
     user_context: CurrentUser,
-    federation_crud_service=Depends(get_federation_crud_service),
+    federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     """
@@ -437,8 +439,8 @@ async def get_federation_sync_job(
     federation_id: str,
     job_id: str,
     user_context: CurrentUser,
-    federation_crud_service=Depends(get_federation_crud_service),
-    federation_job_service=Depends(get_federation_job_service),
+    federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
+    federation_job_service: FederationJobService = Depends(get_federation_job_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     """Return one federation sync job for status polling."""
@@ -485,8 +487,8 @@ async def update_federation(
     federation_id: str,
     data: FederationUpdateRequest,
     user_context: CurrentUser,
-    federation_crud_service=Depends(get_federation_crud_service),
-    federation_sync_service=Depends(get_federation_sync_service),
+    federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
+    federation_sync_service: FederationSyncService = Depends(get_federation_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
     a2a_client_registry: A2AClientRegistry = Depends(get_a2a_client_registry),
 ):
@@ -536,7 +538,11 @@ def _require_syncable_federation(federation, *, dry_run: bool) -> None:
         _raise_conflict(f"Federation in sync status '{federation.syncStatus}' cannot start a new sync")
 
 
-def _validate_sync_provider_config(federation_crud_service, provider_type, provider_config: dict) -> dict:
+def _validate_sync_provider_config(
+    federation_crud_service: FederationCrudService,
+    provider_type,
+    provider_config: dict,
+) -> dict:
     try:
         return federation_crud_service.validate_provider_config(provider_type, provider_config)
     except ValueError as exc:
@@ -555,8 +561,8 @@ async def sync_federation(
     user_context: CurrentUser,
     response: Response,
     background_tasks: BackgroundTasks,
-    federation_crud_service=Depends(get_federation_crud_service),
-    federation_sync_service=Depends(get_federation_sync_service),
+    federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
+    federation_sync_service: FederationSyncService = Depends(get_federation_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     """
@@ -652,8 +658,8 @@ async def sync_federation(
 async def delete_federation(
     federation_id: str,
     user_context: CurrentUser,
-    federation_crud_service=Depends(get_federation_crud_service),
-    federation_sync_service=Depends(get_federation_sync_service),
+    federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
+    federation_sync_service: FederationSyncService = Depends(get_federation_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     """

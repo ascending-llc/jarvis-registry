@@ -129,6 +129,7 @@ class TestFlowStateManager:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
             state_metadata=state_metadata,
             device_code="device-1",
         )
@@ -173,6 +174,7 @@ class TestFlowStateManager:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
 
         flow = manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
@@ -207,6 +209,7 @@ class TestFlowStateManager:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
         manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
@@ -251,6 +254,7 @@ class TestFlowStateManager:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
         flow = manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
@@ -286,6 +290,7 @@ class TestFlowStateManager:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
         manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
@@ -339,6 +344,7 @@ class TestFlowStateManager:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
         manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
@@ -385,6 +391,7 @@ class TestFlowStateManager:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
         manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
@@ -422,6 +429,7 @@ class TestFlowStateManager:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
         manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
@@ -461,6 +469,7 @@ class TestFlowStateManager:
                 code_verifier,
                 oauth_config,
                 flow_id,
+                redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
             )
             manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
@@ -501,6 +510,7 @@ class TestFlowStateManager:
                 code_verifier,
                 oauth_config,
                 flow_id,
+                redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
             )
             flow = manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
             # Make first flow expired
@@ -546,6 +556,7 @@ class TestFlowStateManagerIntegration:
             code_verifier,
             oauth_config,
             flow_id,
+            redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
         manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
@@ -601,6 +612,7 @@ class TestFlowStateManagerIntegration:
                 code_verifier,
                 oauth_config,
                 flow_id,
+                redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
             )
             manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
             flows.append(flow_id)
