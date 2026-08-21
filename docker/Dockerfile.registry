@@ -28,8 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy over config files
-COPY ./config /app/config/
+# Copy over the metrics config file — the only file under ./config/ the app reads at runtime.
+COPY ./config/metrics/registry.yml /app/config/metrics/registry.yml
 
 # Point to shared config files
 ENV OTEL_METRICS_CONFIG_PATH=/app/config/metrics/registry.yml

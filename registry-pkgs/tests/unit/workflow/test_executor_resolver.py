@@ -108,7 +108,9 @@ class TestExecutorResolver:
         )
 
         assert seen == ["alpha", "beta"]
-        assert registry == {"alpha": "executor:alpha", "beta": "executor:beta"}
+        assert set(registry.keys()) == {"alpha", "beta"}
+        for key in ("alpha", "beta"):
+            assert callable(registry[key])
 
     @pytest.mark.asyncio
     async def test_resolve_executor_prefers_active_mcp_server(self, monkeypatch: pytest.MonkeyPatch):
