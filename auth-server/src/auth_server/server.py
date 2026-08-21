@@ -10,9 +10,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import database utilities
+from registry_pkgs.core.structured_logging import configure_structured_logging
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
-from registry_pkgs.telemetry import setup_metrics
+from registry_pkgs.telemetry import setup_metrics, shutdown_telemetry
 
 from .container import AuthContainer
 from .core.config import settings
@@ -35,6 +36,32 @@ MAX_TOKEN_LIFETIME_HOURS = settings.max_token_lifetime_hours
 DEFAULT_TOKEN_LIFETIME_HOURS = settings.default_token_lifetime_hours
 
 
+def _initialize_telemetry() -> None:
+    """Best-effort telemetry setup that should not block the application from starting."""
+    logger.info("🔭 Initializing Telemetry...")
+    try:
+        setup_metrics("auth-server", settings.telemetry_config)
+    except Exception as exc:
+        logger.warning(f"Failed to initialize metrics: {exc}")
+    try:
+        configure_structured_logging(
+            "auth_server",
+            "registry_pkgs",
+            service_name="auth-server",
+            service_version=settings.telemetry_config.build_version,
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to configure structured logging: {exc}")
+
+
+def _shutdown_telemetry_safe() -> None:
+    """Best-effort telemetry shutdown that never raises."""
+    try:
+        shutdown_telemetry()
+    except Exception as exc:
+        logger.warning(f"Failed to shutdown telemetry: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle management."""
@@ -48,6 +75,8 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting Auth Server...")
 
     try:
+        _initialize_telemetry()
+
         # Initialize MongoDB connection
         logger.info("🗄️  Initializing MongoDB connection...")
         await init_mongodb(settings.mongo_config)
@@ -68,24 +97,28 @@ async def lifespan(app: FastAPI):
                 await close_mongodb()
         except Exception as cleanup_error:
             logger.error(f"❌ Error during failed-startup cleanup: {cleanup_error}", exc_info=True)
+        _shutdown_telemetry_safe()
         raise
 
-    # Application is ready
-    yield
-
-    # Shutdown tasks
-    logger.info("🔄 Shutting down Auth Server...")
     try:
-        if hasattr(app.state, "container"):
-            del app.state.container
-        logger.info("Closing Redis connection...")
-        close_redis_client(redis_client)
-        # Close MongoDB connection
-        logger.info("🗄️  Closing MongoDB connection...")
-        await close_mongodb()
-        logger.info("✅ Shutdown completed successfully!")
-    except Exception as e:
-        logger.error(f"❌ Error during shutdown: {e}", exc_info=True)
+        # Application is ready
+        yield
+    finally:
+        # Shutdown tasks
+        logger.info("🔄 Shutting down Auth Server...")
+        try:
+            if hasattr(app.state, "container"):
+                del app.state.container
+            logger.info("Closing Redis connection...")
+            close_redis_client(redis_client)
+            # Close MongoDB connection
+            logger.info("🗄️  Closing MongoDB connection...")
+            await close_mongodb()
+            logger.info("✅ Shutdown completed successfully!")
+        except Exception as e:
+            logger.error(f"❌ Error during shutdown: {e}", exc_info=True)
+        finally:
+            _shutdown_telemetry_safe()
 
 
 # Create FastAPI app
@@ -101,13 +134,6 @@ app = FastAPI(
     redoc_url=f"{api_prefix}/redoc" if api_prefix else "/redoc",
     openapi_url=f"{api_prefix}/openapi.json" if api_prefix else "/openapi.json",
 )
-
-logger.info("🔭 Initializing Telemetry...")
-try:
-    setup_metrics("auth-server", settings.telemetry_config)
-except Exception as e:
-    logger.warning(f"Failed to initialize telemetry: {e}")
-
 
 # Add CORS middleware to support browser-based OAuth clients (like Claude Desktop)
 # Parse CORS origins from settings (comma-separated list or "*")

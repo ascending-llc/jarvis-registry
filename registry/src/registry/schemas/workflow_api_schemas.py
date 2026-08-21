@@ -305,6 +305,8 @@ class WorkflowListItem(APIBaseModel):
     createdAt: datetime
     updatedAt: datetime
     aclPermission: ResourcePermissions | None = None
+    runCount: int = 0
+    lastRunAt: datetime | None = None
 
 
 class WorkflowDetailResponse(APIBaseModel):
@@ -474,7 +476,12 @@ class WorkflowRunDetailResponse(APIBaseModel):
 # ==================== Converter Functions ====================
 
 
-def convert_to_list_item(workflow: Any, acl_permission: ResourcePermissions | None = None) -> WorkflowListItem:
+def convert_to_list_item(
+    workflow: Any,
+    acl_permission: ResourcePermissions | None = None,
+    run_count: int = 0,
+    last_run_at: datetime | None = None,
+) -> WorkflowListItem:
     """Convert WorkflowDefinition to WorkflowListItem"""
     from registry_pkgs.models.workflow import WorkflowDefinition
 
@@ -491,6 +498,8 @@ def convert_to_list_item(workflow: Any, acl_permission: ResourcePermissions | No
         createdAt=workflow.created_at,
         updatedAt=workflow.updated_at,
         aclPermission=acl_permission,
+        runCount=run_count,
+        lastRunAt=last_run_at,
     )
 
 

@@ -4,12 +4,51 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.workflow import StepOutput
 from beanie import PydanticObjectId
 
-from registry_pkgs.models.enums import WorkflowDirective, WorkflowRunStatus
+from registry_pkgs.models.enums import NodeRunStatus, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.models.workflow import StepConfig
 from registry_pkgs.workflows.control import DirectiveQueue
-from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError, with_control
+from registry_pkgs.workflows.control import wrapper as wrapper_module
+from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError, _record_attempt_result, with_control
+from registry_pkgs.workflows.types import is_skip_tolerated_failure
+
+
+class _NodeRunField:
+    def __eq__(self, other: object) -> tuple[str, object]:
+        return ("eq", other)
+
+
+class _FakeNodeRun:
+    workflow_run_id = _NodeRunField()
+    node_id = _NodeRunField()
+    existing: _FakeNodeRun | None = None
+    events: list[str] = []
+    save_error: Exception | None = None
+
+    def __init__(self, **kwargs: object) -> None:
+        self.__dict__.update(kwargs)
+        self.status = NodeRunStatus.PENDING
+        self.finished_at = None
+        self.error = None
+
+    @classmethod
+    async def find_one(cls, *args: object, **kwargs: object) -> _FakeNodeRun | None:
+        return cls.existing
+
+    async def save(self) -> None:
+        if self.save_error is not None:
+            raise self.save_error
+        self.events.append("terminal-saved")
+
+
+def _configure_fake_node_run() -> _FakeNodeRun:
+    node_run = _FakeNodeRun()
+    _FakeNodeRun.existing = node_run
+    _FakeNodeRun.events = []
+    _FakeNodeRun.save_error = None
+    return node_run
 
 
 @pytest.mark.unit
@@ -45,6 +84,10 @@ class TestControlWrapper:
         )
         monkeypatch.setattr(
             "registry_pkgs.workflows.control.wrapper._record_attempt_start",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_result",
             AsyncMock(),
         )
         monkeypatch.setattr(
@@ -121,6 +164,11 @@ class TestControlWrapper:
             "registry_pkgs.workflows.control.wrapper._record_attempt_start",
             AsyncMock(),
         )
+        record_attempt_result = AsyncMock()
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_result",
+            record_attempt_result,
+        )
 
         result = await wrapped(SimpleNamespace(input="hello"), {})
 
@@ -128,6 +176,13 @@ class TestControlWrapper:
         assert result.error == "RuntimeError: downstream server exploded"
         assert result.content == ""
         executor.assert_awaited_once()
+        record_attempt_result.assert_awaited_once_with(
+            run_id,
+            "node-1",
+            "github",
+            None,
+            result,
+        )
 
     @pytest.mark.asyncio
     async def test_executor_exception_triggers_retry(self, monkeypatch: pytest.MonkeyPatch):
@@ -157,6 +212,11 @@ class TestControlWrapper:
             "registry_pkgs.workflows.control.wrapper._record_attempt_start",
             AsyncMock(),
         )
+        record_attempt_result = AsyncMock()
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_result",
+            record_attempt_result,
+        )
         monkeypatch.setattr("registry_pkgs.workflows.control.wrapper.asyncio.sleep", AsyncMock())
 
         result = await wrapped(SimpleNamespace(input="hello"), {})
@@ -164,6 +224,159 @@ class TestControlWrapper:
         assert result.success is True
         assert result.content == "done"
         assert executor.await_count == 2
+        record_attempt_result.assert_awaited_once_with(
+            run_id,
+            "node-1",
+            "github",
+            step_config,
+            success_output,
+        )
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_persist_only_final_failure(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        failures = [
+            StepOutput(content="", success=False, error="attempt 1"),
+            StepOutput(content="", success=False, error="attempt 2"),
+            StepOutput(content="", success=False, error="attempt 3"),
+        ]
+        executor = AsyncMock(side_effect=failures)
+        step_config = StepConfig(on_error="retry", max_retries=2, backoff_base_seconds=0.01, backoff_max_seconds=0.01)
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=step_config,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        record_attempt_result = AsyncMock()
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", record_attempt_result)
+        monkeypatch.setattr(wrapper_module.asyncio, "sleep", AsyncMock())
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result is failures[-1]
+        assert executor.await_count == 3
+        record_attempt_result.assert_awaited_once_with(
+            run_id,
+            "node-1",
+            "github",
+            step_config,
+            failures[-1],
+        )
+
+    @pytest.mark.asyncio
+    async def test_terminal_result_persisted_before_success_returns(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        node_run = _configure_fake_node_run()
+        monkeypatch.setattr(wrapper_module, "NodeRun", _FakeNodeRun)
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+
+        async def executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+            return StepOutput(content="done", success=True)
+
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=None,
+            directive_queue=queue,
+        )
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+        _FakeNodeRun.events.append("wrapper-returned")
+
+        assert result.success is True
+        assert _FakeNodeRun.events == ["terminal-saved", "wrapper-returned"]
+        assert node_run.status == NodeRunStatus.COMPLETED
+        assert node_run.finished_at is not None
+        assert node_run.error is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("step_config", "expected_status"),
+        [
+            (None, NodeRunStatus.FAILED),
+            (StepConfig(on_error="skip"), NodeRunStatus.SKIPPED),
+        ],
+    )
+    async def test_record_attempt_result_maps_terminal_failure_status(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        step_config: StepConfig | None,
+        expected_status: NodeRunStatus,
+    ):
+        node_run = _configure_fake_node_run()
+        monkeypatch.setattr(wrapper_module, "NodeRun", _FakeNodeRun)
+
+        await _record_attempt_result(
+            str(PydanticObjectId()),
+            "node-1",
+            "github",
+            step_config,
+            StepOutput(content="", success=False, error="boom"),
+        )
+
+        assert node_run.status == expected_status
+        assert node_run.finished_at is not None
+        assert node_run.error == "boom"
+
+    @pytest.mark.asyncio
+    async def test_wrapper_returns_result_when_terminal_persistence_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        _configure_fake_node_run()
+        _FakeNodeRun.save_error = RuntimeError("mongo unavailable")
+        monkeypatch.setattr(wrapper_module, "NodeRun", _FakeNodeRun)
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        output = StepOutput(content="done", success=True)
+        executor = AsyncMock(return_value=output)
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=None,
+            directive_queue=queue,
+        )
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result is output
+        executor.assert_awaited_once()
+        assert "batch sync will retry" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("success", "step_config", "expected"),
+        [
+            (True, StepConfig(on_error="skip"), False),
+            (False, None, False),
+            (False, StepConfig(on_error="fail"), False),
+            (False, StepConfig(on_error="skip"), True),
+        ],
+    )
+    def test_is_skip_tolerated_failure(
+        self,
+        success: bool,
+        step_config: StepConfig | None,
+        expected: bool,
+    ):
+        assert is_skip_tolerated_failure(success, step_config) is expected
 
     @pytest.mark.asyncio
     async def test_cancelled_error_not_swallowed_by_exception_handler(self, monkeypatch: pytest.MonkeyPatch):

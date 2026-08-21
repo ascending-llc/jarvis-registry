@@ -25,6 +25,7 @@ from a2a.types import (
 )
 from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.core.config import JwtSigningConfig
@@ -44,6 +45,8 @@ _A2A_JWT_TTL_SECONDS = _A2A_TASK_BUDGET_SECONDS + 300
 _A2A_HTTP_TIMEOUT = httpx.Timeout(30.0, read=_A2A_TASK_BUDGET_SECONDS)
 # Preemptive backstop: a still-streaming send never reaches the poll loop's own check.
 _A2A_HARD_TIMEOUT_SECONDS = _A2A_TASK_BUDGET_SECONDS + 60
+_TRACE_CONTEXT_PROPAGATOR = TraceContextTextMapPropagator()
+_TRACE_CONTEXT_HEADERS = frozenset({"baggage", "traceparent", "tracestate"})
 
 HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
 ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
@@ -189,6 +192,17 @@ def _extra_call_headers(agent: A2AAgent) -> dict[str, str]:
     if is_agentcore_runtime(agent):
         return {"X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4())}
     return {}
+
+
+def _inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
+    """Return copied request headers containing only the current W3C traceparent."""
+    outbound_headers = {key: value for key, value in headers.items() if key.lower() not in _TRACE_CONTEXT_HEADERS}
+    try:
+        _TRACE_CONTEXT_PROPAGATOR.inject(outbound_headers)
+    except Exception:
+        logger.warning("Failed to inject trace context into A2A request headers", exc_info=True)
+    outbound_headers.pop("tracestate", None)
+    return outbound_headers
 
 
 def _create_message(text: str) -> Message:
@@ -454,6 +468,7 @@ async def call_a2a(
         headers = build_headers(agent, jwt_config=jwt_config)
     else:
         headers = _extra_call_headers(agent)
+    headers = _inject_traceparent(headers)
     context = ClientCallContext(
         state={
             "http_kwargs": {

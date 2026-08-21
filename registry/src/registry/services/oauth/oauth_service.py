@@ -640,7 +640,7 @@ class MCPOAuthService:
         For internal use with pre-validated tokens, use refresh_token() instead.
         """
         try:
-            logger.info(f"[OAuth] Validating and refreshing tokens for user={user_id}, server={mcp_server}")
+            logger.info(f"[OAuth] Validating and refreshing tokens for user={user_id}, server={mcp_server.serverName}")
             server_name = mcp_server.serverName
             server_id = str(mcp_server.id)
 
