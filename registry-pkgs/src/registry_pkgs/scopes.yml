@@ -474,6 +474,15 @@ skills-read:
   - action: get_skill_file_content
     method: GET
     endpoint: /skills/{skill_id}/files/{path}
+  - action: list_skill_sync_sources
+    method: GET
+    endpoint: /skill-sync-sources
+  - action: get_skill_sync_source
+    method: GET
+    endpoint: /skill-sync-sources/{source_id}
+  - action: get_skill_sync_job
+    method: GET
+    endpoint: /skill-sync-sources/{source_id}/jobs/{job_id}
 
 skills-write:
   description: "Create, update, delete, and enable/disable skills."
@@ -490,3 +499,18 @@ skills-write:
   - action: toggle_skill
     method: POST
     endpoint: /skills/{skill_id}/toggle
+  - action: create_skill_sync_source
+    method: POST
+    endpoint: /skill-sync-sources
+  - action: update_skill_sync_source
+    method: PUT
+    endpoint: /skill-sync-sources/{source_id}
+  - action: delete_skill_sync_source
+    method: DELETE
+    endpoint: /skill-sync-sources/{source_id}
+  - action: trigger_skill_sync
+    method: POST
+    endpoint: /skill-sync-sources/{source_id}/sync
+  - action: initiate_skill_sync_oauth
+    method: GET
+    endpoint: /skill-sync-sources/{source_id}/oauth/initiate

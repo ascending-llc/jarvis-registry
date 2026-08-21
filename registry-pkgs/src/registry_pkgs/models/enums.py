@@ -51,6 +51,179 @@ class FederationProviderType(StrEnum):
     AZURE_AI_FOUNDRY = "azure_ai_foundry"
 
 
+class SkillSyncProviderType(StrEnum):
+    """Supported providers for external skill sources."""
+
+    GITHUB = "github"
+
+
+class SkillSyncSourceStatus(StrEnum):
+    ACTIVE = "active"
+    DELETING = "deleting"
+    DELETED = "deleted"
+
+
+class SkillSyncStatus(StrEnum):
+    IDLE = "idle"
+    PENDING = "pending"
+    SYNCING = "syncing"
+    SUCCESS = "success"
+    PARTIAL_SUCCESS = "partial_success"
+    FAILED = "failed"
+
+    def is_running(self) -> bool:
+        return self in {SkillSyncStatus.PENDING, SkillSyncStatus.SYNCING}
+
+
+class SkillSyncJobType(StrEnum):
+    FULL_SYNC = "full_sync"
+    CONFIG_RESYNC = "config_resync"
+    DELETE_SYNC = "delete_sync"
+
+
+class SkillSyncTriggerType(StrEnum):
+    MANUAL = "manual"
+    OAUTH_CALLBACK = "oauth_callback"
+    API = "api"
+
+
+class SkillSyncJobStatus(StrEnum):
+    PENDING = "pending"
+    SYNCING = "syncing"
+    SUCCESS = "success"
+    PARTIAL_SUCCESS = "partial_success"
+    FAILED = "failed"
+
+
+class SkillSyncJobPhase(StrEnum):
+    QUEUED = "queued"
+    DOWNLOADING = "downloading"
+    EXTRACTING = "extracting"
+    DISCOVERING = "discovering"
+    APPLYING = "applying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class SkillSyncJobErrorCode(StrEnum):
+    GITHUB_AUTH_FAILED = "github_auth_failed"
+    GITHUB_RATE_LIMITED = "github_rate_limited"
+    GITHUB_NOT_FOUND = "github_not_found"
+    DOWNLOAD_FAILED = "download_failed"
+    DOWNLOAD_TOO_LARGE = "download_too_large"
+    EXTRACTION_FAILED = "extraction_failed"
+    DECOMPRESSION_BOMB = "decompression_bomb"
+    NO_SKILLS_FOUND = "no_skills_found"
+    SYNC_NOT_IMPLEMENTED = "sync_not_implemented"
+    INTERNAL_ERROR = "internal_error"
+
+
+class SkillSyncSkillErrorCode(StrEnum):
+    SKILL_PARSE_FAILED = "skill_parse_failed"
+    SKILL_NAME_MISSING = "skill_name_missing"
+    DUPLICATE_SKILL_NAME = "duplicate_skill_name"
+    FILE_TOO_LARGE = "file_too_large"
+    TOO_MANY_FILES = "too_many_files"
+    WRITE_FAILED = "write_failed"
+
+
+class SkillSyncStateMachine:
+    """State transition guards for skill sync sources and jobs."""
+
+    @staticmethod
+    def can_start_sync(sync_status: SkillSyncStatus) -> bool:
+        return sync_status in {
+            SkillSyncStatus.IDLE,
+            SkillSyncStatus.SUCCESS,
+            SkillSyncStatus.PARTIAL_SUCCESS,
+            SkillSyncStatus.FAILED,
+        }
+
+    @staticmethod
+    def can_update(status: SkillSyncSourceStatus) -> bool:
+        return status == SkillSyncSourceStatus.ACTIVE
+
+    @staticmethod
+    def can_delete(status: SkillSyncSourceStatus) -> bool:
+        return status == SkillSyncSourceStatus.ACTIVE
+
+    @staticmethod
+    def transition_to_sync_pending(
+        status: SkillSyncSourceStatus,
+        sync_status: SkillSyncStatus,
+    ) -> SkillSyncStatus:
+        if status != SkillSyncSourceStatus.ACTIVE:
+            raise ValueError(f"Skill sync source in status '{status}' cannot start a sync")
+        if not SkillSyncStateMachine.can_start_sync(sync_status):
+            raise ValueError("Skill sync source already has an active sync job")
+        return SkillSyncStatus.PENDING
+
+    @staticmethod
+    def transition_to_syncing(
+        status: SkillSyncSourceStatus,
+        sync_status: SkillSyncStatus,
+    ) -> SkillSyncStatus:
+        if status != SkillSyncSourceStatus.ACTIVE:
+            raise ValueError(f"Skill sync source in status '{status}' cannot transition to syncing")
+        if sync_status not in {SkillSyncStatus.PENDING, SkillSyncStatus.SYNCING}:
+            raise ValueError(f"Skill sync source in sync status '{sync_status}' cannot transition to syncing")
+        return SkillSyncStatus.SYNCING
+
+    @staticmethod
+    def transition_to_sync_success(sync_status: SkillSyncStatus) -> SkillSyncStatus:
+        if sync_status not in {SkillSyncStatus.PENDING, SkillSyncStatus.SYNCING, SkillSyncStatus.SUCCESS}:
+            raise ValueError(f"Skill sync source in sync status '{sync_status}' cannot transition to success")
+        return SkillSyncStatus.SUCCESS
+
+    @staticmethod
+    def transition_to_sync_partial_success(sync_status: SkillSyncStatus) -> SkillSyncStatus:
+        if sync_status not in {SkillSyncStatus.PENDING, SkillSyncStatus.SYNCING, SkillSyncStatus.PARTIAL_SUCCESS}:
+            raise ValueError(f"Skill sync source in sync status '{sync_status}' cannot transition to partial_success")
+        return SkillSyncStatus.PARTIAL_SUCCESS
+
+    @staticmethod
+    def transition_to_sync_failed(sync_status: SkillSyncStatus) -> SkillSyncStatus:
+        if sync_status not in {SkillSyncStatus.PENDING, SkillSyncStatus.SYNCING, SkillSyncStatus.FAILED}:
+            raise ValueError(f"Skill sync source in sync status '{sync_status}' cannot transition to failed")
+        return SkillSyncStatus.FAILED
+
+    @staticmethod
+    def transition_to_deleting(status: SkillSyncSourceStatus) -> SkillSyncSourceStatus:
+        if not SkillSyncStateMachine.can_delete(status):
+            raise ValueError(f"Skill sync source in status '{status}' cannot be deleted")
+        return SkillSyncSourceStatus.DELETING
+
+
+class SkillSyncJobStateMachine:
+    @staticmethod
+    def transition_to_syncing(status: SkillSyncJobStatus) -> SkillSyncJobStatus:
+        if status not in {SkillSyncJobStatus.PENDING, SkillSyncJobStatus.SYNCING}:
+            raise ValueError(f"Skill sync job in status '{status}' cannot transition to syncing")
+        return SkillSyncJobStatus.SYNCING
+
+    @staticmethod
+    def transition_to_success(status: SkillSyncJobStatus) -> SkillSyncJobStatus:
+        if status not in {SkillSyncJobStatus.PENDING, SkillSyncJobStatus.SYNCING, SkillSyncJobStatus.SUCCESS}:
+            raise ValueError(f"Skill sync job in status '{status}' cannot transition to success")
+        return SkillSyncJobStatus.SUCCESS
+
+    @staticmethod
+    def transition_to_partial_success(status: SkillSyncJobStatus) -> SkillSyncJobStatus:
+        if status not in {
+            SkillSyncJobStatus.PENDING,
+            SkillSyncJobStatus.SYNCING,
+            SkillSyncJobStatus.PARTIAL_SUCCESS,
+        }:
+            raise ValueError(f"Skill sync job in status '{status}' cannot transition to partial_success")
+        return SkillSyncJobStatus.PARTIAL_SUCCESS
+
+    @staticmethod
+    def transition_to_failed(status: SkillSyncJobStatus) -> SkillSyncJobStatus:
+        if status not in {SkillSyncJobStatus.PENDING, SkillSyncJobStatus.SYNCING, SkillSyncJobStatus.FAILED}:
+            raise ValueError(f"Skill sync job in status '{status}' cannot transition to failed")
+        return SkillSyncJobStatus.FAILED
+
+
 class AgentCoreRuntimeAccessMode(StrEnum):
     """Federation-configured auth mode for AgentCore runtime data-plane access."""
 

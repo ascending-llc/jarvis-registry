@@ -32,6 +32,8 @@ from .federation_metadata import (
     FederationMetadata,
 )
 from .federation_sync_job import FederationSyncJob
+from .skill_sync_job import SkillSyncJob
+from .skill_sync_source import SkillSyncSource
 from .token_type import TokenType
 from .workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
 
@@ -49,6 +51,8 @@ __all__ = [
     "AzureFoundryFederationMetadata",
     "FederationMetadata",
     "FederationSyncJob",
+    "SkillSyncJob",
+    "SkillSyncSource",
     "RegistryAccessRole",
     "NodeRun",
     "WorkflowDefinition",

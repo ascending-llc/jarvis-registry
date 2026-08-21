@@ -279,6 +279,7 @@ class MCPOAuthService:
                 code_verifier=code_verifier,
                 oauth_config=oauth_config,
                 flow_id=flow_id,
+                redirect_uri=get_default_redirect_uri(path=server.path),
                 state_metadata=state_metadata,
                 mcp_client_context=mcp_client_context,
                 device_code=device_code,

@@ -54,6 +54,11 @@ from .services.search.service import SearchService
 from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.skill_service import SkillService
+from .services.skill_sync_job_service import SkillSyncJobService
+from .services.skill_sync_oauth_service import SkillSyncOAuthService
+from .services.skill_sync_service import SkillSyncService
+from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
+from .services.skill_sync_token_service import SkillSyncTokenService
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
@@ -369,6 +374,30 @@ class RegistryContainer:
     @cached_property
     def federation_job_service(self) -> FederationJobService:
         return FederationJobService()
+
+    @cached_property
+    def skill_sync_source_crud_service(self) -> SkillSyncSourceCrudService:
+        return SkillSyncSourceCrudService()
+
+    @cached_property
+    def skill_sync_service(self) -> SkillSyncService:
+        return SkillSyncService(self.skill_sync_source_crud_service)
+
+    @cached_property
+    def skill_sync_job_service(self) -> SkillSyncJobService:
+        return SkillSyncJobService()
+
+    @cached_property
+    def skill_sync_token_service(self) -> SkillSyncTokenService:
+        return SkillSyncTokenService(self.mcp_proxy_client)
+
+    @cached_property
+    def skill_sync_oauth_service(self) -> SkillSyncOAuthService:
+        return SkillSyncOAuthService(
+            flow_state_manager=self.flow_state_manager,
+            token_service=self.skill_sync_token_service,
+            http_client=self.mcp_proxy_client,
+        )
 
     @cached_property
     def federation_sync_service(self) -> FederationSyncService:
