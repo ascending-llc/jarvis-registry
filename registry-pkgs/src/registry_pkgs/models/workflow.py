@@ -630,6 +630,7 @@ class WorkflowSchedule(Document):
 
     next_run_at: datetime | None = None
     locked_until: datetime | None = None
+    lease_token: str | None = None
     last_run_at: datetime | None = None
     last_run_id: PydanticObjectId | None = None
     last_run_status: WorkflowRunStatus | None = None
