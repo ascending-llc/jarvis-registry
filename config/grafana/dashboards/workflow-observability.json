@@ -1,0 +1,99 @@
+{
+  "id": null,
+  "uid": "workflow-observability",
+  "title": "Registry - Workflow Observability",
+  "description": "workflow, executor, and MCP tool metrics. Use Explore with the Tempo datasource for trace details.",
+  "tags": ["registry", "workflow", "otel", "traces"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Executor Invocation Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(workflow_agent_invocations_total[5m])) by (agent_type, status)",
+          "legendFormat": "{{agent_type}} / {{status}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "id": 2,
+      "title": "Executor Failure Ratio",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(workflow_agent_invocations_total{status=\"failure\"}[5m])) / clamp_min(sum(rate(workflow_agent_invocations_total[5m])), 1e-9)",
+          "legendFormat": "Failure ratio"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "id": 3,
+      "title": "Executor Latency P95",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(workflow_agent_call_seconds_bucket[5m])) by (le, agent_type))",
+          "legendFormat": "{{agent_type}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "id": 4,
+      "title": "Terminal Workflow Runs",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(increase(workflow_runs_total[5m])) by (workflow_name, status)",
+          "legendFormat": "{{workflow_name}} / {{status}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "id": 5,
+      "title": "End-to-End Workflow Latency P95",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(workflow_run_seconds_bucket[5m])) by (le, workflow_name, status))",
+          "legendFormat": "{{workflow_name}} / {{status}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    },
+    {
+      "id": 6,
+      "title": "MCP Tool Calls",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(workflow_tool_calls_total[5m])) by (executor_key, tool_name, status)",
+          "legendFormat": "{{executor_key}} / {{tool_name}} / {{status}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}}
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

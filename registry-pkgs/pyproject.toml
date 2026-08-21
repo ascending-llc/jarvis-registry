@@ -36,6 +36,9 @@ dependencies = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-prometheus",
     "opentelemetry-exporter-otlp-proto-http",
+    "opentelemetry-instrumentation-logging>=0.65b0",
+    # agno auto-instrumentation (OpenInference)
+    "openinference-instrumentation-agno>=1.0.0",
 ]
 
 [build-system]
