@@ -86,6 +86,6 @@ def configure_structured_logging(
             handler = logging.StreamHandler()
             handler.setFormatter(formatter)
             target_logger.addHandler(handler)
-            target_logger.propagate = False
 
+        target_logger.propagate = False
         _configured_loggers.add(name)

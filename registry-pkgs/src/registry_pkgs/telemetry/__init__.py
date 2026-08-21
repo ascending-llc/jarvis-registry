@@ -279,8 +279,8 @@ def shutdown_telemetry() -> None:
         tracer_provider = trace.get_tracer_provider()
         if isinstance(tracer_provider, TracerProvider):
             tracer_provider.shutdown()
-    except Exception:  # nosec B110 - intentional suppression during teardown
-        pass
+    except Exception as exc:
+        logger.warning("Failed to shutdown tracer: %s", exc)
 
     try:
         provider = metrics.get_meter_provider()

@@ -260,6 +260,19 @@ class TestShutdownTelemetry:
         mock_tracer_provider.shutdown.assert_called_once_with()
         mock_get_provider.return_value.shutdown.assert_called_once_with(timeout_millis=1000)
 
+    def test_shutdown_telemetry_logs_tracer_shutdown_failure(self, caplog):
+        """Test that tracer shutdown errors are suppressed but still logged (unlike metrics, this used to be silent)."""
+        mock_tracer_provider = MagicMock(spec=TracerProvider)
+        mock_tracer_provider.shutdown.side_effect = Exception("tracer shutdown error")
+        with (
+            patch("registry_pkgs.telemetry.trace.get_tracer_provider", return_value=mock_tracer_provider),
+            patch("registry_pkgs.telemetry.metrics.get_meter_provider"),
+        ):
+            # Should not raise
+            shutdown_telemetry()
+
+        assert "Failed to shutdown tracer" in caplog.text
+
 
 @pytest.mark.unit
 @pytest.mark.telemetry
