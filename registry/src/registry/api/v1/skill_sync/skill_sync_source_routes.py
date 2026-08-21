@@ -1,5 +1,6 @@
 import logging
 import math
+from typing import NoReturn
 from urllib.parse import urlencode
 
 from beanie import PydanticObjectId
@@ -38,10 +39,12 @@ from ....schemas.skill_sync_api_schemas import (
     SkillSyncTriggerResponse,
 )
 from ....services.access_control_service import ACLService
+from ....services.skill_sync_job_service import SkillSyncJobService
 from ....services.skill_sync_service import (
     SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
     SkillSyncService,
 )
+from ....services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from ....services.skill_sync_token_service import SkillSyncTokenService
 
 logger = logging.getLogger(__name__)
@@ -110,7 +113,7 @@ def _to_list_response(
 
 async def _to_detail_response(
     source: SkillSyncSource,
-    source_service,
+    source_service: SkillSyncSourceCrudService,
     permissions: ResourcePermissions | None = None,
 ) -> SkillSyncSourceDetailResponse:
     recent_jobs = await source_service.get_recent_jobs(source.id)
@@ -125,18 +128,40 @@ async def _to_detail_response(
     )
 
 
-async def _required_source(source_id: str, source_service) -> SkillSyncSource:
+async def _required_source(source_id: str, source_service: SkillSyncSourceCrudService) -> SkillSyncSource:
     source = await source_service.get_source(source_id)
     if source is None:
         raise HTTPException(http_status.HTTP_404_NOT_FOUND, detail="Skill sync source not found")
     return source
 
 
+async def _authorize_source_and_raise_unavailable(
+    source_id: str,
+    user_context: CurrentUser,
+    required_permission: str,
+    *,
+    source_service: SkillSyncSourceCrudService,
+    acl_service: ACLService,
+) -> NoReturn:
+    user_object_id = PydanticObjectId(user_context["user_id"])
+    source = await _required_source(source_id, source_service)
+    await acl_service.check_user_permission(
+        user_id=user_object_id,
+        resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
+        resource_id=source.id,
+        required_permission=required_permission,
+    )
+    raise HTTPException(
+        status_code=http_status.HTTP_501_NOT_IMPLEMENTED,
+        detail=SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
+    )
+
+
 @router.post("", response_model=SkillSyncSourceDetailResponse, status_code=http_status.HTTP_201_CREATED)
 async def create_source(
     data: SkillSyncSourceCreateRequest,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     skill_sync_service: SkillSyncService = Depends(get_skill_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -178,7 +203,7 @@ async def list_sources(
     query: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
@@ -221,7 +246,7 @@ async def list_sources(
 async def get_source(
     source_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
@@ -246,7 +271,7 @@ async def update_source(
     source_id: str,
     data: SkillSyncSourceUpdateRequest,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -286,21 +311,16 @@ async def update_source(
 async def delete_source(
     source_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
-        user_object_id = PydanticObjectId(user_context["user_id"])
-        source = await _required_source(source_id, source_service)
-        await acl_service.check_user_permission(
-            user_id=user_object_id,
-            resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
-            resource_id=source.id,
-            required_permission="DELETE",
-        )
-        raise HTTPException(
-            status_code=http_status.HTTP_501_NOT_IMPLEMENTED,
-            detail=SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
+        await _authorize_source_and_raise_unavailable(
+            source_id,
+            user_context,
+            "DELETE",
+            source_service=source_service,
+            acl_service=acl_service,
         )
     except HTTPException:
         raise
@@ -315,21 +335,16 @@ async def delete_source(
 async def sync_source(
     source_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
-        user_object_id = PydanticObjectId(user_context["user_id"])
-        source = await _required_source(source_id, source_service)
-        await acl_service.check_user_permission(
-            user_id=user_object_id,
-            resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
-            resource_id=source.id,
-            required_permission="EDIT",
-        )
-        raise HTTPException(
-            status_code=http_status.HTTP_501_NOT_IMPLEMENTED,
-            detail=SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
+        await _authorize_source_and_raise_unavailable(
+            source_id,
+            user_context,
+            "EDIT",
+            source_service=source_service,
+            acl_service=acl_service,
         )
     except HTTPException:
         raise
@@ -344,21 +359,16 @@ async def sync_source(
 async def initiate_skill_sync_oauth(
     source_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
-        user_object_id = PydanticObjectId(user_context["user_id"])
-        source = await _required_source(source_id, source_service)
-        await acl_service.check_user_permission(
-            user_id=user_object_id,
-            resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
-            resource_id=source.id,
-            required_permission="EDIT",
-        )
-        raise HTTPException(
-            status_code=http_status.HTTP_501_NOT_IMPLEMENTED,
-            detail=SKILL_SYNC_EXECUTION_UNAVAILABLE_DETAIL,
+        await _authorize_source_and_raise_unavailable(
+            source_id,
+            user_context,
+            "EDIT",
+            source_service=source_service,
+            acl_service=acl_service,
         )
     except HTTPException:
         raise
@@ -373,7 +383,7 @@ async def skill_sync_oauth_callback(
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
-    source_service=Depends(get_skill_sync_source_crud_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
 ):
     error_redirect = (
         f"{settings.registry_client_url}/skill-sync-sources/{source_id}?{urlencode({'error': 'auth_failed'})}"
@@ -397,8 +407,8 @@ async def get_sync_job(
     source_id: str,
     job_id: str,
     user_context: CurrentUser,
-    source_service=Depends(get_skill_sync_source_crud_service),
-    job_service=Depends(get_skill_sync_job_service),
+    source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
+    job_service: SkillSyncJobService = Depends(get_skill_sync_job_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:

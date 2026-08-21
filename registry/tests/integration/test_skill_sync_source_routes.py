@@ -27,6 +27,7 @@ from registry_pkgs.models.enums import (
     SkillSyncStatus,
     SkillSyncTriggerType,
 )
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.skill_sync_job import SkillSyncApplySummary, SkillSyncDiscoverySummary
 from registry_pkgs.models.skill_sync_source import SkillSyncSourceStats
 
@@ -85,6 +86,15 @@ def _make_job(source_id, **overrides):
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+def _assert_permission_checked(ctx: SimpleNamespace, required_permission: str) -> None:
+    ctx.acl_service.check_user_permission.assert_awaited_once_with(
+        user_id=PydanticObjectId(USER_ID),
+        resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
+        resource_id=ctx.source.id,
+        required_permission=required_permission,
+    )
 
 
 @pytest.fixture
@@ -147,6 +157,7 @@ def test_sync_returns_501_without_creating_job(skill_sync_route_context) -> None
     response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync")
     assert response.status_code == 501
     assert response.json()["detail"] == "Skill sync execution is not available yet"
+    _assert_permission_checked(ctx, "EDIT")
     ctx.job_service.create_job.assert_not_awaited()
 
 
@@ -211,6 +222,7 @@ def test_oauth_initiate_returns_501(skill_sync_route_context) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 501
+    _assert_permission_checked(ctx, "EDIT")
 
 
 def test_create_source_delegates_transaction_to_service(skill_sync_route_context) -> None:
@@ -233,6 +245,7 @@ def test_delete_returns_501_without_creating_job(skill_sync_route_context) -> No
     ctx = skill_sync_route_context
     response = ctx.client.delete(f"/skill-sync-sources/{ctx.source.id}")
     assert response.status_code == 501
+    _assert_permission_checked(ctx, "DELETE")
     ctx.job_service.create_job.assert_not_awaited()
 
 
