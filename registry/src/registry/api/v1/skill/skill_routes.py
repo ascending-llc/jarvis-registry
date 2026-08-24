@@ -51,7 +51,6 @@ def _metadata_response(skill, permissions: ResourcePermissions) -> SkillMetadata
         createdByRegistry=skill.createdByRegistry,
         permissions=permissions,
         updatedAt=skill.updatedAt,
-        deletedAt=skill.deletedAt,
     )
 
 

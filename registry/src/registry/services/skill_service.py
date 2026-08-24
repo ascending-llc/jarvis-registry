@@ -161,7 +161,6 @@ class SkillService:
 
         query: dict = {
             "_id": {"$in": [PydanticObjectId(resource_id) for resource_id in accessible_ids]},
-            "deletedAt": None,
         }
         if enabled is not None:
             query["enabled"] = enabled
@@ -256,7 +255,6 @@ class SkillService:
         duplicate_query = {
             "name": data.name,
             "author": object_user_id,
-            "deletedAt": None,
         }
         if await Skill.find_one(duplicate_query):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A skill with this name already exists")
@@ -339,7 +337,6 @@ class SkillService:
                                 "_id": {"$ne": skill_id},
                                 "name": updates["name"],
                                 "author": skill.author,
-                                "deletedAt": None,
                             },
                             session=mongo_session,
                         )
@@ -407,7 +404,7 @@ class SkillService:
 
     @staticmethod
     async def _get_existing_skill(skill_id: PydanticObjectId) -> Skill:
-        skill = await Skill.find_one({"_id": skill_id, "deletedAt": None})
+        skill = await Skill.find_one({"_id": skill_id})
         if skill is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill not found")
         return skill
