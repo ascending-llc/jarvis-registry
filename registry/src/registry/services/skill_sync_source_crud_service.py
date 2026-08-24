@@ -17,6 +17,15 @@ from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSou
 
 
 class SkillSyncSourceCrudService:
+    _SYNC_CONFIG_FIELDS = {
+        "owner",
+        "repo",
+        "ref",
+        "paths",
+        "githubAppClientId",
+        "githubAppClientSecret",
+    }
+
     @staticmethod
     def _encrypt_secret(secret: str) -> str:
         return secret if is_encrypted(secret) else encrypt_value(secret)
@@ -31,7 +40,6 @@ class SkillSyncSourceCrudService:
         repo: str,
         ref: str,
         paths: list[str],
-        skill_discovery_depth: int,
         github_app_client_id: str,
         github_app_client_secret: str,
         created_by: str | None,
@@ -46,7 +54,6 @@ class SkillSyncSourceCrudService:
             repo=repo,
             ref=ref,
             paths=paths,
-            skillDiscoveryDepth=skill_discovery_depth,
             githubAppClientId=github_app_client_id,
             githubAppClientSecretEncrypted=self._encrypt_secret(github_app_client_secret),
             status=SkillSyncSourceStatus.ACTIVE,
@@ -120,7 +127,6 @@ class SkillSyncSourceCrudService:
             "repo": "repo",
             "ref": "ref",
             "paths": "paths",
-            "skillDiscoveryDepth": "skillDiscoveryDepth",
             "githubAppClientId": "githubAppClientId",
         }
         for input_name, model_name in field_map.items():
@@ -128,6 +134,8 @@ class SkillSyncSourceCrudService:
                 setattr(source, model_name, changes[input_name])
         if "githubAppClientSecret" in changes:
             source.githubAppClientSecretEncrypted = self._encrypt_secret(changes["githubAppClientSecret"])
+        if self._SYNC_CONFIG_FIELDS.intersection(changes):
+            source.configRevision += 1
         source.updatedBy = updated_by
         await source.save(session=session)
         return source

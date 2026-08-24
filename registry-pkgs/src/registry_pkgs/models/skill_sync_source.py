@@ -33,7 +33,7 @@ class SkillSyncSource(Document):
     repo: str
     ref: str = "main"
     paths: list[str] = Field(default_factory=list)
-    skillDiscoveryDepth: int = 2
+    configRevision: int = Field(default=1, ge=1)
     githubAppClientId: str
     githubAppClientSecretEncrypted: str
     status: SkillSyncSourceStatus = SkillSyncSourceStatus.ACTIVE

@@ -1,7 +1,8 @@
-import io
+import copy
 import logging
 import tarfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 
@@ -14,6 +15,7 @@ MAX_EXTRACTED_SIZE = 500 * 1024 * 1024
 MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024
 
 _GITHUB_API_BASE = "https://api.github.com"
+_SKILL_ENTRY_FILENAME = "SKILL.md"
 
 
 class GitHubDownloadError(Exception):
@@ -23,13 +25,34 @@ class GitHubDownloadError(Exception):
 
 
 @dataclass
-class DiscoveredFile:
+class ExtractedAuxFile:
     relative_path: str
-    content: bytes
+    absolute_path: Path
     size: int
 
 
+@dataclass
+class ExtractedSkillFolder:
+    root_relative_path: str
+    skill_md_path: Path
+    aux_files: list[ExtractedAuxFile] = field(default_factory=list)
+
+
+@dataclass
+class ExtractionResult:
+    skill_folders: list[ExtractedSkillFolder] = field(default_factory=list)
+    skipped_paths: list[str] = field(default_factory=list)
+    oversized_skill_paths: list[str] = field(default_factory=list)
+
+
 class SkillSyncGitHubService:
+    """Materialize an immutable GitHub repository snapshot safely on local disk.
+
+    The service resolves a mutable ref to a commit SHA, streams that SHA's tarball under
+    download limits, and extracts configured paths with traversal, link, file-size, and
+    decompression safeguards. It does not interpret Skill metadata or write database state.
+    """
+
     def __init__(self, http_client: httpx.AsyncClient) -> None:
         self._http_client = http_client
 
@@ -41,10 +64,7 @@ class SkillSyncGitHubService:
         ref: str,
         access_token: str,
     ) -> str:
-        """
-        docs: https://docs.github.com/en/rest/commits/commits?apiVersion=2022-11-28#get-a-commit
-        Resolve a ref to a full commit SHA via the documented REST API.
-        """
+        """Resolve a mutable branch or tag to the immutable commit used by this job."""
         url = f"{_GITHUB_API_BASE}/repos/{owner}/{repo}/commits/{ref}"
         headers = {
             "Authorization": f"token {access_token}",
@@ -69,10 +89,11 @@ class SkillSyncGitHubService:
         repo: str,
         ref: str,
         access_token: str,
-    ) -> tuple[bytes, str]:
-        """Resolve commit SHA then stream-download the GitHub tarball."""
+        dest_path: Path,
+    ) -> str:
+        """Resolve the ref once, then stream the tarball by immutable SHA with a size limit."""
         commit_sha = await self.resolve_commit_sha(owner=owner, repo=repo, ref=ref, access_token=access_token)
-        url = f"{_GITHUB_API_BASE}/repos/{owner}/{repo}/tarball/{ref}"
+        url = f"{_GITHUB_API_BASE}/repos/{owner}/{repo}/tarball/{commit_sha}"
         headers = {
             "Authorization": f"token {access_token}",
             "Accept": "application/vnd.github+json",
@@ -81,18 +102,18 @@ class SkillSyncGitHubService:
             async with self._http_client.stream("GET", url, headers=headers, follow_redirects=True) as response:
                 _raise_for_github_status(response, owner, repo, ref)
 
-                chunks: list[bytes] = []
                 total_size = 0
-                async for chunk in response.aiter_bytes():
-                    total_size += len(chunk)
-                    if total_size > MAX_TARBALL_SIZE:
-                        raise GitHubDownloadError(
-                            f"Tarball size exceeds limit {MAX_TARBALL_SIZE}",
-                            SkillSyncJobErrorCode.DOWNLOAD_TOO_LARGE,
-                        )
-                    chunks.append(chunk)
+                with open(dest_path, "wb") as f:
+                    async for chunk in response.aiter_bytes():
+                        total_size += len(chunk)
+                        if total_size > MAX_TARBALL_SIZE:
+                            raise GitHubDownloadError(
+                                f"Tarball size exceeds limit {MAX_TARBALL_SIZE}",
+                                SkillSyncJobErrorCode.DOWNLOAD_TOO_LARGE,
+                            )
+                        f.write(chunk)
 
-                return b"".join(chunks), commit_sha
+                return commit_sha
         except GitHubDownloadError:
             raise
         except httpx.HTTPError as exc:
@@ -101,18 +122,17 @@ class SkillSyncGitHubService:
                 SkillSyncJobErrorCode.DOWNLOAD_FAILED,
             ) from exc
 
-    def extract_files(
+    def extract_skill_folders(
         self,
-        tarball_bytes: bytes,
+        tarball_path: Path,
         *,
         paths: list[str],
-        max_depth: int,
-    ) -> list[DiscoveredFile]:
-        """In-memory extraction filtered by paths + depth, with decompression bomb guard."""
+        extraction_dir: Path,
+    ) -> ExtractionResult:
+        """Safely extract configured skill folders with traversal, link, and size defenses."""
         try:
-            tar_io = io.BytesIO(tarball_bytes)
-            with tarfile.open(fileobj=tar_io, mode="r:gz") as tar:
-                return _extract_from_tar(tar, paths=paths, max_depth=max_depth)
+            with tarfile.open(tarball_path, mode="r:gz") as tar:
+                return _two_pass_extract(tar, paths=paths, extraction_dir=extraction_dir)
         except GitHubDownloadError:
             raise
         except Exception as exc:
@@ -145,54 +165,134 @@ def _raise_for_github_status(response: httpx.Response, owner: str, repo: str, re
         )
 
 
-def _extract_from_tar(
-    tar: tarfile.TarFile,
-    *,
-    paths: list[str],
-    max_depth: int,
-) -> list[DiscoveredFile]:
-    files: list[DiscoveredFile] = []
-    total_extracted = 0
-    normalized_paths = [p.rstrip("/") for p in paths]
-
-    for member in tar.getmembers():
-        if not member.isfile():
-            continue
-        relative_path = _strip_top_dir(member.name)
-        if not relative_path:
-            continue
-        if not _matches_paths(relative_path, normalized_paths, max_depth):
-            continue
-        if member.size > MAX_SINGLE_FILE_SIZE:
-            logger.warning("Skipping oversized file: %s (%d bytes)", relative_path, member.size)
-            continue
-
-        total_extracted += member.size
-        if total_extracted > MAX_EXTRACTED_SIZE:
-            raise GitHubDownloadError(
-                f"Total extracted size exceeds {MAX_EXTRACTED_SIZE} bytes",
-                SkillSyncJobErrorCode.DECOMPRESSION_BOMB,
-            )
-
-        file_obj = tar.extractfile(member)
-        if file_obj is None:
-            continue
-        content = file_obj.read()
-        files.append(DiscoveredFile(relative_path=relative_path, content=content, size=len(content)))
-
-    return files
-
-
 def _strip_top_dir(path: str) -> str:
     parts = path.split("/", 1)
     return parts[1] if len(parts) > 1 else ""
 
 
-def _matches_paths(relative_path: str, normalized_paths: list[str], max_depth: int) -> bool:
+def _two_pass_extract(
+    tar: tarfile.TarFile,
+    *,
+    paths: list[str],
+    extraction_dir: Path,
+) -> ExtractionResult:
+    normalized_paths = [p.rstrip("/") for p in paths]
+    members = tar.getmembers()
+
+    # Pass 1: identify skill folders from tar headers only
+    # candidate_folders[prefix/folder_name] = {has_skill_md, members}
+    candidate_folders: dict[str, dict] = {}
+    skipped_paths: list[str] = []
+
+    for member in members:
+        if not member.isfile():
+            continue
+        relative_path = _strip_top_dir(member.name)
+        if not relative_path:
+            continue
+
+        matched_prefix = _match_prefix(relative_path, normalized_paths)
+        if matched_prefix is None:
+            continue
+
+        suffix = relative_path[len(matched_prefix) :].lstrip("/")
+        if not suffix:
+            continue
+
+        parts = suffix.split("/", 1)
+        folder_name = parts[0]
+        folder_key = f"{matched_prefix}/{folder_name}" if matched_prefix != "." else folder_name
+
+        if len(parts) == 1 and "/" not in suffix:
+            # File directly under prefix, not inside a subfolder
+            if suffix == _SKILL_ENTRY_FILENAME:
+                # SKILL.md directly under a path prefix — treat as a skill folder at prefix level
+                if folder_key not in candidate_folders:
+                    candidate_folders[folder_key] = {"has_skill_md": False, "members": []}
+                # Actually this is a bare file, not inside a subfolder — skip it
+                skipped_paths.append(relative_path)
+                continue
+            skipped_paths.append(relative_path)
+            continue
+
+        if folder_key not in candidate_folders:
+            candidate_folders[folder_key] = {"has_skill_md": False, "members": []}
+
+        candidate_folders[folder_key]["members"].append((member, relative_path))
+
+        remaining = parts[1] if len(parts) > 1 else ""
+        if remaining == _SKILL_ENTRY_FILENAME:
+            candidate_folders[folder_key]["has_skill_md"] = True
+
+    # Separate confirmed skill folders from non-skill folders
+    confirmed_folders: dict[str, list[tuple[tarfile.TarInfo, str]]] = {}
+    for folder_key, info in candidate_folders.items():
+        if info["has_skill_md"]:
+            confirmed_folders[folder_key] = info["members"]
+        else:
+            skipped_paths.append(folder_key)
+
+    # Pass 2: size-check and extract confirmed folders
+    result = ExtractionResult(skipped_paths=skipped_paths)
+    total_extracted = 0
+
+    for folder_key, folder_members in confirmed_folders.items():
+        # Check if any member exceeds MAX_SINGLE_FILE_SIZE
+        oversized = False
+        for member, _rel_path in folder_members:
+            if member.size > MAX_SINGLE_FILE_SIZE:
+                result.oversized_skill_paths.append(folder_key)
+                oversized = True
+                break
+        if oversized:
+            continue
+
+        # Extract all members in this folder
+        skill_md_path: Path | None = None
+        aux_files: list[ExtractedAuxFile] = []
+
+        for member, relative_path in folder_members:
+            total_extracted += member.size
+            if total_extracted > MAX_EXTRACTED_SIZE:
+                raise GitHubDownloadError(
+                    f"Total extracted size exceeds {MAX_EXTRACTED_SIZE} bytes",
+                    SkillSyncJobErrorCode.DECOMPRESSION_BOMB,
+                )
+
+            member_copy = copy.copy(member)
+            member_copy.name = relative_path
+
+            tar.extract(member_copy, path=extraction_dir, filter="data")
+            on_disk = extraction_dir / relative_path
+
+            suffix_in_folder = relative_path[len(folder_key) :].lstrip("/")
+            if suffix_in_folder == _SKILL_ENTRY_FILENAME:
+                skill_md_path = on_disk
+            else:
+                aux_files.append(
+                    ExtractedAuxFile(
+                        relative_path=relative_path,
+                        absolute_path=on_disk,
+                        size=member.size,
+                    )
+                )
+
+        if skill_md_path is not None:
+            result.skill_folders.append(
+                ExtractedSkillFolder(
+                    root_relative_path=folder_key,
+                    skill_md_path=skill_md_path,
+                    aux_files=aux_files,
+                )
+            )
+
+    return result
+
+
+def _match_prefix(relative_path: str, normalized_paths: list[str]) -> str | None:
     for prefix in normalized_paths:
+        if prefix == ".":
+            return "."
         if relative_path == prefix or relative_path.startswith(prefix + "/"):
-            suffix = relative_path[len(prefix) :].lstrip("/")
-            depth = suffix.count("/")
-            if depth <= max_depth:
-                return True
-    return False
+            return prefix
+    return None

@@ -1,30 +1,19 @@
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from registry_pkgs.models.enums import SkillSyncSkillErrorCode
 from registry_pkgs.models.skill_sync_job import SkillSyncDiscoverySummary, SkillSyncSkillError
 
-from .skill_sync_github_service import DiscoveredFile
+from ..models.skill_frontmatter import SkillFrontmatter
+from .skill_sync_github_service import ExtractedAuxFile, ExtractedSkillFolder, ExtractionResult
 
 logger = logging.getLogger(__name__)
 
 MAX_FILES_PER_SKILL = 50
-
-_FRONTMATTER_FIELDS = {
-    "name",
-    "description",
-    "displayTitle",
-    "category",
-    "alwaysApply",
-    "userInvocable",
-    "disableModelInvocation",
-    "allowedTools",
-    "tags",
-}
 
 
 @dataclass
@@ -41,7 +30,7 @@ class DiscoveredSkill:
     disable_model_invocation: bool
     allowed_tools: list[str] | None
     tags: list[str]
-    files: list[DiscoveredFile] = field(default_factory=list)
+    files: list[ExtractedAuxFile] = field(default_factory=list)
 
 
 @dataclass
@@ -52,115 +41,41 @@ class DiscoveryResult:
 
 
 class SkillSyncDiscoveryService:
-    def discover_skills(self, files: list[DiscoveredFile]) -> DiscoveryResult:
-        """Scan .md files for YAML frontmatter, associate same-directory aux files per skill."""
-        md_files: dict[str, DiscoveredFile] = {}
-        aux_files: dict[str, list[DiscoveredFile]] = {}
+    """Convert safely extracted folders into validated Skill candidates and item errors.
 
-        for f in files:
-            if f.relative_path.endswith(".md"):
-                md_files[f.relative_path] = f
-            else:
-                parent = os.path.dirname(f.relative_path)
-                aux_files.setdefault(parent, []).append(f)
+    Discovery reads ``SKILL.md`` files, validates frontmatter and per-Skill limits, and
+    returns valid candidates plus structured errors and summary data. It is deliberately
+    side-effect free with respect to GitHub, jobs, sources, and synchronized Skill records.
+    """
 
-        # Count .md skills per directory — aux files are only assigned when unambiguous (single skill in dir)
-        md_count_per_dir: dict[str, int] = {}
-        for path in md_files:
-            parent = os.path.dirname(path)
-            md_count_per_dir[parent] = md_count_per_dir.get(parent, 0) + 1
+    def discover_skills(self, extraction: ExtractionResult) -> DiscoveryResult:
+        """Validate each extracted SKILL.md independently and retain item-level errors.
 
+        Returning valid skills and errors together lets the apply phase make partial progress
+        while preserving previously synced entries for paths that failed this discovery run.
+        """
         skills: list[DiscoveredSkill] = []
         errors: list[SkillSyncSkillError] = []
-        skipped_paths: list[str] = []
+        skipped_paths: list[str] = list(extraction.skipped_paths)
         seen_names: dict[str, str] = {}
 
-        for path, md_file in sorted(md_files.items()):
-            try:
-                content = md_file.content.decode("utf-8")
-            except UnicodeDecodeError:
-                skipped_paths.append(path)
-                continue
-
-            parsed = _parse_frontmatter(content)
-            if parsed is None:
-                skipped_paths.append(path)
-                continue
-
-            fm, body = parsed
-            name = fm.get("name")
-            if not name or not isinstance(name, str):
-                errors.append(
-                    SkillSyncSkillError(
-                        skillPath=path,
-                        upstreamId=path,
-                        errorCode=SkillSyncSkillErrorCode.SKILL_NAME_MISSING,
-                        errorMessage="Frontmatter missing required 'name' field",
-                        phase="discovery",
-                    )
-                )
-                continue
-
-            name = name.strip()
-            description = fm.get("description", "")
-            if not description:
-                errors.append(
-                    SkillSyncSkillError(
-                        skillPath=path,
-                        upstreamId=path,
-                        errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
-                        errorMessage="Frontmatter missing required 'description' field",
-                        phase="discovery",
-                    )
-                )
-                continue
-
-            if name in seen_names:
-                errors.append(
-                    SkillSyncSkillError(
-                        skillPath=path,
-                        upstreamId=path,
-                        errorCode=SkillSyncSkillErrorCode.DUPLICATE_SKILL_NAME,
-                        errorMessage=f"Duplicate skill name '{name}', first seen at {seen_names[name]}",
-                        phase="discovery",
-                    )
-                )
-                continue
-
-            seen_names[name] = path
-
-            parent_dir = os.path.dirname(path)
-            # Only assign aux files when this is the sole .md skill in its directory
-            skill_files = aux_files.get(parent_dir, []) if md_count_per_dir.get(parent_dir, 0) == 1 else []
-            if len(skill_files) > MAX_FILES_PER_SKILL:
-                errors.append(
-                    SkillSyncSkillError(
-                        skillPath=path,
-                        upstreamId=path,
-                        errorCode=SkillSyncSkillErrorCode.TOO_MANY_FILES,
-                        errorMessage=f"Skill has {len(skill_files)} auxiliary files, max {MAX_FILES_PER_SKILL}",
-                        phase="discovery",
-                    )
-                )
-                continue
-
-            skills.append(
-                DiscoveredSkill(
-                    upstream_id=path,
-                    name=name,
-                    description=str(description).strip(),
-                    display_title=fm.get("displayTitle"),
-                    body=body,
-                    frontmatter={k: v for k, v in fm.items() if k in _FRONTMATTER_FIELDS},
-                    category=fm.get("category", "general"),
-                    always_apply=bool(fm.get("alwaysApply", False)),
-                    user_invocable=bool(fm.get("userInvocable", True)),
-                    disable_model_invocation=bool(fm.get("disableModelInvocation", False)),
-                    allowed_tools=fm.get("allowedTools"),
-                    tags=fm.get("tags", []),
-                    files=skill_files,
+        for folder_path in extraction.oversized_skill_paths:
+            errors.append(
+                SkillSyncSkillError(
+                    skillPath=folder_path,
+                    upstreamId=folder_path,
+                    errorCode=SkillSyncSkillErrorCode.FILE_TOO_LARGE,
+                    errorMessage=f"Skill folder '{folder_path}' contains a file exceeding the size limit",
+                    phase="extraction",
                 )
             )
+
+        for folder in extraction.skill_folders:
+            skill_or_error = _process_skill_folder(folder, seen_names)
+            if isinstance(skill_or_error, DiscoveredSkill):
+                skills.append(skill_or_error)
+            else:
+                errors.append(skill_or_error)
 
         summary = SkillSyncDiscoverySummary(
             discoveredSkillCount=len(skills),
@@ -168,6 +83,98 @@ class SkillSyncDiscoveryService:
             skippedPaths=skipped_paths,
         )
         return DiscoveryResult(skills=skills, errors=errors, summary=summary)
+
+
+def _process_skill_folder(
+    folder: ExtractedSkillFolder,
+    seen_names: dict[str, str],
+) -> DiscoveredSkill | SkillSyncSkillError:
+    path = folder.root_relative_path
+
+    try:
+        raw = folder.skill_md_path.read_bytes()
+    except Exception as exc:
+        return SkillSyncSkillError(
+            skillPath=path,
+            upstreamId=path,
+            errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
+            errorMessage=f"Failed to read SKILL.md: {exc}",
+            phase="discovery",
+        )
+
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return SkillSyncSkillError(
+            skillPath=path,
+            upstreamId=path,
+            errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
+            errorMessage="SKILL.md contains non-UTF-8 content",
+            phase="discovery",
+        )
+
+    parsed = _parse_frontmatter(content)
+    if parsed is None:
+        return SkillSyncSkillError(
+            skillPath=path,
+            upstreamId=path,
+            errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
+            errorMessage="SKILL.md has no valid YAML frontmatter",
+            phase="discovery",
+        )
+
+    raw_frontmatter, body = parsed
+    try:
+        frontmatter = SkillFrontmatter.model_validate(raw_frontmatter)
+    except ValidationError as exc:
+        name_missing = any(error["loc"] == ("name",) for error in exc.errors())
+        return SkillSyncSkillError(
+            skillPath=path,
+            upstreamId=path,
+            errorCode=(
+                SkillSyncSkillErrorCode.SKILL_NAME_MISSING
+                if name_missing
+                else SkillSyncSkillErrorCode.SKILL_PARSE_FAILED
+            ),
+            errorMessage=f"SKILL.md frontmatter validation failed: {exc.errors(include_url=False)}",
+            phase="discovery",
+        )
+
+    if frontmatter.name in seen_names:
+        return SkillSyncSkillError(
+            skillPath=path,
+            upstreamId=path,
+            errorCode=SkillSyncSkillErrorCode.DUPLICATE_SKILL_NAME,
+            errorMessage=f"Duplicate skill name '{frontmatter.name}', first seen at {seen_names[frontmatter.name]}",
+            phase="discovery",
+        )
+
+    seen_names[frontmatter.name] = path
+
+    if len(folder.aux_files) > MAX_FILES_PER_SKILL:
+        return SkillSyncSkillError(
+            skillPath=path,
+            upstreamId=path,
+            errorCode=SkillSyncSkillErrorCode.TOO_MANY_FILES,
+            errorMessage=f"Skill has {len(folder.aux_files)} auxiliary files, max {MAX_FILES_PER_SKILL}",
+            phase="discovery",
+        )
+
+    return DiscoveredSkill(
+        upstream_id=path,
+        name=frontmatter.name,
+        description=frontmatter.description,
+        display_title=frontmatter.displayTitle,
+        body=body,
+        frontmatter=frontmatter.model_dump(exclude_unset=True, exclude_none=True),
+        category=frontmatter.category,
+        always_apply=frontmatter.alwaysApply,
+        user_invocable=frontmatter.userInvocable,
+        disable_model_invocation=frontmatter.disableModelInvocation,
+        allowed_tools=frontmatter.allowedTools,
+        tags=frontmatter.tags,
+        files=folder.aux_files,
+    )
 
 
 def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str] | None:
