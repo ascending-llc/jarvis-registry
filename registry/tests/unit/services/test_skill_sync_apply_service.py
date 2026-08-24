@@ -316,8 +316,8 @@ async def test_delete_source_skills_returns_real_deleted_counts(monkeypatch):
     monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
     source = SimpleNamespace(id=PydanticObjectId())
     skills = [
-        SimpleNamespace(id=PydanticObjectId(), deletedAt=None, save=AsyncMock()),
-        SimpleNamespace(id=PydanticObjectId(), deletedAt=None, save=AsyncMock()),
+        SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock(), save=AsyncMock()),
+        SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock(), save=AsyncMock()),
     ]
     service = _service(MagicMock(delete_acl_entries_for_resource=AsyncMock()))
     service.list_live_skills = AsyncMock(return_value=skills)
@@ -330,8 +330,9 @@ async def test_delete_source_skills_returns_real_deleted_counts(monkeypatch):
 
     assert summary.skillsDeleted == 2
     assert summary.filesDeleted == 4
-    assert all(skill.deletedAt is not None for skill in skills)
-    assert all(skill.save.await_count == 1 for skill in skills)
+    # Hard delete: the document is removed outright, never re-saved with a tombstone.
+    assert all(skill.delete.await_count == 1 for skill in skills)
+    assert all(skill.save.await_count == 0 for skill in skills)
 
 
 @pytest.mark.asyncio

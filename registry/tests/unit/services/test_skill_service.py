@@ -73,9 +73,7 @@ async def test_list_skills_filters_by_acl_status_and_file_count(mock_skill_cls, 
     result = await SkillService(acl_service, user_service).list_skills(_USER_ID, enabled=True, file_count=0)
 
     assert result == [(skill, permissions)]
-    mock_skill_cls.find.assert_called_once_with(
-        {"_id": {"$in": [skill.id]}, "deletedAt": None, "enabled": True, "fileCount": 0}
-    )
+    mock_skill_cls.find.assert_called_once_with({"_id": {"$in": [skill.id]}, "enabled": True, "fileCount": 0})
 
 
 @pytest.mark.asyncio
@@ -206,9 +204,7 @@ async def test_create_inserts_skill_and_grants_owner(mock_skill_cls, mock_mongod
     assert mock_skill_cls.call_args.kwargs["createdByRegistry"] is True
     assert mock_skill_cls.call_args.kwargs["authorName"] == "Database User"
     assert mock_skill_cls.call_args.kwargs["fileCount"] == 0
-    mock_skill_cls.find_one.assert_awaited_once_with(
-        {"name": "test-skill", "author": PydanticObjectId(_USER_ID), "deletedAt": None}
-    )
+    mock_skill_cls.find_one.assert_awaited_once_with({"name": "test-skill", "author": PydanticObjectId(_USER_ID)})
 
 
 def _make_named_skill(name: str, author_id: str = _USER_ID) -> MagicMock:

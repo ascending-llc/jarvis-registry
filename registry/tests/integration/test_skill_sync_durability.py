@@ -123,7 +123,7 @@ async def test_apply_delete_rolls_back_skill_and_files_when_acl_delete_fails(mon
     client = AsyncMongoClient(uri, tz_aware=True, serverSelectionTimeoutMS=3000)
     database = client[database_name]
     skill_id = PydanticObjectId()
-    await database.skills.insert_one({"_id": skill_id, "deletedAt": None})
+    await database.skills.insert_one({"_id": skill_id, "name": "doomed-skill"})
     await database.skillfiles.insert_many(
         [
             {"skillId": skill_id, "relativePath": "one.txt"},
@@ -141,28 +141,23 @@ async def test_apply_delete_rolls_back_skill_and_files_when_acl_delete_fails(mon
             assert query == {"skillId": skill_id}
             return _FileFinder()
 
-    async def _save_skill(_self, *, session):
-        await database.skills.update_one(
-            {"_id": skill_id},
-            {"$set": {"deletedAt": datetime.now(UTC)}},
-            session=session,
-        )
+    async def _delete_skill_doc(_self, *, session):
+        await database.skills.delete_one({"_id": skill_id}, session=session)
 
     acl_service = type(
         "FailingAclService",
         (),
         {"delete_acl_entries_for_resource": AsyncMock(side_effect=RuntimeError("ACL delete failed"))},
     )()
-    skill = type("StoredSkill", (), {"id": skill_id, "deletedAt": None, "save": _save_skill})()
+    skill = type("StoredSkill", (), {"id": skill_id, "delete": _delete_skill_doc})()
     monkeypatch.setattr(MongoDB, "get_client", lambda: client)
     monkeypatch.setattr("registry.services.skill_sync_apply_service.SkillFile", _SkillFileAdapter)
 
     try:
         with pytest.raises(RuntimeError, match="ACL delete failed"):
-            await SkillSyncApplyService(acl_service)._delete_skill(skill, datetime.now(UTC))
+            await SkillSyncApplyService(acl_service)._delete_skill(skill)
 
-        stored_skill = await database.skills.find_one({"_id": skill_id})
-        assert stored_skill["deletedAt"] is None
+        assert await database.skills.find_one({"_id": skill_id}) is not None
         assert await database.skillfiles.count_documents({"skillId": skill_id}) == 2
     finally:
         await client.drop_database(database_name)
