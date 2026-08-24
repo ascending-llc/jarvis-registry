@@ -248,3 +248,24 @@ async def test_delete_source_tokens_deletes_matching_tokens(monkeypatch, service
         }
     )
     delete_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_access_token_scopes_to_user_and_access_type(monkeypatch, service):
+    source_id = PydanticObjectId()
+    user_id = str(PydanticObjectId())
+    delete_mock = AsyncMock()
+    find_result = SimpleNamespace(delete=delete_mock)
+    find_mock = MagicMock(return_value=find_result)
+    monkeypatch.setattr("registry.services.skill_sync_token_service.Token.find", find_mock)
+
+    await service.delete_user_access_token(user_id=user_id, source_id=source_id)
+
+    find_mock.assert_called_once_with(
+        {
+            "userId": PydanticObjectId(user_id),
+            "type": TokenType.SKILL_SYNC_GITHUB_ACCESS.value,
+            "identifier": build_skill_sync_token_identifier(source_id),
+        }
+    )
+    delete_mock.assert_awaited_once()

@@ -3,7 +3,7 @@ import math
 from urllib.parse import urlencode
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
 from fastapi.responses import RedirectResponse
 
@@ -44,7 +44,7 @@ from ....schemas.skill_sync_api_schemas import (
 from ....services.access_control_service import ACLService
 from ....services.skill_sync_job_service import SkillSyncJobService
 from ....services.skill_sync_oauth_service import SkillSyncOAuthService
-from ....services.skill_sync_service import SkillSyncService
+from ....services.skill_sync_service import SkillSyncService, run_skill_delete_background, run_skill_sync_background
 from ....services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from ....services.skill_sync_token_service import SkillSyncTokenService
 
@@ -266,6 +266,7 @@ async def update_source(
     source_id: str,
     data: SkillSyncSourceUpdateRequest,
     user_context: CurrentUser,
+    background_tasks: BackgroundTasks,
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     sync_service: SkillSyncService = Depends(get_skill_sync_service),
     token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
@@ -292,15 +293,22 @@ async def update_source(
         if credentials_changed:
             await token_service.delete_source_tokens(source.id)
         if data.syncAfterUpdate:
-            job, needs_auth = await sync_service.trigger_sync(
+            result = await sync_service.trigger_sync(
                 source=source,
                 user_id=user_str_id,
                 trigger_type=SkillSyncTriggerType.MANUAL,
             )
-            if needs_auth:
+            if result.job is None:
                 return SkillSyncTriggerResponse(needsAuthorization=True)
-            if job is not None:
-                return SkillSyncTriggerResponse(job=_to_job_response(job))
+            background_tasks.add_task(
+                run_skill_sync_background,
+                skill_sync_service=sync_service,
+                source=result.source,
+                job=result.job,
+                user_id=user_str_id,
+                access_token=result.access_token,
+            )
+            return SkillSyncTriggerResponse(job=_to_job_response(result.job))
         return await _to_detail_response(source, source_service, permissions)
     except HTTPException:
         raise
@@ -322,12 +330,14 @@ async def update_source(
 async def delete_source(
     source_id: str,
     user_context: CurrentUser,
+    background_tasks: BackgroundTasks,
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     sync_service: SkillSyncService = Depends(get_skill_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
         user_object_id = PydanticObjectId(user_context["user_id"])
+        user_str_id = str(user_context["user_id"])
         source = await _required_source(source_id, source_service)
         await acl_service.check_user_permission(
             user_id=user_object_id,
@@ -340,9 +350,16 @@ async def delete_source(
                 http_status.HTTP_409_CONFLICT,
                 detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source cannot be deleted"),
             )
-        job = await sync_service.delete_source_with_skills(
+        job, source = await sync_service.delete_source_with_skills(
             source=source,
-            user_id=str(user_context["user_id"]),
+            user_id=user_str_id,
+        )
+        background_tasks.add_task(
+            run_skill_delete_background,
+            skill_sync_service=sync_service,
+            source=source,
+            job=job,
+            user_id=user_str_id,
         )
         return SkillSyncDeleteResponse(sourceId=str(source.id), jobId=str(job.id), status="deleting")
     except HTTPException:
@@ -365,6 +382,7 @@ async def delete_source(
 async def sync_source(
     source_id: str,
     user_context: CurrentUser,
+    background_tasks: BackgroundTasks,
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     sync_service: SkillSyncService = Depends(get_skill_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
@@ -384,16 +402,22 @@ async def sync_source(
                 http_status.HTTP_409_CONFLICT,
                 detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source already has an active sync"),
             )
-        job, needs_auth = await sync_service.trigger_sync(
+        result = await sync_service.trigger_sync(
             source=source,
             user_id=user_str_id,
             trigger_type=SkillSyncTriggerType.MANUAL,
         )
-        if needs_auth:
+        if result.job is None:
             return SkillSyncTriggerResponse(needsAuthorization=True)
-        if job is None:
-            return SkillSyncTriggerResponse(needsAuthorization=True)
-        return SkillSyncTriggerResponse(job=_to_job_response(job))
+        background_tasks.add_task(
+            run_skill_sync_background,
+            skill_sync_service=sync_service,
+            source=result.source,
+            job=result.job,
+            user_id=user_str_id,
+            access_token=result.access_token,
+        )
+        return SkillSyncTriggerResponse(job=_to_job_response(result.job))
     except HTTPException:
         raise
     except ValueError as exc:
@@ -449,6 +473,7 @@ async def initiate_skill_sync_oauth(
 async def skill_sync_oauth_callback(
     request: Request,
     source_id: str,
+    background_tasks: BackgroundTasks,
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
@@ -470,13 +495,21 @@ async def skill_sync_oauth_callback(
             state=state,
             redirect_uri=redirect_uri,
         )
-        _job, needs_auth = await sync_service.trigger_sync(
+        result = await sync_service.trigger_sync(
             source=source,
             user_id=user_id,
             trigger_type=SkillSyncTriggerType.OAUTH_CALLBACK,
         )
-        if needs_auth:
+        if result.job is None:
             return RedirectResponse(error_redirect)
+        background_tasks.add_task(
+            run_skill_sync_background,
+            skill_sync_service=sync_service,
+            source=result.source,
+            job=result.job,
+            user_id=user_id,
+            access_token=result.access_token,
+        )
         success_redirect = (
             f"{settings.registry_client_url}/skill-sync-sources/{source_id}?{urlencode({'status': 'syncing'})}"
         )

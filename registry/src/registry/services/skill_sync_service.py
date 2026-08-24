@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import mimetypes
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
@@ -46,24 +46,47 @@ logger = logging.getLogger(__name__)
 _GITHUB_SYNC_FILE_SOURCE = "github-sync"
 _ACL_INHERIT_BATCH_SIZE = 500
 
-_background_tasks: set[asyncio.Task] = set()
+
+@dataclass
+class SyncTriggerResult:
+    job: SkillSyncJob | None = None
+    source: SkillSyncSource | None = None
+    access_token: str | None = None
 
 
-def _on_background_done(task: asyncio.Task) -> None:
-    _background_tasks.discard(task)
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("Background sync task failed: %s", exc, exc_info=exc)
+async def run_skill_sync_background(
+    *,
+    skill_sync_service: SkillSyncService,
+    source: SkillSyncSource,
+    job: SkillSyncJob,
+    user_id: str,
+    access_token: str,
+) -> None:
+    try:
+        await skill_sync_service._run_sync(source, job, user_id, access_token)
+    except Exception:
+        logger.exception(
+            "Skill sync background task failed: source_id=%s job_id=%s",
+            source.id,
+            job.id,
+        )
 
 
-def _fire_background(coro) -> asyncio.Task:
-    """Create a GC-safe background task with exception logging."""
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_on_background_done)
-    return task
+async def run_skill_delete_background(
+    *,
+    skill_sync_service: SkillSyncService,
+    source: SkillSyncSource,
+    job: SkillSyncJob,
+    user_id: str,
+) -> None:
+    try:
+        await skill_sync_service._run_delete(source, job, user_id)
+    except Exception:
+        logger.exception(
+            "Skill delete background task failed: source_id=%s job_id=%s",
+            source.id,
+            job.id,
+        )
 
 
 class SkillSyncService:
@@ -132,8 +155,8 @@ class SkillSyncService:
         source: SkillSyncSource,
         user_id: str,
         trigger_type: SkillSyncTriggerType,
-    ) -> tuple[SkillSyncJob | None, bool]:
-        """Resolve OAuth token, create a job, and launch background sync. Returns (job, needs_auth)."""
+    ) -> SyncTriggerResult:
+        """Resolve OAuth token and create a sync job. Caller must schedule background execution."""
         client_secret = decrypt_value(source.githubAppClientSecretEncrypted)
         access_token = await self._token_service.resolve_access_token(
             user_id=user_id,
@@ -142,7 +165,7 @@ class SkillSyncService:
             client_secret=client_secret,
         )
         if access_token is None:
-            return None, True
+            return SyncTriggerResult()
 
         async with MongoDB.get_client().start_session() as mongo_session:
             async with await mongo_session.start_transaction():
@@ -161,15 +184,15 @@ class SkillSyncService:
                     },
                     session=mongo_session,
                 )
-        _fire_background(self._run_sync(source, job, user_id, access_token))
-        return job, False
+        return SyncTriggerResult(job=job, source=source, access_token=access_token)
 
     async def delete_source_with_skills(
         self,
         *,
         source: SkillSyncSource,
         user_id: str,
-    ) -> SkillSyncJob:
+    ) -> tuple[SkillSyncJob, SkillSyncSource]:
+        """Create a delete job. Caller must schedule background execution. Returns (job, source)."""
         async with MongoDB.get_client().start_session() as mongo_session:
             async with await mongo_session.start_transaction():
                 source = await self._source_crud_service.mark_deleting(source, session=mongo_session)
@@ -181,8 +204,7 @@ class SkillSyncService:
                     request_snapshot={"action": "delete"},
                     session=mongo_session,
                 )
-        _fire_background(self._run_delete(source, job, user_id))
-        return job
+        return job, source
 
     async def _run_sync(
         self,
@@ -225,15 +247,18 @@ class SkillSyncService:
             job.skillErrors.extend(discovery.errors)
             await job.save()
 
-            if not discovery.skills and not discovery.errors:
+            if not discovery.skills:
+                error_msg = (
+                    f"No valid skills found in configured paths; {len(discovery.errors)} errors during discovery"
+                )
                 await self._finalize_job(
                     job,
                     SkillSyncJobStatus.FAILED,
                     SkillSyncJobPhase.FAILED,
                     error_code=SkillSyncJobErrorCode.NO_SKILLS_FOUND,
-                    error="No skills found in configured paths",
+                    error=error_msg,
                 )
-                await self._source_crud_service.mark_sync_failed(source, "No skills found in configured paths")
+                await self._source_crud_service.mark_sync_failed(source, error_msg)
                 return
 
             job.phase = SkillSyncJobPhase.APPLYING
@@ -277,6 +302,8 @@ class SkillSyncService:
 
         except GitHubDownloadError as exc:
             logger.exception("GitHub download failed for source %s", source.id)
+            if exc.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED:
+                await self._token_service.delete_user_access_token(user_id=user_id, source_id=source.id)
             await self._finalize_job(
                 job,
                 SkillSyncJobStatus.FAILED,

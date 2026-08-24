@@ -170,6 +170,15 @@ class SkillSyncTokenService:
         token.expiresAt = expires_at
         await token.save()
 
+    async def delete_user_access_token(self, *, user_id: str, source_id: str | PydanticObjectId) -> None:
+        await Token.find(
+            {
+                "userId": PydanticObjectId(user_id),
+                "type": TokenType.SKILL_SYNC_GITHUB_ACCESS.value,
+                "identifier": build_skill_sync_token_identifier(source_id),
+            }
+        ).delete()
+
     async def delete_source_tokens(self, source_id: str | PydanticObjectId) -> None:
         await Token.find(
             {

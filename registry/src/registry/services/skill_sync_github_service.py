@@ -1,9 +1,7 @@
 import io
 import logging
-import re
 import tarfile
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -16,7 +14,6 @@ MAX_EXTRACTED_SIZE = 500 * 1024 * 1024
 MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024
 
 _GITHUB_API_BASE = "https://api.github.com"
-_FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 class GitHubDownloadError(Exception):
@@ -36,6 +33,35 @@ class SkillSyncGitHubService:
     def __init__(self, http_client: httpx.AsyncClient) -> None:
         self._http_client = http_client
 
+    async def resolve_commit_sha(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        ref: str,
+        access_token: str,
+    ) -> str:
+        """
+        docs: https://docs.github.com/en/rest/commits/commits?apiVersion=2022-11-28#get-a-commit
+        Resolve a ref to a full commit SHA via the documented REST API.
+        """
+        url = f"{_GITHUB_API_BASE}/repos/{owner}/{repo}/commits/{ref}"
+        headers = {
+            "Authorization": f"token {access_token}",
+            "Accept": "application/vnd.github+json",
+        }
+        try:
+            response = await self._http_client.get(url, headers=headers)
+            _raise_for_github_status(response, owner, repo, ref)
+            return response.json()["sha"]
+        except GitHubDownloadError:
+            raise
+        except (httpx.HTTPError, KeyError, TypeError) as exc:
+            raise GitHubDownloadError(
+                f"Failed to resolve commit SHA for {ref}: {exc}",
+                SkillSyncJobErrorCode.DOWNLOAD_FAILED,
+            ) from exc
+
     async def download_tarball(
         self,
         *,
@@ -44,7 +70,8 @@ class SkillSyncGitHubService:
         ref: str,
         access_token: str,
     ) -> tuple[bytes, str]:
-        """Stream-download a GitHub tarball, enforcing MAX_TARBALL_SIZE during transfer."""
+        """Resolve commit SHA then stream-download the GitHub tarball."""
+        commit_sha = await self.resolve_commit_sha(owner=owner, repo=repo, ref=ref, access_token=access_token)
         url = f"{_GITHUB_API_BASE}/repos/{owner}/{repo}/tarball/{ref}"
         headers = {
             "Authorization": f"token {access_token}",
@@ -52,26 +79,7 @@ class SkillSyncGitHubService:
         }
         try:
             async with self._http_client.stream("GET", url, headers=headers, follow_redirects=True) as response:
-                if response.status_code in (401, 403):
-                    raise GitHubDownloadError(
-                        f"GitHub authentication failed (HTTP {response.status_code})",
-                        SkillSyncJobErrorCode.GITHUB_AUTH_FAILED,
-                    )
-                if response.status_code == 429:
-                    raise GitHubDownloadError(
-                        "GitHub API rate limit exceeded",
-                        SkillSyncJobErrorCode.GITHUB_RATE_LIMITED,
-                    )
-                if response.status_code == 404:
-                    raise GitHubDownloadError(
-                        f"Repository {owner}/{repo} ref {ref} not found",
-                        SkillSyncJobErrorCode.GITHUB_NOT_FOUND,
-                    )
-                if response.status_code >= 400:
-                    raise GitHubDownloadError(
-                        f"GitHub API returned HTTP {response.status_code}",
-                        SkillSyncJobErrorCode.DOWNLOAD_FAILED,
-                    )
+                _raise_for_github_status(response, owner, repo, ref)
 
                 chunks: list[bytes] = []
                 total_size = 0
@@ -84,9 +92,7 @@ class SkillSyncGitHubService:
                         )
                     chunks.append(chunk)
 
-                tarball_bytes = b"".join(chunks)
-                commit_sha = _extract_commit_sha(response)
-                return tarball_bytes, commit_sha
+                return b"".join(chunks), commit_sha
         except GitHubDownloadError:
             raise
         except httpx.HTTPError as exc:
@@ -116,25 +122,27 @@ class SkillSyncGitHubService:
             ) from exc
 
 
-def _extract_commit_sha(response: httpx.Response) -> str:
-    for hist in reversed(response.history):
-        location = str(hist.headers.get("location", ""))
-        candidate = urlsplit(location).path.rstrip("/").rsplit("/", 1)[-1]
-        if _is_full_commit_sha(candidate):
-            return candidate.lower()
-    content_disp = response.headers.get("content-disposition", "")
-    for part in content_disp.split(";"):
-        part = part.strip()
-        if part.startswith("filename="):
-            filename = part.split("=", 1)[1].strip('"')
-            sha_part = filename.rsplit("-", 1)[-1].replace(".tar.gz", "")
-            if _is_full_commit_sha(sha_part):
-                return sha_part.lower()
-    return "unknown"
-
-
-def _is_full_commit_sha(value: str) -> bool:
-    return bool(_FULL_COMMIT_SHA_RE.fullmatch(value))
+def _raise_for_github_status(response: httpx.Response, owner: str, repo: str, ref: str) -> None:
+    if response.status_code in (401, 403):
+        raise GitHubDownloadError(
+            f"GitHub authentication failed (HTTP {response.status_code})",
+            SkillSyncJobErrorCode.GITHUB_AUTH_FAILED,
+        )
+    if response.status_code == 429:
+        raise GitHubDownloadError(
+            "GitHub API rate limit exceeded",
+            SkillSyncJobErrorCode.GITHUB_RATE_LIMITED,
+        )
+    if response.status_code == 404:
+        raise GitHubDownloadError(
+            f"Repository {owner}/{repo} ref {ref} not found",
+            SkillSyncJobErrorCode.GITHUB_NOT_FOUND,
+        )
+    if response.status_code >= 400:
+        raise GitHubDownloadError(
+            f"GitHub API returned HTTP {response.status_code}",
+            SkillSyncJobErrorCode.DOWNLOAD_FAILED,
+        )
 
 
 def _extract_from_tar(

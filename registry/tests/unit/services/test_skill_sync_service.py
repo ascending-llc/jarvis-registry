@@ -121,7 +121,6 @@ async def test_trigger_sync_marks_source_and_creates_job_in_one_transaction(monk
     client.start_session.return_value = _FakeSessionContext(session)
     monkeypatch.setattr("registry.services.skill_sync_service.MongoDB.get_client", lambda: client)
     monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
-    monkeypatch.setattr("registry.services.skill_sync_service._fire_background", MagicMock())
 
     source = _sync_source()
     job = SimpleNamespace(id=PydanticObjectId())
@@ -139,16 +138,16 @@ async def test_trigger_sync_marks_source_and_creates_job_in_one_transaction(monk
         discovery_service=MagicMock(),
         acl_service=MagicMock(),
     )
-    service._run_sync = MagicMock(return_value=object())
 
-    result, needs_auth = await service.trigger_sync(
+    result = await service.trigger_sync(
         source=source,
         user_id=str(PydanticObjectId()),
         trigger_type=MagicMock(),
     )
 
-    assert result is job
-    assert needs_auth is False
+    assert result.job is job
+    assert result.source is source
+    assert result.access_token == "access-token"
     assert source_service.mark_sync_pending.await_args.kwargs["session"] is session
     assert job_service.create_job.await_args.kwargs["session"] is session
 
@@ -159,7 +158,6 @@ async def test_delete_source_marks_source_and_creates_job_in_one_transaction(mon
     client = MagicMock()
     client.start_session.return_value = _FakeSessionContext(session)
     monkeypatch.setattr("registry.services.skill_sync_service.MongoDB.get_client", lambda: client)
-    monkeypatch.setattr("registry.services.skill_sync_service._fire_background", MagicMock())
 
     source = _sync_source()
     job = SimpleNamespace(id=PydanticObjectId())
@@ -175,11 +173,11 @@ async def test_delete_source_marks_source_and_creates_job_in_one_transaction(mon
         discovery_service=MagicMock(),
         acl_service=MagicMock(),
     )
-    service._run_delete = MagicMock(return_value=object())
 
-    result = await service.delete_source_with_skills(source=source, user_id=str(PydanticObjectId()))
+    result_job, result_source = await service.delete_source_with_skills(source=source, user_id=str(PydanticObjectId()))
 
-    assert result is job
+    assert result_job is job
+    assert result_source is source
     assert source_service.mark_deleting.await_args.kwargs["session"] is session
     assert job_service.create_job.await_args.kwargs["session"] is session
 

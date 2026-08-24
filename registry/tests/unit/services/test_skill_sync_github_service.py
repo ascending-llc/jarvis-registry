@@ -10,7 +10,6 @@ from registry.services.skill_sync_github_service import (
     MAX_TARBALL_SIZE,
     GitHubDownloadError,
     SkillSyncGitHubService,
-    _extract_commit_sha,
     _matches_paths,
     _strip_top_dir,
 )
@@ -34,47 +33,83 @@ class _FakeResponse:
         status_code: int = 200,
         content: bytes = b"",
         headers: dict | None = None,
-        history: list | None = None,
+        json_data: dict | None = None,
     ):
         self.status_code = status_code
         self.content = content
         self.headers = headers or {}
-        self.history = history or []
+        self._json_data = json_data
+
+    def json(self):
+        return self._json_data
 
     async def aiter_bytes(self):
         yield self.content
 
 
-def _make_redirect_history(sha: str) -> list:
-    return [
-        _FakeResponse(
-            status_code=302,
-            headers={"location": f"https://codeload.github.com/owner/repo/legacy.tar.gz/{sha}"},
-        )
-    ]
-
-
-def _make_streaming_client(response: _FakeResponse) -> AsyncMock:
+def _make_client(*, get_response: _FakeResponse, stream_response: _FakeResponse | None = None) -> AsyncMock:
     client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=get_response)
 
-    @asynccontextmanager
-    async def _stream(*args, **kwargs):
-        yield response
+    if stream_response is not None:
 
-    client.stream = _stream
+        @asynccontextmanager
+        async def _stream(*args, **kwargs):
+            yield stream_response
+
+        client.stream = _stream
+
     return client
 
 
-def _make_streaming_error_client(exc: Exception) -> AsyncMock:
+def _make_streaming_error_client(*, get_response: _FakeResponse, stream_exc: Exception) -> AsyncMock:
     client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=get_response)
 
     @asynccontextmanager
     async def _stream(*args, **kwargs):
-        raise exc
+        raise stream_exc
         yield  # noqa: RUF027  # pragma: no cover
 
     client.stream = _stream
     return client
+
+
+def _sha_response(sha: str = "a" * 40) -> _FakeResponse:
+    return _FakeResponse(json_data={"sha": sha})
+
+
+# ── resolve_commit_sha ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resolve_commit_sha_success():
+    sha = "a" * 40
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_FakeResponse(json_data={"sha": sha}))
+    service = SkillSyncGitHubService(client)
+    result = await service.resolve_commit_sha(owner="org", repo="repo", ref="main", access_token="tok")
+    assert result == sha
+
+
+@pytest.mark.asyncio
+async def test_resolve_commit_sha_auth_failed():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_FakeResponse(status_code=401))
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.resolve_commit_sha(owner="o", repo="r", ref="main", access_token="bad")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED
+
+
+@pytest.mark.asyncio
+async def test_resolve_commit_sha_not_found():
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_FakeResponse(status_code=404))
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.resolve_commit_sha(owner="o", repo="r", ref="main", access_token="tok")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_NOT_FOUND
 
 
 # ── download_tarball ──────────────────────────────────────────
@@ -84,8 +119,10 @@ def _make_streaming_error_client(exc: Exception) -> AsyncMock:
 async def test_download_tarball_success():
     tarball = _make_tarball({"skills/hello.md": b"# Hello"})
     sha = "a" * 40
-    resp = _FakeResponse(content=tarball, history=_make_redirect_history(sha))
-    client = _make_streaming_client(resp)
+    client = _make_client(
+        get_response=_sha_response(sha),
+        stream_response=_FakeResponse(content=tarball),
+    )
     service = SkillSyncGitHubService(client)
     result_bytes, commit_sha = await service.download_tarball(owner="org", repo="repo", ref="main", access_token="tok")
     assert result_bytes == tarball
@@ -94,7 +131,8 @@ async def test_download_tarball_success():
 
 @pytest.mark.asyncio
 async def test_download_tarball_auth_failed():
-    client = _make_streaming_client(_FakeResponse(status_code=401))
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_FakeResponse(status_code=401))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="bad")
@@ -103,7 +141,8 @@ async def test_download_tarball_auth_failed():
 
 @pytest.mark.asyncio
 async def test_download_tarball_forbidden():
-    client = _make_streaming_client(_FakeResponse(status_code=403))
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_FakeResponse(status_code=403))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="bad")
@@ -112,7 +151,8 @@ async def test_download_tarball_forbidden():
 
 @pytest.mark.asyncio
 async def test_download_tarball_rate_limited():
-    client = _make_streaming_client(_FakeResponse(status_code=429))
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_FakeResponse(status_code=429))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
@@ -121,7 +161,8 @@ async def test_download_tarball_rate_limited():
 
 @pytest.mark.asyncio
 async def test_download_tarball_not_found():
-    client = _make_streaming_client(_FakeResponse(status_code=404))
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_FakeResponse(status_code=404))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
@@ -130,7 +171,8 @@ async def test_download_tarball_not_found():
 
 @pytest.mark.asyncio
 async def test_download_tarball_server_error():
-    client = _make_streaming_client(_FakeResponse(status_code=500))
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_FakeResponse(status_code=500))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
@@ -139,7 +181,10 @@ async def test_download_tarball_server_error():
 
 @pytest.mark.asyncio
 async def test_download_tarball_too_large():
-    client = _make_streaming_client(_FakeResponse(content=b"x" * (MAX_TARBALL_SIZE + 1)))
+    client = _make_client(
+        get_response=_sha_response(),
+        stream_response=_FakeResponse(content=b"x" * (MAX_TARBALL_SIZE + 1)),
+    )
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
@@ -148,11 +193,26 @@ async def test_download_tarball_too_large():
 
 @pytest.mark.asyncio
 async def test_download_tarball_network_error():
-    client = _make_streaming_error_client(httpx.ConnectError("connection refused"))
+    client = _make_streaming_error_client(
+        get_response=_sha_response(),
+        stream_exc=httpx.ConnectError("connection refused"),
+    )
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
         await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
     assert exc_info.value.error_code == SkillSyncJobErrorCode.DOWNLOAD_FAILED
+
+
+@pytest.mark.asyncio
+async def test_download_tarball_stream_auth_failed():
+    client = _make_client(
+        get_response=_sha_response(),
+        stream_response=_FakeResponse(status_code=401),
+    )
+    service = SkillSyncGitHubService(client)
+    with pytest.raises(GitHubDownloadError) as exc_info:
+        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+    assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED
 
 
 # ── extract_files ─────────────────────────────────────────────
@@ -253,44 +313,3 @@ def test_matches_paths():
     assert _matches_paths("other/hello.md", ["skills"], 2) is False
     assert _matches_paths("skills/a/b/c.md", ["skills"], 1) is False
     assert _matches_paths("skills/a/b/c.md", ["skills"], 3) is True
-
-
-def test_extract_commit_sha_from_redirect():
-    sha = "a" * 40
-    resp = _FakeResponse(content=b"data", history=_make_redirect_history(sha))
-    assert _extract_commit_sha(resp) == sha
-
-
-def test_extract_commit_sha_from_content_disposition():
-    sha = "b" * 40
-    resp = _FakeResponse(
-        content=b"data",
-        headers={"content-disposition": f'attachment; filename="owner-repo-{sha}.tar.gz"'},
-    )
-    assert _extract_commit_sha(resp) == sha
-
-
-def test_extract_commit_sha_rejects_tokenized_redirect():
-    resp = _FakeResponse(
-        content=b"data",
-        history=[
-            _FakeResponse(
-                status_code=302,
-                headers={"location": "https://codeload.github.com/owner/repo/legacy.tar.gz/main?token=secret-token"},
-            )
-        ],
-    )
-    assert _extract_commit_sha(resp) == "unknown"
-
-
-def test_extract_commit_sha_rejects_non_sha_filename():
-    resp = _FakeResponse(
-        content=b"data",
-        headers={"content-disposition": 'attachment; filename="owner-repo-main?token=secret-token.tar.gz"'},
-    )
-    assert _extract_commit_sha(resp) == "unknown"
-
-
-def test_extract_commit_sha_unknown():
-    resp = _FakeResponse(content=b"data")
-    assert _extract_commit_sha(resp) == "unknown"

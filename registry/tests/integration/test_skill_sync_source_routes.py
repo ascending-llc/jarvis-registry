@@ -18,6 +18,7 @@ from registry.deps import (
     get_skill_sync_token_service,
 )
 from registry.schemas.acl_schema import ResourcePermissions
+from registry.services.skill_sync_service import SyncTriggerResult
 from registry_pkgs.models.enums import (
     SkillSyncJobPhase,
     SkillSyncJobStatus,
@@ -154,7 +155,7 @@ def skill_sync_route_context():
 
 def test_sync_triggers_sync_needs_auth(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
-    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=(None, True))
+    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=SyncTriggerResult())
     response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync")
     assert response.status_code == 200
     body = response.json()
@@ -165,7 +166,9 @@ def test_sync_triggers_sync_needs_auth(skill_sync_route_context) -> None:
 
 def test_sync_triggers_sync_returns_job(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
-    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=(ctx.job, False))
+    ctx.skill_sync_service.trigger_sync = AsyncMock(
+        return_value=SyncTriggerResult(job=ctx.job, source=ctx.source, access_token="tok")
+    )
     response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync")
     assert response.status_code == 200
     body = response.json()
@@ -256,7 +259,7 @@ def test_create_source_delegates_transaction_to_service(skill_sync_route_context
 
 def test_delete_returns_202_with_job(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
-    ctx.skill_sync_service.delete_source_with_skills = AsyncMock(return_value=ctx.job)
+    ctx.skill_sync_service.delete_source_with_skills = AsyncMock(return_value=(ctx.job, ctx.source))
     response = ctx.client.delete(f"/skill-sync-sources/{ctx.source.id}")
     assert response.status_code == 202
     body = response.json()
@@ -268,7 +271,9 @@ def test_delete_returns_202_with_job(skill_sync_route_context) -> None:
 
 def test_update_with_sync_triggers_sync(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
-    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=(ctx.job, False))
+    ctx.skill_sync_service.trigger_sync = AsyncMock(
+        return_value=SyncTriggerResult(job=ctx.job, source=ctx.source, access_token="tok")
+    )
     response = ctx.client.put(
         f"/skill-sync-sources/{ctx.source.id}",
         json={"displayName": "Renamed", "syncAfterUpdate": True},
@@ -281,7 +286,7 @@ def test_update_with_sync_triggers_sync(skill_sync_route_context) -> None:
 
 def test_update_with_sync_returns_needs_auth(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
-    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=(None, True))
+    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=SyncTriggerResult())
     response = ctx.client.put(
         f"/skill-sync-sources/{ctx.source.id}",
         json={"displayName": "Renamed", "syncAfterUpdate": True},
@@ -300,7 +305,9 @@ def test_list_sources_maps_acl_runtime_error_to_500(skill_sync_route_context) ->
 def test_oauth_callback_exchanges_and_triggers_sync(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
     ctx.oauth_service.exchange_callback = AsyncMock(return_value=USER_ID)
-    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=(ctx.job, False))
+    ctx.skill_sync_service.trigger_sync = AsyncMock(
+        return_value=SyncTriggerResult(job=ctx.job, source=ctx.source, access_token="tok")
+    )
     response = ctx.client.get(
         f"/skill-sync-sources/{ctx.source.id}/oauth/callback?code=code&state=state",
         follow_redirects=False,
