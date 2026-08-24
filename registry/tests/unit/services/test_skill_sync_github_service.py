@@ -327,6 +327,29 @@ def test_extract_bare_files_under_path_skipped(tmp_path):
     assert "skills/bare-file.md" in result.skipped_paths
 
 
+def test_extract_configured_path_is_skill_folder(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "my-skill/SKILL.md": b"---\nname: my-skill\n---\nM",
+                "my-skill/scripts/run.sh": b"echo hi",
+                "other/README.md": b"# Other",
+            }
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=["my-skill"], extraction_dir=extraction_dir)
+    assert len(result.skill_folders) == 1
+    folder = result.skill_folders[0]
+    assert folder.root_relative_path == "my-skill"
+    assert folder.skill_md_path.read_bytes() == b"---\nname: my-skill\n---\nM"
+    assert [f.relative_path for f in folder.aux_files] == ["my-skill/scripts/run.sh"]
+    assert result.skipped_paths == []
+
+
 def test_extract_case_sensitive_skill_md(tmp_path):
     tarball_path = tmp_path / "tarball.tar.gz"
     tarball_path.write_bytes(

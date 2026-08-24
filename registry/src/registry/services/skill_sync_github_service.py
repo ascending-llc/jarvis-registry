@@ -179,10 +179,13 @@ def _two_pass_extract(
     normalized_paths = [p.rstrip("/") for p in paths]
     members = tar.getmembers()
 
-    # Pass 1: identify skill folders from tar headers only
-    # candidate_folders[prefix/folder_name] = {has_skill_md, members}
-    candidate_folders: dict[str, dict] = {}
+    # Pass 1: identify skill folders from tar headers only (no file content is read).
+    # A folder is a skill folder iff it holds SKILL.md directly. Two layouts are supported:
+    # a configured path that *is* a skill folder (<path>/SKILL.md), and one that is a
+    # container of skill folders (<path>/<skill>/SKILL.md).
     skipped_paths: list[str] = []
+    # matched prefix -> [(member, relative_path, path relative to that prefix)]
+    by_prefix: dict[str, list[tuple[tarfile.TarInfo, str, str]]] = {}
 
     for member in members:
         if not member.isfile():
@@ -199,38 +202,33 @@ def _two_pass_extract(
         if not suffix:
             continue
 
-        parts = suffix.split("/", 1)
-        folder_name = parts[0]
-        folder_key = f"{matched_prefix}/{folder_name}" if matched_prefix != "." else folder_name
+        by_prefix.setdefault(matched_prefix, []).append((member, relative_path, suffix))
 
-        if len(parts) == 1 and "/" not in suffix:
-            # File directly under prefix, not inside a subfolder
-            if suffix == _SKILL_ENTRY_FILENAME:
-                # SKILL.md directly under a path prefix — treat as a skill folder at prefix level
-                if folder_key not in candidate_folders:
-                    candidate_folders[folder_key] = {"has_skill_md": False, "members": []}
-                # Actually this is a bare file, not inside a subfolder — skip it
-                skipped_paths.append(relative_path)
-                continue
-            skipped_paths.append(relative_path)
+    confirmed_folders: dict[str, list[tuple[tarfile.TarInfo, str]]] = {}
+
+    for matched_prefix, entries in by_prefix.items():
+        root_key = "" if matched_prefix == "." else matched_prefix
+
+        # The configured path is itself a skill folder — it owns every file beneath it.
+        if any(suffix == _SKILL_ENTRY_FILENAME for _, _, suffix in entries):
+            confirmed_folders[root_key] = [(member, rel) for member, rel, _ in entries]
             continue
 
-        if folder_key not in candidate_folders:
-            candidate_folders[folder_key] = {"has_skill_md": False, "members": []}
+        # Otherwise each direct subfolder is a skill-folder candidate; bare files are skipped.
+        groups: dict[str, list[tuple[tarfile.TarInfo, str, str]]] = {}
+        for member, relative_path, suffix in entries:
+            parts = suffix.split("/", 1)
+            if len(parts) == 1:
+                skipped_paths.append(relative_path)
+                continue
+            folder_key = f"{root_key}/{parts[0]}" if root_key else parts[0]
+            groups.setdefault(folder_key, []).append((member, relative_path, parts[1]))
 
-        candidate_folders[folder_key]["members"].append((member, relative_path))
-
-        remaining = parts[1] if len(parts) > 1 else ""
-        if remaining == _SKILL_ENTRY_FILENAME:
-            candidate_folders[folder_key]["has_skill_md"] = True
-
-    # Separate confirmed skill folders from non-skill folders
-    confirmed_folders: dict[str, list[tuple[tarfile.TarInfo, str]]] = {}
-    for folder_key, info in candidate_folders.items():
-        if info["has_skill_md"]:
-            confirmed_folders[folder_key] = info["members"]
-        else:
-            skipped_paths.append(folder_key)
+        for folder_key, group in groups.items():
+            if any(rest == _SKILL_ENTRY_FILENAME for _, _, rest in group):
+                confirmed_folders[folder_key] = [(member, rel) for member, rel, _ in group]
+            else:
+                skipped_paths.append(folder_key)
 
     # Pass 2: size-check and extract confirmed folders
     result = ExtractionResult(skipped_paths=skipped_paths)
