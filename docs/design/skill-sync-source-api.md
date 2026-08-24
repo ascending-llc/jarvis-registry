@@ -49,7 +49,6 @@
   "repo": "skills-repo",
   "ref": "main",
   "paths": ["skills/", "prompts/mcp"],
-  "skillDiscoveryDepth": 2,
   "githubAppClientId": "github-app-client-id",
   "githubAppClientSecret": "github-app-client-secret"
 }
@@ -63,7 +62,6 @@
 - `repo` (required, string): GitHub repository name, 1–100 characters, regex: `^[A-Za-z0-9._-]+$`
 - `ref` (optional, string): Git ref to sync from (default: `"main"`), 1–255 characters, validated against path traversal
 - `paths` (required, array of strings, min 1): Repository-relative POSIX paths to scan for skills. Must be safe relative paths (no leading `/`, no `..`, no `\`)
-- `skillDiscoveryDepth` (optional, integer): Max directory depth for skill discovery (default: 2, range: 0–10)
 - `githubAppClientId` (required, string): GitHub App OAuth client ID
 - `githubAppClientSecret` (required, string): GitHub App client secret (encrypted at rest via AES-CBC)
 
@@ -85,7 +83,6 @@
   "repo": "skills-repo",
   "ref": "main",
   "paths": ["skills/", "prompts/mcp"],
-  "skillDiscoveryDepth": 2,
   "status": "active",
   "syncStatus": "idle",
   "syncMessage": null,
@@ -141,8 +138,7 @@
       "repo": "skills-repo",
       "ref": "main",
       "paths": ["skills/"],
-      "skillDiscoveryDepth": 2,
-      "status": "active",
+          "status": "active",
       "syncStatus": "success",
       "syncMessage": null,
       "stats": { "skillCount": 12, "fileCount": 8 },
@@ -193,7 +189,6 @@
   "repo": "skills-repo",
   "ref": "main",
   "paths": ["skills/"],
-  "skillDiscoveryDepth": 2,
   "status": "active",
   "syncStatus": "success",
   "syncMessage": null,
@@ -218,7 +213,13 @@
       "triggerType": "manual",
       "status": "success",
       "phase": "completed",
-      "requestSnapshot": {},
+      "requestSnapshot": {
+        "owner": "octocat",
+        "repo": "skills",
+        "ref": "main",
+        "paths": ["skills"],
+        "configRevision": 1
+      },
       "discoverySummary": { "discoveredSkillCount": 12, "discoveredFileCount": 8, "skippedPaths": [] },
       "applySummary": { "skillsCreated": 12, "skillsUpdated": 0, "skillsDeleted": 0, "skillsFailed": 0, "filesCreated": 8, "filesUpdated": 0, "filesDeleted": 0 },
       "skillErrors": [],
@@ -260,7 +261,6 @@
   "repo": "new-repo",
   "ref": "develop",
   "paths": ["src/skills/"],
-  "skillDiscoveryDepth": 3,
   "githubAppClientId": "new-github-app-client-id",
   "githubAppClientSecret": "new-secret",
   "syncAfterUpdate": false
@@ -292,7 +292,6 @@ When `syncAfterUpdate=true` and sync starts successfully, returns `SkillSyncTrig
       "repo": "new-repo",
       "ref": "develop",
       "paths": ["src/skills/"],
-      "skillDiscoveryDepth": 3
     },
     "discoverySummary": { "discoveredSkillCount": 0, "discoveredFileCount": 0, "skippedPaths": [] },
     "applySummary": { "skillsCreated": 0, "skillsUpdated": 0, "skillsDeleted": 0, "skillsFailed": 0, "filesCreated": 0, "filesUpdated": 0, "filesDeleted": 0 },
@@ -359,7 +358,8 @@ This endpoint:
 This endpoint:
 1. Check for an existing OAuth token (access → refresh fallback)
 2. If no valid token is available, return `needsAuthorization: true`
-3. If a token is valid, atomically transition the source to `pending`, create a `FULL_SYNC` job, launch background sync, and return job details
+3. If a token is valid, atomically transition the source to `pending`, persist a `FULL_SYNC` job, and return job details
+4. The app-scoped job runner atomically claims persisted jobs with a renewable lease. An expired lease is reclaimed after process failure; after three abandoned attempts the job is failed and the source is released from its active state
 
 **Response**: `200 OK`
 ```json
@@ -456,7 +456,13 @@ This is the GitHub OAuth redirect target. It is **unauthenticated** (GitHub redi
   "triggerType": "manual",
   "status": "syncing",
   "phase": "discovering",
-  "requestSnapshot": {},
+  "requestSnapshot": {
+    "owner": "octocat",
+    "repo": "skills",
+    "ref": "main",
+    "paths": ["skills"],
+    "configRevision": 1
+  },
   "discoverySummary": {
     "discoveredSkillCount": 8,
     "discoveredFileCount": 5,
@@ -531,7 +537,7 @@ MongoDB collection: `skill_sync_sources`
 | `repo` | string | GitHub repository name |
 | `ref` | string | Git ref (branch/tag), default `"main"` |
 | `paths` | string[] | Repo-relative POSIX paths to scan |
-| `skillDiscoveryDepth` | int | Max directory depth for discovery (0–10) |
+| `configRevision` | integer | Internal monotonic revision for execution-affecting source configuration |
 | `githubAppClientId` | string | GitHub App OAuth client ID |
 | `githubAppClientSecretEncrypted` | string | AES-CBC encrypted client secret |
 | `status` | SkillSyncSourceStatus | Source lifecycle status |
@@ -562,7 +568,7 @@ MongoDB collection: `skill_sync_jobs`
 | `triggeredBy` | string | User ID who triggered the job |
 | `status` | SkillSyncJobStatus | Job status |
 | `phase` | SkillSyncJobPhase | Detailed execution phase |
-| `requestSnapshot` | dict | Frozen source config at job creation time |
+| `requestSnapshot` | SkillSyncFullRequestSnapshot \| SkillSyncDeleteRequestSnapshot | Typed, immutable execution input; full sync stores owner/repo/ref/paths/configRevision and delete stores action/configRevision |
 | `discoverySummary` | SkillSyncDiscoverySummary | `{ discoveredSkillCount, discoveredFileCount, skippedPaths }` |
 | `applySummary` | SkillSyncApplySummary | `{ skillsCreated/Updated/Deleted/Failed, filesCreated/Updated/Deleted }` |
 | `skillErrors` | SkillSyncSkillError[] | Per-skill error details |
@@ -570,10 +576,19 @@ MongoDB collection: `skill_sync_jobs`
 | `error` | string \| null | Human-readable error message |
 | `startedAt` | datetime \| null | When execution started |
 | `finishedAt` | datetime \| null | When execution completed |
+| `leaseOwner` | string \| null | Registry runner instance currently owning the job |
+| `leaseExpiresAt` | datetime \| null | Renewable claim deadline used for crash recovery |
+| `heartbeatAt` | datetime \| null | Last successful lease renewal |
+| `attemptCount` | integer | Number of worker claims, including crash-recovery attempts |
 
 **Indexes**:
 - `(sourceId, createdAt desc)` — recent jobs query
 - `(sourceId, status)` — active job guard
+- `(status, leaseExpiresAt, createdAt)` — durable claim and expired-lease recovery
+
+The durable runner executes only from `requestSnapshot`. If an execution-affecting source update increments
+`configRevision` while a job is queued, that stale job fails before contacting GitHub; a new sync must be triggered
+from the updated source configuration.
 
 ### Enums
 
@@ -739,3 +754,18 @@ All error responses follow the standard format:
 | `409` | Conflict (invalid state for operation, e.g., updating a non-ACTIVE source) |
 | `422` | Validation error (invalid input) |
 | `500` | Internal server error |
+
+---
+
+## Durable Sync Integration Tests
+
+The regular suite runs deterministic unit tests and skips tests that require a live MongoDB replica set. To verify
+atomic worker leasing and transaction rollback against MongoDB itself:
+
+```bash
+SKILL_SYNC_MONGO_INTEGRATION_URI='mongodb://127.0.0.1:27017/?replicaSet=rs0' \
+  LOG_FORMAT='%(levelname)s:%(name)s:%(message)s' \
+  uv run pytest registry/tests/integration/test_skill_sync_durability.py
+```
+
+The integration file uses isolated, randomly named databases and removes them after every test.
