@@ -331,8 +331,13 @@ When authorization is required:
 
 This endpoint:
 1. Transition source status to `DELETING`
-2. Create a `DELETE_SYNC` job to soft-delete all synced skills and delete their auxiliary files, ACL entries, and stored GitHub tokens
+2. Create a `DELETE_SYNC` job that removes all synced skills outright, along with their auxiliary files, ACL entries, and stored GitHub tokens
 3. Return `202 Accepted` with the job ID
+
+Child skills are hard-deleted, matching how federation reconciles stale children. The
+source document itself is soft-deleted (`status=deleted` plus a `deletedAt` timestamp) so
+the delete outcome stays auditable. Stale-skill reconciliation during a normal sync — a
+skill that disappeared upstream — hard-deletes the same way.
 
 **Response**: `202 Accepted`
 ```json
@@ -466,7 +471,7 @@ This is the GitHub OAuth redirect target. It is **unauthenticated** (GitHub redi
   "discoverySummary": {
     "discoveredSkillCount": 8,
     "discoveredFileCount": 5,
-    "skippedPaths": ["vendor/"]
+    "skippedPaths": ["skills/vendor", "skills/README.md"]
   },
   "applySummary": {
     "skillsCreated": 0,
