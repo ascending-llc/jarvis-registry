@@ -27,7 +27,7 @@ def _make_source(
         repo="skills",
         ref="main",
         paths=[],
-        skillDiscoveryDepth=2,
+        configRevision=1,
         githubAppClientId="client-id",
         githubAppClientSecretEncrypted="encrypted-secret",
         status=status,
@@ -88,7 +88,6 @@ async def test_create_source_encrypts_secret_and_inserts(monkeypatch):
         repo="skills",
         ref="main",
         paths=["skills/"],
-        skill_discovery_depth=3,
         github_app_client_id="client-id",
         github_app_client_secret="plaintext-secret",
         created_by="user-1",
@@ -115,7 +114,6 @@ async def test_create_source_does_not_reencrypt_already_encrypted_secret(monkeyp
         repo="skills",
         ref="main",
         paths=[],
-        skill_discovery_depth=2,
         github_app_client_id="client-id",
         github_app_client_secret="encrypted:already",
         created_by=None,
@@ -253,6 +251,7 @@ async def test_update_source_maps_fields_and_saves():
     assert result.displayName == "New Name"
     assert result.tags == ["x", "y"]
     assert result.updatedBy == "user-2"
+    assert result.configRevision == 1
     source.save.assert_awaited_once()
 
 
@@ -268,6 +267,17 @@ async def test_update_source_encrypts_changed_secret():
     )
 
     assert result.githubAppClientSecretEncrypted == "encrypted:new-plaintext"
+    assert result.configRevision == 2
+
+
+@pytest.mark.asyncio
+async def test_update_source_increments_config_revision_for_repository_change():
+    source = _make_source()
+    service = SkillSyncSourceCrudService()
+
+    result = await service.update_source(source, {"ref": "release"}, updated_by=None)
+
+    assert result.configRevision == 2
 
 
 @pytest.mark.asyncio

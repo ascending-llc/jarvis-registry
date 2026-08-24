@@ -1,5 +1,6 @@
+from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
@@ -12,6 +13,21 @@ from registry_pkgs.models.enums import (
     SkillSyncJobType,
     SkillSyncTriggerType,
 )
+from registry_pkgs.models.skill_sync_job import (
+    SkillSyncDeleteRequestSnapshot,
+    SkillSyncFullRequestSnapshot,
+    SkillSyncJob,
+)
+
+
+def _full_snapshot() -> SkillSyncFullRequestSnapshot:
+    return SkillSyncFullRequestSnapshot(
+        owner="octocat",
+        repo="skills",
+        ref="main",
+        paths=["skills"],
+        configRevision=1,
+    )
 
 
 def _make_job(status: SkillSyncJobStatus = SkillSyncJobStatus.PENDING):
@@ -96,7 +112,7 @@ async def test_create_job_raises_when_active_job_exists(monkeypatch):
             job_type=SkillSyncJobType.FULL_SYNC,
             trigger_type=SkillSyncTriggerType.MANUAL,
             triggered_by="user-1",
-            request_snapshot={},
+            request_snapshot=_full_snapshot(),
         )
 
 
@@ -124,14 +140,14 @@ async def test_create_job_inserts_new_job_when_no_active_job(monkeypatch):
         job_type=SkillSyncJobType.FULL_SYNC,
         trigger_type=SkillSyncTriggerType.MANUAL,
         triggered_by="user-1",
-        request_snapshot={"foo": "bar"},
+        request_snapshot=_full_snapshot(),
     )
 
     assert job.sourceId == source_id
     assert job.jobType == SkillSyncJobType.FULL_SYNC
     assert job.triggerType == SkillSyncTriggerType.MANUAL
     assert job.triggeredBy == "user-1"
-    assert job.requestSnapshot == {"foo": "bar"}
+    assert job.requestSnapshot == _full_snapshot()
     job.insert.assert_awaited_once_with(session=None)
 
 
@@ -149,7 +165,7 @@ async def test_create_job_passes_session_through(monkeypatch):
         job_type=SkillSyncJobType.DELETE_SYNC,
         trigger_type=SkillSyncTriggerType.API,
         triggered_by="user-2",
-        request_snapshot={},
+        request_snapshot=SkillSyncDeleteRequestSnapshot(configRevision=1),
         session=session,
     )
 
@@ -177,3 +193,63 @@ async def test_mark_not_implemented_sets_failed_state():
     assert result.error == "Skill sync execution is not implemented yet"
     assert result.finishedAt is not None
     job.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_job_uses_atomic_lease_update(monkeypatch):
+    expected = SimpleNamespace(id=PydanticObjectId())
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value={"_id": expected.id})
+    monkeypatch.setattr(SkillSyncJob, "get_pymongo_collection", lambda: collection)
+    monkeypatch.setattr(SkillSyncJob, "model_validate", lambda document: expected)
+
+    result = await SkillSyncJobService().claim_next_job(
+        lease_owner="worker-1",
+        lease_duration=timedelta(minutes=2),
+    )
+
+    assert result is expected
+    query, update = collection.find_one_and_update.await_args.args
+    assert {"attemptCount": {"$exists": False}} in query["$and"][0]["$or"]
+    assert update["$set"]["leaseOwner"] == "worker-1"
+    assert update["$set"]["status"] == SkillSyncJobStatus.SYNCING.value
+    assert update["$inc"] == {"attemptCount": 1}
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_only_renews_owned_syncing_job(monkeypatch):
+    collection = MagicMock()
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    monkeypatch.setattr(SkillSyncJob, "get_pymongo_collection", lambda: collection)
+    job_id = PydanticObjectId()
+
+    renewed = await SkillSyncJobService().heartbeat(
+        job_id=job_id,
+        lease_owner="worker-1",
+        lease_duration=timedelta(minutes=2),
+    )
+
+    assert renewed is True
+    query = collection.update_one.await_args.args[0]
+    assert query == {
+        "_id": job_id,
+        "status": SkillSyncJobStatus.SYNCING.value,
+        "leaseOwner": "worker-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_fail_next_exhausted_job_finalizes_atomically(monkeypatch):
+    expected = SimpleNamespace(id=PydanticObjectId())
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value={"_id": expected.id})
+    monkeypatch.setattr(SkillSyncJob, "get_pymongo_collection", lambda: collection)
+    monkeypatch.setattr(SkillSyncJob, "model_validate", lambda document: expected)
+
+    result = await SkillSyncJobService().fail_next_exhausted_job()
+
+    assert result is expected
+    _query, update = collection.find_one_and_update.await_args.args
+    assert update["$set"]["status"] == SkillSyncJobStatus.FAILED.value
+    assert update["$set"]["phase"] == SkillSyncJobPhase.FAILED.value
+    assert update["$set"]["leaseOwner"] is None

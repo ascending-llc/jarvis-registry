@@ -143,7 +143,6 @@ class SkillSyncE2E:
             display_name="E2E Test Source",
             description="Automated e2e test",
             tags=["e2e", "test"],
-            skillDiscoveryDepth=2,
         )
         _result("CREATE source → 201", body is not None)
         if body is None:
@@ -183,7 +182,6 @@ class SkillSyncE2E:
             ("bad ref", {**base, "ref": "refs/../hack"}),
             ("bad owner", {**base, "owner": "-invalid"}),
             ("missing required", {"displayName": "missing fields"}),
-            ("depth > 10", {**base, "skillDiscoveryDepth": 99}),
         ]
         for label, payload in cases:
             r = self.client.post(self.api, json=payload)
@@ -307,7 +305,6 @@ class SkillSyncE2E:
             ("empty displayName", {"displayName": ""}),
             ("path traversal", {"paths": ["../escape"]}),
             ("bad ref", {"ref": "refs/../hack"}),
-            ("negative depth", {"skillDiscoveryDepth": -1}),
         ]
         for label, payload in cases:
             r = self.client.put(f"{self.api}/{sid}", json=payload)

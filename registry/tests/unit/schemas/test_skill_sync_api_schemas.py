@@ -44,3 +44,24 @@ def test_update_secret_is_optional() -> None:
     request = SkillSyncSourceUpdateRequest(displayName="Renamed")
     assert request.githubAppClientSecret is None
     assert request.model_dump(exclude_unset=True) == {"displayName": "Renamed"}
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["skills", "skills/team"],
+        ["skills/team", "skills"],
+        [".", "skills"],
+    ],
+)
+def test_create_request_rejects_overlapping_paths(paths: list[str]) -> None:
+    payload = _valid_create_payload()
+    payload["paths"] = paths
+
+    with pytest.raises(ValidationError, match="overlap|cannot be combined"):
+        SkillSyncSourceCreateRequest(**payload)
+
+
+def test_update_request_rejects_overlapping_paths() -> None:
+    with pytest.raises(ValidationError, match="overlapping"):
+        SkillSyncSourceUpdateRequest(paths=["skills", "skills/team"])

@@ -10,7 +10,7 @@ from registry.services.skill_sync_github_service import (
     MAX_TARBALL_SIZE,
     GitHubDownloadError,
     SkillSyncGitHubService,
-    _matches_paths,
+    _match_prefix,
     _strip_top_dir,
 )
 from registry_pkgs.models.enums import SkillSyncJobErrorCode
@@ -116,186 +116,328 @@ async def test_resolve_commit_sha_not_found():
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_success():
-    tarball = _make_tarball({"skills/hello.md": b"# Hello"})
+async def test_download_tarball_success(tmp_path):
+    tarball = _make_tarball({"skills/hello/SKILL.md": b"# Hello"})
     sha = "a" * 40
-    client = _make_client(
-        get_response=_sha_response(sha),
-        stream_response=_FakeResponse(content=tarball),
-    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get = AsyncMock(return_value=_sha_response(sha))
+    streamed_urls: list[str] = []
+
+    @asynccontextmanager
+    async def _stream(method, url, **kwargs):
+        streamed_urls.append(url)
+        yield _FakeResponse(content=tarball)
+
+    client.stream = _stream
     service = SkillSyncGitHubService(client)
-    result_bytes, commit_sha = await service.download_tarball(owner="org", repo="repo", ref="main", access_token="tok")
-    assert result_bytes == tarball
+    dest = tmp_path / "tarball.tar.gz"
+    commit_sha = await service.download_tarball(
+        owner="org", repo="repo", ref="main", access_token="tok", dest_path=dest
+    )
     assert commit_sha == sha
+    assert streamed_urls == [f"https://api.github.com/repos/org/repo/tarball/{sha}"]
+    assert dest.exists()
+    assert dest.stat().st_size == len(tarball)
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_auth_failed():
+async def test_download_tarball_auth_failed(tmp_path):
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=401))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
-        await service.download_tarball(owner="o", repo="r", ref="main", access_token="bad")
+        await service.download_tarball(
+            owner="o", repo="r", ref="main", access_token="bad", dest_path=tmp_path / "t.tar.gz"
+        )
     assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_forbidden():
+async def test_download_tarball_forbidden(tmp_path):
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=403))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
-        await service.download_tarball(owner="o", repo="r", ref="main", access_token="bad")
+        await service.download_tarball(
+            owner="o", repo="r", ref="main", access_token="bad", dest_path=tmp_path / "t.tar.gz"
+        )
     assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_rate_limited():
+async def test_download_tarball_rate_limited(tmp_path):
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=429))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
-        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+        await service.download_tarball(
+            owner="o", repo="r", ref="main", access_token="tok", dest_path=tmp_path / "t.tar.gz"
+        )
     assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_RATE_LIMITED
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_not_found():
+async def test_download_tarball_not_found(tmp_path):
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=404))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
-        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+        await service.download_tarball(
+            owner="o", repo="r", ref="main", access_token="tok", dest_path=tmp_path / "t.tar.gz"
+        )
     assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_NOT_FOUND
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_server_error():
+async def test_download_tarball_server_error(tmp_path):
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=500))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
-        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+        await service.download_tarball(
+            owner="o", repo="r", ref="main", access_token="tok", dest_path=tmp_path / "t.tar.gz"
+        )
     assert exc_info.value.error_code == SkillSyncJobErrorCode.DOWNLOAD_FAILED
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_too_large():
+async def test_download_tarball_too_large(tmp_path):
     client = _make_client(
         get_response=_sha_response(),
         stream_response=_FakeResponse(content=b"x" * (MAX_TARBALL_SIZE + 1)),
     )
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
-        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+        await service.download_tarball(
+            owner="o", repo="r", ref="main", access_token="tok", dest_path=tmp_path / "t.tar.gz"
+        )
     assert exc_info.value.error_code == SkillSyncJobErrorCode.DOWNLOAD_TOO_LARGE
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_network_error():
+async def test_download_tarball_network_error(tmp_path):
     client = _make_streaming_error_client(
         get_response=_sha_response(),
         stream_exc=httpx.ConnectError("connection refused"),
     )
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
-        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+        await service.download_tarball(
+            owner="o", repo="r", ref="main", access_token="tok", dest_path=tmp_path / "t.tar.gz"
+        )
     assert exc_info.value.error_code == SkillSyncJobErrorCode.DOWNLOAD_FAILED
 
 
 @pytest.mark.asyncio
-async def test_download_tarball_stream_auth_failed():
+async def test_download_tarball_stream_auth_failed(tmp_path):
     client = _make_client(
         get_response=_sha_response(),
         stream_response=_FakeResponse(status_code=401),
     )
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
-        await service.download_tarball(owner="o", repo="r", ref="main", access_token="tok")
+        await service.download_tarball(
+            owner="o", repo="r", ref="main", access_token="tok", dest_path=tmp_path / "t.tar.gz"
+        )
     assert exc_info.value.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED
 
 
-# ── extract_files ─────────────────────────────────────────────
+# ── extract_skill_folders ─────────────────────────────────────
 
 
-def test_extract_files_basic():
-    tarball = _make_tarball(
-        {
-            "skills/hello.md": b"# Hello",
-            "skills/world.md": b"# World",
-            "README.md": b"# Readme",
-        }
+def test_extract_basic_skill_folder(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/hello/SKILL.md": b"---\nname: hello\n---\nHello",
+                "skills/hello/helper.py": b"print('hi')",
+                "README.md": b"# Readme",
+            }
+        )
     )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
     service = SkillSyncGitHubService(AsyncMock())
-    files = service.extract_files(tarball, paths=["skills"], max_depth=2)
-    assert len(files) == 2
-    paths = {f.relative_path for f in files}
-    assert paths == {"skills/hello.md", "skills/world.md"}
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    assert len(result.skill_folders) == 1
+    folder = result.skill_folders[0]
+    assert folder.root_relative_path == "skills/hello"
+    assert folder.skill_md_path.exists()
+    assert folder.skill_md_path.read_bytes() == b"---\nname: hello\n---\nHello"
+    assert len(folder.aux_files) == 1
+    assert folder.aux_files[0].relative_path == "skills/hello/helper.py"
+    assert folder.aux_files[0].absolute_path.exists()
+    assert folder.aux_files[0].absolute_path.read_bytes() == b"print('hi')"
 
 
-def test_extract_files_respects_depth():
-    tarball = _make_tarball(
-        {
-            "skills/a.md": b"a",
-            "skills/sub/b.md": b"b",
-            "skills/sub/deep/c.md": b"c",
-        }
+def test_extract_multiple_skill_folders(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/alpha/SKILL.md": b"---\nname: alpha\n---\nA",
+                "skills/beta/SKILL.md": b"---\nname: beta\n---\nB",
+            }
+        )
     )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
     service = SkillSyncGitHubService(AsyncMock())
-    files = service.extract_files(tarball, paths=["skills"], max_depth=1)
-    paths = {f.relative_path for f in files}
-    assert "skills/a.md" in paths
-    assert "skills/sub/b.md" in paths
-    assert "skills/sub/deep/c.md" not in paths
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    assert len(result.skill_folders) == 2
+    names = {f.root_relative_path for f in result.skill_folders}
+    assert names == {"skills/alpha", "skills/beta"}
 
 
-def test_extract_files_multiple_paths():
-    tarball = _make_tarball(
-        {
-            "skills/a.md": b"a",
-            "docs/b.md": b"b",
-            "other/c.md": b"c",
-        }
+def test_extract_skips_folder_without_skill_md(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/valid/SKILL.md": b"---\nname: valid\n---\nV",
+                "skills/invalid/readme.md": b"# Not a skill",
+            }
+        )
     )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
     service = SkillSyncGitHubService(AsyncMock())
-    files = service.extract_files(tarball, paths=["skills", "docs"], max_depth=2)
-    paths = {f.relative_path for f in files}
-    assert paths == {"skills/a.md", "docs/b.md"}
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    assert len(result.skill_folders) == 1
+    assert result.skill_folders[0].root_relative_path == "skills/valid"
+    assert "skills/invalid" in result.skipped_paths
 
 
-def test_extract_files_skips_oversized(monkeypatch):
-    monkeypatch.setattr("registry.services.skill_sync_github_service.MAX_SINGLE_FILE_SIZE", 10)
-    tarball = _make_tarball(
-        {
-            "skills/small.md": b"ok",
-            "skills/big.md": b"x" * 20,
-        }
+def test_extract_bare_files_under_path_skipped(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/bare-file.md": b"Not in a folder",
+                "skills/deploy/SKILL.md": b"---\nname: deploy\n---\nD",
+            }
+        )
     )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
     service = SkillSyncGitHubService(AsyncMock())
-    files = service.extract_files(tarball, paths=["skills"], max_depth=2)
-    assert len(files) == 1
-    assert files[0].relative_path == "skills/small.md"
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    assert len(result.skill_folders) == 1
+    assert "skills/bare-file.md" in result.skipped_paths
 
 
-def test_extract_files_decompression_bomb(monkeypatch):
+def test_extract_case_sensitive_skill_md(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/lower/skill.md": b"---\nname: lower\n---\nL",
+                "skills/upper/SKILL.md": b"---\nname: upper\n---\nU",
+            }
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    assert len(result.skill_folders) == 1
+    assert result.skill_folders[0].root_relative_path == "skills/upper"
+    assert "skills/lower" in result.skipped_paths
+
+
+def test_extract_recursive_aux_files(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/deploy/SKILL.md": b"---\nname: deploy\n---\nD",
+                "skills/deploy/scripts/run.sh": b"#!/bin/bash",
+                "skills/deploy/scripts/utils/helper.sh": b"helper",
+                "skills/deploy/config.yml": b"key: val",
+            }
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    assert len(result.skill_folders) == 1
+    assert len(result.skill_folders[0].aux_files) == 3
+    aux_paths = {af.relative_path for af in result.skill_folders[0].aux_files}
+    assert "skills/deploy/scripts/run.sh" in aux_paths
+    assert "skills/deploy/scripts/utils/helper.sh" in aux_paths
+    assert "skills/deploy/config.yml" in aux_paths
+
+
+def test_extract_oversized_file_rejects_whole_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_github_service.MAX_SINGLE_FILE_SIZE", 30)
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/big/SKILL.md": b"---\nname: big\n---\nB",
+                "skills/big/huge.bin": b"x" * 50,
+                "skills/small/SKILL.md": b"---\nname: small\n---\nS",
+            }
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    assert len(result.skill_folders) == 1
+    assert result.skill_folders[0].root_relative_path == "skills/small"
+    assert "skills/big" in result.oversized_skill_paths
+
+
+def test_extract_decompression_bomb(tmp_path, monkeypatch):
     monkeypatch.setattr("registry.services.skill_sync_github_service.MAX_EXTRACTED_SIZE", 10)
-    tarball = _make_tarball(
-        {
-            "skills/a.md": b"x" * 6,
-            "skills/b.md": b"y" * 6,
-        }
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/a/SKILL.md": b"x" * 6,
+                "skills/a/big.txt": b"y" * 6,
+            }
+        )
     )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
     service = SkillSyncGitHubService(AsyncMock())
     with pytest.raises(GitHubDownloadError) as exc_info:
-        service.extract_files(tarball, paths=["skills"], max_depth=2)
+        service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
     assert exc_info.value.error_code == SkillSyncJobErrorCode.DECOMPRESSION_BOMB
 
 
-def test_extract_files_invalid_tarball():
+def test_extract_invalid_tarball(tmp_path):
+    tarball_path = tmp_path / "bad.tar.gz"
+    tarball_path.write_bytes(b"not a tarball")
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
     service = SkillSyncGitHubService(AsyncMock())
     with pytest.raises(GitHubDownloadError) as exc_info:
-        service.extract_files(b"not a tarball", paths=["skills"], max_depth=2)
+        service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
     assert exc_info.value.error_code == SkillSyncJobErrorCode.EXTRACTION_FAILED
+
+
+def test_extract_multiple_paths(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/a/SKILL.md": b"---\nname: a\n---\nA",
+                "docs/b/SKILL.md": b"---\nname: b\n---\nB",
+                "other/c/SKILL.md": b"---\nname: c\n---\nC",
+            }
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=["skills", "docs"], extraction_dir=extraction_dir)
+    names = {f.root_relative_path for f in result.skill_folders}
+    assert names == {"skills/a", "docs/b"}
 
 
 # ── helpers ───────────────────────────────────────────────────
@@ -307,9 +449,8 @@ def test_strip_top_dir():
     assert _strip_top_dir("top/") == ""
 
 
-def test_matches_paths():
-    assert _matches_paths("skills/hello.md", ["skills"], 2) is True
-    assert _matches_paths("skills/sub/hello.md", ["skills"], 2) is True
-    assert _matches_paths("other/hello.md", ["skills"], 2) is False
-    assert _matches_paths("skills/a/b/c.md", ["skills"], 1) is False
-    assert _matches_paths("skills/a/b/c.md", ["skills"], 3) is True
+def test_match_prefix():
+    assert _match_prefix("skills/hello/SKILL.md", ["skills"]) == "skills"
+    assert _match_prefix("docs/hello/SKILL.md", ["skills", "docs"]) == "docs"
+    assert _match_prefix("other/hello.md", ["skills"]) is None
+    assert _match_prefix("skills-extra/hello.md", ["skills"]) is None

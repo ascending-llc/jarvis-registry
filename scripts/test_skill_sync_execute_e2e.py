@@ -283,7 +283,6 @@ class SkillSyncExecuteE2E:
             f"{self.api}/{source_id}",
             json={
                 "paths": paths,
-                "skillDiscoveryDepth": 2,
             },
         )
         logger.info("PUT source paths -> %s", response.status_code)
