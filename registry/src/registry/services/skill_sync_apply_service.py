@@ -84,7 +84,7 @@ class SkillSyncApplyService:
             if upstream_id in present_upstream_ids:
                 continue
             try:
-                await self._delete_skill(existing_skill, now)
+                await self._delete_skill(existing_skill)
                 summary.skillsDeleted += 1
             except Exception as exc:
                 logger.exception("Failed to delete skill %s: %s", existing_skill.id, exc)
@@ -125,20 +125,17 @@ class SkillSyncApplyService:
         return summary
 
     async def delete_source_skills(self, source: SkillSyncSource) -> SkillSyncApplySummary:
-        """Soft-delete every live child skill while removing its files and ACL atomically."""
-        now = datetime.now(UTC)
+        """Delete every live child skill together with its files and ACL atomically."""
         summary = SkillSyncApplySummary()
         for skill in await self.list_live_skills(source.id):
-            deleted_files = await self._delete_skill(skill, now)
+            deleted_files = await self._delete_skill(skill)
             summary.skillsDeleted += 1
             summary.filesDeleted += deleted_files
         return summary
 
     @staticmethod
     async def list_live_skills(source_id: PydanticObjectId) -> list[Skill]:
-        return await Skill.find(
-            {"source": SkillSource.GITHUB, "sourceMetadata.sourceId": str(source_id), "deletedAt": None}
-        ).to_list()
+        return await Skill.find({"source": SkillSource.GITHUB, "sourceMetadata.sourceId": str(source_id)}).to_list()
 
     @staticmethod
     async def build_source_stats(live_skills: list[Skill]) -> SkillSyncSourceStats:
@@ -193,13 +190,18 @@ class SkillSyncApplyService:
         for offset in range(0, len(new_entries), _ACL_INHERIT_BATCH_SIZE):
             await RegistryAclEntry.insert_many(new_entries[offset : offset + _ACL_INHERIT_BATCH_SIZE], ordered=False)
 
-    async def _delete_skill(self, skill: Skill, now: datetime) -> int:
-        """Delete one skill's files, soft-delete it, and remove ACL in one transaction."""
+    async def _delete_skill(self, skill: Skill) -> int:
+        """Remove one skill together with its files and ACL in one transaction.
+
+        Hard delete matches how federation reconciles stale children and how a manual skill
+        delete behaves, so no reader can resurrect a tombstone by forgetting a filter. Safe
+        because an empty discovery never reaches apply and a skill this run failed to parse
+        is never treated as stale.
+        """
         async with MongoDB.get_client().start_session() as session:
             async with await session.start_transaction():
                 result = await SkillFile.find({"skillId": skill.id}).delete(session=session)
-                skill.deletedAt = now
-                await skill.save(session=session)
+                await skill.delete(session=session)
                 await self._acl_service.delete_acl_entries_for_resource(
                     resource_type=RegistryResourceType.SKILL.value,
                     resource_id=skill.id,
