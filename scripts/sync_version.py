@@ -32,7 +32,6 @@ def find_pyproject_files() -> list[Path]:
         root / "registry-pkgs" / "pyproject.toml",
         root / "registry" / "pyproject.toml",
         root / "auth-server" / "pyproject.toml",
-        root / "workflow-worker" / "pyproject.toml",
         root / "servers" / "mcpgw" / "pyproject.toml",
     ]
 

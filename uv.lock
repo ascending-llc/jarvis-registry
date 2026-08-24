@@ -8,7 +8,6 @@ members = [
     "mcp-registry-workspace",
     "registry",
     "registry-pkgs",
-    "workflow-worker",
 ]
 
 [[package]]
@@ -1935,7 +1934,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "registry" },
     { name = "registry-pkgs" },
-    { name = "workflow-worker" },
 ]
 
 [package.dev-dependencies]
@@ -1969,7 +1967,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "registry", editable = "registry" },
     { name = "registry-pkgs", editable = "registry-pkgs" },
-    { name = "workflow-worker", editable = "workflow-worker" },
 ]
 
 [package.metadata.requires-dev]
@@ -3968,23 +3965,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ff/83/de1f7709376dc3ca9b7eeb4b9a07b4526b14876b6d372a4dc62312bebee0/websockets-15.0.1-cp312-cp312-win32.whl", hash = "sha256:c338ffa0520bdb12fbc527265235639fb76e7bc7faafbb93f6ba80d9c06578a9", size = 176395, upload-time = "2025-03-05T20:02:33.017Z" },
     { url = "https://files.pythonhosted.org/packages/7d/71/abf2ebc3bbfa40f391ce1428c7168fb20582d0ff57019b69ea20fa698043/websockets-15.0.1-cp312-cp312-win_amd64.whl", hash = "sha256:fcd5cf9e305d7b8338754470cf69cf81f420459dbae8a3b40cee57417f4614a7", size = 176841, upload-time = "2025-03-05T20:02:34.498Z" },
     { url = "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl", hash = "sha256:f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f", size = 169743, upload-time = "2025-03-05T20:03:39.41Z" },
-]
-
-[[package]]
-name = "workflow-worker"
-version = "0.2.0"
-source = { editable = "workflow-worker" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pydantic-settings" },
-    { name = "registry-pkgs" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "registry-pkgs", editable = "registry-pkgs" },
 ]
 
 [[package]]
