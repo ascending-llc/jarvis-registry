@@ -17,6 +17,7 @@ from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepos
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.runner import WorkflowRunner
+from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 
 from .auth.oauth.flow_state_manager import FlowStateManager
 from .auth.oauth.reconnection import OAuthReconnectionManager
@@ -284,8 +285,15 @@ class RegistryContainer:
         return WorkflowService(acl_service=self.acl_service)
 
     @cached_property
+    def workflow_schedule_repository(self) -> WorkflowScheduleRepository:
+        return WorkflowScheduleRepository(MongoDB.get_database())
+
+    @cached_property
     def workflow_schedule_service(self) -> WorkflowScheduleService:
-        return WorkflowScheduleService(acl_service=self.acl_service)
+        return WorkflowScheduleService(
+            acl_service=self.acl_service,
+            schedule_repository=self.workflow_schedule_repository,
+        )
 
     @cached_property
     def a2a_client_registry(self) -> A2AClientRegistry:
