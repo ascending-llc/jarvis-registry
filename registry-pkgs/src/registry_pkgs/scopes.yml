@@ -333,6 +333,9 @@ acl-read:
   - action: get_resource_permissions
     method: GET
     endpoint: /permissions/{resource_type}/{resource_id}
+  - action: get_resource_type_roles
+    method: GET
+    endpoint: /permissions/{resource_type}/roles
 
 acl-write:
   description: "Change who has access to a given server, agent, federation, or workflow."
@@ -403,6 +406,12 @@ workflows-read:
   - action: get_node_run
     method: GET
     endpoint: /workflows/{workflow_id}/runs/{run_id}/nodes/{node_run_id}
+  - action: list_workflow_schedules
+    method: GET
+    endpoint: /workflows/{workflow_id}/schedules
+  - action: get_workflow_schedule
+    method: GET
+    endpoint: /workflows/{workflow_id}/schedules/{schedule_id}
 
 workflows-control:
   description: "Trigger, pause, resume, cancel, retry, approve, and replay workflow runs."
@@ -451,13 +460,28 @@ workflows-write:
   - action: trigger_workflow_run
     method: POST
     endpoint: /workflows/{workflow_id}/runs
+  - action: create_workflow_schedule
+    method: POST
+    endpoint: /workflows/{workflow_id}/schedules
+  - action: update_workflow_schedule
+    method: PUT
+    endpoint: /workflows/{workflow_id}/schedules/{schedule_id}
+  - action: delete_workflow_schedule
+    method: DELETE
+    endpoint: /workflows/{workflow_id}/schedules/{schedule_id}
+  - action: toggle_workflow_schedule
+    method: POST
+    endpoint: /workflows/{workflow_id}/schedules/{schedule_id}/toggle
 
 workflows-share:
-  description: "Manage who else has access to a workflow you own."
+  description: "Manage who else has access to a workflow or workflow schedule you own."
   actions:
   - action: share_workflow
     method: PUT
     endpoint: /permissions/workflow/{resource_id}
+  - action: share_workflow_schedule
+    method: PUT
+    endpoint: /permissions/workflowSchedule/{resource_id}
 
 skills-read:
   description: "View skills and their content and files."
