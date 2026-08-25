@@ -57,12 +57,32 @@ async def test_collect_pending_authorizations_skips_query_without_executor_keys(
 
 
 @pytest.mark.asyncio
+async def test_collect_pending_authorizations_skips_builtins_even_when_oauth_servers_share_their_names() -> None:
+    workflow = _workflow(
+        _step("echo", "echo"),
+        _step("set-value", "set_value"),
+    )
+    oauth_service = _oauth_service()
+
+    with patch("registry.services.workflow_reauth_service.ExtendedMCPServer.find") as find:
+        result = await collect_pending_oauth_authorizations(
+            workflow,
+            user_id="user-1",
+            oauth_service=oauth_service,
+        )
+
+    assert result == []
+    find.assert_not_called()
+    oauth_service.get_valid_access_token.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_collect_pending_authorizations_filters_auth_modes_and_batches_query() -> None:
     oauth_valid = _server("oauth-valid", {"oauth": {"client_id": "valid"}})
     oauth_pending = _server("oauth-pending", {"requiresOAuth": True})
     servers = [
-        oauth_valid,
         oauth_pending,
+        oauth_valid,
         _server("agentcore", {"runtimeAccess": {"mode": "jwt"}}),
         _server("api-key", {"apiKey": {"key": "secret"}}),
         _server("none", {}),
@@ -75,8 +95,8 @@ async def test_collect_pending_authorizations_filters_auth_modes_and_batches_que
     )
     oauth_service = _oauth_service()
     oauth_service.get_valid_access_token.side_effect = [
-        ("access-token", None, None),
         (None, "https://issuer.example/authorize", None),
+        ("access-token", None, None),
     ]
     query = MagicMock()
     query.to_list = AsyncMock(return_value=servers)
@@ -91,16 +111,60 @@ async def test_collect_pending_authorizations_filters_auth_modes_and_batches_que
             oauth_service=oauth_service,
         )
 
-    find.assert_called_once()
+    find.assert_called_once_with(
+        {
+            "serverName": {
+                "$in": [
+                    "not-an-mcp",
+                    "oauth-pending",
+                    "oauth-valid",
+                ]
+            }
+        },
+        {"config.enabled": True},
+    )
     query.to_list.assert_awaited_once_with()
     assert oauth_service.get_valid_access_token.await_count == 2
-    assert oauth_service.get_valid_access_token.await_args_list[0].kwargs["server"] is oauth_valid
-    assert oauth_service.get_valid_access_token.await_args_list[1].kwargs["server"] is oauth_pending
+    assert oauth_service.get_valid_access_token.await_args_list[0].kwargs["server"] is oauth_pending
+    assert oauth_service.get_valid_access_token.await_args_list[1].kwargs["server"] is oauth_valid
     assert len(result) == 1
     assert result[0].serverId == str(oauth_pending.id)
     assert result[0].serverName == "oauth-pending"
     assert result[0].authUrl == "https://issuer.example/authorize"
     assert result[0].flowId == f"user-1:{oauth_pending.id}"
+
+
+@pytest.mark.asyncio
+async def test_collect_pending_authorizations_returns_distinct_servers_in_stable_order() -> None:
+    server_zulu = _server("zulu", {"requiresOAuth": True})
+    server_alpha = _server("alpha", {"requiresOAuth": True})
+    oauth_service = _oauth_service()
+    oauth_service.get_valid_access_token.side_effect = [
+        (None, "https://issuer.example/alpha", None),
+        (None, "https://issuer.example/zulu", None),
+    ]
+    query = MagicMock()
+    query.to_list = AsyncMock(return_value=[server_zulu, server_alpha])
+
+    with patch(
+        "registry.services.workflow_reauth_service.ExtendedMCPServer.find",
+        return_value=query,
+    ):
+        result = await collect_pending_oauth_authorizations(
+            _workflow(
+                _step("zulu-first", "zulu"),
+                _step("alpha", "alpha"),
+                _step("zulu-duplicate", "zulu"),
+            ),
+            user_id="user-1",
+            oauth_service=oauth_service,
+        )
+
+    assert [item.serverName for item in result] == ["alpha", "zulu"]
+    assert [item.authUrl for item in result] == [
+        "https://issuer.example/alpha",
+        "https://issuer.example/zulu",
+    ]
 
 
 @pytest.mark.asyncio

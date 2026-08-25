@@ -16,7 +16,12 @@ from registry.schemas.workflow_api_schemas import (
     WorkflowUpdateRequest,
 )
 from registry.services import workflow_service
-from registry.services.workflow_service import ExecutorRefResolution, WorkflowRunStats, WorkflowService
+from registry.services.workflow_service import (
+    ExecutorRefResolution,
+    PreparedWorkflowRunDefinition,
+    WorkflowRunStats,
+    WorkflowService,
+)
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.workflow import WorkflowNode
@@ -534,6 +539,26 @@ class _FakeWorkflow:
         self.saved = True
 
 
+def _historical_snapshot(workflow_id: PydanticObjectId, *, version: int = 2, executor_key: str = "old-tool") -> dict:
+    return {
+        "id": str(workflow_id),
+        "name": "historical-workflow",
+        "description": None,
+        "nodes": [
+            {
+                "name": "historical-step",
+                "node_type": "step",
+                "executor_key": executor_key,
+                "step_objective": "Run the historical step",
+            }
+        ],
+        "enabled": True,
+        "version": version,
+        "created_at": datetime.now(UTC).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 # ── Transaction + collection mocks for update_workflow ─────────────────────────
 
 
@@ -793,7 +818,7 @@ async def test_trigger_run_resolves_requested_historical_version(monkeypatch: py
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
 
-    historical = SimpleNamespace(version=2, definition={"snapshot": "v2"})
+    historical = SimpleNamespace(version=2, definition=_historical_snapshot(fake_wf.id))
 
     async def fake_find_one(*_a, **_k):
         return historical
@@ -820,7 +845,101 @@ async def test_trigger_run_resolves_requested_historical_version(monkeypatch: py
     await WorkflowService(acl_service=AsyncMock()).trigger_workflow_run(workflow_id=str(fake_wf.id), version=2)
 
     assert captured["workflow_version"] == 2
-    assert captured["definition_snapshot"] == {"snapshot": "v2"}
+    assert captured["definition_snapshot"] is historical.definition
+
+
+@pytest.mark.asyncio
+async def test_prepare_workflow_run_definition_resolves_historical_definition(monkeypatch: pytest.MonkeyPatch):
+    workflow = _FakeWorkflow(version=3)
+    snapshot = _historical_snapshot(workflow.id, executor_key="historical-oauth")
+    find_one = AsyncMock(return_value=SimpleNamespace(version=2, definition=snapshot))
+    monkeypatch.setattr(workflow_service.WorkflowVersion, "find_one", find_one)
+
+    prepared = await WorkflowService(acl_service=AsyncMock()).prepare_workflow_run_definition(workflow, 2)
+
+    find_one.assert_awaited_once_with({"workflow_id": workflow.id, "version": 2})
+    assert prepared.workflow_id == workflow.id
+    assert prepared.version == 2
+    assert prepared.snapshot is snapshot
+    assert prepared.definition.id == workflow.id
+    assert prepared.definition.nodes[0].executor_key == "historical-oauth"
+
+
+@pytest.mark.asyncio
+async def test_prepare_workflow_run_definition_reuses_current_definition(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = _FakeWorkflow(version=3)
+    find_one = AsyncMock()
+    monkeypatch.setattr(workflow_service.WorkflowVersion, "find_one", find_one)
+
+    prepared = await WorkflowService(acl_service=AsyncMock()).prepare_workflow_run_definition(workflow, None)
+
+    find_one.assert_not_awaited()
+    assert prepared.workflow_id == workflow.id
+    assert prepared.version == 3
+    assert prepared.definition is workflow
+    assert prepared.snapshot == workflow.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_prepare_workflow_run_definition_rejects_disabled_before_version_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = _FakeWorkflow(version=3)
+    workflow.enabled = False
+    find_one = AsyncMock()
+    monkeypatch.setattr(workflow_service.WorkflowVersion, "find_one", find_one)
+
+    with pytest.raises(ValueError, match="disabled"):
+        await WorkflowService(acl_service=AsyncMock()).prepare_workflow_run_definition(workflow, 2)
+
+    find_one.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepare_workflow_run_definition_rejects_unknown_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = _FakeWorkflow(version=3)
+    find_one = AsyncMock(return_value=None)
+    monkeypatch.setattr(workflow_service.WorkflowVersion, "find_one", find_one)
+
+    with pytest.raises(ValueError, match=f"Workflow {workflow.id} version 2 not found"):
+        await WorkflowService(acl_service=AsyncMock()).prepare_workflow_run_definition(workflow, 2)
+
+
+@pytest.mark.asyncio
+async def test_trigger_workflow_run_reuses_prepared_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow_id = PydanticObjectId()
+    definition = SimpleNamespace()
+    snapshot = _historical_snapshot(workflow_id)
+    prepared = PreparedWorkflowRunDefinition(
+        workflow_id=workflow_id,
+        definition=definition,
+        snapshot=snapshot,
+        version=2,
+    )
+    get_workflow = AsyncMock(side_effect=AssertionError("prepared run must not reload workflow"))
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", get_workflow)
+    captured: dict = {}
+
+    class _FakeRun:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.id = PydanticObjectId()
+
+        async def insert(self):
+            return None
+
+    monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeRun)
+
+    await WorkflowService(acl_service=AsyncMock()).trigger_workflow_run(
+        workflow_id=str(workflow_id),
+        version=2,
+        prepared_definition=prepared,
+    )
+
+    get_workflow.assert_not_awaited()
+    assert captured["workflow_definition_id"] == workflow_id
+    assert captured["workflow_version"] == 2
+    assert captured["definition_snapshot"] is snapshot
 
 
 @pytest.mark.asyncio
@@ -905,7 +1024,7 @@ async def test_trigger_workflow_run_persists_triggering_identity(monkeypatch: py
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
 
-    historical = SimpleNamespace(version=2, definition={"snapshot": "v2"})
+    historical = SimpleNamespace(version=2, definition=_historical_snapshot(fake_wf.id))
 
     async def fake_find_one(*_a, **_k):
         return historical

@@ -37,13 +37,13 @@ from registry_pkgs.models.workflow import (
     WorkflowVersion,
 )
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
+from registry_pkgs.workflows.runner import definition_from_snapshot
+from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
 
 from ..schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 from ..services.access_control_service import ACLService
 
 logger = logging.getLogger(__name__)
-
-_BUILTIN_EXECUTOR_KEYS = {"echo", "set_value"}
 
 
 class ExecutorRefResolution(NamedTuple):
@@ -54,6 +54,15 @@ class ExecutorRefResolution(NamedTuple):
 class WorkflowRunStats(NamedTuple):
     run_count: int
     last_run_at: datetime | None
+
+
+class PreparedWorkflowRunDefinition(NamedTuple):
+    """Validated definition and snapshot selected for a workflow run."""
+
+    workflow_id: PydanticObjectId
+    definition: WorkflowDefinition
+    snapshot: dict[str, Any]
+    version: int
 
 
 def _convert_human_review(api_human_review: Any) -> HumanReviewSpec | None:
@@ -117,7 +126,7 @@ class WorkflowService:
                 executor_keys.add(node.executor_key.lstrip("/"))
             if node.a2a_pool:
                 pool_paths.update(path.lstrip("/") for path in node.a2a_pool)
-        executor_keys -= _BUILTIN_EXECUTOR_KEYS
+        executor_keys -= BUILTIN_EXECUTOR_KEYS
         return executor_keys, pool_paths
 
     async def _validate_executor_refs(
@@ -653,6 +662,7 @@ class WorkflowService:
         triggering_username: str | None = None,
         triggering_scopes: list[str] | None = None,
         triggering_client_id: str | None = None,
+        prepared_definition: PreparedWorkflowRunDefinition | None = None,
     ) -> WorkflowRun:
         """
         Trigger a workflow run (async execution).
@@ -667,6 +677,8 @@ class WorkflowService:
             parent_run_id: Parent run ID for retry
             resolved_dependencies: Dependency resolution for retry
             version: Workflow version to run; defaults to the latest version when omitted
+            prepared_definition: Previously validated definition selected for this run. When
+                provided, its snapshot is reused instead of resolving the workflow again.
 
         Returns:
             Created WorkflowRun document (status=PENDING)
@@ -675,25 +687,18 @@ class WorkflowService:
             ValueError: If workflow not found or validation fails
         """
         try:
-            # Get existing workflow
-            workflow = await self.get_workflow_by_id(workflow_id)
-
-            # Check if workflow is enabled
-            if not workflow.enabled:
+            prepared = prepared_definition
+            if prepared is None:
+                workflow = await self.get_workflow_by_id(workflow_id)
+                prepared = await self.prepare_workflow_run_definition(workflow, version)
+            elif str(prepared.workflow_id) != workflow_id:
                 raise ValueError(
-                    f"Workflow '{workflow.name}' is disabled. Please enable the workflow before triggering a run."
+                    f"Prepared workflow {prepared.workflow_id} does not match requested workflow {workflow_id}"
                 )
-
-            # Resolve the definition snapshot for the requested version (defaults to latest).
-            if version is not None and version != workflow.version:
-                workflow_version = await WorkflowVersion.find_one({"workflow_id": workflow.id, "version": version})
-                if not workflow_version:
-                    raise ValueError(f"Workflow {workflow_id} version {version} not found")
-                definition_snapshot = workflow_version.definition
-                resolved_version = version
-            else:
-                definition_snapshot = workflow.model_dump(mode="json")
-                resolved_version = workflow.version
+            elif version is not None and prepared.version != version:
+                raise ValueError(
+                    f"Prepared workflow version {prepared.version} does not match requested version {version}"
+                )
 
             # Convert resolved_dependencies if provided
             from registry_pkgs.models.workflow import ResolvedDependency
@@ -713,13 +718,13 @@ class WorkflowService:
 
             # Create workflow run
             run = WorkflowRun(
-                workflow_definition_id=workflow.id,
-                workflow_version=resolved_version,
+                workflow_definition_id=prepared.workflow_id,
+                workflow_version=prepared.version,
                 status=WorkflowRunStatus.PENDING,
                 trigger_source=trigger_source,
                 started_at=datetime.now(UTC),
                 initial_input=initial_input,
-                definition_snapshot=definition_snapshot,
+                definition_snapshot=prepared.snapshot,
                 parent_run_id=PydanticObjectId(parent_run_id) if parent_run_id else None,
                 resolved_dependencies=resolved_deps,
                 triggering_user_id=triggering_user_id,
@@ -746,6 +751,41 @@ class WorkflowService:
         except Exception:
             logger.exception("Error triggering workflow run for %s", workflow_id)
             raise
+
+    async def prepare_workflow_run_definition(
+        self,
+        workflow: WorkflowDefinition,
+        version: int | None,
+    ) -> PreparedWorkflowRunDefinition:
+        """Validate run eligibility and resolve the exact definition that will execute."""
+        if not workflow.enabled:
+            raise ValueError(
+                f"Workflow '{workflow.name}' is disabled. Please enable the workflow before triggering a run."
+            )
+
+        if version is None or version == workflow.version:
+            snapshot = workflow.model_dump(mode="json")
+            return PreparedWorkflowRunDefinition(
+                workflow_id=workflow.id,
+                definition=workflow,
+                snapshot=snapshot,
+                version=workflow.version,
+            )
+
+        workflow_version = await WorkflowVersion.find_one({"workflow_id": workflow.id, "version": version})
+        if workflow_version is None:
+            raise ValueError(f"Workflow {workflow.id} version {version} not found")
+
+        snapshot = workflow_version.definition
+        definition = definition_from_snapshot(snapshot)
+        if definition.id is None:
+            definition.id = workflow.id
+        return PreparedWorkflowRunDefinition(
+            workflow_id=workflow.id,
+            definition=definition,
+            snapshot=snapshot,
+            version=version,
+        )
 
     async def list_workflow_runs(
         self,

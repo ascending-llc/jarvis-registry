@@ -467,7 +467,7 @@ def collect_executor_keys(nodes: list[WorkflowNode]) -> set[str]:
     """
     keys: set[str] = set()
     for node in nodes:
-        if node.executor_key:
+        if node.node_type == WorkflowNodeType.STEP and node.executor_key:
             keys.add(node.executor_key)
         keys.update(collect_executor_keys(node.children))
         keys.update(collect_executor_keys(node.true_steps))

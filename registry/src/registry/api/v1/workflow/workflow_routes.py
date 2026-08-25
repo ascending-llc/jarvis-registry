@@ -572,8 +572,10 @@ async def trigger_workflow_run(
         # Running a workflow requires VIEWER or more on the workflow itself
         workflow, _ = await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
 
+        prepared_definition = await workflow_service.prepare_workflow_run_definition(workflow, data.version)
+
         pending_authorizations = await collect_pending_oauth_authorizations(
-            workflow,
+            prepared_definition.definition,
             user_id=user_id,
             oauth_service=oauth_service,
         )
@@ -596,6 +598,7 @@ async def trigger_workflow_run(
             triggering_username=user_context.get("username"),
             triggering_scopes=effective_scopes_from_context(user_context),
             triggering_client_id=user_context.get("client_id"),
+            prepared_definition=prepared_definition,
         )
 
         # Schedule background execution

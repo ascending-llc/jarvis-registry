@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from registry_pkgs.models.workflow import StepConfig
 
+BUILTIN_ECHO_EXECUTOR_KEY = "echo"
+BUILTIN_SET_VALUE_EXECUTOR_KEY = "set_value"
+BUILTIN_EXECUTOR_KEYS = frozenset({BUILTIN_ECHO_EXECUTOR_KEY, BUILTIN_SET_VALUE_EXECUTOR_KEY})
+
 # Synthetic executor-registry key used for pool A2A nodes.
 # Format: "__pool__<node.id>"
 POOL_KEY_PREFIX = "__pool__"

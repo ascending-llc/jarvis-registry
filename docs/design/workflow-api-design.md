@@ -792,6 +792,7 @@ When one or more OAuth MCP servers require re-authorization, no workflow run is 
 
 **Important Notes**:
 - The endpoint performs OAuth preflight before creating a run and always returns `200 OK`
+- OAuth preflight evaluates the exact workflow version requested by `version` (or the latest version when omitted)
 - If `requiresReauth` is `true`, no `WorkflowRun` exists; complete every pending authorization and retry the request
 - If `requiresReauth` is `false`, the run executes asynchronously after the response
 - **Workflow must be enabled before triggering** - disabled workflows will return a 400 error with message "Workflow is disabled. Please enable the workflow before triggering a run."

@@ -11,6 +11,7 @@ from registry.services.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.models.enums import McpAuthMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowDefinition, collect_executor_keys
+from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +23,17 @@ async def collect_pending_oauth_authorizations(
     oauth_service: MCPOAuthService,
 ) -> list[PendingAuthorization]:
     """Return OAuth MCP servers that the user must re-authorize before a run."""
-    executor_keys = collect_executor_keys(workflow.nodes)
+    executor_keys = collect_executor_keys(workflow.nodes) - BUILTIN_EXECUTOR_KEYS
     if not executor_keys:
         return []
 
     servers = await ExtendedMCPServer.find(
-        {"serverName": {"$in": list(executor_keys)}},
+        {"serverName": {"$in": sorted(executor_keys)}},
         {"config.enabled": True},
     ).to_list()
 
     pending: list[PendingAuthorization] = []
-    for server in servers:
+    for server in sorted(servers, key=lambda item: item.serverName):
         if server.mcp_auth_mode != McpAuthMode.OAUTH:
             continue
 

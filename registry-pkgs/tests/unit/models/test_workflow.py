@@ -18,11 +18,13 @@ def test_collect_executor_keys_walks_every_nested_container_and_deduplicates() -
         WorkflowNode(
             name="parallel",
             node_type=WorkflowNodeType.PARALLEL,
+            executor_key="ignored-parallel-key",
             children=[_step("parallel-a", "parallel-a"), _step("parallel-b", "shared")],
         ),
         WorkflowNode(
             name="condition",
             node_type=WorkflowNodeType.CONDITION,
+            executor_key="ignored-condition-key",
             condition_cel="input.enabled",
             true_steps=[_step("true", "true-key")],
             false_steps=[_step("false", "false-key")],
@@ -30,12 +32,14 @@ def test_collect_executor_keys_walks_every_nested_container_and_deduplicates() -
         WorkflowNode(
             name="loop",
             node_type=WorkflowNodeType.LOOP,
+            executor_key="ignored-loop-key",
             children=[_step("loop-step", "loop-key")],
             loop_config=LoopConfig(max_iterations=2),
         ),
         WorkflowNode(
             name="router",
             node_type=WorkflowNodeType.ROUTER,
+            executor_key="ignored-router-key",
             condition_cel="input.route",
             choices=[
                 RouterChoice(name="first", steps=[_step("choice-a", "choice-a")]),

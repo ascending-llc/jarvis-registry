@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from registry.api.v1.workflow import workflow_routes
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
-from registry.services.workflow_service import WorkflowRunStats
+from registry.services.workflow_service import PreparedWorkflowRunDefinition, WorkflowRunStats
 
 
 def _canvas() -> dict[str, dict[str, float]]:
@@ -276,6 +276,7 @@ def _fake_workflow(name: str = "wf", version: int = 1):
         name=name,
         description=None,
         nodes=[WorkflowNode(name="s", node_type="step", executor_key="tool", step_objective="run s")],
+        enabled=True,
         version=version,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
@@ -433,7 +434,7 @@ async def test_list_workflow_versions_returns_history():
 
 
 @pytest.mark.asyncio
-async def test_trigger_run_forwards_requested_version(monkeypatch):
+async def test_trigger_run_preflights_and_runs_requested_historical_version(monkeypatch):
     from types import SimpleNamespace
 
     from registry.schemas.workflow_api_schemas import WorkflowRunTriggerRequest
@@ -458,30 +459,51 @@ async def test_trigger_run_forwards_requested_version(monkeypatch):
         started_at=datetime.now(UTC),
     )
 
+    current_workflow = _fake_workflow(version=3)
+    current_workflow.nodes[0].executor_key = "latest-oauth"
+    historical_workflow = _fake_workflow(version=2)
+    historical_workflow.id = current_workflow.id
+    historical_workflow.nodes[0].executor_key = "historical-no-oauth"
+    historical_snapshot = historical_workflow.model_dump(mode="json")
+    prepared_definition = PreparedWorkflowRunDefinition(
+        workflow_id=current_workflow.id,
+        definition=historical_workflow,
+        snapshot=historical_snapshot,
+        version=2,
+    )
+
     mock_service = MagicMock()
-    mock_service.get_workflow_by_id = AsyncMock(return_value=_fake_workflow(version=3))
+    mock_service.get_workflow_by_id = AsyncMock(return_value=current_workflow)
+    mock_service.prepare_workflow_run_definition = AsyncMock(return_value=prepared_definition)
     mock_service.trigger_workflow_run = AsyncMock(return_value=run)
 
     mock_acl = MagicMock()
     mock_acl.check_user_permission = AsyncMock(return_value=ResourcePermissions(VIEW=True))
 
     background_tasks = MagicMock()
+    oauth_service = MagicMock()
     collect_pending = AsyncMock(return_value=[])
     monkeypatch.setattr(workflow_routes, "collect_pending_oauth_authorizations", collect_pending)
 
     response = await workflow_routes.trigger_workflow_run(
-        workflow_id=str(PydanticObjectId()),
+        workflow_id=str(current_workflow.id),
         data=WorkflowRunTriggerRequest(version=2),
         background_tasks=background_tasks,
         user_context=user_context,
         workflow_service=mock_service,
         workflow_runner=MagicMock(),
         acl_service=mock_acl,
-        oauth_service=MagicMock(),
+        oauth_service=oauth_service,
     )
 
     assert mock_service.trigger_workflow_run.await_args.kwargs["version"] == 2
-    collect_pending.assert_awaited_once()
+    assert mock_service.trigger_workflow_run.await_args.kwargs["prepared_definition"] is prepared_definition
+    mock_service.prepare_workflow_run_definition.assert_awaited_once_with(current_workflow, 2)
+    collect_pending.assert_awaited_once_with(
+        historical_workflow,
+        user_id=user_context["user_id"],
+        oauth_service=oauth_service,
+    )
     background_tasks.add_task.assert_called_once()
     _, kwargs = background_tasks.add_task.call_args
     assert kwargs["auth_context"] is user_context
@@ -494,7 +516,11 @@ async def test_trigger_run_forwards_requested_version(monkeypatch):
 async def test_trigger_run_returns_pending_authorizations_without_creating_run(monkeypatch):
     from registry.schemas.workflow_api_schemas import PendingAuthorization, WorkflowRunTriggerRequest
 
-    workflow = _fake_workflow()
+    workflow = _fake_workflow(version=3)
+    workflow.nodes[0].executor_key = "latest-no-oauth"
+    historical_workflow = _fake_workflow(version=2)
+    historical_workflow.id = workflow.id
+    historical_workflow.nodes[0].executor_key = "historical-oauth"
     user_context = {
         "user_id": str(PydanticObjectId()),
         "username": "u",
@@ -503,6 +529,13 @@ async def test_trigger_run_returns_pending_authorizations_without_creating_run(m
     }
     mock_service = MagicMock()
     mock_service.get_workflow_by_id = AsyncMock(return_value=workflow)
+    prepared_definition = PreparedWorkflowRunDefinition(
+        workflow_id=workflow.id,
+        definition=historical_workflow,
+        snapshot=historical_workflow.model_dump(mode="json"),
+        version=2,
+    )
+    mock_service.prepare_workflow_run_definition = AsyncMock(return_value=prepared_definition)
     mock_service.trigger_workflow_run = AsyncMock()
     mock_acl = MagicMock()
     mock_acl.check_user_permission = AsyncMock(return_value=ResourcePermissions(VIEW=True))
@@ -521,7 +554,7 @@ async def test_trigger_run_returns_pending_authorizations_without_creating_run(m
 
     response = await workflow_routes.trigger_workflow_run(
         workflow_id=str(workflow.id),
-        data=WorkflowRunTriggerRequest(),
+        data=WorkflowRunTriggerRequest(version=2),
         background_tasks=background_tasks,
         user_context=user_context,
         workflow_service=mock_service,
@@ -531,10 +564,11 @@ async def test_trigger_run_returns_pending_authorizations_without_creating_run(m
     )
 
     collect_pending.assert_awaited_once_with(
-        workflow,
+        historical_workflow,
         user_id=user_context["user_id"],
         oauth_service=oauth_service,
     )
+    mock_service.prepare_workflow_run_definition.assert_awaited_once_with(workflow, 2)
     mock_service.trigger_workflow_run.assert_not_awaited()
     background_tasks.add_task.assert_not_called()
     assert response.requiresReauth is True
@@ -549,6 +583,51 @@ def test_trigger_run_route_returns_200() -> None:
     route = next(route for route in workflow_routes.router.routes if route.path == "/workflows/{workflow_id}/runs")
 
     assert route.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prepare_error", "expected_status"),
+    [
+        ("Workflow 'wf' is disabled. Please enable the workflow before triggering a run.", 400),
+        ("Workflow workflow-id version 2 not found", 404),
+    ],
+)
+async def test_trigger_run_validates_definition_before_oauth_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    prepare_error: str,
+    expected_status: int,
+) -> None:
+    from registry.schemas.workflow_api_schemas import WorkflowRunTriggerRequest
+
+    workflow = _fake_workflow(version=3)
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=workflow)
+    mock_service.prepare_workflow_run_definition = AsyncMock(side_effect=ValueError(prepare_error))
+    mock_service.trigger_workflow_run = AsyncMock()
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=ResourcePermissions(VIEW=True))
+    collect_pending = AsyncMock()
+    monkeypatch.setattr(workflow_routes, "collect_pending_oauth_authorizations", collect_pending)
+    oauth_service = MagicMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.trigger_workflow_run(
+            workflow_id=str(workflow.id),
+            data=WorkflowRunTriggerRequest(version=2),
+            background_tasks=MagicMock(),
+            user_context=user_context,
+            workflow_service=mock_service,
+            workflow_runner=MagicMock(),
+            acl_service=mock_acl,
+            oauth_service=oauth_service,
+        )
+
+    assert exc_info.value.status_code == expected_status
+    collect_pending.assert_not_awaited()
+    oauth_service.get_valid_access_token.assert_not_called()
+    mock_service.trigger_workflow_run.assert_not_awaited()
 
 
 @pytest.mark.asyncio
