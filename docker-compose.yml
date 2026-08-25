@@ -90,6 +90,33 @@ services:
     profiles:
       - full
 
+  workflow-worker:
+    image: ghcr.io/ascending-llc/jarvis/workflow-worker:latest
+#    build:
+#      context: .
+#      dockerfile: docker/Dockerfile.workflow-worker
+    environment:
+      - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
+      - REDIS_URI=redis://registry-redis:6379/1
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_WORKFLOW_LLM_MODEL=${AWS_WORKFLOW_LLM_MODEL:-amazon.nova-2-lite-v1:0}
+      - WORKFLOW_WORKER_MAX_SLEEP_SECONDS=${WORKFLOW_WORKER_MAX_SLEEP_SECONDS:-30}
+      - WORKFLOW_WORKER_MAX_CONCURRENT_RUNS=${WORKFLOW_WORKER_MAX_CONCURRENT_RUNS:-5}
+      - WORKFLOW_WORKER_MAX_CLAIMED_RUNS=${WORKFLOW_WORKER_MAX_CLAIMED_RUNS:-10}
+      - WORKFLOW_WORKER_LEASE_DURATION_SECONDS=${WORKFLOW_WORKER_LEASE_DURATION_SECONDS:-300}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=workflow-worker
+    depends_on:
+      registry-mongodb:
+        condition: service_healthy
+      registry-redis:
+        condition: service_started
+    restart: unless-stopped
+    env_file:
+      - .env
+    profiles:
+      - full
+
   # MongoDB Database
   registry-mongodb:
     container_name: registry-mongodb
