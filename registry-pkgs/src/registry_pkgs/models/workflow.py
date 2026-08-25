@@ -459,6 +459,24 @@ def _collect_all_node_names(nodes: list[WorkflowNode]) -> set[str]:
     return names
 
 
+def collect_executor_keys(nodes: list[WorkflowNode]) -> set[str]:
+    """Recursively collect every non-null STEP-node executor key in the workflow tree.
+
+    Keys may resolve to MCP servers, A2A agents, or built-in executors. Callers
+    interested in one executor type must filter the collected keys separately.
+    """
+    keys: set[str] = set()
+    for node in nodes:
+        if node.executor_key:
+            keys.add(node.executor_key)
+        keys.update(collect_executor_keys(node.children))
+        keys.update(collect_executor_keys(node.true_steps))
+        keys.update(collect_executor_keys(node.false_steps))
+        for choice in node.choices:
+            keys.update(collect_executor_keys(choice.steps))
+    return keys
+
+
 def _validate_references_exist(nodes: list[WorkflowNode], all_names: set[str]) -> None:
     """Raise ValueError if any step node references a name absent from the definition."""
     for node in nodes:

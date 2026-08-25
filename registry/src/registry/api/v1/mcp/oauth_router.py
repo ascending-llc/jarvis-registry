@@ -515,7 +515,11 @@ async def get_oauth_tokens(
 
 
 @router.get("/oauth/status/{flow_id}")
-async def get_oauth_status(flow_id: str, mcp_service: MCPService = Depends(get_mcp_service)) -> dict[str, Any]:
+async def get_oauth_status(
+    flow_id: str,
+    current_user: CurrentUser,
+    mcp_service: MCPService = Depends(get_mcp_service),
+) -> dict[str, Any]:
     """
     Check OAuth flow status
 
@@ -524,11 +528,17 @@ async def get_oauth_status(flow_id: str, mcp_service: MCPService = Depends(get_m
 
     """
     try:
+        user_id = current_user.get("user_id")
+        if not flow_id.startswith(f"{user_id}:") and not flow_id.startswith("system:"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission to access this flow")
+
         # Get flow status
         flow_status = await mcp_service.oauth_service.get_flow_status(flow_id)
 
         return flow_status
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to check OAuth flow status: {str(e)}", exc_info=True)
         raise HTTPException(

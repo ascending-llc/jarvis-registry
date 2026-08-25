@@ -9,6 +9,7 @@ from langchain_core.documents import Document as LangChainDocument
 from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
+from registry_pkgs.models.enums import McpAuthMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.federation_metadata import (
     AgentCoreA2AFederationMetadata,
@@ -142,6 +143,27 @@ class TestExtendedMCPServerStructure:
         assert server.config["tools"] == "create_repo, list_issues"
         assert "toolFunctions" in server.config
         assert server.config["initDuration"] == 170
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"runtimeAccess": {"mode": "jwt"}, "oauth": {}}, McpAuthMode.AGENTCORE),
+            ({"requiresOAuth": True}, McpAuthMode.OAUTH),
+            ({"oauth": {}}, McpAuthMode.OAUTH),
+            ({"apiKey": {}}, McpAuthMode.API_KEY),
+            ({"apiKey": "invalid"}, McpAuthMode.NONE),
+            ({}, McpAuthMode.NONE),
+            (None, McpAuthMode.NONE),
+        ],
+    )
+    def test_mcp_auth_mode(self, config, expected):
+        server = ExtendedMCPServer.model_construct(
+            serverName="test-server",
+            config=config,
+            author=PydanticObjectId(),
+        )
+
+        assert server.mcp_auth_mode == expected
 
     def test_default_values(self):
         """Test default values are set correctly."""

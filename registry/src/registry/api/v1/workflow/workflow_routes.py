@@ -14,7 +14,13 @@ from fastapi import status as http_status
 
 from registry.auth.dependencies import CurrentUser, UserContextDict, effective_scopes_from_context
 from registry.core.telemetry_decorators import track_registry_operation
-from registry.deps import get_acl_service, get_workflow_control_service, get_workflow_runner, get_workflow_service
+from registry.deps import (
+    get_acl_service,
+    get_oauth_service,
+    get_workflow_control_service,
+    get_workflow_runner,
+    get_workflow_service,
+)
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.errors import ErrorCode, create_error_detail
 from registry.schemas.workflow_api_schemas import (
@@ -40,8 +46,10 @@ from registry.schemas.workflow_api_schemas import (
 )
 from registry.schemas.workflow_schemas import NodeRunListResponse, NodeRunSummary, RunStatusResponse
 from registry.services.access_control_service import ACLService
+from registry.services.oauth.oauth_service import MCPOAuthService
 from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_executor import execute_workflow_run_background
+from registry.services.workflow_reauth_service import collect_pending_oauth_authorizations
 from registry.services.workflow_service import WorkflowService
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
@@ -538,7 +546,7 @@ async def list_workflow_versions(
     "/workflows/{workflow_id}/runs",
     response_model=WorkflowRunTriggerResponse,
     response_model_by_alias=True,
-    status_code=http_status.HTTP_202_ACCEPTED,
+    status_code=http_status.HTTP_200_OK,
     summary="Trigger Workflow Run",
     description="Trigger a workflow run (async execution)",
 )
@@ -551,17 +559,30 @@ async def trigger_workflow_run(
     workflow_service: WorkflowService = Depends(get_workflow_service),
     workflow_runner: WorkflowRunner = Depends(get_workflow_runner),
     acl_service: ACLService = Depends(get_acl_service),
+    oauth_service: MCPOAuthService = Depends(get_oauth_service),
 ):
     """
     Trigger a workflow run (async execution).
 
     Requires VIEWER (VIEW) permission on the workflow plus the workflows-control scope.
-    Returns 202 Accepted immediately. The workflow will be executed asynchronously in the background.
+    Returns 200 OK after OAuth preflight. Eligible workflows execute asynchronously in the background.
     """
     try:
         user_id = _require_user_id(user_context)
         # Running a workflow requires VIEWER or more on the workflow itself
-        await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
+        workflow, _ = await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
+
+        pending_authorizations = await collect_pending_oauth_authorizations(
+            workflow,
+            user_id=user_id,
+            oauth_service=oauth_service,
+        )
+        if pending_authorizations:
+            return WorkflowRunTriggerResponse(
+                message="One or more MCP servers require OAuth re-authorization before this run can start",
+                requiresReauth=True,
+                pendingAuthorizations=pending_authorizations,
+            )
 
         # Create workflow run record (status=PENDING)
         run = await workflow_service.trigger_workflow_run(

@@ -345,15 +345,26 @@ class WorkflowVersionListResponse(APIBaseModel):
     versions: list[WorkflowVersionItem]
 
 
-class WorkflowRunTriggerResponse(APIBaseModel):
-    """Response schema for workflow run trigger (202 Accepted)"""
+class PendingAuthorization(APIBaseModel):
+    """One MCP server that must be re-authorized before a workflow run can proceed."""
 
-    runId: str
-    workflowDefinitionId: str
-    status: str
+    serverId: str
+    serverName: str
+    authUrl: str
+    flowId: str
+
+
+class WorkflowRunTriggerResponse(APIBaseModel):
+    """Response schema for a successful workflow run trigger preflight."""
+
+    runId: str | None = None
+    workflowDefinitionId: str | None = None
+    status: str | None = None
     triggerSource: str | None = None
-    startedAt: datetime
+    startedAt: datetime | None = None
     message: str
+    requiresReauth: bool = False
+    pendingAuthorizations: list[PendingAuthorization] = Field(default_factory=list)
 
 
 class WorkflowRunListItem(APIBaseModel):

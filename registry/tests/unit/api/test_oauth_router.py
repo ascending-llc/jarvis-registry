@@ -208,15 +208,27 @@ class TestOAuthRouter:
     def test_get_oauth_status_success(self, client):
         """Test successful retrieval of OAuth status"""
         # Mock status response
-        mock_status = {"flow_id": "test_user-1234567890", "status": "completed", "server_id": TEST_SERVER_ID}
+        mock_status = {"flow_id": f"test_user:{TEST_SERVER_ID}", "status": "completed", "server_id": TEST_SERVER_ID}
         mock_mcp_service.oauth_service.get_flow_status = make_async(lambda *args, **kwargs: mock_status)
 
-        flow_id = "test_user-1234567890"
+        flow_id = f"test_user:{TEST_SERVER_ID}"
 
         response = client.get(f"/mcp/oauth/status/{flow_id}")
 
         assert response.status_code == 200
         assert response.json() == mock_status
+
+    def test_get_oauth_status_unauthorized(self, client):
+        """Test OAuth status retrieval for another user's flow."""
+        response = client.get(f"/mcp/oauth/status/other_user:{TEST_SERVER_ID}")
+
+        assert response.status_code == 403
+
+    def test_get_oauth_status_rejects_user_id_prefix_collision(self, client):
+        """A user ID prefix without the flow separator must not grant ownership."""
+        response = client.get(f"/mcp/oauth/status/test_user_suffix:{TEST_SERVER_ID}")
+
+        assert response.status_code == 403
 
     def test_cancel_oauth_flow_success(self, client):
         """Test successful cancellation of OAuth flow"""
