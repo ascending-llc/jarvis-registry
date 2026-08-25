@@ -65,6 +65,7 @@ from registry_pkgs.models.workflow import (
     WorkflowRun,
 )
 from registry_pkgs.telemetry.workflow_metrics import record_workflow_run
+from registry_pkgs.telemetry.workflow_tracing import trace_workflow_continuation, trace_workflow_run
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
@@ -159,6 +160,7 @@ class WorkflowRunner:
         self._redis_key_prefix = redis_key_prefix
         self._mcp_headers_provider = mcp_headers_provider
 
+    @trace_workflow_run
     async def run(
         self,
         definition_id: str,
@@ -315,6 +317,7 @@ class WorkflowRunner:
             mcp_headers_provider=self._mcp_headers_provider,
         )
 
+    @trace_workflow_continuation
     async def continue_run(
         self,
         *,

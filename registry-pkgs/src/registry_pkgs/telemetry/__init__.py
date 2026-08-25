@@ -16,6 +16,7 @@ from .decorators import (
     create_timed_context,
     track_duration,
 )
+from .workflow_tracing import ensure_langfuse_trace_attribute_processor
 
 __all__ = [
     "setup_metrics",
@@ -240,6 +241,7 @@ def setup_tracing(
             if provider_is_new
             else current_provider
         )
+        ensure_langfuse_trace_attribute_processor(tracer_provider)
 
         instrumentor = instrumentor_type()
         if not instrumentor.is_instrumented_by_opentelemetry:

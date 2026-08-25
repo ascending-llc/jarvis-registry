@@ -307,6 +307,7 @@ class TestSetupTracing:
         with (
             patch("opentelemetry.trace.get_tracer_provider", return_value=MagicMock()),
             patch("opentelemetry.trace.set_tracer_provider") as mock_set,
+            patch("registry_pkgs.telemetry.ensure_langfuse_trace_attribute_processor") as mock_ensure_processor,
             patch(
                 "registry_pkgs.telemetry._load_agno_instrumentation",
                 return_value=(mock_instrumentor_type, mock_trace_config_type),
@@ -319,6 +320,7 @@ class TestSetupTracing:
             mock_set.assert_called_once()
             tp_arg = mock_set.call_args[0][0]
             assert isinstance(tp_arg, TracerProvider)
+            mock_ensure_processor.assert_called_once_with(tp_arg)
             mock_instrumentor_type.return_value.instrument.assert_called_once()
             _, instrument_kwargs = mock_instrumentor_type.return_value.instrument.call_args
             assert instrument_kwargs["tracer_provider"] is tp_arg
