@@ -165,7 +165,7 @@ async def test_workflow_run_trace_matches_execution_format_and_propagates_to_chi
 @pytest.mark.unit
 @pytest.mark.telemetry
 @pytest.mark.asyncio
-async def test_workflow_run_trace_status_failure_does_not_change_result() -> None:
+async def test_workflow_run_trace_status_failure_does_not_change_result(caplog: pytest.LogCaptureFixture) -> None:
     result = (
         SimpleNamespace(id="run-1", status=WorkflowRunStatus.FAILED, error_summary="model failed"),
         [],
@@ -186,6 +186,7 @@ async def test_workflow_run_trace_status_failure_does_not_change_result() -> Non
     assert returned is result
     span.set_attribute.assert_any_call("registry.operation.success", False)
     span.set_status.assert_called_once()
+    assert "Failed to set workflow span status (RuntimeError) for status=failed" in caplog.text
 
 
 @pytest.mark.unit

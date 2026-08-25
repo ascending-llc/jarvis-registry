@@ -190,8 +190,12 @@ def _record_workflow_result(span: Span, result: object) -> bool:
         error_summary = getattr(run, "error_summary", None)
         try:
             span.set_status(Status(StatusCode.ERROR, str(error_summary or f"Workflow {status}")))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to set workflow span status (%s) for status=%s",
+                type(exc).__name__,
+                status,
+            )
     return success
 
 
