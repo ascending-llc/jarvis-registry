@@ -35,7 +35,7 @@ from .federation_sync_job import FederationSyncJob
 from .skill_sync_job import SkillSyncJob
 from .skill_sync_source import SkillSyncSource
 from .token_type import TokenType
-from .workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
+from .workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowSchedule, WorkflowVersion
 
 __all__ = [
     "A2AAgent",
@@ -57,6 +57,7 @@ __all__ = [
     "NodeRun",
     "WorkflowDefinition",
     "WorkflowRun",
+    "WorkflowSchedule",
     "WorkflowVersion",
     "Group",
     "User",

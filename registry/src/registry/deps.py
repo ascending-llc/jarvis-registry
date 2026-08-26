@@ -33,6 +33,7 @@ from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .services.skill_sync_token_service import SkillSyncTokenService
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_schedule_service import WorkflowScheduleService
 from .services.workflow_service import WorkflowService
 
 
@@ -177,6 +178,12 @@ def check_if_https(request: Request) -> bool:
 
 def get_workflow_service(container: RegistryContainer = Depends(get_container)) -> WorkflowService:
     return container.workflow_service
+
+
+def get_workflow_schedule_service(
+    container: RegistryContainer = Depends(get_container),
+) -> WorkflowScheduleService:
+    return container.workflow_schedule_service
 
 
 def get_workflow_runner(container: RegistryContainer = Depends(get_container)) -> WorkflowRunner:

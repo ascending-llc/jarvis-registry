@@ -29,6 +29,7 @@ from ..models import (
     User,
     WorkflowDefinition,
     WorkflowRun,
+    WorkflowSchedule,
     WorkflowVersion,
 )
 
@@ -147,6 +148,7 @@ class MongoDB:
                     SkillSyncJob,
                     WorkflowDefinition,
                     WorkflowRun,
+                    WorkflowSchedule,
                     NodeRun,
                     WorkflowVersion,
                     ExtendedSkill,

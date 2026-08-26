@@ -67,6 +67,7 @@ from .services.skill_sync_token_service import SkillSyncTokenService
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
+from .services.workflow_schedule_service import WorkflowScheduleService
 from .services.workflow_service import WorkflowService
 from .services.workflow_shutdown import cancel_in_flight_runs
 
@@ -291,6 +292,10 @@ class RegistryContainer:
     @cached_property
     def workflow_service(self) -> WorkflowService:
         return WorkflowService(acl_service=self.acl_service)
+
+    @cached_property
+    def workflow_schedule_service(self) -> WorkflowScheduleService:
+        return WorkflowScheduleService(acl_service=self.acl_service)
 
     @cached_property
     def a2a_client_registry(self) -> A2AClientRegistry:

@@ -17,6 +17,7 @@ from .api.v1.skill.skill_routes import router as skill_router
 from .api.v1.skill_sync.skill_sync_source_routes import router as skill_sync_source_router
 from .api.v1.token_routes import router as token_router
 from .api.v1.workflow.control_routes import router as workflow_control_router
+from .api.v1.workflow.schedule_routes import router as workflow_schedule_router
 from .api.v1.workflow.workflow_routes import router as workflow_router
 from .core.config import settings
 from .health.routes import router as health_router
@@ -29,6 +30,11 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(servers_router_v1, prefix=f"/api/{settings.api_version}", tags=["Server Management V1"])
     app.include_router(a2a_agent_router, prefix=f"/api/{settings.api_version}", tags=["A2A Agent Management V1"])
     app.include_router(workflow_router, prefix=f"/api/{settings.api_version}", tags=["Workflow Management V1"])
+    app.include_router(
+        workflow_schedule_router,
+        prefix=f"/api/{settings.api_version}",
+        tags=["Workflow Schedule Management V1"],
+    )
     app.include_router(management_router, prefix="/api")
     app.include_router(search_router, prefix=f"/api/{settings.api_version}", tags=["Semantic Search"])
     app.include_router(health_router, prefix="/api/health", tags=["Health Monitoring"])
