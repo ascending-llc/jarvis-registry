@@ -11,26 +11,22 @@ export const getDirectParents = (nodeId: string, edges: Edge[]): Set<string> =>
   new Set(edges.filter(edge => edge.target === nodeId).map(edge => edge.source));
 
 /**
- * Returns the closest execution nodes on every upstream path.
- * Structural nodes are traversed; traversal stops when an Agent, MCP, or Pool is reached.
+ * Returns the node's direct parents that are themselves execution nodes.
+ *
+ * Their output is already injected as implicit input at runtime (see
+ * compiler._build_implicit_previous_step_names), but only across a direct
+ * edge — a structural node (Condition/Router/Loop/Parallel) between two
+ * execution nodes breaks that implicit chain, so it must not be tunneled
+ * through here either. A node whose direct parent is structural has no
+ * effective executing parent at all.
  */
 export const getEffectiveExecutingParents = (nodeId: string, edges: Edge[], nodes: Node<NodeData>[]): Set<string> => {
   const effectiveParents = new Set<string>();
-  const visited = new Set<string>();
-  const queue = [nodeId];
   const nodeMap = new Map(nodes.map(node => [node.id, node]));
 
-  for (let index = 0; index < queue.length; index += 1) {
-    const current = queue[index];
-    if (current === undefined || visited.has(current)) continue;
-    visited.add(current);
-
-    for (const upstreamId of getDirectParents(current, edges)) {
-      const upstreamNode = nodeMap.get(upstreamId);
-      if (!upstreamNode) continue;
-      if (isExecutionNode(upstreamNode)) effectiveParents.add(upstreamId);
-      else queue.push(upstreamId);
-    }
+  for (const parentId of getDirectParents(nodeId, edges)) {
+    const parentNode = nodeMap.get(parentId);
+    if (parentNode && isExecutionNode(parentNode)) effectiveParents.add(parentId);
   }
 
   return effectiveParents;
