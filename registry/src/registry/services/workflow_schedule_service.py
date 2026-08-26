@@ -192,6 +192,9 @@ class WorkflowScheduleService:
                     schedule_permission="EDIT",
                     session=mongo_session,
                 )
+                # Idempotent: no DB update when the state already matches
+                if access.schedule.enabled == enabled:
+                    return access
                 updates = await self._toggle_updates(access.schedule, enabled, mongo_session)
                 document = await _schedule_collection().find_one_and_update(
                     {
@@ -307,7 +310,8 @@ class WorkflowScheduleService:
                 "timezone cannot be null",
             )
         self._validate(cron_expression, timezone_name)
-        if schedule.enabled and {"cron_expression", "timezone"}.intersection(updates):
+        cron_changed = cron_expression != schedule.cron_expression or timezone_name != schedule.timezone
+        if schedule.enabled and cron_changed:
             updates["next_run_at"] = calculate_next_run_at(cron_expression, timezone_name)
         updates["updated_at"] = datetime.now(UTC)
         return updates

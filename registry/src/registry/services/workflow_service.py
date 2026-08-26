@@ -471,6 +471,11 @@ class WorkflowService:
                     detail="Workflow version already archived; concurrent update detected",
                 ) from exc
 
+            # Cascade-disable schedules when the update flips enabled from True → False
+            disabling = data.enabled is False and workflow.enabled is True
+            if disabling:
+                await self._cascade_disable_schedules(workflow.id, session=session)
+
             logger.info(f"Updated workflow {workflow_id}: version {previous_version} → {update_fields['version']}")
             return await WorkflowDefinition.get(workflow.id, session=session)
 
@@ -598,15 +603,17 @@ class WorkflowService:
             ValueError: If workflow not found
         """
         try:
-            # Get existing workflow
             workflow = await self.get_workflow_by_id(workflow_id)
-
-            # Update enabled field
             workflow.enabled = enabled
             workflow.updated_at = datetime.now(UTC)
 
-            # Save to database
-            await workflow.save()
+            if not enabled:
+                async with MongoDB.get_client().start_session() as session:
+                    async with await session.start_transaction():
+                        await workflow.save(session=session)
+                        await self._cascade_disable_schedules(workflow.id, session=session)
+            else:
+                await workflow.save()
 
             logger.info(f"Toggled workflow {workflow.name} (ID: {workflow.id}) enabled to {enabled}")
             return workflow
@@ -616,6 +623,29 @@ class WorkflowService:
         except Exception:
             logger.exception("Error toggling workflow %s", workflow_id)
             raise
+
+    @staticmethod
+    async def _cascade_disable_schedules(
+        workflow_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
+    ) -> None:
+        """Bulk-disable all enabled schedules for a workflow, clearing lease fields."""
+        result = await WorkflowSchedule.find(
+            {"workflow_definition_id": workflow_id, "enabled": True},
+        ).update_many(
+            {
+                "$set": {
+                    "enabled": False,
+                    "next_run_at": None,
+                    "locked_until": None,
+                    "lease_token": None,
+                    "updated_at": datetime.now(UTC),
+                }
+            },
+            session=session,
+        )
+        if result.modified_count > 0:
+            logger.info("Cascade-disabled %d schedule(s) for workflow %s", result.modified_count, workflow_id)
 
     async def trigger_workflow_run(
         self,
