@@ -89,6 +89,16 @@ class SkillSyncApplyService:
             except Exception as exc:
                 logger.exception("Failed to delete skill %s: %s", existing_skill.id, exc)
                 summary.skillsFailed += 1
+                metadata = existing_skill.sourceMetadata or {}
+                job.skillErrors.append(
+                    SkillSyncSkillError(
+                        skillPath=metadata.get("skillPath", upstream_id),
+                        upstreamId=metadata.get("upstreamId", upstream_id),
+                        errorCode=SkillSyncSkillErrorCode.DELETE_FAILED,
+                        errorMessage=str(exc),
+                        phase="delete",
+                    )
+                )
 
         for discovered in discovery.skills:
             try:

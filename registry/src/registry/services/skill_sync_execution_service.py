@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import tempfile
@@ -150,14 +151,15 @@ class SkillSyncExecutionService:
             )
             job.phase = SkillSyncJobPhase.EXTRACTING
             await job.save()
-            extraction = self._github_service.extract_skill_folders(
+            extraction = await asyncio.to_thread(
+                self._github_service.extract_skill_folders,
                 tarball_path,
                 paths=request_snapshot.paths,
                 extraction_dir=Path(extraction_dir),
             )
             job.phase = SkillSyncJobPhase.DISCOVERING
             await job.save()
-            discovery = self._discovery_service.discover_skills(extraction)
+            discovery = await asyncio.to_thread(self._discovery_service.discover_skills, extraction)
             job.discoverySummary = discovery.summary
             job.skillErrors.extend(discovery.errors)
             await job.save()

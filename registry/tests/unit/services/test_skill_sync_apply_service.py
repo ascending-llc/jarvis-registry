@@ -197,6 +197,35 @@ async def test_apply_deletes_stale_skill_and_counts_existing_update():
 
 
 @pytest.mark.asyncio
+async def test_apply_records_error_when_stale_skill_delete_fails():
+    source = SimpleNamespace(id=PydanticObjectId())
+    stale = SimpleNamespace(
+        id=PydanticObjectId(),
+        sourceMetadata={"upstreamId": f"{source.id}:skills/stale", "skillPath": "skills/stale"},
+    )
+    job = SimpleNamespace(skillErrors=[])
+    service = _service()
+    service.list_live_skills = AsyncMock(return_value=[stale])
+    service._delete_skill = AsyncMock(side_effect=RuntimeError("delete failed"))
+
+    summary = await service.apply_discovered_skills(
+        source=source,
+        job=job,
+        discovery=DiscoveryResult(skills=[], errors=[], summary=SkillSyncDiscoverySummary()),
+        user_id=str(PydanticObjectId()),
+        commit_sha="a" * 40,
+        request_snapshot=_snapshot(),
+    )
+
+    assert summary.skillsFailed == 1
+    assert summary.skillsDeleted == 0
+    assert job.skillErrors[0].errorCode == SkillSyncSkillErrorCode.DELETE_FAILED
+    assert job.skillErrors[0].skillPath == "skills/stale"
+    assert job.skillErrors[0].phase == "delete"
+    assert "delete failed" in job.skillErrors[0].errorMessage
+
+
+@pytest.mark.asyncio
 async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tmp_path):
     text_path = tmp_path / "README.md"
     text_path.write_text("new text")
