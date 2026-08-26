@@ -26,6 +26,7 @@ from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.telemetry.workflow_metrics import record_agent_invocation
+from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider, make_mcp_executor
@@ -131,7 +132,7 @@ async def build_executor_registry(
     executor_keys: list[str],
     *,
     llm: Model,
-    auth_context: dict[str, Any] | None,
+    auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
     pool_nodes: list[WorkflowNode] | None = None,
     selector_llm: Model | None = None,
@@ -200,7 +201,7 @@ async def _resolve_executor(
     key: str,
     *,
     llm: Model,
-    auth_context: dict[str, Any] | None,
+    auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
     a2a_httpx_client: httpx.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,

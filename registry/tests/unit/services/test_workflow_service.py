@@ -535,7 +535,7 @@ class _FakeWorkflow:
     def model_dump_json(self):
         return f'{{"name": "{self.name}", "version": {self.version}}}'
 
-    async def save(self):
+    async def save(self, **_kwargs):
         self.saved = True
 
 
@@ -989,9 +989,19 @@ async def test_delete_workflow_cascades_agno_sessions(monkeypatch: pytest.Monkey
         def find(*_a, **_k):
             return _DeleteQuery()
 
+    class _EmptyScheduleQuery(_DeleteQuery):
+        async def to_list(self):
+            return []
+
+    class _FakeWorkflowSchedule:
+        @staticmethod
+        def find(*_a, **_k):
+            return _EmptyScheduleQuery()
+
     monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeWorkflowRun)
     monkeypatch.setattr(workflow_service, "NodeRun", _FakeNodeRun)
     monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
+    monkeypatch.setattr(workflow_service, "WorkflowSchedule", _FakeWorkflowSchedule)
 
     class _Collection:
         async def delete_many(self, query):
@@ -1544,3 +1554,78 @@ async def test_update_workflow_403_on_new_executor_prevents_db_write(monkeypatch
     assert "new-tool" in exc_info.value.detail
     collection.find_one_and_update.assert_not_awaited()
     assert inserted == []
+
+
+@pytest.mark.asyncio
+async def test_toggle_workflow_status_cascade_disables_schedules(monkeypatch: pytest.MonkeyPatch):
+    """Disabling a workflow must cascade-disable all its enabled schedules."""
+    fake_wf = _FakeWorkflow()
+    fake_wf.enabled = True
+
+    async def fake_get(self, workflow_id, session=None):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    cascade_called = {}
+
+    async def fake_cascade(workflow_id, session=None):
+        cascade_called["workflow_id"] = workflow_id
+        cascade_called["has_session"] = session is not None
+
+    monkeypatch.setattr(WorkflowService, "_cascade_disable_schedules", staticmethod(fake_cascade))
+    monkeypatch.setattr(workflow_service.MongoDB, "get_client", _FakeTxnClient)
+
+    result = await WorkflowService(acl_service=AsyncMock()).toggle_workflow_status(
+        workflow_id=str(fake_wf.id), enabled=False
+    )
+
+    assert result.enabled is False
+    assert cascade_called["workflow_id"] == fake_wf.id
+    assert cascade_called["has_session"] is True
+
+
+@pytest.mark.asyncio
+async def test_toggle_workflow_status_enable_does_not_cascade(monkeypatch: pytest.MonkeyPatch):
+    """Enabling a workflow must NOT call _cascade_disable_schedules."""
+    fake_wf = _FakeWorkflow()
+    fake_wf.enabled = False
+
+    async def fake_get(self, workflow_id, session=None):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    cascade_called = []
+
+    async def fake_cascade(workflow_id, session=None):
+        cascade_called.append(True)
+
+    monkeypatch.setattr(WorkflowService, "_cascade_disable_schedules", staticmethod(fake_cascade))
+
+    result = await WorkflowService(acl_service=AsyncMock()).toggle_workflow_status(
+        workflow_id=str(fake_wf.id), enabled=True
+    )
+
+    assert result.enabled is True
+    assert cascade_called == []
+
+
+@pytest.mark.asyncio
+async def test_toggle_workflow_status_idempotent_skip(monkeypatch: pytest.MonkeyPatch):
+    """Toggling to the current state must return immediately without DB write."""
+    fake_wf = _FakeWorkflow()
+    fake_wf.enabled = True
+    fake_wf.saved = False
+
+    async def fake_get(self, workflow_id, session=None):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    result = await WorkflowService(acl_service=AsyncMock()).toggle_workflow_status(
+        workflow_id=str(fake_wf.id), enabled=True
+    )
+
+    assert result is fake_wf
+    assert fake_wf.saved is False

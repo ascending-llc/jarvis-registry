@@ -27,6 +27,8 @@ from opentelemetry import trace
 from opentelemetry.trace import Span, Status, StatusCode
 from pydantic import AnyUrl, BaseModel
 
+from registry_pkgs.telemetry.span_attributes import TRACE_APP, clean_span_attributes, set_span_attributes
+
 from .core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,6 @@ _DISCOVERY_OPERATIONS = {
     "mcp": ("mcp.discovery", "McpDiscovery", "discover_servers", "mcp"),
     "a2a": ("a2a.discovery", "AgentDiscovery", "discover_agents", "agent"),
 }
-_TRACE_APP = "registry"
 _TRACER = trace.get_tracer("registry.mcpgw")
 _RAW_PYTHON_BYTES_OMITTED = "[RAW PYTHON BYTES OMITTED]"
 _TRACE_MODEL_FIELDS: dict[type[BaseModel], tuple[str, ...]] = {
@@ -128,26 +129,6 @@ def _serialize_trace_value(value: Any) -> str:
     return json.dumps(serialized, ensure_ascii=False, separators=(",", ":"))
 
 
-def _clean_attributes(attributes: dict[str, Any]) -> dict[str, bool | int | float | str | list[str]]:
-    cleaned: dict[str, bool | int | float | str | list[str]] = {}
-    for key, value in attributes.items():
-        if (isinstance(value, (bool, int, float, str)) and value != "") or (
-            isinstance(value, list) and value and all(isinstance(item, str) and item != "" for item in value)
-        ):
-            cleaned[key] = value
-    return cleaned
-
-
-def _set_span_attributes(span: Span, attributes: dict[str, Any]) -> None:
-    try:
-        if not span.is_recording():
-            return
-        for key, value in _clean_attributes(attributes).items():
-            span.set_attribute(key, value)
-    except Exception as exc:
-        logger.warning("Failed to set trace attributes (%s)", type(exc).__name__)
-
-
 def _extract_caller_identity(ctx: Context[ServerSession, McpAppContext]) -> dict[str, Any]:
     try:
         request_context = getattr(ctx, "request_context", None)
@@ -177,7 +158,7 @@ def _extract_caller_identity(ctx: Context[ServerSession, McpAppContext]) -> dict
             identity["mcp_client_name"] = getattr(client_info, "name", None)
             identity["mcp_client_version"] = getattr(client_info, "version", None)
 
-        return _clean_attributes(identity)
+        return clean_span_attributes(identity)
     except Exception:
         logger.warning("Failed to extract caller identity for tracing", exc_info=True)
         return {}
@@ -185,7 +166,7 @@ def _extract_caller_identity(ctx: Context[ServerSession, McpAppContext]) -> dict
 
 def _caller_attributes(ctx: Context[ServerSession, McpAppContext]) -> dict[str, Any]:
     identity = _extract_caller_identity(ctx)
-    return _clean_attributes(
+    return clean_span_attributes(
         {
             "langfuse.user.id": identity.get("user_id"),
             "langfuse.trace.metadata.username": identity.get("username"),
@@ -214,14 +195,14 @@ def _build_trace_attributes(
         "langfuse.observation.type": observation_type,
         "langfuse.trace.name": trace_name,
         "langfuse.trace.tags": tags,
-        "langfuse.trace.metadata.app": _TRACE_APP,
+        "langfuse.trace.metadata.app": TRACE_APP,
         "langfuse.trace.metadata.operationType": operation_type,
         "registry.operation.type": operation_type,
     }
 
 
 def _trace_tags(operation: str) -> list[str]:
-    return [_TRACE_APP, operation]
+    return [TRACE_APP, operation]
 
 
 def _set_serialized_attribute(
@@ -258,7 +239,7 @@ def _record_result(span: Span, result: CallToolResult) -> bool:
     try:
         span.set_status(Status(StatusCode.ERROR, "MCP operation returned an error result"))
     except Exception:
-        pass
+        logger.error("failed to set OTEL span status to ERROR when MCP operation returned an error result")
     return False
 
 
@@ -300,7 +281,7 @@ def trace_discovery(
             "top_n": top_n,
             "type_list": type_list,
         }
-        with _TRACER.start_as_current_span(span_name, attributes=_clean_attributes(attributes)) as span:
+        with _TRACER.start_as_current_span(span_name, attributes=clean_span_attributes(attributes)) as span:
             _set_serialized_attribute(span, "langfuse.observation.input", trace_input)
             success = False
             try:
@@ -309,7 +290,7 @@ def trace_discovery(
                 success = True
                 return results
             finally:
-                _set_span_attributes(span, {"registry.operation.success": success})
+                set_span_attributes(span, {"registry.operation.success": success})
 
     return wrapper
 
@@ -343,7 +324,7 @@ def trace_tool_execution(
             "mcp.tool.name": tool_name,
             "mcp.server.id": server_id,
         }
-        with _TRACER.start_as_current_span(_TOOL_SPAN_NAME, attributes=_clean_attributes(attributes)) as span:
+        with _TRACER.start_as_current_span(_TOOL_SPAN_NAME, attributes=clean_span_attributes(attributes)) as span:
             _set_serialized_attribute(
                 span,
                 "langfuse.observation.input",
@@ -355,7 +336,7 @@ def trace_tool_execution(
                 success = _record_result(span, result)
                 return result
             finally:
-                _set_span_attributes(span, {"registry.operation.success": success})
+                set_span_attributes(span, {"registry.operation.success": success})
 
     return wrapper
 
@@ -387,7 +368,7 @@ def trace_agent_execution[AgentMessageT](
             ),
             "a2a.agent.id": agent_id,
         }
-        with _TRACER.start_as_current_span(_AGENT_SPAN_NAME, attributes=_clean_attributes(attributes)) as span:
+        with _TRACER.start_as_current_span(_AGENT_SPAN_NAME, attributes=clean_span_attributes(attributes)) as span:
             _set_serialized_attribute(
                 span,
                 "langfuse.observation.input",
@@ -399,6 +380,6 @@ def trace_agent_execution[AgentMessageT](
                 success = _record_result(span, result)
                 return result
             finally:
-                _set_span_attributes(span, {"registry.operation.success": success})
+                set_span_attributes(span, {"registry.operation.success": success})
 
     return wrapper

@@ -12,6 +12,7 @@ from registry_pkgs.models.enums import (
     SkillSyncStatus,
     SkillSyncTriggerType,
 )
+from registry_pkgs.models.skill_sync_job import SkillSyncRequestSnapshot
 
 from .acl_schema import ResourcePermissions
 from .server_api_schemas import PaginationMetadata
@@ -25,6 +26,20 @@ def _validate_relative_path(value: str) -> str:
     return normalized.rstrip("/") or "."
 
 
+def _normalize_and_validate_paths(values: list[str]) -> list[str]:
+    normalized = [_validate_relative_path(value) for value in values]
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("paths must not contain duplicates")
+    if "." in normalized and len(normalized) > 1:
+        raise ValueError("the repository root path '.' cannot be combined with other paths")
+
+    sorted_paths = sorted(normalized)
+    for index, parent in enumerate(sorted_paths):
+        if any(child.startswith(parent + "/") for child in sorted_paths[index + 1 :]):
+            raise ValueError("paths must not contain overlapping ancestor and descendant paths")
+    return normalized
+
+
 class SkillSyncSourceCreateRequest(BaseModel):
     displayName: str = Field(min_length=1, max_length=128)
     description: str | None = None
@@ -33,17 +48,13 @@ class SkillSyncSourceCreateRequest(BaseModel):
     repo: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
     ref: str = Field(default="main", min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._/-]+$")
     paths: list[str] = Field(min_length=1)
-    skillDiscoveryDepth: int = Field(default=2, ge=0, le=10)
     githubAppClientId: str = Field(min_length=1)
     githubAppClientSecret: str = Field(min_length=1)
 
     @field_validator("paths")
     @classmethod
     def validate_paths(cls, values: list[str]) -> list[str]:
-        normalized = [_validate_relative_path(value) for value in values]
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("paths must not contain duplicates")
-        return normalized
+        return _normalize_and_validate_paths(values)
 
     @field_validator("ref")
     @classmethod
@@ -63,7 +74,6 @@ class SkillSyncSourceUpdateRequest(BaseModel):
     repo: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
     ref: str | None = Field(default=None, min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._/-]+$")
     paths: list[str] | None = Field(default=None, min_length=1)
-    skillDiscoveryDepth: int | None = Field(default=None, ge=0, le=10)
     githubAppClientId: str | None = Field(default=None, min_length=1)
     githubAppClientSecret: str | None = Field(default=None, min_length=1)
     syncAfterUpdate: bool = False
@@ -73,10 +83,7 @@ class SkillSyncSourceUpdateRequest(BaseModel):
     def validate_paths(cls, values: list[str] | None) -> list[str] | None:
         if values is None:
             return None
-        normalized = [_validate_relative_path(value) for value in values]
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("paths must not contain duplicates")
-        return normalized
+        return _normalize_and_validate_paths(values)
 
     @field_validator("ref")
     @classmethod
@@ -108,7 +115,7 @@ class SkillSyncJobResponse(BaseModel):
     triggerType: SkillSyncTriggerType
     status: SkillSyncJobStatus
     phase: SkillSyncJobPhase
-    requestSnapshot: dict = Field(default_factory=dict)
+    requestSnapshot: SkillSyncRequestSnapshot
     discoverySummary: dict = Field(default_factory=dict)
     applySummary: dict = Field(default_factory=dict)
     skillErrors: list[dict] = Field(default_factory=list)
@@ -131,7 +138,6 @@ class SkillSyncSourceListItemResponse(BaseModel):
     repo: str
     ref: str
     paths: list[str]
-    skillDiscoveryDepth: int
     status: SkillSyncSourceStatus
     syncStatus: SkillSyncStatus
     syncMessage: str | None = None

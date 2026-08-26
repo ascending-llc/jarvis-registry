@@ -65,6 +65,8 @@ from registry_pkgs.models.workflow import (
     WorkflowRun,
 )
 from registry_pkgs.telemetry.workflow_metrics import record_workflow_run
+from registry_pkgs.telemetry.workflow_tracing import trace_workflow_continuation, trace_workflow_run
+from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
@@ -159,12 +161,13 @@ class WorkflowRunner:
         self._redis_key_prefix = redis_key_prefix
         self._mcp_headers_provider = mcp_headers_provider
 
+    @trace_workflow_run
     async def run(
         self,
         definition_id: str,
         user_text: str,
         *,
-        auth_context: dict[str, Any] | None,
+        auth_context: UserContextDict | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
@@ -278,7 +281,7 @@ class WorkflowRunner:
     async def _build_registry(
         self,
         definition: WorkflowDefinition,
-        auth_context: dict[str, Any] | None,
+        auth_context: UserContextDict | None,
     ) -> dict[str, StepExecutor]:
         """Extract executor keys + pool nodes from the definition and resolve them.
 
@@ -315,11 +318,12 @@ class WorkflowRunner:
             mcp_headers_provider=self._mcp_headers_provider,
         )
 
+    @trace_workflow_continuation
     async def continue_run(
         self,
         *,
         existing_run_id: str,
-        auth_context: dict[str, Any] | None,
+        auth_context: UserContextDict | None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Resume a run that is holding at one or more pending requirements.
 

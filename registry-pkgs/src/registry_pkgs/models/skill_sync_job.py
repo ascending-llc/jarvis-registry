@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any
+from typing import Literal
 
 from beanie import Document, Insert, PydanticObjectId, Replace, Save, before_event
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,6 +38,26 @@ class SkillSyncApplySummary(BaseModel):
     filesDeleted: int = 0
 
 
+class SkillSyncFullRequestSnapshot(BaseModel):
+    owner: str
+    repo: str
+    ref: str
+    paths: list[str]
+    configRevision: int = Field(default=1, ge=1)
+
+    model_config = ConfigDict(frozen=True)
+
+
+class SkillSyncDeleteRequestSnapshot(BaseModel):
+    action: Literal["delete"] = "delete"
+    configRevision: int = Field(default=1, ge=1)
+
+    model_config = ConfigDict(frozen=True)
+
+
+SkillSyncRequestSnapshot = SkillSyncFullRequestSnapshot | SkillSyncDeleteRequestSnapshot
+
+
 class SkillSyncJob(Document):
     sourceId: PydanticObjectId
     jobType: SkillSyncJobType
@@ -45,7 +65,7 @@ class SkillSyncJob(Document):
     triggeredBy: str
     status: SkillSyncJobStatus = SkillSyncJobStatus.PENDING
     phase: SkillSyncJobPhase = SkillSyncJobPhase.QUEUED
-    requestSnapshot: dict[str, Any] = Field(default_factory=dict)
+    requestSnapshot: SkillSyncRequestSnapshot
     discoverySummary: SkillSyncDiscoverySummary = Field(default_factory=SkillSyncDiscoverySummary)
     applySummary: SkillSyncApplySummary = Field(default_factory=SkillSyncApplySummary)
     skillErrors: list[SkillSyncSkillError] = Field(default_factory=list)
@@ -53,6 +73,10 @@ class SkillSyncJob(Document):
     error: str | None = None
     startedAt: datetime | None = None
     finishedAt: datetime | None = None
+    leaseOwner: str | None = None
+    leaseExpiresAt: datetime | None = None
+    heartbeatAt: datetime | None = None
+    attemptCount: int = 0
     createdAt: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updatedAt: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -60,7 +84,11 @@ class SkillSyncJob(Document):
         name = "skill_sync_jobs"
         keep_nulls = False
         use_state_management = True
-        indexes = [IndexModel([("sourceId", 1), ("createdAt", -1)]), IndexModel([("sourceId", 1), ("status", 1)])]
+        indexes = [
+            IndexModel([("sourceId", 1), ("createdAt", -1)]),
+            IndexModel([("sourceId", 1), ("status", 1)]),
+            IndexModel([("status", 1), ("leaseExpiresAt", 1), ("createdAt", 1)]),
+        ]
 
     @before_event(Insert, Replace, Save)
     async def update_timestamps(self) -> None:

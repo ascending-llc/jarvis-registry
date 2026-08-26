@@ -54,6 +54,11 @@ from .services.search.service import SearchService
 from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.skill_service import SkillService
+from .services.skill_sync_apply_service import SkillSyncApplyService
+from .services.skill_sync_discovery_service import SkillSyncDiscoveryService
+from .services.skill_sync_execution_service import SkillSyncExecutionService
+from .services.skill_sync_github_service import SkillSyncGitHubService
+from .services.skill_sync_job_runner import SkillSyncJobRunner
 from .services.skill_sync_job_service import SkillSyncJobService
 from .services.skill_sync_oauth_service import SkillSyncOAuthService
 from .services.skill_sync_service import SkillSyncService
@@ -62,6 +67,7 @@ from .services.skill_sync_token_service import SkillSyncTokenService
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
+from .services.workflow_schedule_service import WorkflowScheduleService
 from .services.workflow_service import WorkflowService
 from .services.workflow_shutdown import cancel_in_flight_runs
 
@@ -288,6 +294,10 @@ class RegistryContainer:
         return WorkflowService(acl_service=self.acl_service)
 
     @cached_property
+    def workflow_schedule_service(self) -> WorkflowScheduleService:
+        return WorkflowScheduleService(acl_service=self.acl_service)
+
+    @cached_property
     def a2a_client_registry(self) -> A2AClientRegistry:
         return A2AClientRegistry(
             agentcore_registry=self.a2a_proxy_client_registry,
@@ -380,12 +390,46 @@ class RegistryContainer:
         return SkillSyncSourceCrudService()
 
     @cached_property
+    def skill_sync_github_service(self) -> SkillSyncGitHubService:
+        return SkillSyncGitHubService(self.mcp_proxy_client)
+
+    @cached_property
+    def skill_sync_discovery_service(self) -> SkillSyncDiscoveryService:
+        return SkillSyncDiscoveryService()
+
+    @cached_property
     def skill_sync_service(self) -> SkillSyncService:
-        return SkillSyncService(self.skill_sync_source_crud_service)
+        return SkillSyncService(
+            source_crud_service=self.skill_sync_source_crud_service,
+            job_service=self.skill_sync_job_service,
+            token_service=self.skill_sync_token_service,
+        )
+
+    @cached_property
+    def skill_sync_apply_service(self) -> SkillSyncApplyService:
+        return SkillSyncApplyService(acl_service=self.acl_service)
+
+    @cached_property
+    def skill_sync_execution_service(self) -> SkillSyncExecutionService:
+        return SkillSyncExecutionService(
+            source_crud_service=self.skill_sync_source_crud_service,
+            token_service=self.skill_sync_token_service,
+            github_service=self.skill_sync_github_service,
+            discovery_service=self.skill_sync_discovery_service,
+            apply_service=self.skill_sync_apply_service,
+            acl_service=self.acl_service,
+        )
 
     @cached_property
     def skill_sync_job_service(self) -> SkillSyncJobService:
         return SkillSyncJobService()
+
+    @cached_property
+    def skill_sync_job_runner(self) -> SkillSyncJobRunner:
+        return SkillSyncJobRunner(
+            job_service=self.skill_sync_job_service,
+            execution_service=self.skill_sync_execution_service,
+        )
 
     @cached_property
     def skill_sync_token_service(self) -> SkillSyncTokenService:
@@ -454,8 +498,12 @@ class RegistryContainer:
         workflow_runner = self.workflow_runner
         logger.info("Workflow runner initialized successfully: %s", type(workflow_runner).__name__)
 
+        logger.info("Starting durable skill sync job runner...")
+        await self.skill_sync_job_runner.start()
+
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
+        await self.skill_sync_job_runner.shutdown()
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
