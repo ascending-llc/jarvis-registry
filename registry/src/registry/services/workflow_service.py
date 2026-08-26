@@ -604,6 +604,8 @@ class WorkflowService:
         """
         try:
             workflow = await self.get_workflow_by_id(workflow_id)
+            if workflow.enabled == enabled:
+                return workflow
             workflow.enabled = enabled
             workflow.updated_at = datetime.now(UTC)
 

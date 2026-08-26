@@ -279,3 +279,64 @@ async def test_delete_schedule_rolls_back_when_acl_cleanup_fails(monkeypatch: py
         resource_id=schedule.id,
         session=session,
     )
+
+
+@pytest.mark.asyncio
+async def test_update_schedule_skips_next_run_recalc_when_cron_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Updating fields other than cron/timezone must NOT recalculate next_run_at."""
+    schedule = _schedule(enabled=True)
+    schedule.initial_input = {"old": True}
+    _patch_transaction(monkeypatch)
+    service = WorkflowScheduleService(acl_service=AsyncMock())
+    service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
+
+    recalc_called = []
+    monkeypatch.setattr(
+        "registry.services.workflow_schedule_service.calculate_next_run_at",
+        lambda *_args: recalc_called.append(True) or object(),
+    )
+
+    collection = SimpleNamespace()
+
+    async def _find_one_and_update(_query, update, **_kwargs):
+        for key, value in update["$set"].items():
+            setattr(schedule, key, value)
+        return schedule
+
+    collection.find_one_and_update = AsyncMock(side_effect=_find_one_and_update)
+    monkeypatch.setattr(workflow_schedule_service, "_schedule_collection", lambda: collection)
+    monkeypatch.setattr(workflow_schedule_service.WorkflowSchedule, "model_validate", lambda doc: doc)
+
+    await service.update_schedule(
+        str(schedule.workflow_definition_id),
+        str(schedule.id),
+        ScheduleUpdateRequest(initial_input={"new": True}),
+        str(schedule.created_by),
+    )
+
+    assert recalc_called == [], "next_run_at should not be recalculated when cron/timezone unchanged"
+    update_set = collection.find_one_and_update.await_args.args[1]["$set"]
+    assert "next_run_at" not in update_set
+
+
+@pytest.mark.asyncio
+async def test_toggle_schedule_idempotent_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Toggling to the current state must return without DB update."""
+    schedule = _schedule(enabled=False)
+    _patch_transaction(monkeypatch)
+    service = WorkflowScheduleService(acl_service=AsyncMock())
+    service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
+
+    collection = SimpleNamespace()
+    collection.find_one_and_update = AsyncMock()
+    monkeypatch.setattr(workflow_schedule_service, "_schedule_collection", lambda: collection)
+
+    result = await service.toggle_schedule(
+        str(schedule.workflow_definition_id),
+        str(schedule.id),
+        False,
+        str(schedule.created_by),
+    )
+
+    assert result.schedule is schedule
+    collection.find_one_and_update.assert_not_awaited()
