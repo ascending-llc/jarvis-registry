@@ -180,9 +180,10 @@ def _two_pass_extract(
     members = tar.getmembers()
 
     # Pass 1: identify skill folders from tar headers only (no file content is read).
-    # A folder is a skill folder iff it holds SKILL.md directly. Two layouts are supported:
-    # a configured path that *is* a skill folder (<path>/SKILL.md), and one that is a
-    # container of skill folders (<path>/<skill>/SKILL.md).
+    # A configured path is treated purely as a container: only its direct child folders can
+    # become skill folders (<path>/<skill>/SKILL.md). A SKILL.md sitting directly at the
+    # configured path's root is a bare file and routes to skipped_paths — never a skill folder
+    # that would swallow its sibling skill folders as auxiliary files.
     skipped_paths: list[str] = []
     # matched prefix -> [(member, relative_path, path relative to that prefix)]
     by_prefix: dict[str, list[tuple[tarfile.TarInfo, str, str]]] = {}
@@ -198,7 +199,9 @@ def _two_pass_extract(
         if matched_prefix is None:
             continue
 
-        suffix = relative_path[len(matched_prefix) :].lstrip("/")
+        # "." is the whole-repo sentinel: it contributes no prefix to strip.
+        prefix_len = 0 if matched_prefix == "." else len(matched_prefix)
+        suffix = relative_path[prefix_len:].lstrip("/")
         if not suffix:
             continue
 
@@ -209,12 +212,8 @@ def _two_pass_extract(
     for matched_prefix, entries in by_prefix.items():
         root_key = "" if matched_prefix == "." else matched_prefix
 
-        # The configured path is itself a skill folder — it owns every file beneath it.
-        if any(suffix == _SKILL_ENTRY_FILENAME for _, _, suffix in entries):
-            confirmed_folders[root_key] = [(member, rel) for member, rel, _ in entries]
-            continue
-
-        # Otherwise each direct subfolder is a skill-folder candidate; bare files are skipped.
+        # Each direct subfolder is a skill-folder candidate; bare files (including a SKILL.md at
+        # the configured path's root) are skipped.
         groups: dict[str, list[tuple[tarfile.TarInfo, str, str]]] = {}
         for member, relative_path, suffix in entries:
             parts = suffix.split("/", 1)

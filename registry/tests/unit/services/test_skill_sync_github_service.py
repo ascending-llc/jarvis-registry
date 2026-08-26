@@ -327,7 +327,9 @@ def test_extract_bare_files_under_path_skipped(tmp_path):
     assert "skills/bare-file.md" in result.skipped_paths
 
 
-def test_extract_configured_path_is_skill_folder(tmp_path):
+def test_extract_configured_path_root_skill_md_is_skipped(tmp_path):
+    # A SKILL.md directly at the configured path root is a bare file, not a skill folder:
+    # the path is a container, only its direct child folders can become skills.
     tarball_path = tmp_path / "tarball.tar.gz"
     tarball_path.write_bytes(
         _make_tarball(
@@ -342,12 +344,53 @@ def test_extract_configured_path_is_skill_folder(tmp_path):
     extraction_dir.mkdir()
     service = SkillSyncGitHubService(AsyncMock())
     result = service.extract_skill_folders(tarball_path, paths=["my-skill"], extraction_dir=extraction_dir)
-    assert len(result.skill_folders) == 1
-    folder = result.skill_folders[0]
-    assert folder.root_relative_path == "my-skill"
-    assert folder.skill_md_path.read_bytes() == b"---\nname: my-skill\n---\nM"
-    assert [f.relative_path for f in folder.aux_files] == ["my-skill/scripts/run.sh"]
-    assert result.skipped_paths == []
+    assert result.skill_folders == []
+    assert "my-skill/SKILL.md" in result.skipped_paths
+    assert "my-skill/scripts" in result.skipped_paths
+
+
+def test_extract_root_skill_md_does_not_swallow_sibling_skill_folders(tmp_path):
+    # Regression: a SKILL.md at the configured path root must not swallow its sibling skill
+    # folders as auxiliary files — each direct child skill folder is recognized independently.
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/SKILL.md": b"---\nname: root\n---\nR",
+                "skills/alpha/SKILL.md": b"---\nname: alpha\n---\nA",
+                "skills/beta/SKILL.md": b"---\nname: beta\n---\nB",
+            }
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    names = {f.root_relative_path for f in result.skill_folders}
+    assert names == {"skills/alpha", "skills/beta"}
+    assert "skills/SKILL.md" in result.skipped_paths
+
+
+def test_extract_whole_repo_path_root_skill_md_does_not_swallow_folders(tmp_path):
+    # paths=["."] treats the repo root as a container: a repo-root SKILL.md is skipped and each
+    # top-level skill folder is recognized independently (exercises the root_key == "" branch).
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "SKILL.md": b"---\nname: root\n---\nR",
+                "alpha/SKILL.md": b"---\nname: alpha\n---\nA",
+                "beta/SKILL.md": b"---\nname: beta\n---\nB",
+            }
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=["."], extraction_dir=extraction_dir)
+    names = {f.root_relative_path for f in result.skill_folders}
+    assert names == {"alpha", "beta"}
+    assert "SKILL.md" in result.skipped_paths
 
 
 def test_extract_case_sensitive_skill_md(tmp_path):
