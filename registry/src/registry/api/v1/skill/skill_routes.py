@@ -9,8 +9,10 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from ....auth.dependencies import CurrentUser
+from ....core.telemetry_decorators import track_registry_operation
 from ....deps import get_skill_service
 from ....schemas.acl_schema import ResourcePermissions
+from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.skill_api_schemas import (
     SkillContentResponse,
     SkillCreateRequest,
@@ -49,7 +51,6 @@ def _metadata_response(skill, permissions: ResourcePermissions) -> SkillMetadata
         createdByRegistry=skill.createdByRegistry,
         permissions=permissions,
         updatedAt=skill.updatedAt,
-        deletedAt=skill.deletedAt,
     )
 
 
@@ -83,6 +84,7 @@ def _detail_response(skill, files, permissions: ResourcePermissions) -> SkillDet
 
 
 @router.get("/skills", response_model=SkillListResponse, summary="List skills")
+@track_registry_operation("list", resource_type="skill")
 async def list_skills_route(
     user_context: CurrentUser,
     enabled: Optional[bool] = None,
@@ -100,7 +102,10 @@ async def list_skills_route(
         raise
     except Exception as e:
         logger.exception("Failed to list skills")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
 
 
 @router.post(
@@ -109,6 +114,7 @@ async def list_skills_route(
     status_code=status.HTTP_201_CREATED,
     summary="Create a skill",
 )
+@track_registry_operation("create", resource_type="skill")
 async def create_skill(
     data: SkillCreateRequest,
     user_context: CurrentUser,
@@ -125,10 +131,14 @@ async def create_skill(
         raise
     except Exception as e:
         logger.exception("Failed to create skill")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
 
 
 @router.get("/skills/{skill_id}", response_model=SkillDetailResponse, summary="Get a skill")
+@track_registry_operation("read", resource_type="skill")
 async def get_skill(
     skill_id: PydanticObjectId,
     user_context: CurrentUser,
@@ -141,7 +151,10 @@ async def get_skill(
         raise
     except Exception as e:
         logger.exception("Failed to get skill %s", skill_id)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
 
 
 @router.get(
@@ -149,6 +162,7 @@ async def get_skill(
     response_model=SkillContentResponse,
     summary="Get skill sync content",
 )
+@track_registry_operation("read", resource_type="skill_content")
 async def get_skill_content(
     skill_id: PydanticObjectId,
     user_context: CurrentUser,
@@ -174,7 +188,10 @@ async def get_skill_content(
         raise
     except Exception as e:
         logger.exception("Failed to get skill content for %s", skill_id)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
 
 
 @router.get(
@@ -182,6 +199,7 @@ async def get_skill_content(
     response_model=SkillFileContentResponse,
     summary="Get skill file content",
 )
+@track_registry_operation("read", resource_type="skill_file")
 async def get_skill_file_content(
     skill_id: PydanticObjectId,
     file_path: str,
@@ -194,10 +212,14 @@ async def get_skill_file_content(
         raise
     except Exception as e:
         logger.exception("Failed to get file %s for skill %s", file_path, skill_id)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
 
 
 @router.patch("/skills/{skill_id}", response_model=SkillDetailResponse, summary="Update a skill")
+@track_registry_operation("update", resource_type="skill")
 async def update_skill(
     skill_id: PydanticObjectId,
     data: SkillUpdateRequest,
@@ -215,10 +237,14 @@ async def update_skill(
         raise
     except Exception as e:
         logger.exception("Failed to update skill %s", skill_id)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
 
 
 @router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a skill")
+@track_registry_operation("delete", resource_type="skill")
 async def delete_skill(
     skill_id: PydanticObjectId,
     user_context: CurrentUser,
@@ -231,10 +257,14 @@ async def delete_skill(
         raise
     except Exception as e:
         logger.exception("Failed to delete skill %s", skill_id)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
 
 
 @router.post("/skills/{skill_id}/toggle", response_model=SkillToggleResponse, summary="Toggle a skill")
+@track_registry_operation("toggle", resource_type="skill")
 async def toggle_skill(
     skill_id: PydanticObjectId,
     data: SkillToggleRequest,
@@ -248,4 +278,7 @@ async def toggle_skill(
         raise
     except Exception as e:
         logger.exception("Failed to toggle skill %s", skill_id)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e

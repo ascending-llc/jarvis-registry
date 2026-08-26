@@ -1,9 +1,8 @@
 """
-End-to-end test for Skill Sync Source CRUD + OAuth callback APIs.
+End-to-end test for Skill Sync Source CRUD + sync + OAuth APIs.
 
 Env vars:
     COOKIE                    Session cookie (required)
-    CSRF                      CSRF token (auto-extracted from COOKIE if missing)
     GITHUB_CLIENT_ID          GitHub App OAuth client ID (required)
     GITHUB_CLIENT_SECRET      GitHub App client secret (required)
     BASE_URL                  Registry base URL (default: http://localhost)
@@ -20,6 +19,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 import dotenv
 import httpx
@@ -102,12 +102,12 @@ class SkillSyncE2E:
         self.test_list_sources_filters()
         self.test_update_source()
         self.test_update_validation_errors()
-        self.test_sync_returns_501()
-        self.test_delete_returns_501()
-        self.test_oauth_initiate_returns_501()
+        self.test_sync_needs_auth()
+        self.test_oauth_initiate_redirects()
         self.test_oauth_callback_missing_params()
         self.test_oauth_callback_error_param()
         self.test_get_job_not_found()
+        self.test_delete_source()
 
         self.cleanup()
 
@@ -143,7 +143,6 @@ class SkillSyncE2E:
             display_name="E2E Test Source",
             description="Automated e2e test",
             tags=["e2e", "test"],
-            skillDiscoveryDepth=2,
         )
         _result("CREATE source → 201", body is not None)
         if body is None:
@@ -183,7 +182,6 @@ class SkillSyncE2E:
             ("bad ref", {**base, "ref": "refs/../hack"}),
             ("bad owner", {**base, "owner": "-invalid"}),
             ("missing required", {"displayName": "missing fields"}),
-            ("depth > 10", {**base, "skillDiscoveryDepth": 99}),
         ]
         for label, payload in cases:
             r = self.client.post(self.api, json=payload)
@@ -280,9 +278,22 @@ class SkillSyncE2E:
         # restore
         self.client.put(f"{self.api}/{sid}", json={"ref": "main"})
 
-        # syncAfterUpdate=true → 501
+        # syncAfterUpdate=true → triggers sync (returns 200 with needsAuthorization or source detail)
         r = self.client.put(f"{self.api}/{sid}", json={"displayName": "Sync After", "syncAfterUpdate": True})
-        _result("UPDATE syncAfterUpdate=true → 501", r.status_code == 501, f"status={r.status_code}")
+        _result(
+            "UPDATE syncAfterUpdate triggers sync",
+            r.status_code == 200,
+            f"status={r.status_code}",
+        )
+        if r.status_code == 200:
+            body = r.json()
+            has_needs_auth = body.get("needsAuthorization") is True
+            has_source_detail = "displayName" in body
+            _result(
+                "UPDATE syncAfterUpdate response shape",
+                has_needs_auth or has_source_detail,
+                f"needsAuth={has_needs_auth}, hasDetail={has_source_detail}",
+            )
 
     def test_update_validation_errors(self) -> None:
         sid = self._require_source()
@@ -294,7 +305,6 @@ class SkillSyncE2E:
             ("empty displayName", {"displayName": ""}),
             ("path traversal", {"paths": ["../escape"]}),
             ("bad ref", {"ref": "refs/../hack"}),
-            ("negative depth", {"skillDiscoveryDepth": -1}),
         ]
         for label, payload in cases:
             r = self.client.put(f"{self.api}/{sid}", json=payload)
@@ -303,29 +313,70 @@ class SkillSyncE2E:
         r = self.client.put(f"{self.api}/000000000000000000000000", json={"displayName": "ghost"})
         _result("UPDATE nonexistent → 404", r.status_code == 404, f"status={r.status_code}")
 
-    def test_sync_returns_501(self) -> None:
+    def test_sync_needs_auth(self) -> None:
         sid = self._require_source()
         if not sid:
-            _result("SYNC 501", False, "no source created")
+            _result("SYNC needs_auth", False, "no source created")
             return
         r = self.client.post(f"{self.api}/{sid}/sync")
-        _result("SYNC → 501", r.status_code == 501, f"status={r.status_code}")
-
-    def test_delete_returns_501(self) -> None:
-        sid = self._require_source()
-        if not sid:
-            _result("DELETE 501", False, "no source created")
+        _result("SYNC → 200", r.status_code == 200, f"status={r.status_code}")
+        if r.status_code != 200:
             return
-        r = self.client.delete(f"{self.api}/{sid}")
-        _result("DELETE → 501", r.status_code == 501, f"status={r.status_code}")
+        body = r.json()
+        has_needs_auth = body.get("needsAuthorization") is True
+        has_job = body.get("job") is not None
+        _result(
+            "SYNC returns needsAuth or job",
+            has_needs_auth or has_job,
+            f"needsAuth={has_needs_auth}, hasJob={has_job}",
+        )
+        if has_job:
+            job = body["job"]
+            _result("SYNC job has id", bool(job.get("id")))
+            _result("SYNC job sourceId matches", job.get("sourceId") == sid)
+            _result("SYNC job status", job.get("status") in ("pending", "running"))
+            self._poll_job(sid, job["id"], label="SYNC")
 
-    def test_oauth_initiate_returns_501(self) -> None:
+    def _poll_job(
+        self,
+        source_id: str,
+        job_id: str,
+        label: str = "JOB",
+        max_wait: int = 60,
+        allow_404: bool = False,
+    ) -> dict | None:
+        start = time.time()
+        while time.time() - start < max_wait:
+            r = self.client.get(f"{self.api}/{source_id}/jobs/{job_id}")
+            if r.status_code in (403, 404) and allow_404:
+                _result(f"{label} job done (source deleted)", True, f"status={r.status_code} (expected)")
+                return None
+            if r.status_code != 200:
+                _result(f"{label} poll job → 200", False, f"status={r.status_code}")
+                return None
+            job = r.json()
+            status = job.get("status")
+            if status in ("success", "partial_success", "failed"):
+                _result(f"{label} job finished", True, f"status={status}, phase={job.get('phase')}")
+                return job
+            time.sleep(2)
+        _result(f"{label} job finished within {max_wait}s", False, "timeout")
+        return None
+
+    def test_oauth_initiate_redirects(self) -> None:
         sid = self._require_source()
         if not sid:
-            _result("OAUTH initiate 501", False, "no source created")
+            _result("OAUTH initiate", False, "no source created")
             return
         r = self.client.get(f"{self.api}/{sid}/oauth/initiate")
-        _result("OAUTH initiate → 501", r.status_code == 501, f"status={r.status_code}")
+        _result("OAUTH initiate → 307", r.status_code == 307, f"status={r.status_code}")
+        if r.status_code == 307:
+            location = r.headers.get("location", "")
+            _result(
+                "OAUTH initiate → GitHub authorize URL",
+                "github.com" in location and "oauth" in location.lower(),
+                f"location={location}",
+            )
 
     def test_oauth_callback_missing_params(self) -> None:
         sid = self._require_source()
@@ -357,10 +408,35 @@ class SkillSyncE2E:
         r = self.client.get(f"{self.api}/{sid}/jobs/000000000000000000000000")
         _result("GET nonexistent job → 404", r.status_code == 404, f"status={r.status_code}")
 
+    def test_delete_source(self) -> None:
+        source = self._create_source(display_name="E2E Delete Target", tags=["e2e", "delete-test"])
+        if not source:
+            _result("DELETE create target", False, "could not create source for delete test")
+            return
+        sid = source["id"]
+
+        r = self.client.delete(f"{self.api}/{sid}")
+        _result("DELETE → 202", r.status_code == 202, f"status={r.status_code}")
+        if r.status_code != 202:
+            return
+        body = r.json()
+        _result("DELETE sourceId matches", body.get("sourceId") == sid)
+        _result("DELETE has jobId", bool(body.get("jobId")))
+        _result("DELETE status=deleting", body.get("status") == "deleting")
+
+        if body.get("jobId"):
+            self._poll_job(sid, body["jobId"], label="DELETE", allow_404=True)
+
+        self.created_ids.remove(sid)
+
     def cleanup(self) -> None:
         logger.info("--- Cleanup ---")
-        for source_id in self.created_ids:
-            logger.info("  Created source (manual cleanup needed): %s", source_id)
+        for source_id in list(self.created_ids):
+            r = self.client.delete(f"{self.api}/{source_id}")
+            if r.status_code == 202:
+                logger.info("  Deleted source %s (status=202)", source_id)
+            else:
+                logger.warning("  Failed to delete source %s (status=%d)", source_id, r.status_code)
 
 
 def main() -> None:

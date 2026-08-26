@@ -49,7 +49,6 @@
   "repo": "skills-repo",
   "ref": "main",
   "paths": ["skills/", "prompts/mcp"],
-  "skillDiscoveryDepth": 2,
   "githubAppClientId": "github-app-client-id",
   "githubAppClientSecret": "github-app-client-secret"
 }
@@ -62,8 +61,7 @@
 - `owner` (required, string): GitHub owner (user or org), 1–39 characters, alphanumeric + hyphens, regex: `^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`
 - `repo` (required, string): GitHub repository name, 1–100 characters, regex: `^[A-Za-z0-9._-]+$`
 - `ref` (optional, string): Git ref to sync from (default: `"main"`), 1–255 characters, validated against path traversal
-- `paths` (required, array of strings, min 1): Repository-relative POSIX paths to scan for skills. Must be safe relative paths (no leading `/`, no `..`, no `\`)
-- `skillDiscoveryDepth` (optional, integer): Max directory depth for skill discovery (default: 2, range: 0–10)
+- `paths` (required, array of strings, min 1): Repository-relative POSIX paths to scan for skills. Must be safe relative paths (no leading `/`, no `..`, no `\`). Each path is a **container**: only its direct child folders holding a `SKILL.md` become skills — the path itself is never a skill, so a `SKILL.md` at the path root is skipped. Use `["."]` to scan the repository root.
 - `githubAppClientId` (required, string): GitHub App OAuth client ID
 - `githubAppClientSecret` (required, string): GitHub App client secret (encrypted at rest via AES-CBC)
 
@@ -85,7 +83,6 @@
   "repo": "skills-repo",
   "ref": "main",
   "paths": ["skills/", "prompts/mcp"],
-  "skillDiscoveryDepth": 2,
   "status": "active",
   "syncStatus": "idle",
   "syncMessage": null,
@@ -107,7 +104,7 @@
 - `githubAppClientSecret` is never returned in any response; `hasClientSecret` indicates whether one is stored
 
 **Error**:
-- `400` Validation error (invalid paths, bad owner/repo format, missing required fields)
+- `422` Validation error (invalid paths, bad owner/repo format, missing required fields)
 - `500` Internal server error
 
 ---
@@ -141,8 +138,7 @@
       "repo": "skills-repo",
       "ref": "main",
       "paths": ["skills/"],
-      "skillDiscoveryDepth": 2,
-      "status": "active",
+          "status": "active",
       "syncStatus": "success",
       "syncMessage": null,
       "stats": { "skillCount": 12, "fileCount": 8 },
@@ -151,7 +147,7 @@
         "status": "success",
         "startedAt": "2026-08-19T10:00:00Z",
         "finishedAt": "2026-08-19T10:02:30Z",
-        "commitSha": "commit-sha-1"
+        "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "permissions": { "VIEW": true, "EDIT": true, "DELETE": false, "SHARE": false },
       "createdAt": "2026-08-19T10:30:00Z",
@@ -193,7 +189,6 @@
   "repo": "skills-repo",
   "ref": "main",
   "paths": ["skills/"],
-  "skillDiscoveryDepth": 2,
   "status": "active",
   "syncStatus": "success",
   "syncMessage": null,
@@ -203,7 +198,7 @@
     "status": "success",
     "startedAt": "2026-08-19T10:00:00Z",
     "finishedAt": "2026-08-19T10:02:30Z",
-    "commitSha": "commit-sha-1"
+    "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "permissions": { "VIEW": true, "EDIT": true, "DELETE": true, "SHARE": true },
   "createdAt": "2026-08-19T10:30:00Z",
@@ -218,7 +213,13 @@
       "triggerType": "manual",
       "status": "success",
       "phase": "completed",
-      "requestSnapshot": {},
+      "requestSnapshot": {
+        "owner": "octocat",
+        "repo": "skills",
+        "ref": "main",
+        "paths": ["skills"],
+        "configRevision": 1
+      },
       "discoverySummary": { "discoveredSkillCount": 12, "discoveredFileCount": 8, "skippedPaths": [] },
       "applySummary": { "skillsCreated": 12, "skillsUpdated": 0, "skillsDeleted": 0, "skillsFailed": 0, "filesCreated": 8, "filesUpdated": 0, "filesDeleted": 0 },
       "skillErrors": [],
@@ -260,7 +261,6 @@
   "repo": "new-repo",
   "ref": "develop",
   "paths": ["src/skills/"],
-  "skillDiscoveryDepth": 3,
   "githubAppClientId": "new-github-app-client-id",
   "githubAppClientSecret": "new-secret",
   "syncAfterUpdate": false
@@ -269,19 +269,58 @@
 
 **Request Fields**:
 - All create fields are accepted (same validation rules apply)
-- `syncAfterUpdate` (optional, boolean, default: `false`): When `true`, triggers a sync after the update. Currently returns `501 Not Implemented` (deferred to PR2)
+- `syncAfterUpdate` (optional, boolean, default: `false`): When `true`, triggers a sync after the update when a usable GitHub token is available; otherwise returns `needsAuthorization: true`
 
 **Behavior**:
 - Only `ACTIVE` sources can be updated (state machine guard)
 - Changing `githubAppClientId` or `githubAppClientSecret` automatically **deletes all stored OAuth tokens** for this source, forcing re-authorization on next sync
 
-**Response**: `200 OK` — returns the updated `SkillSyncSourceDetailResponse`
+**Response**: `200 OK` — when `syncAfterUpdate` is omitted or `false`, returns the updated `SkillSyncSourceDetailResponse`
+
+When `syncAfterUpdate=true` and sync starts successfully, returns `SkillSyncTriggerResponse`:
+```json
+{
+  "job": {
+    "id": "job-id-3",
+    "sourceId": "source-id-1",
+    "jobType": "full_sync",
+    "triggerType": "manual",
+    "status": "pending",
+    "phase": "queued",
+    "requestSnapshot": {
+      "owner": "new-org",
+      "repo": "new-repo",
+      "ref": "develop",
+      "paths": ["src/skills/"],
+    },
+    "discoverySummary": { "discoveredSkillCount": 0, "discoveredFileCount": 0, "skippedPaths": [] },
+    "applySummary": { "skillsCreated": 0, "skillsUpdated": 0, "skillsDeleted": 0, "skillsFailed": 0, "filesCreated": 0, "filesUpdated": 0, "filesDeleted": 0 },
+    "skillErrors": [],
+    "errorCode": null,
+    "error": null,
+    "startedAt": null,
+    "finishedAt": null,
+    "createdAt": "2026-08-19T10:00:00Z",
+    "updatedAt": "2026-08-19T10:00:00Z"
+  },
+  "needsAuthorization": false,
+  "authorizeUrl": null
+}
+```
+
+When authorization is required:
+```json
+{
+  "job": null,
+  "needsAuthorization": true,
+  "authorizeUrl": null
+}
+```
 
 **Error**:
 - `403` User does not have EDIT permission
 - `404` Source not found
 - `409` Source cannot be updated (status is not `ACTIVE`)
-- `501` `syncAfterUpdate=true` is not yet implemented
 - `500` Internal server error
 
 ---
@@ -290,19 +329,22 @@
 
 **Endpoint**: `DELETE /api/v1/skill-sync-sources/{source_id}`
 
-> **Status**: `501 Not Implemented` — gated until PR2 ships the sync execution engine.
-
-When implemented, this endpoint will:
+This endpoint:
 1. Transition source status to `DELETING`
-2. Create a `DELETE_SYNC` job to remove all synced skills
+2. Create a `DELETE_SYNC` job that removes all synced skills outright, along with their auxiliary files, ACL entries, and stored GitHub tokens
 3. Return `202 Accepted` with the job ID
 
-**Response** (planned): `202 Accepted`
+Child skills are hard-deleted, matching how federation reconciles stale children. The
+source document itself is soft-deleted (`status=deleted` plus a `deletedAt` timestamp) so
+the delete outcome stays auditable. Stale-skill reconciliation during a normal sync — a
+skill that disappeared upstream — hard-deletes the same way.
+
+**Response**: `202 Accepted`
 ```json
 {
   "sourceId": "source-id-1",
   "jobId": "job-id-2",
-  "status": "pending"
+  "status": "deleting"
 }
 ```
 
@@ -310,7 +352,6 @@ When implemented, this endpoint will:
 - `403` User does not have DELETE permission
 - `404` Source not found
 - `409` Source cannot be deleted (status is not `ACTIVE`)
-- `501` Not implemented (current)
 - `500` Internal server error
 
 ---
@@ -319,14 +360,13 @@ When implemented, this endpoint will:
 
 **Endpoint**: `POST /api/v1/skill-sync-sources/{source_id}/sync`
 
-> **Status**: `501 Not Implemented` — gated until PR2 ships the sync execution engine.
-
-When implemented, this endpoint will:
+This endpoint:
 1. Check for an existing OAuth token (access → refresh fallback)
-2. If no valid token, return `needsAuthorization: true` with `authorizeUrl`
-3. If token is valid, create a `FULL_SYNC` job and return job details
+2. If no valid token is available, return `needsAuthorization: true`
+3. If a token is valid, atomically transition the source to `pending`, persist a `FULL_SYNC` job, and return job details
+4. The app-scoped job runner atomically claims persisted jobs with a renewable lease. An expired lease is reclaimed after process failure; after three abandoned attempts the job is failed and the source is released from its active state
 
-**Response** (planned): `200 OK`
+**Response**: `200 OK`
 ```json
 {
   "job": {
@@ -348,7 +388,7 @@ Or when re-authorization is needed:
 {
   "job": null,
   "needsAuthorization": true,
-  "authorizeUrl": "https://github.com/login/oauth/authorize?client_id=...&state=...&code_challenge=...&code_challenge_method=S256"
+  "authorizeUrl": null
 }
 ```
 
@@ -356,7 +396,6 @@ Or when re-authorization is needed:
 - `403` User does not have EDIT permission
 - `404` Source not found
 - `409` Source already has an active sync job
-- `501` Not implemented (current)
 - `500` Internal server error
 
 ---
@@ -365,20 +404,17 @@ Or when re-authorization is needed:
 
 **Endpoint**: `GET /api/v1/skill-sync-sources/{source_id}/oauth/initiate`
 
-> **Status**: `501 Not Implemented` — gated until PR2.
-
-When implemented, this endpoint will:
+This endpoint:
 1. Generate PKCE `code_verifier` + `code_challenge` (S256 via authlib)
 2. Store OAuth flow state in FlowStateManager (Redis or memory fallback)
 3. Redirect (`307`) to `https://github.com/login/oauth/authorize` with PKCE parameters
 
-**Response** (planned): `307 Temporary Redirect`
+**Response**: `307 Temporary Redirect`
 - `Location: https://github.com/login/oauth/authorize?client_id=...&redirect_uri=...&state=...&code_challenge=...&code_challenge_method=S256`
 
 **Error**:
 - `403` User does not have EDIT permission
 - `404` Source not found
-- `501` Not implemented (current)
 - `500` Internal server error
 
 ---
@@ -398,19 +434,16 @@ This is the GitHub OAuth redirect target. It is **unauthenticated** (GitHub redi
 }
 ```
 
-**Current Behavior** (PR1):
+**Behavior**:
 - If `error` is present or `code`/`state` is missing → redirects to frontend with `error=auth_failed`
-- If source exists → redirects to frontend with `error=sync_unavailable`
 - If source not found → redirects to frontend with `error=auth_failed`
-
-**Planned Behavior** (PR2):
-1. Validate state token and consume flow from FlowStateManager
-2. Exchange `code` for tokens at `https://github.com/login/oauth/access_token` (with `code_verifier`)
-3. Store encrypted tokens (access + refresh) in MongoDB `Token` collection
-4. Redirect to frontend: `{registry_client_url}/skill-sync-sources/{source_id}?syncTriggered=true`
+- Otherwise, validates state token and consumes the stored flow from FlowStateManager
+- Exchanges `code` for tokens at `https://github.com/login/oauth/access_token` with `code_verifier`
+- Stores encrypted tokens (access + refresh) in MongoDB `tokens`
+- Triggers a `FULL_SYNC` job with `triggerType=oauth_callback`
 
 **Response**: `307 Temporary Redirect`
-- Success: `Location: {registry_client_url}/skill-sync-sources/{source_id}?syncTriggered=true`
+- Success: `Location: {registry_client_url}/skill-sync-sources/{source_id}?status=syncing`
 - Error: `Location: {registry_client_url}/skill-sync-sources/{source_id}?error=auth_failed`
 
 ---
@@ -428,11 +461,17 @@ This is the GitHub OAuth redirect target. It is **unauthenticated** (GitHub redi
   "triggerType": "manual",
   "status": "syncing",
   "phase": "discovering",
-  "requestSnapshot": {},
+  "requestSnapshot": {
+    "owner": "octocat",
+    "repo": "skills",
+    "ref": "main",
+    "paths": ["skills"],
+    "configRevision": 1
+  },
   "discoverySummary": {
     "discoveredSkillCount": 8,
     "discoveredFileCount": 5,
-    "skippedPaths": ["vendor/"]
+    "skippedPaths": ["skills/vendor", "skills/README.md"]
   },
   "applySummary": {
     "skillsCreated": 0,
@@ -503,14 +542,14 @@ MongoDB collection: `skill_sync_sources`
 | `repo` | string | GitHub repository name |
 | `ref` | string | Git ref (branch/tag), default `"main"` |
 | `paths` | string[] | Repo-relative POSIX paths to scan |
-| `skillDiscoveryDepth` | int | Max directory depth for discovery (0–10) |
+| `configRevision` | integer | Internal monotonic revision for execution-affecting source configuration |
 | `githubAppClientId` | string | GitHub App OAuth client ID |
 | `githubAppClientSecretEncrypted` | string | AES-CBC encrypted client secret |
 | `status` | SkillSyncSourceStatus | Source lifecycle status |
 | `syncStatus` | SkillSyncStatus | Current sync state |
 | `syncMessage` | string \| null | Last sync error/status message |
-| `stats` | SkillSyncSourceStats | `{ skillCount, fileCount }` |
-| `lastSync` | SkillSyncSourceLastSync \| null | Last completed sync snapshot |
+| `stats` | SkillSyncSourceStats | Live synced inventory counts: `{ skillCount, fileCount }` for non-deleted GitHub skills and their auxiliary files |
+| `lastSync` | SkillSyncSourceLastSync \| null | Last completed sync snapshot; `commitSha` is either a 40-character Git commit SHA or `"unknown"` |
 | `createdBy` | string \| null | Creator user ID |
 | `updatedBy` | string \| null | Last updater user ID |
 | `createdAt` | datetime | Auto-set on insert |
@@ -534,7 +573,7 @@ MongoDB collection: `skill_sync_jobs`
 | `triggeredBy` | string | User ID who triggered the job |
 | `status` | SkillSyncJobStatus | Job status |
 | `phase` | SkillSyncJobPhase | Detailed execution phase |
-| `requestSnapshot` | dict | Frozen source config at job creation time |
+| `requestSnapshot` | SkillSyncFullRequestSnapshot \| SkillSyncDeleteRequestSnapshot | Typed, immutable execution input; full sync stores owner/repo/ref/paths/configRevision and delete stores action/configRevision |
 | `discoverySummary` | SkillSyncDiscoverySummary | `{ discoveredSkillCount, discoveredFileCount, skippedPaths }` |
 | `applySummary` | SkillSyncApplySummary | `{ skillsCreated/Updated/Deleted/Failed, filesCreated/Updated/Deleted }` |
 | `skillErrors` | SkillSyncSkillError[] | Per-skill error details |
@@ -542,10 +581,19 @@ MongoDB collection: `skill_sync_jobs`
 | `error` | string \| null | Human-readable error message |
 | `startedAt` | datetime \| null | When execution started |
 | `finishedAt` | datetime \| null | When execution completed |
+| `leaseOwner` | string \| null | Registry runner instance currently owning the job |
+| `leaseExpiresAt` | datetime \| null | Renewable claim deadline used for crash recovery |
+| `heartbeatAt` | datetime \| null | Last successful lease renewal |
+| `attemptCount` | integer | Number of worker claims, including crash-recovery attempts |
 
 **Indexes**:
 - `(sourceId, createdAt desc)` — recent jobs query
 - `(sourceId, status)` — active job guard
+- `(status, leaseExpiresAt, createdAt)` — durable claim and expired-lease recovery
+
+The durable runner executes only from `requestSnapshot`. If an execution-affecting source update increments
+`configRevision` while a job is queued, that stale job fails before contacting GitHub; a new sync must be triggered
+from the updated source configuration.
 
 ### Enums
 
@@ -655,7 +703,7 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
 7. Server stores encrypted tokens (AES-CBC) in MongoDB Token collection
 
 8. Server redirects to frontend:
-   → {registry_client_url}/skill-sync-sources/{source_id}?syncTriggered=true
+   → {registry_client_url}/skill-sync-sources/{source_id}?status=syncing
 ```
 
 ### Token Prefix Reference
@@ -706,9 +754,23 @@ All error responses follow the standard format:
 
 | Status Code | Meaning |
 |-------------|---------|
-| `400` | Validation error (invalid input) |
 | `403` | Insufficient permissions |
 | `404` | Resource not found |
 | `409` | Conflict (invalid state for operation, e.g., updating a non-ACTIVE source) |
-| `501` | Feature not yet implemented (sync execution, delete, OAuth) |
+| `422` | Validation error (invalid input) |
 | `500` | Internal server error |
+
+---
+
+## Durable Sync Integration Tests
+
+The regular suite runs deterministic unit tests and skips tests that require a live MongoDB replica set. To verify
+atomic worker leasing and transaction rollback against MongoDB itself:
+
+```bash
+SKILL_SYNC_MONGO_INTEGRATION_URI='mongodb://127.0.0.1:27017/?replicaSet=rs0' \
+  LOG_FORMAT='%(levelname)s:%(name)s:%(message)s' \
+  uv run pytest registry/tests/integration/test_skill_sync_durability.py
+```
+
+The integration file uses isolated, randomly named databases and removes them after every test.

@@ -125,6 +125,7 @@ class SkillSyncSkillErrorCode(StrEnum):
     FILE_TOO_LARGE = "file_too_large"
     TOO_MANY_FILES = "too_many_files"
     WRITE_FAILED = "write_failed"
+    DELETE_FAILED = "delete_failed"
 
 
 class SkillSyncStateMachine:
