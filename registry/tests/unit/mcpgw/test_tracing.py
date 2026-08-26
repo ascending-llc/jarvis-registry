@@ -32,7 +32,7 @@ from registry.mcpgw.tracing import (
     _build_tool_trace_input,
     _extract_caller_identity,
     _serialize_trace_value,
-    _set_span_attributes,
+    set_span_attributes,
     trace_agent_execution,
     trace_discovery,
     trace_tool_execution,
@@ -433,7 +433,7 @@ def test_span_attribute_failure_is_logged_without_attribute_data(caplog: pytest.
     span.set_attribute.side_effect = RuntimeError("attribute rejected")
 
     with caplog.at_level("WARNING", logger="registry.mcpgw.tracing"):
-        _set_span_attributes(span, {"sensitive-key": "DO_NOT_LOG_ATTRIBUTE_VALUE"})
+        set_span_attributes(span, {"sensitive-key": "DO_NOT_LOG_ATTRIBUTE_VALUE"})
 
     assert "Failed to set trace attributes (RuntimeError)" in caplog.text
     assert "sensitive-key" not in caplog.text

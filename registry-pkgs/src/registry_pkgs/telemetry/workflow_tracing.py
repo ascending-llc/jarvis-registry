@@ -18,15 +18,14 @@ from opentelemetry.sdk.trace import Span as SDKSpan
 from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 from opentelemetry.trace import Span, Status, StatusCode
 
+from .span_attributes import TRACE_APP, SpanAttributeValue, clean_span_attributes, set_span_attributes
+
 logger = logging.getLogger(__name__)
 
-type SpanAttributeValue = bool | int | float | str | list[str]
-
-_TRACE_APP = "registry"
 _WORKFLOW_SPAN_NAME = "workflow.execute"
 _WORKFLOW_CONTINUE_SPAN_NAME = "workflow.continue"
 _WORKFLOW_TRACE_NAME = "WorkflowRun"
-_WORKFLOW_TAGS = [_TRACE_APP, "workflow"]
+_WORKFLOW_TAGS = [TRACE_APP, "workflow"]
 _TRACER = trace.get_tracer("registry.workflows")
 _FAILED_STATUSES = frozenset({"cancelled", "failed"})
 _TRACE_ATTRIBUTE_KEYS = frozenset(
@@ -43,31 +42,10 @@ _registered_providers: WeakSet[TracerProvider] = WeakSet()
 _registration_lock = Lock()
 
 
-def _clean_span_attributes(attributes: Mapping[str, object]) -> dict[str, SpanAttributeValue]:
-    cleaned: dict[str, SpanAttributeValue] = {}
-    for key, value in attributes.items():
-        if (isinstance(value, (bool, int, float, str)) and value != "") or (
-            isinstance(value, list) and value and all(isinstance(item, str) and item != "" for item in value)
-        ):
-            cleaned[key] = value
-    return cleaned
-
-
-def _set_span_attributes(span: Span, attributes: Mapping[str, object]) -> None:
-    """Best-effort attribute assignment without exposing values in logs."""
-    try:
-        if not span.is_recording():
-            return
-        for key, value in _clean_span_attributes(attributes).items():
-            span.set_attribute(key, value)
-    except Exception as exc:
-        logger.warning("Failed to set trace attributes (%s)", type(exc).__name__)
-
-
 def _trace_attributes(attributes: Mapping[str, object]) -> dict[str, SpanAttributeValue]:
     return {
         key: value
-        for key, value in _clean_span_attributes(attributes).items()
+        for key, value in clean_span_attributes(attributes).items()
         if key in _TRACE_ATTRIBUTE_KEYS or key.startswith(_TRACE_METADATA_PREFIX)
     }
 
@@ -94,7 +72,7 @@ class LangfuseTraceAttributeSpanProcessor(SpanProcessor):
         context = parent_context or otel_context.get_current()
         attributes = otel_context.get_value(_TRACE_ATTRIBUTES_CONTEXT_KEY, context)
         if isinstance(attributes, dict):
-            _set_span_attributes(span, attributes)
+            set_span_attributes(span, attributes)
 
 
 def ensure_langfuse_trace_attribute_processor(tracer_provider: TracerProvider) -> None:
@@ -133,12 +111,12 @@ def _build_workflow_attributes(
             "workflowRunId": workflow_run_id,
         }
     )
-    return _clean_span_attributes(
+    return clean_span_attributes(
         {
             "langfuse.observation.type": "chain",
             "langfuse.trace.name": _WORKFLOW_TRACE_NAME,
             "langfuse.trace.tags": tags or _WORKFLOW_TAGS,
-            "langfuse.trace.metadata.app": _TRACE_APP,
+            "langfuse.trace.metadata.app": TRACE_APP,
             "langfuse.trace.metadata.operationType": operation_type,
             **{f"langfuse.trace.metadata.{key}": value for key, value in metadata.items()},
             "langfuse.user.id": user_id,
@@ -178,7 +156,7 @@ def _record_workflow_result(span: Span, result: object) -> bool:
         "node_run_count": len(node_runs) if isinstance(node_runs, list) else None,
     }
     _set_serialized_attribute(span, "langfuse.observation.output", output)
-    _set_span_attributes(
+    set_span_attributes(
         span,
         {
             "registry.operation.status": status,
@@ -215,7 +193,7 @@ async def _trace_workflow_call[ResultT](
                 success = _record_workflow_result(span, result)
                 return result
             finally:
-                _set_span_attributes(span, {"registry.operation.success": success})
+                set_span_attributes(span, {"registry.operation.success": success})
 
 
 def trace_workflow_run[ResultT](
