@@ -5,7 +5,6 @@ This module provides functions to execute workflows asynchronously using Backgro
 """
 
 import logging
-from typing import Any
 
 from beanie import PydanticObjectId
 
@@ -14,13 +13,15 @@ from registry_pkgs.models.workflow import NodeRun, WorkflowRun
 from registry_pkgs.workflows.helpers import extract_user_text
 from registry_pkgs.workflows.runner import WorkflowRunner
 
+from ..auth.dependencies import UserContextDict
+
 logger = logging.getLogger(__name__)
 
 
 async def execute_workflow_run_background(
     run_id: str | PydanticObjectId,
     workflow_runner: WorkflowRunner,
-    auth_context: dict[str, Any] | None = None,
+    auth_context: UserContextDict | None = None,
 ) -> None:
     """
     Execute a workflow run in the background.

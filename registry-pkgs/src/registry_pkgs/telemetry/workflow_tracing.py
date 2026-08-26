@@ -18,6 +18,8 @@ from opentelemetry.sdk.trace import Span as SDKSpan
 from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 from opentelemetry.trace import Span, Status, StatusCode
 
+from registry_pkgs.types import UserContextDict
+
 from .span_attributes import TRACE_APP, SpanAttributeValue, clean_span_attributes, set_span_attributes
 
 logger = logging.getLogger(__name__)
@@ -84,7 +86,7 @@ def ensure_langfuse_trace_attribute_processor(tracer_provider: TracerProvider) -
         _registered_providers.add(tracer_provider)
 
 
-def _auth_metadata(auth_context: dict[str, Any] | None) -> tuple[object, dict[str, object]]:
+def _auth_metadata(auth_context: UserContextDict | None) -> tuple[object, dict[str, object]]:
     if auth_context is None:
         return None, {}
     return auth_context.get("user_id"), {
@@ -100,7 +102,7 @@ def _build_workflow_attributes(
     *,
     operation_type: str,
     workflow_run_id: str,
-    auth_context: dict[str, Any] | None,
+    auth_context: UserContextDict | None,
     workflow_definition_id: str | None = None,
     tags: list[str] | None = None,
 ) -> dict[str, object]:
@@ -207,7 +209,7 @@ def trace_workflow_run[ResultT](
         definition_id: str,
         user_text: str,
         *,
-        auth_context: dict[str, Any] | None,
+        auth_context: UserContextDict | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
@@ -254,7 +256,7 @@ def trace_workflow_continuation[ResultT](
         runner: object,
         *,
         existing_run_id: str,
-        auth_context: dict[str, Any] | None,
+        auth_context: UserContextDict | None,
     ) -> ResultT:
         attributes = _build_workflow_attributes(
             operation_type="workflow_continue",

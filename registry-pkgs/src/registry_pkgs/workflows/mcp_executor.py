@@ -16,12 +16,13 @@ from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.telemetry.workflow_metrics import record_tool_calls
+from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.helpers import build_prompt
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
-McpHeadersProvider = Callable[[ExtendedMCPServer, dict[str, Any] | None], Awaitable[dict[str, str]]]
+McpHeadersProvider = Callable[[ExtendedMCPServer, UserContextDict | None], Awaitable[dict[str, str]]]
 
 
 def _get_target_url(server: ExtendedMCPServer) -> str:
@@ -81,7 +82,7 @@ def make_mcp_executor(
     mcp_server: ExtendedMCPServer,
     *,
     llm: Model,
-    auth_context: dict[str, Any] | None,
+    auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
     redis_client: Any | None,
     redis_key_prefix: str,
