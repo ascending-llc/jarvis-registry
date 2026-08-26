@@ -7,6 +7,7 @@ from ...auth.oauth import FlowStateManager, parse_scope
 from ...auth.oauth.oauth_client import OAuthClient
 from ...auth.oauth.oauth_utils import get_default_redirect_uri
 from ...auth.oauth.types import StateMetadata
+from ...schemas.common_api_schemas import OAuthFlowStatusResponse
 from ...schemas.enums import OAuthFlowStatus
 from ...schemas.oauth_schema import (
     MCPClientContext,
@@ -16,6 +17,11 @@ from ...services.oauth.token_service import TokenService
 from ...utils.crypto_utils import decrypt_auth_fields
 
 logger = logging.getLogger(__name__)
+
+
+def _not_found_flow_status() -> OAuthFlowStatusResponse:
+    """Return the uniform API representation for an absent or logically expired flow."""
+    return OAuthFlowStatusResponse(status="not_found", completed=False, failed=False)
 
 
 class MCPOAuthService:
@@ -500,22 +506,26 @@ class MCPOAuthService:
             return None
         return flow.tokens
 
-    async def get_flow_status(self, flow_id: str) -> dict[str, Any]:
-        """Get flow status"""
+    async def get_flow_status(self, flow_id: str) -> OAuthFlowStatusResponse:
+        """Return a flow's status, lazily expiring unfinished records by their logical TTL."""
         flow = self.flow_manager.get_flow(flow_id)
         if not flow:
-            return {"status": "not_found", "error": f"Flow '{flow_id}' not found"}
+            return _not_found_flow_status()
 
-        return {
-            "status": flow.status,
-            "completed": flow.status == OAuthFlowStatus.COMPLETED,
-            "failed": flow.status == OAuthFlowStatus.FAILED,
-            "error": flow.error,
-            "server_id": flow.server_id,
-            "user_id": flow.user_id,
-            "created_at": flow.created_at,
-            "completed_at": flow.completed_at,
-        }
+        if flow.status != OAuthFlowStatus.COMPLETED and self.flow_manager.is_flow_expired(flow):
+            self.flow_manager.delete_flow(flow_id)
+            return _not_found_flow_status()
+
+        return OAuthFlowStatusResponse(
+            status=flow.status,
+            completed=flow.status == OAuthFlowStatus.COMPLETED,
+            failed=flow.status == OAuthFlowStatus.FAILED,
+            error=flow.error,
+            server_id=flow.server_id,
+            user_id=flow.user_id,
+            created_at=flow.created_at,
+            completed_at=flow.completed_at,
+        )
 
     async def cancel_oauth_flow(self, user_id: str, server_id: str) -> tuple[bool, str | None]:
         """Cancel OAuth flow"""

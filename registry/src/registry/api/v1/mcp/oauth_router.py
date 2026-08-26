@@ -49,6 +49,7 @@ from ....deps import (
     get_token_service,
 )
 from ....schemas.common_api_schemas import (
+    OAuthFlowStatusResponse,
     OAuthInitiateResponse,
     OAuthMetadataDiscoverResponse,
     OAuthOperationResponse,
@@ -301,10 +302,20 @@ def _build_downstream_client_redirect(
     return RedirectResponse(url=_append_query_params(ctx["redirect_uri"], code=b_code, state=ctx["state"]))
 
 
+def _is_verified_pending_callback_flow(
+    flow: OAuthFlow | None,
+    state: str,
+    flow_manager: FlowStateManager,
+) -> bool:
+    """Return whether ``flow`` is active and bound to the exact callback state."""
+    if flow is None or flow.status != OAuthFlowStatus.PENDING or flow_manager.is_flow_expired(flow):
+        return False
+    return isinstance(flow.state, str) and secrets.compare_digest(flow.state, state)
+
+
 def _relay_callback_error(
     request: Request,
     server_path: str,
-    ctx: MCPClientContext | None,
     page_error_msg: str,
     client_error: str,
     client_error_description: str,
@@ -313,8 +324,14 @@ def _relay_callback_error(
     flow_id: str,
     callback_state: str,
 ) -> RedirectResponse:
-    """Consume and relay a Layer-B callback failure to its previously verified client redirect URI."""
+    """Persist a verified Layer-A failure or atomically relay a verified Layer-B failure."""
+    flow = flow_manager.get_flow(flow_id)
+    if not _is_verified_pending_callback_flow(flow, callback_state, flow_manager):
+        return _redirect_to_page(request, server_path, error_msg=page_error_msg)
+
+    ctx = flow.metadata.mcp_client_context if flow.metadata else None
     if ctx is None:
+        flow_manager.fail_flow(flow_id, page_error_msg)
         return _redirect_to_page(request, server_path, error_msg=page_error_msg)
 
     consumed_flow = flow_manager.consume_flow(flow_id, callback_state)
@@ -337,9 +354,7 @@ def _get_verified_mcp_client_context(
     flow_manager: FlowStateManager,
 ) -> MCPClientContext | None:
     """Return Layer-B context only for an active flow carrying the exact CSRF-bound state."""
-    if flow is None or flow.status != OAuthFlowStatus.PENDING or flow_manager.is_flow_expired(flow):
-        return None
-    if not isinstance(flow.state, str) or not secrets.compare_digest(flow.state, state):
+    if not _is_verified_pending_callback_flow(flow, state, flow_manager):
         return None
     return flow.metadata.mcp_client_context if flow.metadata else None
 
@@ -401,15 +416,11 @@ async def oauth_callback(
             return _redirect_to_page(request, server_path, error_msg="invalid_state_format")
         logger.info(f"[MCP OAuth] Callback received: server={server_path}, flow_id={flow_id}")
 
-        flow = flow_manager.get_flow(flow_id)
-        ctx = _get_verified_mcp_client_context(flow, state, flow_manager)
-
         if error:
             logger.error(f"[MCP OAuth] OAuth error received from provider: {error}")
             return _relay_callback_error(
                 request,
                 server_path,
-                ctx,
                 error,
                 error,
                 "Upstream OAuth provider returned an error",
@@ -422,7 +433,6 @@ async def oauth_callback(
             return _relay_callback_error(
                 request,
                 server_path,
-                ctx,
                 "missing_code",
                 "invalid_request",
                 "missing authorization code",
@@ -431,6 +441,7 @@ async def oauth_callback(
                 callback_state=state,
             )
 
+        flow = flow_manager.get_flow(flow_id)
         if flow and flow.status == OAuthFlowStatus.COMPLETED:
             logger.warning(f"[MCP OAuth] Flow already completed, preventing duplicate token exchange: {flow_id}")
             _mark_completed_device_flow_approved(flow, store)
@@ -444,7 +455,6 @@ async def oauth_callback(
             return _relay_callback_error(
                 request,
                 server_path,
-                ctx,
                 error_msg or "unknown_error",
                 "server_error",
                 "Downstream OAuth flow failed",
@@ -514,12 +524,16 @@ async def get_oauth_tokens(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get tokens: {str(e)}")
 
 
-@router.get("/oauth/status/{flow_id}")
+@router.get(
+    "/oauth/status/{flow_id}",
+    response_model=OAuthFlowStatusResponse,
+    response_model_by_alias=True,
+)
 async def get_oauth_status(
     flow_id: str,
     current_user: CurrentUser,
     mcp_service: MCPService = Depends(get_mcp_service),
-) -> dict[str, Any]:
+) -> OAuthFlowStatusResponse:
     """
     Check OAuth flow status
 
