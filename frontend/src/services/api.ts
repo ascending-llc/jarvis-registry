@@ -98,6 +98,7 @@ const API = {
     `${SKILL_BASE_URL}/${id}/files/${filePath.split('/').map(encodeURIComponent).join('/')}`,
   createSkill: SKILL_BASE_URL,
   updateSkill: (id: string) => `${SKILL_BASE_URL}/${id}`,
+  deleteSkill: (id: string) => `${SKILL_BASE_URL}/${id}`,
   toggleSkillState: (id: string) => `${SKILL_BASE_URL}/${id}/toggle`,
 
   // acl (permissions)

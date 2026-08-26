@@ -1,8 +1,7 @@
 import type { JsonValue, SkillDetail, SkillFileMetadata } from '@/services/skill/type';
-import type { ResourceStats, ResourceStatusFilter } from '@/types/layout';
+import type { ResourceStatusFilter } from '@/types/layout';
 
 export type SkillStatusFilter = ResourceStatusFilter;
-export type SkillStats = ResourceStats;
 export type EditorMode = 'preview' | 'edit';
 
 export type ParsedSkillMarkdown = {

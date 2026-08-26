@@ -6,6 +6,7 @@ import type { AgentItem } from '@/services/agent/type';
 import type { Federation } from '@/services/federation/type';
 import { ServerConnection } from '@/services/mcp/type';
 import type { PermissionType, Server } from '@/services/server/type';
+import type { SkillMetadata } from '@/services/skill/type';
 import type { WorkflowItem } from '@/services/workflow/type';
 
 export interface ServerInfo {
@@ -41,6 +42,12 @@ interface AgentStats {
   disabled: number;
 }
 
+interface SkillStats {
+  total: number;
+  enabled: number;
+  disabled: number;
+}
+
 export interface FederationListStats {
   total: number;
   enabled: number;
@@ -67,6 +74,13 @@ interface ServerContextType {
   agentStats: AgentStats;
   agentLoading: boolean;
   agentError: string | null;
+
+  // Skill state
+  skills: SkillMetadata[];
+  setSkills: React.Dispatch<React.SetStateAction<SkillMetadata[]>>;
+  skillStats: SkillStats;
+  skillLoading: boolean;
+  skillError: string | null;
 
   // Federation state
   federations: Federation[];
@@ -95,6 +109,7 @@ interface ServerContextType {
   // Actions
   refreshServerData: (notLoading?: boolean) => Promise<ServerInfo[]>;
   refreshAgentData: (notLoading?: boolean) => Promise<void>;
+  refreshSkillData: (notLoading?: boolean) => Promise<void>;
   refreshFederationData: (notLoading?: boolean) => Promise<void>;
   refreshWorkflowData: (notLoading?: boolean) => Promise<void>;
   handleServerUpdate: (id: string, updates: Partial<ServerInfo>) => void;
@@ -122,6 +137,7 @@ interface ServerProviderProps {
 export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
+  const [skills, setSkills] = useState<SkillMetadata[]>([]);
   const [federations, setFederations] = useState<Federation[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
   const [viewMode, setViewMode] = useState<'servers' | 'agents' | 'workflow' | 'external'>('servers');
@@ -130,10 +146,12 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [committedQuery, setCommittedQuery] = useState<string>('');
   const [serverLoading, setServerLoading] = useState(true);
   const [agentLoading, setAgentLoading] = useState(true);
+  const [skillLoading, setSkillLoading] = useState(true);
   const [federationsLoading, setFederationsLoading] = useState(true);
   const [workflowLoading, setWorkflowLoading] = useState(true);
   const [serverError, setServerError] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [skillError, setSkillError] = useState<string | null>(null);
   const [federationsError, setFederationsError] = useState<string | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const timeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
@@ -156,6 +174,15 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       disabled: agents.filter(a => !a.enabled).length,
     }),
     [agents],
+  );
+
+  const skillStats = useMemo<SkillStats>(
+    () => ({
+      total: skills.length,
+      enabled: skills.filter(skill => skill.enabled).length,
+      disabled: skills.filter(skill => !skill.enabled).length,
+    }),
+    [skills],
   );
 
   // Calculate workflow stats
@@ -270,6 +297,20 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     }
   }, []);
 
+  const refreshSkillData = useCallback(async (notLoading?: boolean) => {
+    try {
+      if (!notLoading) setSkillLoading(true);
+      setSkillError(null);
+      const result = await SERVICES.SKILL.getSkillsList();
+      setSkills(result.skills);
+    } catch (error: unknown) {
+      const detail = error && typeof error === 'object' && 'detail' in error ? error.detail : null;
+      setSkillError(typeof detail === 'string' && detail.trim() ? detail : 'Failed to fetch skills');
+    } finally {
+      setSkillLoading(false);
+    }
+  }, []);
+
   const handleFederationUpdate = (id: string, updates: Partial<Federation>) => {
     setFederations(prev => prev.map(fed => (fed.id === id ? { ...fed, ...updates } : fed)));
   };
@@ -331,6 +372,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     if (isOnLoginPage) {
       setServerLoading(false);
       setAgentLoading(false);
+      setSkillLoading(false);
       setFederationsLoading(false);
       setWorkflowLoading(false);
       return () => {
@@ -342,6 +384,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     }
     refreshServerData();
     refreshAgentData();
+    refreshSkillData();
     refreshFederationData();
     refreshWorkflowData();
     return () => {
@@ -350,7 +393,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       });
       timeoutRef.current = {};
     };
-  }, [refreshAgentData, refreshServerData, refreshWorkflowData, refreshFederationData]);
+  }, [refreshAgentData, refreshFederationData, refreshServerData, refreshSkillData, refreshWorkflowData]);
 
   const getServerStatusById = useCallback(async (serverId: string): Promise<ServerConnection | undefined> => {
     try {
@@ -428,6 +471,12 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     agentLoading,
     agentError,
 
+    skills,
+    setSkills,
+    skillStats,
+    skillLoading,
+    skillError,
+
     federations,
     setFederations,
     federationStats,
@@ -451,6 +500,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
     refreshServerData,
     refreshAgentData,
+    refreshSkillData,
     refreshFederationData,
     refreshWorkflowData,
     handleServerUpdate,

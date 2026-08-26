@@ -6,11 +6,13 @@ import Layout from '@/components/Layout';
 import ShareModal from '@/components/ShareModal';
 import { useAuth } from '@/contexts/AuthContext';
 import { useGlobal } from '@/contexts/GlobalContext';
+import { useServer } from '@/contexts/ServerContext';
 import { APP_ROUTES } from '@/routes';
 import SERVICES from '@/services';
 import type { RequestErrorPayload, ValidationIssue } from '@/services/request';
-import type { SkillDetail, SkillMetadata } from '@/services/skill/type';
+import type { SkillDetail } from '@/services/skill/type';
 
+import DeleteSkillDialog from './DeleteSkillDialog';
 import SkillEditorView from './SkillEditorView';
 import SkillListView from './SkillListView';
 import {
@@ -25,7 +27,7 @@ import {
   updateSkillMarkdownMetadata,
   validateDraft,
 } from './skillDraft';
-import type { EditorMode, SkillDraft, SkillPageError, SkillStats, SkillStatusFilter } from './types';
+import type { EditorMode, SkillDraft, SkillPageError, SkillStatusFilter } from './types';
 
 const getRequestError = (error: unknown): RequestErrorPayload => {
   if (!error || typeof error !== 'object') {
@@ -64,15 +66,13 @@ const getUpdatedTimestamp = (updatedAt?: string | null): number => {
 const SkillsPage: React.FC = () => {
   const { user } = useAuth();
   const { showToast } = useGlobal();
+  const { skills, setSkills, skillStats, skillLoading, skillError, refreshSkillData } = useServer();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const skillId = searchParams.get('skill');
   const isCreate = !skillId && searchParams.get('create') === 'true';
   const isList = !skillId && !isCreate;
 
-  const [skills, setSkills] = useState<SkillMetadata[]>([]);
-  const [listLoading, setListLoading] = useState(true);
-  const [listError, setListError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<SkillStatusFilter>('all');
 
@@ -85,26 +85,11 @@ const SkillsPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const detailRequestRef = useRef(0);
   const skipNextDetailLoadRef = useRef<string | null>(null);
-
-  const loadSkills = useCallback(async (showLoading = true) => {
-    if (showLoading) setListLoading(true);
-    setListError(null);
-    try {
-      const response = await SERVICES.SKILL.getSkillsList();
-      setSkills(response.skills);
-    } catch (error) {
-      setListError(getRequestErrorMessage(error, 'Failed to load skills.'));
-    } finally {
-      setListLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadSkills();
-  }, [loadSkills]);
 
   const loadSkillDetail = useCallback(async (id: string) => {
     const requestId = detailRequestRef.current + 1;
@@ -132,6 +117,8 @@ const SkillsPage: React.FC = () => {
   useEffect(() => {
     detailRequestRef.current += 1;
     setShareOpen(false);
+    setDeleteOpen(false);
+    setDeleting(false);
 
     if (skillId && skipNextDetailLoadRef.current === skillId) {
       skipNextDetailLoadRef.current = null;
@@ -162,15 +149,6 @@ const SkillsPage: React.FC = () => {
     setDetailLoading(false);
     setDetailError(null);
   }, [isCreate, loadSkillDetail, skillId, user?.username]);
-
-  const stats = useMemo<SkillStats>(
-    () => ({
-      total: skills.length,
-      enabled: skills.filter(skill => skill.enabled).length,
-      disabled: skills.filter(skill => !skill.enabled).length,
-    }),
-    [skills],
-  );
 
   const filteredSkills = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLocaleLowerCase();
@@ -225,6 +203,11 @@ const SkillsPage: React.FC = () => {
       const permissions = current.permissions ?? { VIEW: true, EDIT: false, DELETE: false, SHARE: false };
       return { ...current, permissions: { ...permissions, EDIT: false } };
     });
+  };
+
+  const removeDraftDeletePermission = (current: SkillDraft | null): SkillDraft | null => {
+    if (!current?.permissions) return current;
+    return { ...current, permissions: { ...current.permissions, DELETE: false } };
   };
 
   const handleMutationError = (error: unknown, fallback: string) => {
@@ -326,6 +309,41 @@ const SkillsPage: React.FC = () => {
     }
   };
 
+  const handleDelete = async () => {
+    if (!draft?.id || deleting || saving || toggling) return;
+
+    const deletedSkillId = draft.id;
+    setDeleting(true);
+    try {
+      await SERVICES.SKILL.deleteSkill(deletedSkillId);
+      setDeleteOpen(false);
+      setSkills(current => current.filter(skill => skill.id !== deletedSkillId));
+      showToast('Skill deleted successfully.', 'success');
+      navigateToList();
+      await refreshSkillData(true);
+    } catch (error) {
+      const requestError = getRequestError(error);
+      if (requestError.httpStatus === 403) {
+        setDraft(removeDraftDeletePermission);
+        setSnapshot(removeDraftDeletePermission);
+        setDeleteOpen(false);
+        showToast('You no longer have permission to delete this skill.', 'error');
+        return;
+      }
+      if (requestError.httpStatus === 404) {
+        setDeleteOpen(false);
+        setSkills(current => current.filter(skill => skill.id !== deletedSkillId));
+        showToast('This skill no longer exists.', 'error');
+        navigateToList();
+        await refreshSkillData(true);
+        return;
+      }
+      showToast(getRequestErrorMessage(error, 'Failed to delete skill.'), 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleReset = () => {
     if (!snapshot) return;
     setDraft(cloneDraft(snapshot));
@@ -343,7 +361,7 @@ const SkillsPage: React.FC = () => {
     : undefined;
 
   const skillsNavigation = {
-    stats,
+    stats: skillStats,
     activeFilter: statusFilter,
     onFilterChange: setStatusFilter,
     showStatusFilters: isList,
@@ -360,13 +378,22 @@ const SkillsPage: React.FC = () => {
           onClose={() => setShareOpen(false)}
         />
       )}
+      {deleteOpen && draft?.id && (
+        <DeleteSkillDialog
+          isOpen={deleteOpen}
+          skillName={draft.markdown.parsed.displayTitle || draft.stableName || 'this skill'}
+          deleting={deleting}
+          onCancel={() => setDeleteOpen(false)}
+          onConfirm={() => void handleDelete()}
+        />
+      )}
       {isList ? (
         <SkillListView
           skills={filteredSkills}
-          loading={listLoading}
-          error={listError}
+          loading={skillLoading}
+          error={skillError}
           hasActiveConditions={Boolean(searchTerm.trim()) || statusFilter !== 'all'}
-          onRetry={() => void loadSkills()}
+          onRetry={() => void refreshSkillData()}
           onOpenSkill={id => navigateToSkill(id)}
           onCreate={navigateToCreate}
         />
@@ -379,6 +406,7 @@ const SkillsPage: React.FC = () => {
           editorMode={editorMode}
           saving={saving}
           toggling={toggling}
+          deleting={deleting}
           onBack={navigateToList}
           onRetry={() => skillId && void loadSkillDetail(skillId)}
           onSelectFile={setSelectedPath}
@@ -388,6 +416,7 @@ const SkillsPage: React.FC = () => {
           onMarkdownChange={handleMarkdownChange}
           onCategoryChange={handleCategoryChange}
           onShare={() => setShareOpen(true)}
+          onDelete={() => setDeleteOpen(true)}
           onToggle={() => void handleToggle()}
           onReset={handleReset}
           onSave={() => void handleSave()}

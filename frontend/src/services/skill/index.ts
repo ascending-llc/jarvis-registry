@@ -15,6 +15,8 @@ const createSkill = (data: TYPE.CreateSkillRequest): Promise<TYPE.SkillDetail> =
 const updateSkill = (id: string, data: TYPE.UpdateSkillRequest): Promise<TYPE.SkillDetail> =>
   Request.patch(API.updateSkill(id), data);
 
+const deleteSkill = (id: string): Promise<void> => Request.delete(API.deleteSkill(id));
+
 const toggleSkillState = (id: string, data: TYPE.ToggleSkillRequest): Promise<TYPE.ToggleSkillResponse> =>
   Request.post(API.toggleSkillState(id), data);
 
@@ -24,5 +26,6 @@ export default {
   getSkillFile,
   createSkill,
   updateSkill,
+  deleteSkill,
   toggleSkillState,
 };

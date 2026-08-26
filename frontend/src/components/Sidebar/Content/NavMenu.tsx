@@ -1,6 +1,6 @@
 import { GlobeAltIcon, QueueListIcon, WrenchScrewdriverIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -8,7 +8,6 @@ import AgentIcon from '@/assets/AgentIcon';
 import McpIcon from '@/assets/McpIcon';
 import { useServer } from '@/contexts/ServerContext';
 import { APP_ROUTES } from '@/routes';
-import SERVICES from '@/services';
 import type { ResourceStats, ResourceStatusFilter, SkillsNavigationConfig } from '@/types/layout';
 
 interface NavMenuProps {
@@ -88,32 +87,18 @@ const EMPTY_STATS: ResourceStats = { total: 0, enabled: 0, disabled: 0 };
 const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNavigation }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const [standaloneSkillStats, setStandaloneSkillStats] = useState<ResourceStats>(EMPTY_STATS);
-  const { stats, agentStats, federationStats, workflowStats, viewMode, setViewMode, activeFilter, setActiveFilter } =
-    useServer();
+  const {
+    stats,
+    agentStats,
+    skillStats,
+    federationStats,
+    workflowStats,
+    viewMode,
+    setViewMode,
+    activeFilter,
+    setActiveFilter,
+  } = useServer();
   const isSkillsPage = location.pathname === APP_ROUTES.skills;
-
-  useEffect(() => {
-    if (skillsNavigation) return;
-
-    let active = true;
-    SERVICES.SKILL.getSkillsList()
-      .then(result => {
-        if (!active) return;
-        setStandaloneSkillStats({
-          total: result.skills.length,
-          enabled: result.skills.filter(skill => skill.enabled).length,
-          disabled: result.skills.filter(skill => !skill.enabled).length,
-        });
-      })
-      .catch(() => {
-        if (active) setStandaloneSkillStats(EMPTY_STATS);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [skillsNavigation]);
 
   const handleNavigation = (mode: 'servers' | 'agents' | 'workflow' | 'external') => {
     if (!isSkillsPage && viewMode === mode) {
@@ -146,7 +131,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
     if (window.innerWidth < 768) setSidebarOpen(false);
   };
 
-  const displayedSkillStats = skillsNavigation?.stats ?? standaloneSkillStats;
+  const displayedSkillStats = skillsNavigation?.stats ?? skillStats;
   const displayedFilter: ResourceStatusFilter = isSkillsPage
     ? (skillsNavigation?.activeFilter ?? 'all')
     : (activeFilter as ResourceStatusFilter);

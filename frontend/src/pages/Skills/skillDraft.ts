@@ -11,17 +11,15 @@ import type {
 import type { DraftValidation, ParsedSkillMarkdown, SkillDraft, SkillMarkdownState } from './types';
 
 export const SKILL_CATEGORIES = [
-  { label: 'Ideas', color: '#fbbf24' },
-  { label: 'Travel', color: '#2dd4bf' },
-  { label: 'Learning', color: '#60a5fa' },
-  { label: 'Writing', color: '#a78bfa' },
-  { label: 'Communication', color: '#a78bfa' },
-  { label: 'Document Processing', color: '#38bdf8' },
-  { label: 'Analytics', color: '#34d399' },
-  { label: 'Compliance', color: '#fb7185' },
-  { label: 'Shopping', color: '#38bdf8' },
-  { label: 'Code', color: '#fb923c' },
-  { label: 'Misc.', color: '#818cf8' },
+  { label: 'Ideas', color: '#f5b800' },
+  { label: 'Travel', color: '#f5b522' },
+  { label: 'Learning', color: '#82b9ff' },
+  { label: 'Writing', color: '#b66cff' },
+  { label: 'Shopping', color: '#c56bea' },
+  { label: 'Code', color: '#ff4550' },
+  { label: 'Misc.', color: '#82b9ff' },
+  { label: 'Roleplay', color: '#ff7b2f' },
+  { label: 'Finance', color: '#ff7b2f' },
 ] as const;
 
 export type SkillCategory = (typeof SKILL_CATEGORIES)[number]['label'];
