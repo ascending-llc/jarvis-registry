@@ -22,8 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy over config files
-COPY ./config /app/config/
+# Copy over the metrics config file — the only file under ./config/ the app reads at runtime.
+COPY ./config/metrics/auth_server.yml /app/config/metrics/auth_server.yml
 
 # Point to shared config files
 ENV OTEL_METRICS_CONFIG_PATH=/app/config/metrics/auth_server.yml

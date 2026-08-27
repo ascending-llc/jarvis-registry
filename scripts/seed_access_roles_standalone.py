@@ -26,7 +26,7 @@ async def seed_access_roles(collection, session):
     Uses direct MongoDB operations instead of Beanie ORM to avoid
     triggering A2AAgent model initialization.
     """
-    print("=== Seeding Federation, Workflow & Skill AccessRoles ===\n")
+    print("=== Seeding Federation, Workflow, Skill & Skill Sync Source AccessRoles ===\n")
 
     # Chat handles its own resource types. Registry owns these additional role catalogs.
     roles_data = [
@@ -145,6 +145,36 @@ async def seed_access_roles(collection, session):
             "resourceType": "skill",
             "name": "com_ui_skill_role_owner",
             "description": "com_ui_skill_owner_desc",
+            "permBits": 15,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "skill_sync_source_viewer",
+            "resourceType": "skillSyncSource",
+            "name": "com_ui_skill_sync_source_role_viewer",
+            "description": "com_ui_skill_sync_source_viewer_desc",
+            "permBits": 1,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "skill_sync_source_editor",
+            "resourceType": "skillSyncSource",
+            "name": "com_ui_skill_sync_source_role_editor",
+            "description": "com_ui_skill_sync_source_editor_desc",
+            "permBits": 3,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "skill_sync_source_owner",
+            "resourceType": "skillSyncSource",
+            "name": "com_ui_skill_sync_source_role_owner",
+            "description": "com_ui_skill_sync_source_owner_desc",
             "permBits": 15,
             "createdAt": datetime.now(UTC),
             "updatedAt": datetime.now(UTC),

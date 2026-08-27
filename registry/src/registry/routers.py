@@ -14,6 +14,7 @@ from .api.v1.meta_routes import router as meta_router
 from .api.v1.search_routes import router as search_router
 from .api.v1.server.server_routes import router as servers_router_v1
 from .api.v1.skill.skill_routes import router as skill_router
+from .api.v1.skill_sync.skill_sync_source_routes import router as skill_sync_source_router
 from .api.v1.token_routes import router as token_router
 from .api.v1.workflow.control_routes import router as workflow_control_router
 from .api.v1.workflow.schedule_routes import router as workflow_schedule_router
@@ -54,4 +55,9 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(system_router)
     app.include_router(auth_provider_router, tags=["Authentication"])
     app.include_router(skill_router, prefix=f"/api/{settings.api_version}", tags=["Skills Management"])
+    app.include_router(
+        skill_sync_source_router,
+        prefix=f"/api/{settings.api_version}",
+        tags=["Skill Sync Source Management"],
+    )
     app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])

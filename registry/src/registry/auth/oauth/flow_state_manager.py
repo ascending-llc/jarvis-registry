@@ -12,7 +12,6 @@ from redis import Redis
 from ...auth.oauth.oauth_utils import parse_scope, scope_to_string
 from ...auth.oauth.redis_flow_storage import RedisFlowStorage
 from ...auth.oauth.types import OAuthFlowState, StateMetadata
-from ...core.config import settings
 from ...schemas.enums import OAuthFlowStatus
 from ...schemas.oauth_schema import (
     MCPClientContext,
@@ -146,6 +145,7 @@ class FlowStateManager:
         oauth_config: dict[str, Any],
         flow_id: str,
         *,
+        redirect_uri: str,
         state_metadata: StateMetadata | None = None,
         mcp_client_context: MCPClientContext | None = None,
         device_code: str | None = None,
@@ -168,7 +168,10 @@ class FlowStateManager:
             authorization_url=authorization_url,
             state=state,
             code_verifier=code_verifier,
-            client_info=self._create_client_info(oauth_config, server_path),
+            client_info=self._create_client_info(
+                oauth_config,
+                redirect_uri=redirect_uri,
+            ),
             metadata=self._create_oauth_metadata(oauth_config),
             resource_metadata=resource_metadata,
             mcp_client_context=mcp_client_context,
@@ -399,26 +402,21 @@ class FlowStateManager:
             logger.debug(f"Found {len(user_flows)} flows in memory for {user_id}/{server_id}")
             return user_flows
 
-    def _create_client_info(self, oauth_config: dict[str, Any], server_path: str) -> OAuthClientInformation:
+    def _create_client_info(
+        self,
+        oauth_config: dict[str, Any],
+        *,
+        redirect_uri: str,
+    ) -> OAuthClientInformation:
         """
         Build OAuth client information from server configuration
         """
-        base_url = settings.registry_client_url
-        if base_url.endswith("/"):
-            base_url = base_url.removesuffix("/")
-
-        # Ensure server_path starts with / for proper URL construction
-        normalized_path = server_path if server_path.startswith("/") else f"/{server_path}"
-        redirect_uri = f"{base_url}/api/v1/mcp{normalized_path}/oauth/callback"
-
-        redirect_uris = [redirect_uri]
-
         scope_string = scope_to_string(oauth_config.get("scope"))
-        logger.debug(f"Client info - redirect_uris: {redirect_uris}, scopes: {scope_string}")
+        logger.debug(f"Client info - redirect_uris: [{redirect_uri}], scopes: {scope_string}")
         return OAuthClientInformation(  # type: ignore [call-arg]
             client_id=str(oauth_config.get("client_id", "")).strip(),
-            client_secret=str(oauth_config.get("client_secret")).strip(),
-            redirect_uris=redirect_uris,
+            client_secret=str(oauth_config.get("client_secret")).strip() if oauth_config.get("client_secret") else None,
+            redirect_uris=[redirect_uri],
             scope=scope_string,
             additional_params=oauth_config.get("additional_params"),
         )

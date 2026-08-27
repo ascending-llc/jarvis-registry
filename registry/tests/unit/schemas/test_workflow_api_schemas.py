@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from beanie import PydanticObjectId
 from pydantic import ValidationError
 
 from registry.schemas.workflow_api_schemas import (
@@ -14,7 +15,9 @@ from registry.schemas.workflow_api_schemas import (
     WorkflowNodeInput,
     WorkflowNodeOutput,
     WorkflowRunDetailResponse,
+    convert_to_list_item,
 )
+from registry_pkgs.models.workflow import WorkflowDefinition
 
 
 def test_workflow_node_output_uses_independent_container_defaults():
@@ -26,6 +29,34 @@ def test_workflow_node_output_uses_independent_container_defaults():
 
     assert second.config == {}
     assert second.children == []
+
+
+def test_convert_to_list_item_threads_run_stats_and_uses_defaults():
+    created_at = datetime(2026, 8, 1, tzinfo=UTC)
+    updated_at = datetime(2026, 8, 2, tzinfo=UTC)
+    last_run_at = datetime(2026, 8, 18, 19, 32, 56, tzinfo=UTC)
+    workflow = WorkflowDefinition.model_construct(
+        id=PydanticObjectId(),
+        name="Workflow",
+        description="Description",
+        nodes=[object(), object()],
+        enabled=True,
+        version=3,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+    item_with_stats = convert_to_list_item(
+        workflow,
+        run_count=19,
+        last_run_at=last_run_at,
+    )
+    item_with_defaults = convert_to_list_item(workflow)
+
+    assert item_with_stats.runCount == 19
+    assert item_with_stats.lastRunAt == last_run_at
+    assert item_with_defaults.runCount == 0
+    assert item_with_defaults.lastRunAt is None
 
 
 def test_workflow_node_output_branch_fields_have_independent_defaults():

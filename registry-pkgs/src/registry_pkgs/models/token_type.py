@@ -15,3 +15,5 @@ class TokenType(StrEnum):
     MCP_OAUTH = MCP_OAUTH_ACCESS
     MCP_OAUTH_REFRESH = "mcp_oauth_refresh"  # Refresh token
     MCP_OAUTH_CLIENT = "mcp_oauth_client"  # Client credentials (client_id, client_secret)
+    SKILL_SYNC_GITHUB_ACCESS = "skill_sync_github_access"
+    SKILL_SYNC_GITHUB_REFRESH = "skill_sync_github_refresh"

@@ -15,12 +15,14 @@ from registry_pkgs.core.agentcore_jwt import parse_agentcore_runtime_access, sig
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.telemetry.workflow_metrics import record_tool_calls
+from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.helpers import build_prompt
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
-McpHeadersProvider = Callable[[ExtendedMCPServer, dict[str, Any] | None], Awaitable[dict[str, str]]]
+McpHeadersProvider = Callable[[ExtendedMCPServer, UserContextDict | None], Awaitable[dict[str, str]]]
 
 
 def _get_target_url(server: ExtendedMCPServer) -> str:
@@ -60,7 +62,14 @@ async def _execute_mcp_agent(
             raise RuntimeError(f"Failed to initialize MCP toolkit at {target_url}")
 
         response = await agent.arun(prompt)
+        if getattr(response, "tools", None):
+            try:
+                record_tool_calls(server.serverName, response.tools)
+            except Exception:
+                logger.exception("Failed to record tool call metrics for %r", server.serverName)
+
         _raise_if_agent_failed(response)
+
         content = response.content or ""
         logger.debug("  ← MCP server %r responded: %r", server.serverName, content[:200])
         return StepOutput(content=content)
@@ -73,7 +82,7 @@ def make_mcp_executor(
     mcp_server: ExtendedMCPServer,
     *,
     llm: Model,
-    auth_context: dict[str, Any] | None,
+    auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
     redis_client: Any | None,
     redis_key_prefix: str,

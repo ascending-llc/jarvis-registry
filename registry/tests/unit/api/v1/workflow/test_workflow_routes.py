@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from registry.api.v1.workflow import workflow_routes
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
+from registry.services.workflow_service import WorkflowRunStats
 
 
 def _canvas() -> dict[str, dict[str, float]]:
@@ -289,6 +290,7 @@ async def test_list_workflows_filters_by_accessible_ids():
 
     mock_service = MagicMock()
     mock_service.list_workflows = AsyncMock(return_value=([wf], 1))
+    mock_service.get_run_stats = AsyncMock(return_value={wf.id: WorkflowRunStats(run_count=0, last_run_at=None)})
 
     mock_acl = MagicMock()
     mock_acl.get_accessible_resource_ids = AsyncMock(return_value=[str(wf.id)])
@@ -307,8 +309,38 @@ async def test_list_workflows_filters_by_accessible_ids():
     assert batch_kwargs["resource_ids"] == [wf.id]
     forwarded = mock_service.list_workflows.await_args.kwargs
     assert forwarded["accessible_workflow_ids"] == [str(wf.id)]
+    mock_service.get_run_stats.assert_awaited_once_with(workflow_ids=[wf.id])
     assert len(response.workflows) == 1
     assert response.workflows[0].aclPermission.VIEW is True
+    assert response.workflows[0].runCount == 0
+    assert response.workflows[0].lastRunAt is None
+
+
+@pytest.mark.asyncio
+async def test_list_workflows_threads_nonzero_run_stats_to_response():
+    wf = _fake_workflow()
+    last_run_at = datetime(2026, 8, 18, 19, 32, 56, tzinfo=UTC)
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    mock_service = MagicMock()
+    mock_service.list_workflows = AsyncMock(return_value=([wf], 1))
+    mock_service.get_run_stats = AsyncMock(
+        return_value={wf.id: WorkflowRunStats(run_count=19, last_run_at=last_run_at)}
+    )
+
+    mock_acl = MagicMock()
+    mock_acl.get_accessible_resource_ids = AsyncMock(return_value=[str(wf.id)])
+    mock_acl.get_user_permissions_for_resources = AsyncMock(return_value={wf.id: ResourcePermissions(VIEW=True)})
+
+    response = await workflow_routes.list_workflows(
+        user_context=user_context,
+        workflow_service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    mock_service.get_run_stats.assert_awaited_once_with(workflow_ids=[wf.id])
+    assert response.workflows[0].runCount == 19
+    assert response.workflows[0].lastRunAt == last_run_at
 
 
 @pytest.mark.asyncio

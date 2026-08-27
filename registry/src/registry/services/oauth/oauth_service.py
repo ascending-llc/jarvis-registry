@@ -279,6 +279,7 @@ class MCPOAuthService:
                 code_verifier=code_verifier,
                 oauth_config=oauth_config,
                 flow_id=flow_id,
+                redirect_uri=get_default_redirect_uri(path=server.path),
                 state_metadata=state_metadata,
                 mcp_client_context=mcp_client_context,
                 device_code=device_code,
@@ -639,7 +640,7 @@ class MCPOAuthService:
         For internal use with pre-validated tokens, use refresh_token() instead.
         """
         try:
-            logger.info(f"[OAuth] Validating and refreshing tokens for user={user_id}, server={mcp_server}")
+            logger.info(f"[OAuth] Validating and refreshing tokens for user={user_id}, server={mcp_server.serverName}")
             server_name = mcp_server.serverName
             server_id = str(mcp_server.id)
 

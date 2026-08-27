@@ -145,7 +145,16 @@ async def list_workflows(
             resource_type=RegistryResourceType.WORKFLOW.value,
             resource_ids=[w.id for w in workflows],
         )
-        workflow_items = [convert_to_list_item(w, acl_permission=perms_by_id[w.id]) for w in workflows]
+        run_stats_by_id = await workflow_service.get_run_stats(workflow_ids=[w.id for w in workflows])
+        workflow_items = [
+            convert_to_list_item(
+                w,
+                acl_permission=perms_by_id[w.id],
+                run_count=run_stats_by_id[w.id].run_count,
+                last_run_at=run_stats_by_id[w.id].last_run_at,
+            )
+            for w in workflows
+        ]
 
         # Calculate pagination metadata
         total_pages = math.ceil(total / per_page) if total > 0 else 0

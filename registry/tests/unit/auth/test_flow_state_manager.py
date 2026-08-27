@@ -39,6 +39,7 @@ class TestCreateFlowMetadataResourceResolution:
             code_verifier="code_verifier_value",
             oauth_config=oauth_config,
             flow_id="flow_789",
+            redirect_uri="https://example.com/api/v1/mcp/test/oauth/callback",
         )
 
     # ------------------------------------------------------------------

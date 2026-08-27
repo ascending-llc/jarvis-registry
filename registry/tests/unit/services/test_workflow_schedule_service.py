@@ -287,3 +287,52 @@ async def test_delete_schedule_rolls_back_when_acl_cleanup_fails(monkeypatch: py
         resource_id=schedule.id,
         session=session,
     )
+
+
+@pytest.mark.asyncio
+async def test_update_schedule_skips_next_run_recalc_when_cron_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Updating fields other than cron/timezone must NOT recalculate next_run_at."""
+    schedule = _schedule(enabled=True)
+    schedule.initial_input = {"old": True}
+    _patch_transaction(monkeypatch)
+    repository = AsyncMock(spec=WorkflowScheduleRepository)
+    repository.update_schedule.return_value = schedule
+    service = _service(AsyncMock(), repository)
+    service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
+
+    recalc_called = []
+    monkeypatch.setattr(
+        "registry.services.workflow_schedule_service.calculate_next_run_at",
+        lambda *_args: recalc_called.append(True) or object(),
+    )
+
+    await service.update_schedule(
+        str(schedule.workflow_definition_id),
+        str(schedule.id),
+        ScheduleUpdateRequest(initial_input={"new": True}),
+        str(schedule.created_by),
+    )
+
+    assert recalc_called == [], "next_run_at should not be recalculated when cron/timezone unchanged"
+    update_set = repository.update_schedule.await_args.args[2]
+    assert "next_run_at" not in update_set
+
+
+@pytest.mark.asyncio
+async def test_toggle_schedule_idempotent_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Toggling to the current state must return without DB update."""
+    schedule = _schedule(enabled=False)
+    _patch_transaction(monkeypatch)
+    repository = AsyncMock(spec=WorkflowScheduleRepository)
+    service = _service(AsyncMock(), repository)
+    service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
+
+    result = await service.toggle_schedule(
+        str(schedule.workflow_definition_id),
+        str(schedule.id),
+        False,
+        str(schedule.created_by),
+    )
+
+    assert result.schedule is schedule
+    repository.update_schedule.assert_not_awaited()

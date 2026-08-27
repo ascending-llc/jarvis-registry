@@ -23,6 +23,8 @@ from ..models import (
     NodeRun,
     RegistryAccessRole,
     RegistryAclEntry,
+    SkillSyncJob,
+    SkillSyncSource,
     Token,
     User,
     WorkflowDefinition,
@@ -108,6 +110,8 @@ class MongoDB:
                 "A2AAgent": A2AAgent,
                 "Federation": Federation,
                 "FederationSyncJob": FederationSyncJob,
+                "SkillSyncSource": SkillSyncSource,
+                "SkillSyncJob": SkillSyncJob,
                 "ExtendedSkill": ExtendedSkill,
                 "ExtendedSkillFile": ExtendedSkillFile,
             }
@@ -121,6 +125,8 @@ class MongoDB:
             A2AAgent.model_rebuild(_types_namespace=rebuild_namespace)
             Federation.model_rebuild(_types_namespace=rebuild_namespace)
             FederationSyncJob.model_rebuild(_types_namespace=rebuild_namespace)
+            SkillSyncSource.model_rebuild(_types_namespace=rebuild_namespace)
+            SkillSyncJob.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedSkill.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedSkillFile.model_rebuild(_types_namespace=rebuild_namespace)
 
@@ -138,6 +144,8 @@ class MongoDB:
                     A2AAgent,
                     Federation,
                     FederationSyncJob,
+                    SkillSyncSource,
+                    SkillSyncJob,
                     WorkflowDefinition,
                     WorkflowRun,
                     WorkflowSchedule,
