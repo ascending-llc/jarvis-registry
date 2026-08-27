@@ -17,6 +17,7 @@ const API = {
   // mcp
   getServerStatusById: (id: string) => `${MCP_BASE_URL}/connection/status/${id}`,
   getOauthInitiate: (id: string) => `${MCP_BASE_URL}/${id}/oauth/initiate`,
+  getOauthFlowStatus: (flowId: string) => `${MCP_BASE_URL}/oauth/status/${flowId}`,
   getOauthReinit: (id: string) => `${MCP_BASE_URL}/${id}/reinitialize`,
   cancelAuth: (id: string) => `${MCP_BASE_URL}/oauth/cancel/${id}`,
   revokeAuth: (id: string) => `${MCP_BASE_URL}/oauth/token/${id}`,

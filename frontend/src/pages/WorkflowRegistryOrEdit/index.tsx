@@ -17,14 +17,26 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import type { WorkflowNode as ApiWorkflowNode, Workflow } from '@/services/workflow/type';
+import type {
+  PendingAuthorization,
+  TriggerWorkflowRunRequest,
+  WorkflowNode as ApiWorkflowNode,
+  Workflow,
+} from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import { useActiveWorkflowRun } from './hooks/useActiveWorkflowRun';
 import { useWorkflowDraftGuard } from './hooks/useWorkflowDraftGuard';
 import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
+import WorkflowReauthModal from './WorkflowReauthModal';
 
 type MutatingAction = 'idle' | 'saving' | 'triggering' | 'deleting';
+type WorkflowTriggerInput = NonNullable<TriggerWorkflowRunRequest['initialInput']>;
+
+interface PendingWorkflowReauth {
+  initialInput: WorkflowTriggerInput;
+  authorizations: PendingAuthorization[];
+}
 
 const _getDetailErrorMessage = (error: unknown): string => {
   if (!error || typeof error !== 'object' || !('detail' in error)) return 'Failed to fetch workflow';
@@ -67,6 +79,8 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   // ── 4. Dirty Checking & UI State ───────────────────────────────────────────────
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
+  const [reauthModalOpen, setReauthModalOpen] = useState(false);
+  const [pendingWorkflowReauth, setPendingWorkflowReauth] = useState<PendingWorkflowReauth | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
   const canShareWorkflow = isEditMode && isExistingDetailReady && workflow?.permissions?.SHARE === true;
@@ -259,7 +273,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   };
 
   // ── Actions: Trigger run ─────────────────────────────────────────────────────
-  const handleTrigger = async (initialInput: Record<string, any> = {}) => {
+  const handleTrigger = async (initialInput: WorkflowTriggerInput = {}) => {
     if (!canControlWorkflow) {
       setTriggerModalOpen(false);
       showToast('You do not have permission to control workflows', 'error');
@@ -285,6 +299,15 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     setMutatingAction('triggering');
     try {
       const response = await SERVICES.WORKFLOW.triggerWorkflowRun(id, { initialInput });
+      if (response.requiresReauth) {
+        setPendingWorkflowReauth({
+          initialInput,
+          authorizations: response.pendingAuthorizations,
+        });
+        setReauthModalOpen(true);
+        return;
+      }
+
       activeWorkflowRun.trackRun(response.runId);
       setRunHistoryRefresh(k => k + 1);
       showToast('Workflow run triggered!', 'success');
@@ -295,6 +318,13 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       triggeringRef.current = false;
       setMutatingAction('idle');
     }
+  };
+
+  const handleRetryAfterReauth = () => {
+    if (!pendingWorkflowReauth) return;
+    const { initialInput } = pendingWorkflowReauth;
+    setReauthModalOpen(false);
+    void handleTrigger(initialInput);
   };
 
   // ── Actions: Workflow metadata change (from PropsPanel) ──────────────────────
@@ -474,6 +504,15 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         onClose={() => setTriggerModalOpen(false)}
         onTrigger={handleTrigger}
         triggering={mutatingAction === 'triggering'}
+      />
+
+      <WorkflowReauthModal
+        isOpen={reauthModalOpen}
+        workflowName={currentWorkflow?.name ?? 'Workflow'}
+        pendingAuthorizations={pendingWorkflowReauth?.authorizations ?? []}
+        onClose={() => setReauthModalOpen(false)}
+        onRetryRun={handleRetryAfterReauth}
+        retrying={mutatingAction === 'triggering'}
       />
 
       {shareOpen && id && isExistingDetailReady && (
