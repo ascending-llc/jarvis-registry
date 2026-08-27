@@ -26,6 +26,11 @@ from .services.oauth.token_service import TokenService
 from .services.search.service import SearchService
 from .services.server_service import ServerServiceV1
 from .services.skill_service import SkillService
+from .services.skill_sync_job_service import SkillSyncJobService
+from .services.skill_sync_oauth_service import SkillSyncOAuthService
+from .services.skill_sync_service import SkillSyncService
+from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
+from .services.skill_sync_token_service import SkillSyncTokenService
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_schedule_service import WorkflowScheduleService
@@ -110,6 +115,28 @@ def get_federation_crud_service(container: RegistryContainer = Depends(get_conta
 
 def get_federation_job_service(container: RegistryContainer = Depends(get_container)) -> FederationJobService:
     return container.federation_job_service
+
+
+def get_skill_sync_source_crud_service(
+    container: RegistryContainer = Depends(get_container),
+) -> SkillSyncSourceCrudService:
+    return container.skill_sync_source_crud_service
+
+
+def get_skill_sync_service(container: RegistryContainer = Depends(get_container)) -> SkillSyncService:
+    return container.skill_sync_service
+
+
+def get_skill_sync_job_service(container: RegistryContainer = Depends(get_container)) -> SkillSyncJobService:
+    return container.skill_sync_job_service
+
+
+def get_skill_sync_token_service(container: RegistryContainer = Depends(get_container)) -> SkillSyncTokenService:
+    return container.skill_sync_token_service
+
+
+def get_skill_sync_oauth_service(container: RegistryContainer = Depends(get_container)) -> SkillSyncOAuthService:
+    return container.skill_sync_oauth_service
 
 
 def get_federation_sync_service(container: RegistryContainer = Depends(get_container)) -> FederationSyncService:

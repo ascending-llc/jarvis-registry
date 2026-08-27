@@ -46,7 +46,6 @@ def _make_skill(skill_id: PydanticObjectId | None = None) -> MagicMock:
     skill.sourceMetadata = None
     skill.createdAt = datetime(2026, 8, 1, tzinfo=UTC)
     skill.updatedAt = datetime(2026, 8, 2, tzinfo=UTC)
-    skill.deletedAt = None
     return skill
 
 

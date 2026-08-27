@@ -12,6 +12,7 @@ class RegistryResourceType(StrEnum):
     WORKFLOW = "workflow"
     WORKFLOW_SCHEDULE = "workflowSchedule"
     SKILL = "skill"
+    SKILL_SYNC_SOURCE = "skillSyncSource"
 
 
 class RegistryAccessRole(AccessRole):

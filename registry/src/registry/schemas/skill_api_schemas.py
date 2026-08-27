@@ -82,7 +82,6 @@ class SkillMetadataResponse(BaseModel):
     createdByRegistry: bool = False
     permissions: ResourcePermissions | None = None
     updatedAt: datetime | None = None
-    deletedAt: datetime | None = None
 
 
 class SkillListResponse(BaseModel):

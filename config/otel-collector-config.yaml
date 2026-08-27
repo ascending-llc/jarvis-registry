@@ -18,6 +18,10 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
 
+  # Persist traces in the local Tempo backend for Grafana exploration.
+  otlp_http/tempo:
+    endpoint: http://tempo:4318
+
   # Receives semantic MCP tool and A2A agent spans emitted by Jarvis Registry.
   otlp_http/langfuse:
     endpoint: https://us.cloud.langfuse.com/api/public/otel
@@ -40,4 +44,5 @@ service:
       processors: [batch]
       exporters:
         - debug
+        - otlp_http/tempo
         - otlp_http/langfuse

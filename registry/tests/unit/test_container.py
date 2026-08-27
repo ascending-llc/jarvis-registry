@@ -1,6 +1,6 @@
 """Unit tests for RegistryContainer — model selection logic."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -32,6 +32,14 @@ def _make_container(settings: MagicMock) -> RegistryContainer:
     )
     container.__dict__["a2a_httpx_client"] = MagicMock()
     return container
+
+
+def _stub_shutdown_dependencies(container: RegistryContainer, monkeypatch) -> None:
+    monkeypatch.setattr("registry.container.cancel_in_flight_runs", AsyncMock())
+    container.__dict__["health_service"] = MagicMock(shutdown=AsyncMock())
+    container.__dict__["mcp_proxy_client"] = MagicMock(aclose=AsyncMock())
+    container.__dict__["a2a_httpx_client"] = MagicMock(aclose=AsyncMock())
+    container.__dict__["a2a_client_registry"] = MagicMock(close=AsyncMock())
 
 
 @pytest.mark.unit
@@ -123,3 +131,15 @@ def test_skill_service_is_app_scoped_and_uses_shared_acl_service():
     assert skill_service is container.skill_service
     assert skill_service.acl_service is container.acl_service
     assert skill_service.user_service is container.user_service
+
+
+@pytest.mark.asyncio
+async def test_shutdown_delegates_to_idempotent_skill_sync_runner(monkeypatch):
+    container = _make_container(_make_settings())
+    _stub_shutdown_dependencies(container, monkeypatch)
+    runner = MagicMock(shutdown=AsyncMock())
+    container.__dict__["skill_sync_job_runner"] = runner
+
+    await container.shutdown()
+
+    runner.shutdown.assert_awaited_once()
