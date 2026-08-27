@@ -99,7 +99,7 @@ export const normalizeSkillCategory = (value: string): SkillCategory =>
 export const getSkillDisplayName = (skill: { name: string; displayTitle?: string | null }): string =>
   skill.displayTitle?.trim() || skill.name;
 
-export const formatSkillVersion = (version: number | null): string => (version === null ? 'v0.1.0' : `v${version}.0.0`);
+export const formatSkillVersion = (version: number | null): string => `V${version ?? 1}`;
 
 export const slugifySkillName = (displayTitle: string): string =>
   displayTitle

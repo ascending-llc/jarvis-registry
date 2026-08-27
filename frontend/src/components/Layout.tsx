@@ -228,7 +228,7 @@ const Layout: React.FC<LayoutProps> = ({ children, searchConfig, skillsNavigatio
 
         {/* Main content */}
         <main
-          className={`flex-1 flex flex-col transition-all duration-300 ${isSubPage ? 'md:ml-16' : sidebarOpen ? 'md:ml-[272px]' : 'md:ml-16'}`}
+          className={`flex min-w-0 flex-1 flex-col transition-all duration-300 ${isSubPage ? 'md:ml-16' : sidebarOpen ? 'md:ml-[272px]' : 'md:ml-16'}`}
         >
           <div className='flex-1 flex flex-col px-4 sm:px-6 lg:px-8 pt-4 md:pt-8 pb-1 md:pb-2 overflow-hidden'>
             {children}

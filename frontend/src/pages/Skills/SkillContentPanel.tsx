@@ -147,16 +147,16 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
     }
 
     return (
-      <pre className='min-h-72 overflow-auto whitespace-pre p-6 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'>
+      <pre className='min-h-72 max-w-full overflow-auto whitespace-pre p-6 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'>
         <code>{file.content ?? ''}</code>
       </pre>
     );
   };
 
   return (
-    <div className='flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)]'>
-      <div className='flex flex-shrink-0 items-center justify-between border-b border-[color:var(--jarvis-border)] px-4 py-3'>
-        <span className='truncate font-mono text-xs text-[var(--jarvis-muted)]'>{selectedPath}</span>
+    <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)]'>
+      <div className='flex min-w-0 flex-shrink-0 items-center justify-between border-b border-[color:var(--jarvis-border)] px-4 py-3'>
+        <span className='min-w-0 truncate font-mono text-xs text-[var(--jarvis-muted)]'>{selectedPath}</span>
         {isSkillMarkdown ? (
           canEdit && (
             <button
@@ -177,7 +177,7 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
         )}
       </div>
 
-      <div className='min-h-0 flex-1 overflow-auto'>
+      <div className='min-h-0 min-w-0 flex-1 overflow-auto'>
         {isSkillMarkdown && editorMode === 'edit' && canEdit && (
           <textarea
             value={markdown}
@@ -189,7 +189,7 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
         )}
 
         {isSkillMarkdown && (editorMode !== 'edit' || !canEdit) && (
-          <div className='px-7 py-7 sm:px-9 sm:py-8'>
+          <div className='min-w-0 [overflow-wrap:anywhere] px-7 py-7 sm:px-9 sm:py-8'>
             {markdownError && (
               <div className='mb-5 rounded-lg border border-[color:var(--jarvis-danger)]/30 bg-[var(--jarvis-danger-soft)] px-4 py-3 text-sm text-[var(--jarvis-danger-text)]'>
                 {markdownError}
@@ -212,21 +212,25 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
                     <h3 className='mb-2 mt-4 text-[15px] font-bold text-[var(--jarvis-text-strong)]'>{children}</h3>
                   ),
                   p: ({ children }) => (
-                    <p className='mb-4 text-[14.5px] leading-[1.75] text-[var(--jarvis-text)]'>{children}</p>
+                    <p className='mb-4 min-w-0 break-words text-[14.5px] leading-[1.75] text-[var(--jarvis-text)]'>
+                      {children}
+                    </p>
                   ),
-                  ul: ({ children }) => <ul className='my-0 list-disc space-y-2 pl-5'>{children}</ul>,
-                  ol: ({ children }) => <ol className='my-0 list-decimal space-y-2 pl-5'>{children}</ol>,
-                  li: ({ children }) => <li className='text-sm leading-[1.6] text-[var(--jarvis-text)]'>{children}</li>,
+                  ul: ({ children }) => <ul className='my-0 min-w-0 list-disc space-y-2 pl-5'>{children}</ul>,
+                  ol: ({ children }) => <ol className='my-0 min-w-0 list-decimal space-y-2 pl-5'>{children}</ol>,
+                  li: ({ children }) => (
+                    <li className='min-w-0 break-words text-sm leading-[1.6] text-[var(--jarvis-text)]'>{children}</li>
+                  ),
                   strong: ({ children }) => (
                     <strong className='font-bold text-[var(--jarvis-text-strong)]'>{children}</strong>
                   ),
                   pre: ({ children }) => (
-                    <pre className='my-4 overflow-auto rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7]'>
+                    <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
                       {children}
                     </pre>
                   ),
                   code: ({ children }) => (
-                    <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px]'>
+                    <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
                       {children}
                     </code>
                   ),
@@ -235,10 +239,13 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
                       href={href}
                       target='_blank'
                       rel='noreferrer'
-                      className='text-[var(--jarvis-primary-text)] underline'
+                      className='break-words text-[var(--jarvis-primary-text)] underline'
                     >
                       {children}
                     </a>
+                  ),
+                  img: ({ src, alt, title }) => (
+                    <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
                   ),
                 }}
               >

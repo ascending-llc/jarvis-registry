@@ -32,9 +32,18 @@
     "start": "vite",
     "build": "vite build",
     "serve": "vite preview",
+<<<<<<< HEAD
     "test": "vitest run",
+=======
+    "test": "react-scripts test --watchAll=false",
+>>>>>>> 1c9f121e (fix: contain content overflow and refine version and subtitle display)
     "format": "biome check --write",
     "rebuild:package-lock": "rm -rf node_modules package-lock.json && npm install"
+  },
+  "jest": {
+    "moduleNameMapper": {
+      "^@/(.*)$": "<rootDir>/src/$1"
+    }
   },
   "browserslist": {
     "production": [

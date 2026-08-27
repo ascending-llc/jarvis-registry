@@ -40,9 +40,9 @@ const SkillListView: React.FC<SkillListViewProps> = ({
 }) => (
   <section className='flex min-h-0 flex-1 flex-col overflow-y-auto px-0 pt-2 md:px-8'>
     <div className='mb-2 flex flex-shrink-0 items-start justify-between gap-4'>
-      <div>
+      <div className='min-w-0 flex-1'>
         <h1 className='text-2xl font-bold tracking-[-0.01em] text-[var(--jarvis-text-strong)]'>Skills</h1>
-        <p className='mb-7 mt-2 max-w-xl text-sm leading-[1.6] text-[var(--jarvis-muted)]'>
+        <p className='mb-7 mt-2 text-sm leading-[1.6] text-[var(--jarvis-muted)]'>
           Reusable capabilities agents can invoke — parsing, formatting, redaction, and routing logic packaged for reuse
           across workflows.
         </p>

@@ -110,7 +110,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
   const selectedMetadata = draft.files.find(file => file.relativePath === selectedPath);
 
   return (
-    <section className='flex min-h-0 flex-1 flex-col overflow-hidden px-0 pt-2 md:px-8'>
+    <section className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-0 pt-2 md:px-8'>
       <div className='mb-5 flex flex-shrink-0 items-center gap-2'>
         <button
           type='button'
@@ -228,7 +228,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
         </div>
       </div>
 
-      <div className='mt-5 min-h-0 flex-1 overflow-auto pr-1'>
+      <div className='mt-5 min-h-0 min-w-0 flex-1 overflow-auto pr-1'>
         <div className='mb-2.5 text-[13px] font-semibold text-[var(--jarvis-text)]'>Description</div>
         {editorMode === 'edit' && canEdit ? (
           <input
@@ -242,8 +242,8 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             className='block h-11 w-full rounded-md border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] px-3 py-2 text-sm text-[var(--jarvis-text)] outline-none transition placeholder:text-[var(--jarvis-input-placeholder)] focus:border-[var(--jarvis-primary)] focus:bg-[var(--jarvis-input-bg-focus)] focus:ring-2 focus:ring-[color:var(--jarvis-primary)]/20 disabled:cursor-not-allowed disabled:opacity-60'
           />
         ) : (
-          <div className='flex h-11 w-full items-center rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-input-bg)] px-3 text-sm text-[var(--jarvis-muted)]'>
-            <span className='truncate'>{parsedMarkdown.description || 'No description'}</span>
+          <div className='flex h-11 min-w-0 w-full items-center overflow-hidden rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-input-bg)] px-3 text-sm text-[var(--jarvis-muted)]'>
+            <span className='min-w-0 flex-1 truncate'>{parsedMarkdown.description || 'No description'}</span>
           </div>
         )}
         <div
@@ -260,7 +260,9 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
           )}
         </div>
 
-        <div className={`items-start gap-4 ${supportingFiles.length > 0 ? 'flex flex-col md:flex-row' : 'flex'}`}>
+        <div
+          className={`min-w-0 items-start gap-4 ${supportingFiles.length > 0 ? 'flex flex-col md:flex-row' : 'flex'}`}
+        >
           {supportingFiles.length > 0 && (
             <aside className='w-full flex-none overflow-auto rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-2 md:w-[216px]'>
               <SkillFileTree files={supportingFiles} selectedPath={selectedPath} onSelect={onSelectFile} />
