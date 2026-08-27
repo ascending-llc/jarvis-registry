@@ -5,6 +5,7 @@ from typing import Any
 
 from agno.workflow import StepInput, StepOutput
 
+from registry_pkgs.core.config import WorkflowPromptSettings
 from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
     ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES,
@@ -16,24 +17,23 @@ from registry_pkgs.workflows.prompt import (
 )
 from registry_pkgs.workflows.serialization import content_to_str
 
-_MAX_DEPENDENCY_CONTENT_CHARS = 8000
+_MAX_PROMPT_CHARS = WorkflowPromptSettings().workflow_prompt_max_chars
 
-_MediaSummaryFields = tuple[tuple[str, int | None], ...]
-_IMAGE_SUMMARY_FIELDS: _MediaSummaryFields = (("mime_type", None), ("format", None), ("alt_text", 500))
-_VIDEO_SUMMARY_FIELDS: _MediaSummaryFields = (("mime_type", None), ("format", None), ("duration", None))
-_AUDIO_SUMMARY_FIELDS: _MediaSummaryFields = (
-    ("mime_type", None),
-    ("format", None),
-    ("duration", None),
-    ("transcript", 500),
-)
+_MediaSummaryFields = tuple[str, ...]
+_IMAGE_SUMMARY_FIELDS: _MediaSummaryFields = ("mime_type", "format", "alt_text")
+_VIDEO_SUMMARY_FIELDS: _MediaSummaryFields = ("mime_type", "format", "duration")
+_AUDIO_SUMMARY_FIELDS: _MediaSummaryFields = ("mime_type", "format", "duration", "transcript")
 
 
-def _truncate(value: str, *, limit: int = _MAX_DEPENDENCY_CONTENT_CHARS) -> str:
-    """Cap prompt-bound text at *limit* chars, appending a note about what was cut."""
-    if len(value) <= limit:
+def _truncate(value: str) -> str:
+    """Cap the fully-assembled prompt at _MAX_PROMPT_CHARS, appending a note about what was cut.
+
+    Applied once to the whole rendered prompt in build_prompt() — not per dependency or per field —
+    so the cap reflects what actually matters: the total size of what's sent to the workflow LLM.
+    """
+    if len(value) <= _MAX_PROMPT_CHARS:
         return value
-    return f"{value[:limit]}\n[truncated: {len(value) - limit} chars omitted]"
+    return f"{value[:_MAX_PROMPT_CHARS]}\n[truncated: {len(value) - _MAX_PROMPT_CHARS} chars omitted]"
 
 
 def _safe_file_preview(file_content: Any, mime_type: str | None) -> str | None:
@@ -57,11 +57,11 @@ def _media_summary_lines(items: list[Any], fallback_label: str, fields: _MediaSu
     lines = []
     for item in items:
         details = [item.id or item.mime_type or fallback_label]
-        for attr, limit in fields:
+        for attr in fields:
             value = getattr(item, attr, None)
             if value is None or value == "":
                 continue
-            details.append(f"{attr}={_truncate(str(value), limit=limit) if limit else value}")
+            details.append(f"{attr}={value}")
         lines.append(f"- {', '.join(details)}")
     return "\n".join(lines)
 
@@ -70,7 +70,7 @@ def step_output_to_prompt_text(output: StepOutput) -> str:
     """Render a StepOutput into a compact, prompt-safe text summary (metadata only, never bytes)."""
     sections: list[str] = []
     if output.content is not None:
-        sections.append(f"Text output:\n{_truncate(content_to_str(output.content))}")
+        sections.append(f"Text output:\n{content_to_str(output.content)}")
 
     if output.images:
         sections.append("Images:\n" + _media_summary_lines(output.images, "image", _IMAGE_SUMMARY_FIELDS))
@@ -95,7 +95,7 @@ def step_output_to_prompt_text(output: StepOutput) -> str:
             lines.append(f"- {', '.join(details)}")
             preview = _safe_file_preview(file.content, file.mime_type)
             if preview:
-                lines.append(f"  Preview:\n{_truncate(preview)}")
+                lines.append(f"  Preview:\n{preview}")
         sections.append("Files:\n" + "\n".join(lines))
 
     if not output.success:
@@ -123,19 +123,22 @@ def build_prompt(step_input: StepInput) -> str:
     ``compiler._with_intention_data``, then delegates to ``render_step_prompt``.
     Falls back to raw trigger text when ``additional_data`` has no step_objective
     (e.g. demo executors or direct unit-test calls that bypass the compiler).
+
+    The fully-assembled prompt is truncated as a whole (see ``_truncate``) — individual
+    dependency outputs, media fields, and trigger parameters are never capped in isolation.
     """
     additional = step_input.additional_data or {}
     step_objective: str = additional.get(ADDITIONAL_DATA_STEP_OBJECTIVE) or ""
 
     # Graceful degradation for demo executors / direct test calls
     if not step_objective:
-        return step_input.get_input_as_string() or "(no input)"
+        return _truncate(step_input.get_input_as_string() or "(no input)")
 
     workflow_description: str | None = additional.get(ADDITIONAL_DATA_WORKFLOW_DESCRIPTION)
     dependency_node_names: list[str] = additional.get(ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES) or []
     dependency_objectives: dict[str, str] = additional.get(ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES) or {}
     trigger_input: dict[str, Any] | None = additional.get(ADDITIONAL_DATA_INITIAL_INPUT)
-    trigger_parameters = _truncate(content_to_str(trigger_input)) if trigger_input else None
+    trigger_parameters = content_to_str(trigger_input) if trigger_input else None
 
     previous = step_input.previous_step_outputs or {}
 
@@ -162,10 +165,11 @@ def build_prompt(step_input: StepInput) -> str:
     is_entry = not previous
     initial_input = step_input.get_input_as_string() if is_entry and not dependencies else None
 
-    return render_step_prompt(
+    prompt = render_step_prompt(
         step_objective=step_objective,
         workflow_description=workflow_description,
         dependencies=dependencies,
         initial_input=initial_input,
         trigger_parameters=trigger_parameters,
     )
+    return _truncate(prompt)
