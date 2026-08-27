@@ -9,6 +9,7 @@ from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.workflow_schedule_schemas import ScheduleCreateRequest, ScheduleUpdateRequest
 from registry.services import workflow_schedule_service
 from registry.services.workflow_schedule_service import ScheduleAccess, WorkflowScheduleService
+from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 
 
 class _AsyncContext:
@@ -41,13 +42,24 @@ def _access(schedule: SimpleNamespace) -> ScheduleAccess:
     )
 
 
+def _service(
+    acl_service: AsyncMock,
+    schedule_repository: AsyncMock | None = None,
+) -> WorkflowScheduleService:
+    repository = schedule_repository or AsyncMock(spec=WorkflowScheduleRepository)
+    return WorkflowScheduleService(
+        acl_service=acl_service,
+        schedule_repository=repository,
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_schedule_grants_owner_in_same_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _patch_transaction(monkeypatch)
     workflow_id = PydanticObjectId()
     user_id = PydanticObjectId()
     acl_service = AsyncMock()
-    service = WorkflowScheduleService(acl_service=acl_service)
+    service = _service(acl_service)
     service._require_workflow_permission = AsyncMock(return_value=SimpleNamespace(enabled=True))
 
     class _FakeSchedule:
@@ -78,7 +90,7 @@ async def test_authorized_loader_checks_parent_and_child_acl(monkeypatch: pytest
     permissions = ResourcePermissions(VIEW=True)
     acl_service = AsyncMock()
     acl_service.check_user_permission.return_value = permissions
-    service = WorkflowScheduleService(acl_service=acl_service)
+    service = _service(acl_service)
     service._require_workflow_permission = AsyncMock(return_value=SimpleNamespace(enabled=True))
     service._load_schedule = AsyncMock(return_value=schedule)
 
@@ -109,7 +121,7 @@ async def test_list_schedules_filters_by_child_schedule_acl(monkeypatch: pytest.
         visible.id: ResourcePermissions(VIEW=True),
         hidden.id: ResourcePermissions(EDIT=True),
     }
-    service = WorkflowScheduleService(acl_service=acl_service)
+    service = _service(acl_service)
     service._require_workflow_permission = AsyncMock(return_value=SimpleNamespace(enabled=True))
 
     class _Query:
@@ -145,7 +157,7 @@ def _schedule(*, enabled: bool = False) -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_get_schedule_reuses_authorized_loader() -> None:
     schedule = _schedule()
-    service = WorkflowScheduleService(acl_service=AsyncMock())
+    service = _service(AsyncMock())
     access = _access(schedule)
     service._load_authorized_schedule = AsyncMock(return_value=access)
 
@@ -169,7 +181,7 @@ async def test_get_schedule_reuses_authorized_loader() -> None:
 async def test_update_schedule_rejects_explicit_null_cron(monkeypatch: pytest.MonkeyPatch) -> None:
     schedule = _schedule()
     _patch_transaction(monkeypatch)
-    service = WorkflowScheduleService(acl_service=AsyncMock())
+    service = _service(AsyncMock())
     service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
 
     with pytest.raises(HTTPException) as exc_info:
@@ -191,23 +203,21 @@ async def test_update_schedule_rejects_explicit_null_cron(monkeypatch: pytest.Mo
 async def test_update_enabled_schedule_recalculates_next_run(monkeypatch: pytest.MonkeyPatch) -> None:
     schedule = _schedule(enabled=True)
     _patch_transaction(monkeypatch)
-    service = WorkflowScheduleService(acl_service=AsyncMock())
+    repository = AsyncMock(spec=WorkflowScheduleRepository)
+    service = _service(AsyncMock(), repository)
     service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
     expected_next_run = object()
     monkeypatch.setattr(
         "registry.services.workflow_schedule_service.calculate_next_run_at",
         lambda *_args: expected_next_run,
     )
-    collection = SimpleNamespace()
 
-    async def _find_one_and_update(_query, update, **_kwargs):
-        for key, value in update["$set"].items():
+    async def _update_schedule(_schedule_id, _workflow_id, updates, _session):
+        for key, value in updates.items():
             setattr(schedule, key, value)
         return schedule
 
-    collection.find_one_and_update = AsyncMock(side_effect=_find_one_and_update)
-    monkeypatch.setattr(workflow_schedule_service, "_schedule_collection", lambda: collection)
-    monkeypatch.setattr(workflow_schedule_service.WorkflowSchedule, "model_validate", lambda document: document)
+    repository.update_schedule.side_effect = _update_schedule
 
     updated = await service.update_schedule(
         str(schedule.workflow_definition_id),
@@ -218,7 +228,7 @@ async def test_update_enabled_schedule_recalculates_next_run(monkeypatch: pytest
 
     assert updated.schedule.cron_expression == "15 2 * * *"
     assert updated.schedule.next_run_at is expected_next_run
-    update = collection.find_one_and_update.await_args.args[1]["$set"]
+    update = repository.update_schedule.await_args.args[2]
     assert "locked_until" not in update
     assert "last_run_status" not in update
 
@@ -230,18 +240,16 @@ async def test_disabling_schedule_clears_next_run_and_lease(monkeypatch: pytest.
     schedule.locked_until = object()
     schedule.lease_token = "lease-1"
     _patch_transaction(monkeypatch)
-    service = WorkflowScheduleService(acl_service=AsyncMock())
+    repository = AsyncMock(spec=WorkflowScheduleRepository)
+    service = _service(AsyncMock(), repository)
     service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
-    collection = SimpleNamespace()
 
-    async def _find_one_and_update(_query, update, **_kwargs):
-        for key, value in update["$set"].items():
+    async def _update_schedule(_schedule_id, _workflow_id, updates, _session):
+        for key, value in updates.items():
             setattr(schedule, key, value)
         return schedule
 
-    collection.find_one_and_update = AsyncMock(side_effect=_find_one_and_update)
-    monkeypatch.setattr(workflow_schedule_service, "_schedule_collection", lambda: collection)
-    monkeypatch.setattr(workflow_schedule_service.WorkflowSchedule, "model_validate", lambda document: document)
+    repository.update_schedule.side_effect = _update_schedule
 
     updated = await service.toggle_schedule(
         str(schedule.workflow_definition_id),
@@ -262,7 +270,7 @@ async def test_delete_schedule_rolls_back_when_acl_cleanup_fails(monkeypatch: py
     session = _patch_transaction(monkeypatch)
     acl_service = AsyncMock()
     acl_service.delete_acl_entries_for_resource.return_value = 0
-    service = WorkflowScheduleService(acl_service=acl_service)
+    service = _service(acl_service)
     service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
     schedule.delete = AsyncMock()
 
@@ -287,7 +295,9 @@ async def test_update_schedule_skips_next_run_recalc_when_cron_unchanged(monkeyp
     schedule = _schedule(enabled=True)
     schedule.initial_input = {"old": True}
     _patch_transaction(monkeypatch)
-    service = WorkflowScheduleService(acl_service=AsyncMock())
+    repository = AsyncMock(spec=WorkflowScheduleRepository)
+    repository.update_schedule.return_value = schedule
+    service = _service(AsyncMock(), repository)
     service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
 
     recalc_called = []
@@ -295,17 +305,6 @@ async def test_update_schedule_skips_next_run_recalc_when_cron_unchanged(monkeyp
         "registry.services.workflow_schedule_service.calculate_next_run_at",
         lambda *_args: recalc_called.append(True) or object(),
     )
-
-    collection = SimpleNamespace()
-
-    async def _find_one_and_update(_query, update, **_kwargs):
-        for key, value in update["$set"].items():
-            setattr(schedule, key, value)
-        return schedule
-
-    collection.find_one_and_update = AsyncMock(side_effect=_find_one_and_update)
-    monkeypatch.setattr(workflow_schedule_service, "_schedule_collection", lambda: collection)
-    monkeypatch.setattr(workflow_schedule_service.WorkflowSchedule, "model_validate", lambda doc: doc)
 
     await service.update_schedule(
         str(schedule.workflow_definition_id),
@@ -315,7 +314,7 @@ async def test_update_schedule_skips_next_run_recalc_when_cron_unchanged(monkeyp
     )
 
     assert recalc_called == [], "next_run_at should not be recalculated when cron/timezone unchanged"
-    update_set = collection.find_one_and_update.await_args.args[1]["$set"]
+    update_set = repository.update_schedule.await_args.args[2]
     assert "next_run_at" not in update_set
 
 
@@ -324,12 +323,9 @@ async def test_toggle_schedule_idempotent_skip(monkeypatch: pytest.MonkeyPatch) 
     """Toggling to the current state must return without DB update."""
     schedule = _schedule(enabled=False)
     _patch_transaction(monkeypatch)
-    service = WorkflowScheduleService(acl_service=AsyncMock())
+    repository = AsyncMock(spec=WorkflowScheduleRepository)
+    service = _service(AsyncMock(), repository)
     service._load_authorized_schedule = AsyncMock(return_value=_access(schedule))
-
-    collection = SimpleNamespace()
-    collection.find_one_and_update = AsyncMock()
-    monkeypatch.setattr(workflow_schedule_service, "_schedule_collection", lambda: collection)
 
     result = await service.toggle_schedule(
         str(schedule.workflow_definition_id),
@@ -339,4 +335,4 @@ async def test_toggle_schedule_idempotent_skip(monkeypatch: pytest.MonkeyPatch) 
     )
 
     assert result.schedule is schedule
-    collection.find_one_and_update.assert_not_awaited()
+    repository.update_schedule.assert_not_awaited()

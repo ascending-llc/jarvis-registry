@@ -1,0 +1,26 @@
+[project]
+name = "workflow-worker"
+version = "0.2.0"
+description = "Async workflow schedule worker for Jarvis Registry"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "registry-pkgs",
+    "pydantic-settings>=2.15.0",
+    "httpx>=0.27.0",
+    "mcp>=1.26.0,<2.0.0",
+]
+
+[tool.uv.sources]
+registry-pkgs = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.poe.tasks]
+start = { shell = "uv run python -m workflow_worker.main" }
+test = { shell = "uv run pytest tests" }
+test-cov = { shell = "uv run pytest tests --cov=workflow_worker --cov-report=term --cov-report=xml" }

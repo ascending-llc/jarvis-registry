@@ -1,5 +1,5 @@
 [project]
-name = "mcp-registry-workspace"
+name = "jarvis-registry-workspace"
 version = "0.2.0"
 description = "Jarvis Registry - Monorepo Workspace Root"
 readme = "README.md"
@@ -10,6 +10,7 @@ dependencies = [
   "registry-pkgs",
   "registry",
   "auth-server",
+  "workflow-worker",
   # External direct dependencies
   "python-dotenv>=1.0.0",
   "inflection>=0.5.1",
@@ -17,12 +18,13 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["registry-pkgs", "registry", "auth-server"]
+members = ["registry-pkgs", "registry", "auth-server", "workflow-worker"]
 
 [tool.uv.sources]
 registry-pkgs = { workspace = true }
 registry = { workspace = true }
 auth-server = { workspace = true }
+workflow-worker = { workspace = true }
 
 [tool.uv]
 
@@ -106,7 +108,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 # Each value must be the import name of one of our own packages in this workspace.
-known-first-party = ["registry_pkgs", "auth_utils", "registry", "auth_server"]
+known-first-party = ["registry_pkgs", "auth_utils", "registry", "auth_server", "workflow_worker"]
 
 [tool.ruff.lint.per-file-ignores]
 # Import order matters some files. Exclude them from automatic import sorting.
@@ -134,7 +136,8 @@ printf "\n📦 Workspace versions:\n" && \
 printf '   Root          → %s\n' $(grep -m1 '^version = ' pyproject.toml | cut -d'\"' -f2) && \
 printf '   registry-pkgs → %s\n' $(grep -m1 '^version = ' registry-pkgs/pyproject.toml | cut -d'\"' -f2) && \
 printf '   registry      → %s\n' $(grep -m1 '^version = ' registry/pyproject.toml | cut -d'\"' -f2) && \
-printf '   auth-server   → %s\n' $(grep -m1 '^version = ' auth-server/pyproject.toml | cut -d'\"' -f2)"""
+printf '   auth-server   → %s\n' $(grep -m1 '^version = ' auth-server/pyproject.toml | cut -d'\"' -f2) && \
+printf '   workflow-worker → %s\n' $(grep -m1 '^version = ' workflow-worker/pyproject.toml | cut -d'\"' -f2)"""
 
 [tool.poe.tasks.version-sync]
 help = "Sync version across all projects (usage: poe version-sync 0.2.0)"
@@ -142,10 +145,10 @@ script = "scripts.sync_version:main"
 
 # Run all tests across all projects
 [tool.poe.tasks.test-all]
-shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test"
+shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test && cd ../workflow-worker && uv run poe test"
 
 [tool.poe.tasks.test-all-cov]
-shell = "cd registry && uv run poe test-cov && cd ../auth-server && uv run poe test-cov && cd ../registry-pkgs && uv run poe test-cov"
+shell = "cd registry && uv run poe test-cov && cd ../auth-server && uv run poe test-cov && cd ../registry-pkgs && uv run poe test-cov && cd ../workflow-worker && uv run poe test-cov"
 
 # registry tests
 [tool.poe.tasks.test-registry]
@@ -167,6 +170,13 @@ shell = "cd registry-pkgs && uv run poe test"
 
 [tool.poe.tasks.test-registry-pkgs-cov]
 shell = "cd registry-pkgs && uv run poe test-cov"
+
+# workflow-worker tests
+[tool.poe.tasks.test-workflow-worker]
+shell = "cd workflow-worker && uv run poe test"
+
+[tool.poe.tasks.test-workflow-worker-cov]
+shell = "cd workflow-worker && uv run poe test-cov"
 
 # Linting and formatting
 [tool.poe.tasks.lint]
@@ -210,9 +220,11 @@ xargs -I % bash -c 'uv build --package % --wheel --no-build-logs --out-dir build
 registry-pkgs
 registry
 auth-server
+workflow-worker
 EOF
 uv export --package registry --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-registry.txt
 uv export --package auth-server --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-auth-server.txt
+uv export --package workflow-worker --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-workflow-worker.txt
 """
 
 [tool.poe.tasks.cleanup-artifacts]
@@ -241,6 +253,7 @@ xargs -I % bash -c '_clean_member "%"' <<EOF
 auth-server
 registry
 registry-pkgs
+workflow-worker
 EOF
 """
 
