@@ -119,7 +119,7 @@ jobs:
       - name: Display artifacts
         run: ls -al build-artifacts
 
-      - name: Build and push mcp-gateway registry image
+      - name: Build Jarvis registry image
         uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64
@@ -128,7 +128,8 @@ jobs:
           build-args: |
             TOOL_DISCOVERY_MODE=external
             BUILD_VERSION=${{ steps.version.outputs.version }}
-          push: true
+          push: false
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           provenance: false
 
@@ -137,6 +138,13 @@ jobs:
           docker run --rm --entrypoint='' -e BUILD_VERSION=dummy -e X_JARVIS_REGISTRY_IMPORT_CHECKS="disabled"
           "ghcr.io/${{ github.repository_owner }}/jarvis/registry:${{ github.sha }}"
           python -c "from registry.main import app; print(type(app))"
+
+      - name: Push image tags after passing the import guard
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"
+          for tag in "${TAGS[@]}"; do
+            docker push "$tag"
+          done
 
   build-and-push-registry-frontend:
     runs-on: ubuntu-latest
@@ -173,7 +181,7 @@ jobs:
             echo "tags=${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build and push mcp-gateway registry frontend image
+      - name: Build and push Jarvis registry frontend image
         uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64
@@ -237,7 +245,7 @@ jobs:
       - name: Display artifacts
         run: ls -al build-artifacts
 
-      - name: Build and push mcp-gateway auth-server image
+      - name: Build Jarvis auth-server image
         uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64
@@ -245,7 +253,8 @@ jobs:
           file: docker/Dockerfile.auth
           build-args: |
             BUILD_VERSION=${{ steps.version.outputs.version }}
-          push: true
+          push: false
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           provenance: false
 
@@ -254,3 +263,90 @@ jobs:
           docker run --rm --entrypoint='' -e X_JARVIS_REGISTRY_IMPORT_CHECKS="disabled"
           "ghcr.io/${{ github.repository_owner }}/jarvis/auth-server:${{ github.sha }}"
           python -c "from auth_server.server import app; print(type(app))"
+
+      - name: Push image tags after passing the import guard
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"
+          for tag in "${TAGS[@]}"; do
+            docker push "$tag"
+          done
+
+  build-and-push-workflow-worker:
+    needs: prepare-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.git_ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine BUILD_VERSION
+        id: version
+        run: |
+          if [ -n "${{ inputs.version_tag }}" ]; then
+            echo "version=${{ inputs.version_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_SHA:0:8}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine image tags
+        id: tags
+        run: |
+          GHCR_BASE="ghcr.io/${{ github.repository_owner }}/jarvis/workflow-worker"
+          GHCR_COMMIT_TAG="${GHCR_BASE}:${{ github.sha }}"
+          GHCR_LATEST_TAG="${GHCR_BASE}:latest"
+
+          if [ -n "${{ inputs.version_tag }}" ]; then
+            GHCR_VERSION_TAG="${GHCR_BASE}:${{ inputs.version_tag }}"
+            echo "tags=${GHCR_VERSION_TAG},${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.tag_as_latest }}" = "true" ]; then
+            echo "tags=${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "tags=${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download build artifact - wheels and locks
+        uses: actions/download-artifact@v8
+        with:
+          name: wheels-and-locks
+          path: build-artifacts/
+
+      - name: Display artifacts
+        run: ls -al build-artifacts
+
+      - name: Build workflow-worker image
+        uses: docker/build-push-action@v7
+        with:
+          platforms: linux/amd64
+          context: .
+          file: docker/Dockerfile.workflow-worker
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.version }}
+          push: false
+          load: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+
+      - name: Guard the Docker image against import exceptions
+        run: >
+          docker run --rm --entrypoint=''
+          "ghcr.io/${{ github.repository_owner }}/jarvis/workflow-worker:${{ github.sha }}"
+          python -c "import workflow_worker.main; from registry_pkgs.workflows.executor_resolver import _builtin_executor; assert _builtin_executor('echo') is not None"
+
+      - name: Push image tags after passing the import guard
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"
+          for tag in "${TAGS[@]}"; do
+            docker push "$tag"
+          done

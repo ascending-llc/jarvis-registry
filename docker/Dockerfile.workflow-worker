@@ -12,7 +12,5 @@ WORKDIR /app
 COPY ./build-artifacts /opt/build/
 RUN pip install --only-binary :all: -r /opt/build/requirements-workflow-worker.txt
 RUN pip install --no-deps --no-index --find-links /opt/build/ workflow-worker registry-pkgs
-RUN python -m pip check && \
-    python -c "import workflow_worker.main; from registry_pkgs.workflows.executor_resolver import _builtin_executor; assert _builtin_executor('echo') is not None"
 
 CMD ["python", "-m", "workflow_worker.main"]

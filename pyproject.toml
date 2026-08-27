@@ -1,5 +1,5 @@
 [project]
-name = "mcp-registry-workspace"
+name = "jarvis-registry-workspace"
 version = "0.2.0"
 description = "Jarvis Registry - Monorepo Workspace Root"
 readme = "README.md"
