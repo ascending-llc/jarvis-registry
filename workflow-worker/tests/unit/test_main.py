@@ -40,7 +40,7 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
 
     monkeypatch.setattr(main, "settings", mock_settings)
     monkeypatch.setattr(main, "init_mongodb", init_mongodb)
-    monkeypatch.setattr(main.MongoDB, "get_database", lambda: object())
+    monkeypatch.setattr(main.MongoDB, "get_database", object)
     monkeypatch.setattr(main, "WorkflowScheduleRepository", lambda _database: repository)
     monkeypatch.setattr(main, "create_redis_client", lambda _config: redis_client)
     monkeypatch.setattr(main, "DirectiveQueue", lambda: directive_queue)

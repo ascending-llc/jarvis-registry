@@ -71,8 +71,6 @@ def _build_runner(
         aws_secret_access_key=settings.aws_secret_access_key,
         aws_session_token=settings.aws_session_token,
     )
-    from registry_pkgs.database.mongodb import MongoDB
-
     logger.warning(
         "Scheduled runs do not supply A2A or MCP OAuth headers providers; "
         "workflows using Azure Foundry agents or OAuth-protected MCP servers will fail at execution time"
@@ -145,6 +143,7 @@ async def _run_scheduler_loop(
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=sleep_seconds)
             except TimeoutError:
+                # Expected: slept the full interval without a stop signal, so loop and re-poll.
                 pass
     finally:
         # Graceful shutdown: wait for all in-flight executions to finish

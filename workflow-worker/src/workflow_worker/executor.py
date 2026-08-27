@@ -35,6 +35,7 @@ async def _renew_lease(
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
             continue
         except TimeoutError:
+            # Expected: no stop signal within the interval, so fall through and renew the lease.
             pass
         try:
             matched = await repository.renew_claim(schedule_id, lease_token, lease_seconds)
@@ -71,7 +72,7 @@ async def run_bounded(
             await _execute_schedule(schedule, runner, repository)
     finally:
         stop_event.set()
-        await heartbeat
+        await asyncio.gather(heartbeat, return_exceptions=True)
 
 
 async def _load_current_claim(
