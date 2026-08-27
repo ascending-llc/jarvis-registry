@@ -30,6 +30,7 @@
     "start": "vite",
     "build": "vite build",
     "serve": "vite preview",
+    "test": "vitest run",
     "format": "biome check --write",
     "rebuild:package-lock": "rm -rf node_modules package-lock.json && npm install"
   },
@@ -56,7 +57,8 @@
     "eslint-plugin-react-refresh": "^0.4.9",
     "globals": "^15.9.0",
     "typescript-eslint": "^8.0.1",
-    "vite": "^7.2.2"
+    "vite": "^7.2.2",
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "nth-check": "^2.1.1",
