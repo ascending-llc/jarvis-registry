@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING
 from httpx import AsyncClient, Limits, Timeout
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic_settings.exceptions import IncompleteFieldDefinitionWarning
 
 from ..core.config import settings
 from .core.event_store import InMemoryEventStore
@@ -279,13 +281,25 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
         allowed_origins=[origin.strip() for origin in settings.mcpgw_allowed_origins.split(",") if origin.strip()],
     )
 
-    mcp = FastMCP(
-        "JarvisRegistry",
-        lifespan=mcp_lifespan,
-        event_store=InMemoryEventStore(max_events_per_stream=50, max_streams=500),
-        instructions=_SYSTEM_INSTRUCTIONS,
-        transport_security=transport_security_settings,
-    )
+    # mcp's FastMCP Settings (a pydantic-settings BaseSettings) has a `lifespan` field whose
+    # forward reference to `FastMCP` itself is never resolved via model_rebuild() — an upstream
+    # bug unfixed in the 1.x line as of mcp 1.29.0, only removed in the breaking v2 rewrite.
+    # Suppressed locally (not via a global filter) because some of our other dependencies
+    # (e.g. weaviate) call warnings.simplefilter("default") on import, which resets the global
+    # filter list and would silently defeat a suppression registered earlier at import time.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Field 'lifespan' has an incomplete definition",
+            category=IncompleteFieldDefinitionWarning,
+        )
+        mcp = FastMCP(
+            "JarvisRegistry",
+            lifespan=mcp_lifespan,
+            event_store=InMemoryEventStore(max_events_per_stream=50, max_streams=500),
+            instructions=_SYSTEM_INSTRUCTIONS,
+            transport_security=transport_security_settings,
+        )
 
     return mcp
 

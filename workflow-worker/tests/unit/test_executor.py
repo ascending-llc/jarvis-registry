@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,6 +8,38 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowRunStatus
 from workflow_worker import executor
+
+
+def _claimed_schedule(**overrides: object) -> SimpleNamespace:
+    defaults: dict[str, object] = {
+        "id": PydanticObjectId(),
+        "workflow_definition_id": PydanticObjectId(),
+        "lease_token": "lease-1",
+        "cron_expression": "0 2 * * *",
+        "timezone": "UTC",
+        "initial_input": {"user_text": "generate report"},
+        "created_by": PydanticObjectId(),
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _definition(**overrides: object) -> SimpleNamespace:
+    defaults: dict[str, object] = {
+        "id": PydanticObjectId(),
+        "version": 3,
+        "enabled": True,
+        "model_dump": lambda mode="json": {"name": "wf"},
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+@pytest.fixture(autouse=True)
+def _workflow_run_settings_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WorkflowRun() calls get_pymongo_collection() in Beanie's __init__; stub settings so
+    constructing one in tests doesn't require a real Beanie/Mongo connection."""
+    monkeypatch.setattr(executor.WorkflowRun, "get_settings", lambda: SimpleNamespace(pymongo_collection=None))
 
 
 @pytest.mark.asyncio
@@ -113,6 +145,138 @@ async def test_execute_schedule_persists_runner_failure(monkeypatch: pytest.Monk
 
     mark_failed.assert_awaited_once_with(run, error)
     finish.assert_awaited_once_with(schedule, run, WorkflowRunStatus.FAILED, repository)
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_run_maps_fields_and_inserts_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    claimed = _claimed_schedule()
+    definition = _definition()
+    next_run_at = datetime.now(UTC) + timedelta(days=1)
+    monkeypatch.setattr(executor, "calculate_next_run_at", lambda cron, tz: next_run_at)
+    repository = SimpleNamespace(advance_and_insert_run=AsyncMock(return_value=True))
+
+    run = await executor._create_scheduled_run(claimed, definition, repository)
+
+    assert run is not None
+    assert run.workflow_definition_id == definition.id
+    assert run.workflow_version == definition.version
+    assert run.status == WorkflowRunStatus.PENDING
+    assert run.trigger_source == "schedule"
+    assert run.initial_input == claimed.initial_input
+    assert run.definition_snapshot == {"name": "wf"}
+    assert run.triggering_user_id == str(claimed.created_by)
+    repository.advance_and_insert_run.assert_awaited_once_with(claimed, run, next_run_at)
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_run_returns_none_when_fencing_check_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    claimed = _claimed_schedule()
+    definition = _definition()
+    monkeypatch.setattr(executor, "calculate_next_run_at", lambda cron, tz: datetime.now(UTC))
+    repository = SimpleNamespace(advance_and_insert_run=AsyncMock(return_value=False))
+
+    run = await executor._create_scheduled_run(claimed, definition, repository)
+
+    assert run is None
+
+
+@pytest.mark.asyncio
+async def test_prepare_scheduled_run_returns_none_when_claim_is_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
+    repository = SimpleNamespace(load_claim=AsyncMock(return_value=None))
+    definition_get = AsyncMock()
+    monkeypatch.setattr(executor.WorkflowDefinition, "get", definition_get)
+
+    result = await executor._prepare_scheduled_run(schedule, repository)
+
+    assert result is None
+    repository.load_claim.assert_awaited_once_with(schedule.id, schedule.lease_token)
+    definition_get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepare_scheduled_run_disables_schedule_when_definition_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
+    claimed = _claimed_schedule()
+    repository = SimpleNamespace(
+        load_claim=AsyncMock(return_value=claimed),
+        disable_claim=AsyncMock(return_value=True),
+        advance_and_insert_run=AsyncMock(),
+    )
+    monkeypatch.setattr(executor.WorkflowDefinition, "get", AsyncMock(return_value=None))
+
+    result = await executor._prepare_scheduled_run(schedule, repository)
+
+    assert result is None
+    repository.disable_claim.assert_awaited_once_with(claimed.id, claimed.lease_token)
+    repository.advance_and_insert_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepare_scheduled_run_disables_schedule_when_definition_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
+    claimed = _claimed_schedule()
+    definition = _definition(enabled=False)
+    repository = SimpleNamespace(
+        load_claim=AsyncMock(return_value=claimed),
+        disable_claim=AsyncMock(return_value=True),
+        advance_and_insert_run=AsyncMock(),
+    )
+    monkeypatch.setattr(executor.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+
+    result = await executor._prepare_scheduled_run(schedule, repository)
+
+    assert result is None
+    repository.disable_claim.assert_awaited_once_with(claimed.id, claimed.lease_token)
+    repository.advance_and_insert_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepare_scheduled_run_skips_when_fencing_check_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
+    claimed = _claimed_schedule()
+    definition = _definition()
+    repository = SimpleNamespace(
+        load_claim=AsyncMock(return_value=claimed),
+        disable_claim=AsyncMock(),
+        advance_and_insert_run=AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(executor.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+    monkeypatch.setattr(executor, "calculate_next_run_at", lambda cron, tz: datetime.now(UTC))
+
+    result = await executor._prepare_scheduled_run(schedule, repository)
+
+    assert result is None
+    repository.disable_claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepare_scheduled_run_returns_claim_definition_and_run_on_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
+    claimed = _claimed_schedule()
+    definition = _definition()
+    repository = SimpleNamespace(
+        load_claim=AsyncMock(return_value=claimed),
+        disable_claim=AsyncMock(),
+        advance_and_insert_run=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(executor.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+    monkeypatch.setattr(executor, "calculate_next_run_at", lambda cron, tz: datetime.now(UTC))
+
+    result = await executor._prepare_scheduled_run(schedule, repository)
+
+    assert result is not None
+    result_claimed, result_definition, result_run = result
+    assert result_claimed is claimed
+    assert result_definition is definition
+    assert result_run.workflow_definition_id == definition.id
+    repository.disable_claim.assert_not_awaited()
 
 
 @pytest.mark.asyncio

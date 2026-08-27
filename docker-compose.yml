@@ -107,9 +107,6 @@ services:
 
   workflow-worker:
     image: ghcr.io/ascending-llc/jarvis/workflow-worker:latest
-#    build:
-#      context: .
-#      dockerfile: docker/Dockerfile.workflow-worker
     environment:
       - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
       - REDIS_URI=redis://registry-redis:6379/1

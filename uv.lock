@@ -3280,6 +3280,7 @@ dependencies = [
     { name = "langchain-classic" },
     { name = "langchain-community" },
     { name = "langchain-weaviate" },
+    { name = "mcp" },
     { name = "openinference-instrumentation-agno" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -3310,6 +3311,7 @@ requires-dist = [
     { name = "langchain-classic", specifier = ">=1.0.0" },
     { name = "langchain-community", specifier = ">=0.4.1" },
     { name = "langchain-weaviate", specifier = ">=0.0.6" },
+    { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
     { name = "openinference-instrumentation-agno", specifier = ">=1.0.0" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -4048,7 +4050,6 @@ name = "workflow-worker"
 version = "0.2.0"
 source = { editable = "workflow-worker" }
 dependencies = [
-    { name = "fastapi" },
     { name = "httpx" },
     { name = "mcp" },
     { name = "pydantic-settings" },
@@ -4057,7 +4058,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.139.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },

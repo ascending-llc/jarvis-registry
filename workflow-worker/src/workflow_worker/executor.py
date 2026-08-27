@@ -200,7 +200,6 @@ async def _execute_schedule(
         final_status = updated_run.status
     except Exception as exc:
         logger.exception("Scheduled workflow execution failed for schedule %s", schedule.id)
-        if run is not None:
-            await _mark_run_failed(run, exc)
+        await _mark_run_failed(run, exc)
     finally:
         await _finish_schedule(schedule, run, final_status, repository)

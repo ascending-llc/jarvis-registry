@@ -27,6 +27,9 @@ def _claimable_filter(now: datetime, due_before: datetime | None = None) -> dict
         ],
     }
     if due_before is not None:
+        # Overrides (not merges with) the $ne: None clause above. This is intentional: Mongo's
+        # comparison operators only match same-BSON-type values by default, so $lte on a Date
+        # already excludes null/missing next_run_at without needing $ne: None alongside it.
         query["next_run_at"] = {"$lte": due_before}
     return query
 
