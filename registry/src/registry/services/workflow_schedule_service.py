@@ -4,7 +4,6 @@ from typing import Any
 
 from beanie import PydanticObjectId
 from fastapi import HTTPException, status
-from pymongo import ReturnDocument
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry.schemas.acl_schema import ResourcePermissions
@@ -15,6 +14,7 @@ from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType, WorkflowDefinition, WorkflowSchedule
 from registry_pkgs.models.enums import RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 from registry_pkgs.workflows.scheduling import calculate_next_run_at, validate_schedule
 
 
@@ -36,10 +36,6 @@ def _object_id(value: str, resource_name: str) -> PydanticObjectId:
         ) from exc
 
 
-def _schedule_collection() -> Any:
-    return MongoDB.get_database().get_collection(WorkflowSchedule.get_settings().name)
-
-
 @dataclass(frozen=True)
 class ScheduleAccess:
     schedule: WorkflowSchedule
@@ -49,8 +45,9 @@ class ScheduleAccess:
 class WorkflowScheduleService:
     """Manage schedule documents while preserving workflow and schedule ACL boundaries."""
 
-    def __init__(self, acl_service: ACLService) -> None:
+    def __init__(self, acl_service: ACLService, schedule_repository: WorkflowScheduleRepository) -> None:
         self._acl_service = acl_service
+        self._schedule_repository = schedule_repository
 
     async def create_schedule(
         self,
@@ -159,19 +156,16 @@ class WorkflowScheduleService:
                     session=mongo_session,
                 )
                 updates = self._validated_updates(access.schedule, data)
-                document = await _schedule_collection().find_one_and_update(
-                    {
-                        "_id": access.schedule.id,
-                        "workflow_definition_id": access.schedule.workflow_definition_id,
-                    },
-                    {"$set": updates},
-                    return_document=ReturnDocument.AFTER,
-                    session=mongo_session,
+                schedule = await self._schedule_repository.update_schedule(
+                    access.schedule.id,
+                    access.schedule.workflow_definition_id,
+                    updates,
+                    mongo_session,
                 )
-        if document is None:
+        if schedule is None:
             raise _http_error(status.HTTP_404_NOT_FOUND, ErrorCode.RESOURCE_NOT_FOUND, "Schedule not found")
         return ScheduleAccess(
-            schedule=WorkflowSchedule.model_validate(document),
+            schedule=schedule,
             permissions=access.permissions,
         )
 
@@ -196,19 +190,16 @@ class WorkflowScheduleService:
                 if access.schedule.enabled == enabled:
                     return access
                 updates = await self._toggle_updates(access.schedule, enabled, mongo_session)
-                document = await _schedule_collection().find_one_and_update(
-                    {
-                        "_id": access.schedule.id,
-                        "workflow_definition_id": access.schedule.workflow_definition_id,
-                    },
-                    {"$set": updates},
-                    return_document=ReturnDocument.AFTER,
-                    session=mongo_session,
+                schedule = await self._schedule_repository.update_schedule(
+                    access.schedule.id,
+                    access.schedule.workflow_definition_id,
+                    updates,
+                    mongo_session,
                 )
-        if document is None:
+        if schedule is None:
             raise _http_error(status.HTTP_404_NOT_FOUND, ErrorCode.RESOURCE_NOT_FOUND, "Schedule not found")
         return ScheduleAccess(
-            schedule=WorkflowSchedule.model_validate(document),
+            schedule=schedule,
             permissions=access.permissions,
         )
 

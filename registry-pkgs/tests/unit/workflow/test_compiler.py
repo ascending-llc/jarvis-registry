@@ -16,10 +16,9 @@ from registry_pkgs.models.workflow import (
     WorkflowNode,
     WorkflowRun,
 )
-from registry_pkgs.workflows import compiler
+from registry_pkgs.workflows import compiler, helpers
 from registry_pkgs.workflows.compiler import step_kwargs
 from registry_pkgs.workflows.helpers import build_prompt, step_output_to_prompt_text
-from registry_pkgs.workflows.serialization import content_to_str
 
 
 async def _executor(*args, **kwargs):
@@ -1281,9 +1280,9 @@ class TestIntentionData:
         assert 'Dependencies:\n- "Ghost Node": produce ghost output.' in prompt
         assert "Current Step Inputs:" not in prompt
 
-    @pytest.mark.skip(reason="truncation temporarily disabled")
     @pytest.mark.asyncio
-    async def test_long_output_is_truncated_in_dependency_prompt(self):
+    async def test_long_output_is_truncated_in_dependency_prompt(self, monkeypatch):
+        """Truncation applies to the whole assembled prompt once it exceeds the aggregate budget."""
         upstream = _step_node("Big Node", "tool", "produce long output")
         node = self._step_node_with_refs("echo", ["Big Node"], "consume long output")
         definition = _workflow_definition([upstream, node])
@@ -1297,12 +1296,20 @@ class TestIntentionData:
             definition, _workflow_run(), executor_registry={"tool": capturing_executor}
         )
         long_content = "x" * 10_000
-        previous = self._make_previous_outputs(**{"Big Node": long_content})
-        await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
+        step_input = StepInput(
+            input="task", previous_step_outputs=self._make_previous_outputs(**{"Big Node": long_content})
+        )
 
-        prompt = received_prompts[0]
-        assert "x" * 8000 in prompt
-        assert "[truncated: 2000 chars omitted]" in prompt
+        await workflow.steps[1].executor(step_input, {})
+        full_prompt = received_prompts[0]
+        assert len(full_prompt) > 10_000  # sanity check before mocking a cap below that size
+
+        monkeypatch.setattr(helpers, "_MAX_PROMPT_CHARS", 8000)
+        await workflow.steps[1].executor(step_input, {})
+        truncated_prompt = received_prompts[1]
+
+        omitted = len(full_prompt) - 8000
+        assert truncated_prompt == f"{full_prompt[:8000]}\n[truncated: {omitted} chars omitted]"
 
     @pytest.mark.asyncio
     async def test_no_dependencies_entry_node_renders_initial_input(self):
@@ -1495,8 +1502,8 @@ class TestIntentionData:
         assert "Workflow Trigger Parameters" not in prompts[0]
 
     @pytest.mark.asyncio
-    async def test_oversized_initial_input_is_truncated_in_trigger_parameters(self):
-        """trigger_parameters gets the same 8000-char cap as dependency content (helpers._truncate)."""
+    async def test_oversized_initial_input_is_truncated_in_trigger_parameters(self, monkeypatch):
+        """An oversized trigger_parameters block also counts toward the aggregate prompt budget."""
         node = _step_node("echo", "tool", "do the thing")
         definition = _workflow_definition([node])
         oversized_input = {"blob": "x" * 10_000}
@@ -1513,16 +1520,18 @@ class TestIntentionData:
             return SimpleNamespace(content="ok")
 
         workflow = compiler.compile_workflow(definition, run, executor_registry={"tool": capturing_executor})
-        await workflow.steps[0].executor(StepInput(input="task"), {})
+        step_input = StepInput(input="task")
 
-        prompt = prompts[0]
-        full_json = content_to_str(oversized_input)
-        omitted = len(full_json) - 8000
-        # `_indented_block` reflows the truncated text's line-leading whitespace, so assert on
-        # the un-reflowable pieces: the full oversized run must not survive intact, and the
-        # truncation note must carry the exact omitted-char count.
-        assert "x" * 10_000 not in prompt
-        assert f"[truncated: {omitted} chars omitted]" in prompt
+        await workflow.steps[0].executor(step_input, {})
+        full_prompt = prompts[0]
+        assert len(full_prompt) > 10_000  # sanity check before mocking a cap below that size
+
+        monkeypatch.setattr(helpers, "_MAX_PROMPT_CHARS", 8000)
+        await workflow.steps[0].executor(step_input, {})
+        truncated_prompt = prompts[1]
+
+        omitted = len(full_prompt) - 8000
+        assert truncated_prompt == f"{full_prompt[:8000]}\n[truncated: {omitted} chars omitted]"
 
     def test_build_prompt_falls_back_without_additional_data(self):
         assert build_prompt(StepInput(input="hello")) == "hello"
@@ -1744,6 +1753,40 @@ class TestIntentionData:
         assert "image-bytes" not in prompt
         assert "video-bytes" not in prompt
         assert "audio-bytes" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_long_media_metadata_is_not_independently_truncated(self):
+        """Per-field caps on alt_text/transcript were removed — only the aggregate prompt budget applies now."""
+        from agno.media import Audio, Image
+
+        upstream = _step_node("Media Node", "tool", "produce media")
+        node = self._step_node_with_refs("echo", ["Media Node"], "consume media")
+        definition = _workflow_definition([upstream, node])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        long_alt_text = "a" * 600
+        long_transcript = "b" * 600
+        previous = {
+            "Media Node": StepOutput(
+                step_name="Media Node",
+                images=[Image(content=b"image-bytes", mime_type="image/png", id="image-1", alt_text=long_alt_text)],
+                audio=[Audio(content=b"audio-bytes", mime_type="audio/mpeg", id="audio-1", transcript=long_transcript)],
+                success=True,
+            )
+        }
+        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), {})
+
+        prompt = received_prompts[0]
+        assert f"alt_text={long_alt_text}" in prompt
+        assert f"transcript={long_transcript}" in prompt
+        assert "[truncated:" not in prompt
 
 
 @pytest.mark.unit
