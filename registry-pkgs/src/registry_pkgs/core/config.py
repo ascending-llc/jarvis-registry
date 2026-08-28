@@ -118,6 +118,30 @@ class TelemetryConfig(BaseModel):
     )
 
 
+_CHARS_PER_TOKEN_ESTIMATE = 4  # rough English-text heuristic; Claude's tokenizer has no fixed char:token ratio
+_WORKFLOW_LLM_CONTEXT_BUDGET_TOKENS = 900_000  # leaves ~100K tokens of headroom under Sonnet 5's 1M-token window
+
+
+class WorkflowPromptSettings(BaseSettings):
+    """Tuning knob for how large a compiled workflow step prompt may grow before truncation.
+
+    Standalone `BaseSettings` rather than a `BaseModel` threaded from `JarvisBaseSettings` (unlike
+    `JwtSigningConfig` and friends below): it has no required fields, so `registry_pkgs.workflows.helpers`
+    can read it directly without the owning app (registry/auth-server) having to construct and pass it down.
+
+    Default sizes to the workflow LLM's context window (currently Claude Sonnet 5 on AWS Bedrock via an
+    Application Inference Profile — see `Settings.workflow_llm_model_id` in the registry app's config),
+    leaving headroom for the rest of the request and the model's own response.
+    """
+
+    model_config = SettingsConfigDict(case_sensitive=False, extra="ignore")
+
+    workflow_prompt_max_chars: int = Field(
+        default=_WORKFLOW_LLM_CONTEXT_BUDGET_TOKENS * _CHARS_PER_TOKEN_ESTIMATE,
+        description="Max characters a compiled workflow step prompt may reach before being truncated",
+    )
+
+
 class JarvisBaseSettings(BaseSettings):
     """Shared base settings for all Jarvis services.
 
