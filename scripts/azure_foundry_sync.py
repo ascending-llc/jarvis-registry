@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from registry.container import RegistryContainer
 from registry.core.config import settings
 from registry_pkgs.database import close_mongodb, init_mongodb
-from registry_pkgs.database.redis_client import create_redis_client
+from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import Federation
@@ -142,6 +142,9 @@ async def main() -> None:
                 print(f"deleted federation {federation.id} + its agents")
             except Exception as exc:
                 logger.warning("cleanup failed (leaving federation %s): %s", federation.id, exc)
+        await container.azure_foundry_client_cache.close()
+        close_redis_client(redis_client)
+        db_client.close()
         await close_mongodb()
 
 
