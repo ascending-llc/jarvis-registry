@@ -52,6 +52,7 @@ from .federation_job_service import FederationJobService
 logger = logging.getLogger(__name__)
 
 ACL_INHERITANCE_BATCH_SIZE = 500
+_STALE_PROTECTED_SKIP_REASONS = frozenset({"detail_fetch_failed", "tag_fetch_failed"})
 
 
 def _enum_value(value):
@@ -60,6 +61,15 @@ def _enum_value(value):
 
 def _acl_key_part(value: Any) -> str:
     return str(_enum_value(value))
+
+
+def _protected_runtime_arns(discovered: dict[str, list[Any]]) -> set[str]:
+    """Return transiently failed runtime ARNs that must not be treated as stale."""
+    return {
+        str(runtime_arn)
+        for skipped in discovered.get("skipped_runtimes", [])
+        if skipped.get("reason") in _STALE_PROTECTED_SKIP_REASONS and (runtime_arn := skipped.get("runtimeArn"))
+    }
 
 
 def _normalize_runtime_access(
@@ -457,6 +467,7 @@ class FederationSyncService:
             federation=federation,
             discovered_mcp=discovered.get("mcp_servers", []),
             discovered_a2a=discovered.get("a2a_agents", []),
+            protected_runtime_arns=_protected_runtime_arns(discovered),
             session=None,
         )
         message = None
@@ -567,6 +578,7 @@ class FederationSyncService:
             federation=federation,
             discovered_mcp=discovered_mcp,
             discovered_a2a=discovered_a2a,
+            protected_runtime_arns=_protected_runtime_arns(discovered),
             session=session,
         )
         return sync_plan
@@ -719,6 +731,7 @@ class FederationSyncService:
         federation: Federation,
         discovered_mcp: list[Any],
         discovered_a2a: list[Any],
+        protected_runtime_arns: set[str] | None = None,
         session: AsyncClientSession | None = None,
     ) -> FederationSyncPlan:
         """Compare discovered resources against Mongo state without mutating it."""
@@ -752,6 +765,7 @@ class FederationSyncService:
         discovered_mcp_ids = self._classify_mcp_items(
             federation, discovered_mcp, existing_mcp_by_remote, existing_mcp_by_server_name, apply_summary, sync_plan
         )
+        discovered_mcp_ids.update(protected_runtime_arns or set())
         self._collect_stale_items(
             existing_mcp, discovered_mcp_ids, apply_summary, sync_plan.mcp_deletes, "deletedMcpServers"
         )
@@ -759,6 +773,7 @@ class FederationSyncService:
         discovered_a2a_ids = self._classify_a2a_items(
             federation, discovered_a2a, existing_a2a_by_remote, existing_a2a_by_path, apply_summary, sync_plan
         )
+        discovered_a2a_ids.update(protected_runtime_arns or set())
         self._collect_stale_items(
             existing_a2a, discovered_a2a_ids, apply_summary, sync_plan.a2a_deletes, "deletedAgents"
         )
@@ -1885,22 +1900,43 @@ class FederationSyncService:
         already gone; orphaned vector records are a cosmetic issue that can be repaired
         by a future rebuild.
         """
-        if mcp_runtime_arns:
-            await self.mcp_server_repo.ensure_collection()
-        if a2a_runtime_arns:
-            await self.a2a_agent_repo.ensure_collection()
+        errors: list[str] = []
+        errors.extend(
+            await self._delete_vectors_for_resource_kind(
+                federation_id_str=federation_id_str,
+                kind="mcp",
+                repository=self.mcp_server_repo,
+                runtime_arns=mcp_runtime_arns,
+            )
+        )
+        errors.extend(
+            await self._delete_vectors_for_resource_kind(
+                federation_id_str=federation_id_str,
+                kind="a2a",
+                repository=self.a2a_agent_repo,
+                runtime_arns=a2a_runtime_arns,
+            )
+        )
+        return errors
 
-        items = [
-            *(_VectorItem("mcp", runtime_arn) for runtime_arn in mcp_runtime_arns),
-            *(_VectorItem("a2a", runtime_arn) for runtime_arn in a2a_runtime_arns),
-        ]
+    async def _delete_vectors_for_resource_kind(
+        self,
+        *,
+        federation_id_str: str,
+        kind: str,
+        repository: Any,
+        runtime_arns: list[str],
+    ) -> list[str]:
+        if not runtime_arns:
+            return []
 
-        async def _delete_one(item: _VectorItem) -> None:
-            repository = self.mcp_server_repo if item.kind == "mcp" else self.a2a_agent_repo
-            await repository.delete_by_runtime_identity(federation_id_str, item.runtime_arn)
+        await repository.ensure_collection()
+
+        async def _delete_one(runtime_arn: str) -> None:
+            await repository.delete_by_runtime_identity(federation_id_str, runtime_arn)
 
         outcomes = await run_bounded(
-            items,
+            runtime_arns,
             _delete_one,
             limit=settings.federation_vector_sync_max_concurrency,
         )
@@ -1910,12 +1946,12 @@ class FederationSyncService:
                 continue
             logger.error(
                 "Failed to delete %s vector records for runtime %s: %s",
-                outcome.item.kind.upper(),
-                outcome.item.runtime_arn,
+                kind.upper(),
+                outcome.item,
                 outcome.error,
                 exc_info=outcome.exc_info,
             )
-            errors.append(f"{outcome.item.kind} vector cleanup failed for {outcome.item.runtime_arn}")
+            errors.append(f"{kind} vector cleanup failed for {outcome.item}")
         return errors
 
     @staticmethod

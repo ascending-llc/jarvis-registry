@@ -10,6 +10,7 @@ from beanie import PydanticObjectId
 from registry.services.federation_sync_service import (
     FederationSyncService,
     _ConflictOutcome,
+    _protected_runtime_arns,
 )
 from registry_pkgs.models.enums import (
     FederationProviderType,
@@ -30,6 +31,19 @@ from tests.unit.services.federation_sync_test_helpers import (
 )
 
 pytestmark = pytest.mark.usefixtures("default_empty_access_roles")
+
+
+def test_protected_runtime_arns_only_includes_transient_discovery_failures() -> None:
+    discovered = {
+        "skipped_runtimes": [
+            {"runtimeArn": "arn:detail", "reason": "detail_fetch_failed"},
+            {"runtimeArn": "arn:tags", "reason": "tag_fetch_failed"},
+            {"runtimeArn": "arn:mismatch", "reason": "tag_filter_mismatch"},
+            {"runtimeArn": "arn:unknown"},
+        ]
+    }
+
+    assert _protected_runtime_arns(discovered) == {"arn:detail", "arn:tags"}
 
 
 @pytest.mark.asyncio
@@ -1559,6 +1573,79 @@ async def test_build_sync_plan_mcp_enrichment_error_does_not_skip_stale_detectio
     assert result.summary.deletedMcpServers == 0
     assert result.summary.updatedMcpServers == 0
     assert result.mcp_deletes == []
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_does_not_delete_runtime_with_transient_discovery_failure(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/detail-failed"
+    existing = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
+        serverName="detail-failed",
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.A2AAgent.find",
+        lambda *_args, **_kwargs: _FakeQuery([]),
+    )
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[],
+        protected_runtime_arns={runtime_arn},
+    )
+
+    assert result.summary.deletedMcpServers == 0
+    assert result.mcp_deletes == []
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_does_not_delete_a2a_runtime_with_transient_discovery_failure(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/tag-failed"
+    existing = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
+        path="/tag-failed",
+    )
+
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedMCPServer.find",
+        lambda *_args, **_kwargs: _FakeQuery([]),
+    )
+
+    def _fake_a2a_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[],
+        protected_runtime_arns={runtime_arn},
+    )
+
+    assert result.summary.deletedAgents == 0
+    assert result.a2a_deletes == []
 
 
 @pytest.mark.asyncio

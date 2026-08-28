@@ -102,7 +102,10 @@ class AgentCoreFederationClient:
             assume_role_arn=assume_role_arn,
             client=control_client,
         )
-        runtime_details = await self._get_runtime_details(control_executor, selected_summaries)
+        runtime_details, detail_fetch_failures = await self._get_runtime_details(
+            control_executor,
+            selected_summaries,
+        )
         runtime_details = [self._normalize_runtime_detail(detail) for detail in runtime_details]
         total_candidates = len(runtime_details)
         filtered_out_count = 0
@@ -133,7 +136,7 @@ class AgentCoreFederationClient:
 
         a2a_agents: list[A2AAgent] = []
         mcp_servers: list[ExtendedMCPServer] = []
-        skipped_runtimes: list[dict[str, Any]] = list(filtered_runtimes)
+        skipped_runtimes: list[dict[str, Any]] = [*detail_fetch_failures, *filtered_runtimes]
         logger.debug(f"runtime_details: {runtime_details}")
         for runtime_detail in runtime_details:
             runtime_arn = runtime_detail["runtimeArn"]
@@ -192,7 +195,7 @@ class AgentCoreFederationClient:
         self,
         control_executor: AgentCoreControlExecutor,
         summaries: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         async def _fetch_one(summary: dict[str, Any]) -> dict[str, Any]:
             runtime_id = summary["agentRuntimeId"]
             runtime_version = summary["agentRuntimeVersion"]
@@ -209,6 +212,7 @@ class AgentCoreFederationClient:
             _fetch_one,
             limit=settings.federation_discovery_max_concurrency,
         )
+        failed_runtimes: list[dict[str, Any]] = []
         for outcome in outcomes:
             if outcome.ok:
                 continue
@@ -218,7 +222,18 @@ class AgentCoreFederationClient:
                 outcome.error,
                 exc_info=outcome.exc_info,
             )
-        return [outcome.result for outcome in outcomes if outcome.ok and outcome.result is not None]
+            summary = outcome.item
+            failed_runtimes.append(
+                {
+                    "runtimeArn": summary.get("agentRuntimeArn") or summary.get("runtimeArn"),
+                    "runtimeId": summary.get("agentRuntimeId"),
+                    "runtimeName": summary.get("agentRuntimeName"),
+                    "serverProtocol": self._extract_runtime_protocol(summary) or "UNKNOWN",
+                    "reason": "detail_fetch_failed",
+                }
+            )
+        details = [outcome.result for outcome in outcomes if outcome.ok and outcome.result is not None]
+        return details, failed_runtimes
 
     @staticmethod
     def _normalize_runtime_detail(runtime_detail: dict[str, Any]) -> dict[str, Any]:

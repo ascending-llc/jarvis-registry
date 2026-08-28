@@ -402,7 +402,7 @@ class TestAgentCoreFederationClient:
 
         monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
         monkeypatch.setattr(client, "_list_runtime_summaries", lambda *_args, **_kwargs: [])
-        monkeypatch.setattr(client, "_get_runtime_details", _async_return([]))
+        monkeypatch.setattr(client, "_get_runtime_details", _async_return(([], [])))
 
         async def _fail_if_called(*_args, **_kwargs):
             raise AssertionError("discovery must not query persisted runtime type state")
@@ -479,7 +479,7 @@ class TestAgentCoreFederationClient:
 
         monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
         monkeypatch.setattr(client, "_list_runtime_summaries", _list_runtime_summaries)
-        monkeypatch.setattr(client, "_get_runtime_details", _async_return([]))
+        monkeypatch.setattr(client, "_get_runtime_details", _async_return(([], [])))
 
         result = await client.discover_runtime_entities(
             author_id=_TEST_AUTHOR_ID,
@@ -502,15 +502,61 @@ class TestAgentCoreFederationClient:
         control_client.get_agent_runtime.side_effect = _get_agent_runtime
         executor = SimpleNamespace(execute=lambda operation: _await_value(operation(control_client)))
         summaries = [
-            {"agentRuntimeId": "first", "agentRuntimeVersion": "1"},
-            {"agentRuntimeId": "broken", "agentRuntimeVersion": "1"},
-            {"agentRuntimeId": "third", "agentRuntimeVersion": "1"},
+            {"agentRuntimeArn": "arn:first", "agentRuntimeId": "first", "agentRuntimeVersion": "1"},
+            {
+                "agentRuntimeArn": "arn:broken",
+                "agentRuntimeId": "broken",
+                "agentRuntimeVersion": "1",
+                "agentRuntimeName": "broken-runtime",
+            },
+            {"agentRuntimeArn": "arn:third", "agentRuntimeId": "third", "agentRuntimeVersion": "1"},
         ]
 
-        details = await client._get_runtime_details(executor, summaries)
+        details, failed_runtimes = await client._get_runtime_details(executor, summaries)
 
         assert [detail["agentRuntimeId"] for detail in details] == ["first", "third"]
+        assert failed_runtimes == [
+            {
+                "runtimeArn": "arn:broken",
+                "runtimeId": "broken",
+                "runtimeName": "broken-runtime",
+                "serverProtocol": "UNKNOWN",
+                "reason": "detail_fetch_failed",
+            }
+        ]
         assert control_client.get_agent_runtime.call_count == 3
+
+    async def test_discovery_reports_runtime_detail_failure_as_skipped_runtime(self, monkeypatch):
+        client = AgentCoreFederationClient()
+        control_client = MagicMock()
+        control_client.get_agent_runtime.side_effect = RuntimeError("detail unavailable")
+        summary = {
+            "agentRuntimeArn": "arn:broken",
+            "agentRuntimeId": "broken",
+            "agentRuntimeVersion": "1",
+            "agentRuntimeName": "broken-runtime",
+        }
+
+        async def _execute_with_control_client(_region, _operation, _assume_role_arn=None):
+            return control_client, [summary]
+
+        executor = SimpleNamespace(execute=lambda operation: _await_value(operation(control_client)))
+        monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
+        monkeypatch.setattr(client.client_provider, "create_scoped_control_executor", lambda **_kwargs: executor)
+
+        result = await client.discover_runtime_entities(region="us-east-1", author_id=_TEST_AUTHOR_ID)
+
+        assert result["mcp_servers"] == []
+        assert result["a2a_agents"] == []
+        assert result["skipped_runtimes"] == [
+            {
+                "runtimeArn": "arn:broken",
+                "runtimeId": "broken",
+                "runtimeName": "broken-runtime",
+                "serverProtocol": "UNKNOWN",
+                "reason": "detail_fetch_failed",
+            }
+        ]
 
     async def test_tag_failure_is_reported_as_skipped_runtime(self):
         client = AgentCoreFederationClient()

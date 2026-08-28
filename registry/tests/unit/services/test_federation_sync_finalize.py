@@ -405,7 +405,14 @@ async def test_bookkeeping_transaction_returns_plan_with_enrichment_errors(
     result = await federation_sync_service._commit_bookkeeping_transaction(
         federation=federation,
         job=job,
-        discovered={"mcp_servers": [SimpleNamespace()], "a2a_agents": [SimpleNamespace()]},
+        discovered={
+            "mcp_servers": [SimpleNamespace()],
+            "a2a_agents": [SimpleNamespace()],
+            "skipped_runtimes": [
+                {"runtimeArn": "arn:transient", "reason": "detail_fetch_failed"},
+                {"runtimeArn": "arn:filtered", "reason": "tag_filter_mismatch"},
+            ],
+        },
         session=session,
     )
 
@@ -414,6 +421,7 @@ async def test_bookkeeping_transaction_returns_plan_with_enrichment_errors(
     assert federation_sync_service.federation_crud_service.mark_syncing.await_args.kwargs["last_sync"].status == (
         FederationSyncStatus.SYNCING
     )
+    assert federation_sync_service._build_sync_plan.await_args.kwargs["protected_runtime_arns"] == {"arn:transient"}
 
 
 def test_build_pending_last_sync_uses_pending_status():
