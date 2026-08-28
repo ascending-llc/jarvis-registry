@@ -30,7 +30,11 @@ from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider, make_mcp_executor
-from registry_pkgs.workflows.types import POOL_KEY_PREFIX
+from registry_pkgs.workflows.types import (
+    BUILTIN_ECHO_EXECUTOR_KEY,
+    BUILTIN_SET_VALUE_EXECUTOR_KEY,
+    POOL_KEY_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +101,7 @@ def _instrumented_executor(
 
 def _builtin_executor(key: str) -> StepExecutor | None:
     """Return a lightweight in-process executor for builtin workflow demo steps."""
-    if key == "echo":
+    if key == BUILTIN_ECHO_EXECUTOR_KEY:
 
         async def _echo(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
             # Demo executor: not LLM-backed, echoes the raw trigger text.
@@ -110,7 +114,7 @@ def _builtin_executor(key: str) -> StepExecutor | None:
         _echo.__name__ = "builtin_echo_executor"
         return _echo
 
-    if key == "set_value":
+    if key == BUILTIN_SET_VALUE_EXECUTOR_KEY:
 
         async def _set_value(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
             # Demo executor: not LLM-backed, stores raw trigger text in session_state.

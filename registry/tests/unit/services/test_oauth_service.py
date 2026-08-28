@@ -4,6 +4,7 @@ import pytest
 from bson import ObjectId
 
 from registry.auth.oauth import FlowStateManager
+from registry.schemas.common_api_schemas import OAuthFlowStatusResponse
 from registry.schemas.enums import OAuthFlowStatus
 from registry.schemas.oauth_schema import OAuthTokens
 from registry.services.oauth.oauth_service import MCPOAuthService
@@ -13,6 +14,9 @@ from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 class TestMCPOAuthService:
     """Unit tests for MCPOAuthService class"""
+
+    def test_oauth_flow_status_enum_contains_only_reachable_states(self) -> None:
+        assert {status.value for status in OAuthFlowStatus} == {"pending", "completed", "failed"}
 
     @pytest.fixture
     def mock_flow_manager(self):
@@ -447,14 +451,16 @@ class TestMCPOAuthService:
 
     # Tests for complete_oauth_flow method
     @pytest.mark.asyncio
-    async def test_complete_oauth_flow_success(self, oauth_service):
-        """Test successful completion of OAuth flow"""
+    @pytest.mark.parametrize("initial_status", [OAuthFlowStatus.PENDING, OAuthFlowStatus.FAILED])
+    async def test_complete_oauth_flow_success(self, oauth_service, initial_status: OAuthFlowStatus):
+        """Pending and retryable failed flows can both complete within their original TTL."""
         flow_id = "test_flow_id"
         authorization_code = "test_code"
         state = "test_flow_id##security_token"
 
         # Mock flow manager
         mock_flow = Mock()
+        mock_flow.status = initial_status
         mock_flow.state = state
         mock_flow.metadata = Mock()
         mock_flow.metadata.metadata = Mock(
@@ -488,6 +494,26 @@ class TestMCPOAuthService:
         oauth_service.token_service.store_oauth_tokens.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_complete_failed_flow_rejects_retry_past_original_ttl(self, oauth_service) -> None:
+        flow_id = "test_flow_id"
+        state = "test_flow_id##security_token"
+        flow = Mock(state=state, status=OAuthFlowStatus.FAILED)
+        oauth_service.flow_manager.decode_state.return_value = {
+            "flow_id": flow_id,
+            "security_token": "security_token",
+        }
+        oauth_service.flow_manager.get_flow.return_value = flow
+        oauth_service.flow_manager.is_flow_expired.return_value = True
+        oauth_service.oauth_client.exchange_code_for_tokens = AsyncMock()
+
+        success, error = await oauth_service.complete_oauth_flow(flow_id, "test_code", state)
+
+        assert success is False
+        assert error == "Flow expired"
+        oauth_service.flow_manager.delete_flow.assert_called_once_with(flow_id)
+        oauth_service.oauth_client.exchange_code_for_tokens.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_complete_oauth_flow_invalid_state(self, oauth_service):
         """Test complete_oauth_flow with invalid state parameter"""
         flow_id = "test_flow_id"
@@ -499,6 +525,74 @@ class TestMCPOAuthService:
 
         assert not success
         assert "Invalid state format" in error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("flow_status", "completed", "failed"),
+        [
+            (OAuthFlowStatus.PENDING, False, False),
+            (OAuthFlowStatus.FAILED, False, True),
+            (OAuthFlowStatus.COMPLETED, True, False),
+        ],
+    )
+    async def test_get_flow_status_returns_uniform_found_shape(
+        self,
+        oauth_service,
+        flow_status: OAuthFlowStatus,
+        completed: bool,
+        failed: bool,
+    ) -> None:
+        flow = Mock(
+            status=flow_status,
+            error="denied" if failed else None,
+            server_id="server-1",
+            user_id="user-1",
+            created_at=100.0,
+            completed_at=120.0 if completed else None,
+        )
+        oauth_service.flow_manager.get_flow.return_value = flow
+        oauth_service.flow_manager.is_flow_expired.return_value = False
+
+        result = await oauth_service.get_flow_status("user-1:server-1")
+
+        assert isinstance(result, OAuthFlowStatusResponse)
+        assert result.status == flow_status
+        assert result.completed is completed
+        assert result.failed is failed
+        assert result.server_id == "server-1"
+        assert result.user_id == "user-1"
+        assert result.created_at == 100.0
+        assert result.completed_at == (120.0 if completed else None)
+        oauth_service.flow_manager.delete_flow.assert_not_called()
+        if completed:
+            oauth_service.flow_manager.is_flow_expired.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_flow_status_returns_uniform_not_found_shape(self, oauth_service) -> None:
+        oauth_service.flow_manager.get_flow.return_value = None
+
+        result = await oauth_service.get_flow_status("user-1:server-1")
+
+        assert result == OAuthFlowStatusResponse(status="not_found", completed=False, failed=False)
+        oauth_service.flow_manager.is_flow_expired.assert_not_called()
+        oauth_service.flow_manager.delete_flow.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flow_status", [OAuthFlowStatus.PENDING, OAuthFlowStatus.FAILED])
+    async def test_get_flow_status_lazily_deletes_logically_expired_unfinished_flow(
+        self,
+        oauth_service,
+        flow_status: OAuthFlowStatus,
+    ) -> None:
+        flow = Mock(status=flow_status)
+        oauth_service.flow_manager.get_flow.return_value = flow
+        oauth_service.flow_manager.is_flow_expired.return_value = True
+
+        result = await oauth_service.get_flow_status("user-1:server-1")
+
+        assert result == OAuthFlowStatusResponse(status="not_found", completed=False, failed=False)
+        oauth_service.flow_manager.is_flow_expired.assert_called_once_with(flow)
+        oauth_service.flow_manager.delete_flow.assert_called_once_with("user-1:server-1")
 
     # Tests for get_valid_access_token method
     @pytest.mark.asyncio

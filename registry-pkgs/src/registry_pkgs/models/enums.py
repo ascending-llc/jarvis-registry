@@ -51,6 +51,15 @@ class FederationProviderType(StrEnum):
     AZURE_AI_FOUNDRY = "azure_ai_foundry"
 
 
+class McpAuthMode(StrEnum):
+    """How an ExtendedMCPServer authenticates to its downstream MCP server."""
+
+    AGENTCORE = "agentcore"
+    OAUTH = "oauth"
+    API_KEY = "api_key"
+    NONE = "none"
+
+
 class SkillSyncProviderType(StrEnum):
     """Supported providers for external skill sources."""
 

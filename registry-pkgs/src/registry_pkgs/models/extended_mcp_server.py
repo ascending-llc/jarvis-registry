@@ -57,7 +57,7 @@ from pydantic import Field
 from pymongo import IndexModel
 
 from ..core.config import ChunkingConfig
-from ..models.enums import MCPEntityType
+from ..models.enums import McpAuthMode, MCPEntityType
 from ._generated import MCPServer
 from .federation_metadata import AgentCoreMcpFederationMetadata, extract_runtime_arn, extract_runtime_version
 
@@ -200,6 +200,18 @@ class ExtendedMCPServer(MCPServer):
         return (
             bool(self.config.get("enabled")) if self.config and isinstance(self.config.get("enabled"), bool) else False
         )
+
+    @property
+    def mcp_auth_mode(self) -> McpAuthMode:
+        """Classify which authentication mechanism the server config declares."""
+        config = self.config or {}
+        if config.get("runtimeAccess"):
+            return McpAuthMode.AGENTCORE
+        if config.get("requiresOAuth", False) or "oauth" in config:
+            return McpAuthMode.OAUTH
+        if isinstance(config.get("apiKey"), dict):
+            return McpAuthMode.API_KEY
+        return McpAuthMode.NONE
 
     # Beanie's init_actions (>=2.1.0) skips any @before_event/@after_event method whose name
     # starts with "_" (https://github.com/BeanieODM/beanie/issues/1316), so this hook cannot
