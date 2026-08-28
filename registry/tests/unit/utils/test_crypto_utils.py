@@ -5,20 +5,43 @@ from unittest.mock import patch
 
 from registry.core.config import settings
 from registry.utils.crypto_utils import (
-    ENCRYPTED_VALUE_PATTERN,
     decrypt_auth_fields,
+    decrypt_value,
     encrypt_auth_fields,
+    encrypt_value,
     generate_access_token,
     generate_refresh_token,
     is_encrypted,
     verify_access_token,
     verify_refresh_token,
 )
+from registry_pkgs.core.crypto_utils import ENCRYPTED_VALUE_PATTERN
 from registry_pkgs.core.jwt_tokens import (
     TOKEN_CLASS_CLAIM,
     TOKEN_CLASS_CRUD_SESSION,
     mint_managed_agent_token,
 )
+
+
+class TestWrapperDelegation:
+    """Verify registry wrappers pass the configured encryption key."""
+
+    def test_encrypt_value_passes_settings_key(self):
+        with patch("registry.utils.crypto_utils._encrypt_value") as mock_encrypt:
+            mock_encrypt.return_value = "ct"
+            assert encrypt_value("secret") == "ct"
+            mock_encrypt.assert_called_once_with("secret", encryption_key=settings.encryption_key)
+
+    def test_decrypt_value_passes_settings_key(self):
+        with patch("registry.utils.crypto_utils._decrypt_value") as mock_decrypt:
+            mock_decrypt.return_value = "pt"
+            assert decrypt_value("ct") == "pt"
+            mock_decrypt.assert_called_once_with("ct", encryption_key=settings.encryption_key)
+
+    def test_round_trip_through_wrappers(self):
+        ciphertext = encrypt_value("round-trip-secret")
+        assert is_encrypted(ciphertext)
+        assert decrypt_value(ciphertext) == "round-trip-secret"
 
 
 class TestCrudSessionTokens:
