@@ -43,6 +43,7 @@ WORKFLOW_LATENCY_BUCKETS = [0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 1
 # OTel semantic-convention resource attribute key. Declared as a literal to avoid
 # pulling in the optional `opentelemetry-semconv` dependency.
 _SERVICE_VERSION = "service.version"
+_DEPLOYMENT_ENVIRONMENT_NAME = "deployment.environment.name"
 _OTLP_EXPORT_TIMEOUT_SECONDS = 5
 _TRACE_MAX_QUEUE_SIZE = 2048
 _TRACE_MAX_EXPORT_BATCH_SIZE = 512
@@ -130,15 +131,16 @@ def _build_resource(service_name: str, telemetry_config: TelemetryConfig) -> Res
     """
     Build the OTel Resource with standard identifying attributes.
 
-    Beyond service.name, include service.version so metrics can be correlated
-    per-version in dashboards (industry-standard resource attribute).
+    Include standard version and deployment environment attributes so telemetry
+    can be correlated across releases and environments.
     """
-    return Resource.create(
-        attributes={
-            SERVICE_NAME: service_name,
-            _SERVICE_VERSION: telemetry_config.build_version,
-        }
-    )
+    attributes = {
+        SERVICE_NAME: service_name,
+        _SERVICE_VERSION: telemetry_config.build_version,
+    }
+    if telemetry_config.deployment_environment:
+        attributes[_DEPLOYMENT_ENVIRONMENT_NAME] = telemetry_config.deployment_environment
+    return Resource.create(attributes=attributes)
 
 
 def setup_metrics(
