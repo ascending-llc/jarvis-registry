@@ -53,7 +53,7 @@ class WorkerSettings(BaseSettings):
         try:
             bytes.fromhex(self.creds_key)
         except ValueError as exc:
-            raise ValueError(f"CREDS_KEY must be a valid hex string, but it is {self.creds_key}") from exc
+            raise ValueError("CREDS_KEY must be a valid hex string.") from exc
         return self
 
     @cached_property

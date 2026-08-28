@@ -59,7 +59,7 @@ def encrypt_value(plaintext: str, *, encryption_key: bytes) -> str:
     - Uses AES-CBC encryption (matching Web Crypto API)
     - Generates a random 16-byte IV for each encryption
     - Returns format: hex(iv):hex(ciphertext)
-    - NO padding (Web Crypto API handles this automatically)
+    - Uses PKCS#7 padding to a 16-byte AES block size
 
     Args:
         plaintext: The plaintext string to encrypt

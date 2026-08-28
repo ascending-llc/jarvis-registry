@@ -63,6 +63,7 @@ class AzureFoundryClientCache:
         """
         cached = self._auth_services.get(federation_id)
         if cached is not None:
+            logger.info(f"Using cached auth service for {federation_id}")
             return cached
 
         federation = await Federation.get(federation_id)
