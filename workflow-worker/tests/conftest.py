@@ -1,5 +1,9 @@
 """Pytest configuration for workflow-worker tests."""
 
+import os
+
+os.environ.setdefault("CREDS_KEY", "00" * 16)
+
 
 def pytest_report_teststatus(report, config):
     """

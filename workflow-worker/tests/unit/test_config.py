@@ -18,6 +18,7 @@ def test_worker_settings_build_shared_client_configs() -> None:
         jwt_self_signed_kid="test-kid",
         jwt_audience="test-audience",
         registry_app_name="test-worker",
+        creds_key="00" * 16,
         _env_file=None,
     )
 
@@ -29,6 +30,7 @@ def test_worker_settings_build_shared_client_configs() -> None:
     assert settings.redis_config.redis_key_prefix == "worker-prefix"
     assert settings.jwt_signing_config.jwt_issuer == "https://issuer.example.com"
     assert settings.jwt_signing_config.registry_app_name == "test-worker"
+    assert settings.encryption_key == bytes.fromhex("00" * 16)
 
 
 def test_worker_settings_reject_claim_capacity_below_execution_capacity() -> None:
@@ -36,5 +38,16 @@ def test_worker_settings_reject_claim_capacity_below_execution_capacity() -> Non
         WorkerSettings(
             WORKFLOW_WORKER_MAX_CONCURRENT_RUNS=5,
             WORKFLOW_WORKER_MAX_CLAIMED_RUNS=4,
+            creds_key="00" * 16,
             _env_file=None,
         )
+
+
+def test_worker_settings_reject_missing_creds_key() -> None:
+    with pytest.raises(ValidationError, match="CREDS_KEY must be set"):
+        WorkerSettings(creds_key="", _env_file=None)
+
+
+def test_worker_settings_reject_non_hex_creds_key() -> None:
+    with pytest.raises(ValidationError, match="CREDS_KEY must be a valid hex string"):
+        WorkerSettings(creds_key="not-hex", _env_file=None)

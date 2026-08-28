@@ -38,11 +38,27 @@ class WorkerSettings(BaseSettings):
     jwt_audience: str = "jarvis-services"
     registry_app_name: str = "jarvis-registry-client"
 
+    creds_key: str = ""
+
     @model_validator(mode="after")
     def _validate_claim_capacity(self) -> Self:
         if self.max_claimed_runs < self.max_concurrent_runs:
             raise ValueError("WORKFLOW_WORKER_MAX_CLAIMED_RUNS must be greater than or equal to MAX_CONCURRENT_RUNS")
         return self
+
+    @model_validator(mode="after")
+    def _validate_creds_key(self) -> Self:
+        if self.creds_key == "":
+            raise ValueError("CREDS_KEY must be set for encryption/decryption.")
+        try:
+            bytes.fromhex(self.creds_key)
+        except ValueError as exc:
+            raise ValueError(f"CREDS_KEY must be a valid hex string, but it is {self.creds_key}") from exc
+        return self
+
+    @cached_property
+    def encryption_key(self) -> bytes:
+        return bytes.fromhex(self.creds_key)
 
     @cached_property
     def mongo_config(self) -> MongoConfig:
