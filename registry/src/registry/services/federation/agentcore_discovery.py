@@ -14,7 +14,9 @@ from registry_pkgs.models.federation_metadata import (
     AgentCoreMcpFederationMetadata,
 )
 
-from .agentcore_clients import AgentCoreClientProvider
+from ...core.config import settings
+from ...utils.concurrency import run_bounded
+from .agentcore_clients import AgentCoreClientProvider, AgentCoreControlExecutor
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
 
 logger = logging.getLogger(__name__)
@@ -95,14 +97,12 @@ class AgentCoreFederationClient:
                 continue
             selected_summaries.append(summary)
 
-        control_client, runtime_details = await self.client_provider.execute_with_control_client(
-            region,
-            lambda control_client: (
-                control_client,
-                self._get_runtime_details(control_client, selected_summaries),
-            ),
-            assume_role_arn,
+        control_executor = self.client_provider.create_scoped_control_executor(
+            region=region,
+            assume_role_arn=assume_role_arn,
+            client=control_client,
         )
+        runtime_details = await self._get_runtime_details(control_executor, selected_summaries)
         runtime_details = [self._normalize_runtime_detail(detail) for detail in runtime_details]
         total_candidates = len(runtime_details)
         filtered_out_count = 0
@@ -114,19 +114,11 @@ class AgentCoreFederationClient:
                 normalized_tag_filter,
                 total_candidates,
             )
-            control_client, filtered = await self.client_provider.execute_with_control_client(
-                region,
-                lambda control_client: (
-                    control_client,
-                    self._filter_runtime_details_by_tags(
-                        control_client,
-                        runtime_details,
-                        normalized_tag_filter,
-                    ),
-                ),
-                assume_role_arn,
+            runtime_details, filtered_runtimes = await self._filter_runtime_details_by_tags(
+                control_executor,
+                runtime_details,
+                normalized_tag_filter,
             )
-            runtime_details, filtered_runtimes = filtered
             filtered_out_count = len(filtered_runtimes)
         else:
             filtered_runtimes = []
@@ -196,21 +188,37 @@ class AgentCoreFederationClient:
                 break
         return items
 
-    def _get_runtime_details(self, control_client: Any, summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        details: list[dict[str, Any]] = []
-        for summary in summaries:
+    async def _get_runtime_details(
+        self,
+        control_executor: AgentCoreControlExecutor,
+        summaries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        async def _fetch_one(summary: dict[str, Any]) -> dict[str, Any]:
             runtime_id = summary["agentRuntimeId"]
             runtime_version = summary["agentRuntimeVersion"]
-            detail = control_client.get_agent_runtime(
-                agentRuntimeId=runtime_id,
-                agentRuntimeVersion=runtime_version,
+            detail = await control_executor.execute(
+                lambda control_client: control_client.get_agent_runtime(
+                    agentRuntimeId=runtime_id,
+                    agentRuntimeVersion=runtime_version,
+                )
             )
-            details.append({**summary, **detail})
-        return details
+            return {**summary, **detail}
 
-    def _list_runtime_tags(self, control_client: Any, runtime_arn: str) -> dict[str, str]:
-        response = control_client.list_tags_for_resource(resourceArn=runtime_arn)
-        return dict(response.get("tags", {}) or {})
+        outcomes = await run_bounded(
+            summaries,
+            _fetch_one,
+            limit=settings.federation_discovery_max_concurrency,
+        )
+        for outcome in outcomes:
+            if outcome.ok:
+                continue
+            logger.error(
+                "Failed to get AgentCore runtime detail: runtime_id=%s error=%s",
+                outcome.item.get("agentRuntimeId"),
+                outcome.error,
+                exc_info=outcome.exc_info,
+            )
+        return [outcome.result for outcome in outcomes if outcome.ok and outcome.result is not None]
 
     @staticmethod
     def _normalize_runtime_detail(runtime_detail: dict[str, Any]) -> dict[str, Any]:
@@ -227,19 +235,50 @@ class AgentCoreFederationClient:
         """
         return all(str(runtime_tags.get(key)) == str(expected) for key, expected in required_tags.items())
 
-    def _filter_runtime_details_by_tags(
+    async def _filter_runtime_details_by_tags(
         self,
-        control_client: Any,
+        control_executor: AgentCoreControlExecutor,
         runtime_details: list[dict[str, Any]],
         required_tags: dict[str, str],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         matched_details: list[dict[str, Any]] = []
         filtered_runtimes: list[dict[str, Any]] = []
 
-        for runtime_detail in runtime_details:
+        async def _fetch_tags(runtime_detail: dict[str, Any]) -> dict[str, str]:
+            runtime_arn = runtime_detail["runtimeArn"]
+            response = await control_executor.execute(
+                lambda control_client: control_client.list_tags_for_resource(resourceArn=runtime_arn)
+            )
+            return dict(response.get("tags", {}) or {})
+
+        outcomes = await run_bounded(
+            runtime_details,
+            _fetch_tags,
+            limit=settings.federation_discovery_max_concurrency,
+        )
+        for outcome in outcomes:
+            runtime_detail = outcome.item
             runtime_arn = runtime_detail["runtimeArn"]
             runtime_name = runtime_detail.get("agentRuntimeName")
-            runtime_tags = self._list_runtime_tags(control_client, runtime_arn)
+            if not outcome.ok or outcome.result is None:
+                logger.error(
+                    "Failed to list AgentCore runtime tags: runtime_arn=%s error=%s",
+                    runtime_arn,
+                    outcome.error,
+                    exc_info=outcome.exc_info,
+                )
+                filtered_runtimes.append(
+                    {
+                        "runtimeArn": runtime_arn,
+                        "runtimeId": runtime_detail.get("agentRuntimeId"),
+                        "runtimeName": runtime_name,
+                        "serverProtocol": self._extract_runtime_protocol(runtime_detail) or "UNKNOWN",
+                        "reason": "tag_fetch_failed",
+                    }
+                )
+                continue
+
+            runtime_tags = outcome.result
             runtime_detail["tags"] = runtime_tags
 
             if self._matches_resource_tags(runtime_tags, required_tags):

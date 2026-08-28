@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -20,6 +19,8 @@ from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
 from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetadata
 
+from ...core.config import settings
+from ...utils.concurrency import run_bounded
 from .azure_foundry_auth import AzureFoundryAuthService
 
 logger = logging.getLogger(__name__)
@@ -86,10 +87,19 @@ class AzureFoundryDiscoveryClient:
         # Enrich with the full agentCard/v0.3 (parallel; failures kept per-agent).
         headers = await auth.build_headers()
         async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(60.0)) as http_client:
-            await asyncio.gather(
-                *(self._enrich_agent_card(agent, http_client) for agent in agents),
-                return_exceptions=False,
+            outcomes = await run_bounded(
+                agents,
+                lambda agent: self._enrich_agent_card(agent, http_client),
+                limit=settings.azure_foundry_discovery_max_concurrency,
             )
+            for outcome in outcomes:
+                if not outcome.ok:
+                    logger.warning(
+                        "Unexpected Foundry A2A enrichment failure for %s: %s",
+                        outcome.item,
+                        outcome.error,
+                        exc_info=outcome.exc_info,
+                    )
 
         return agents
 
@@ -121,16 +131,20 @@ class AzureFoundryDiscoveryClient:
         if not names:
             return []
 
-        async def _safe_get(name: str) -> Any | None:
-            try:
-                return await project.agents.get(name)
-            except Exception as exc:
-                # A single broken agent must not abort the whole sync. Log and skip.
-                logger.warning("agents.get(%s) failed: %s", name, exc)
-                return None
-
-        results = await asyncio.gather(*(_safe_get(name) for name in names))
-        return [detail for detail in results if detail is not None]
+        outcomes = await run_bounded(
+            names,
+            project.agents.get,
+            limit=settings.azure_foundry_discovery_max_concurrency,
+        )
+        for outcome in outcomes:
+            if not outcome.ok:
+                logger.warning(
+                    "agents.get(%s) failed: %s",
+                    outcome.item,
+                    outcome.error,
+                    exc_info=outcome.exc_info,
+                )
+        return [outcome.result for outcome in outcomes if outcome.ok and outcome.result is not None]
 
     @staticmethod
     def _is_a2a_enabled(detail: Any) -> bool:

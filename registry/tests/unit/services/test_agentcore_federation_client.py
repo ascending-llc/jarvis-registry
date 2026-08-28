@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import boto3
 import pytest
@@ -401,7 +402,7 @@ class TestAgentCoreFederationClient:
 
         monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
         monkeypatch.setattr(client, "_list_runtime_summaries", lambda *_args, **_kwargs: [])
-        monkeypatch.setattr(client, "_get_runtime_details", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(client, "_get_runtime_details", _async_return([]))
 
         async def _fail_if_called(*_args, **_kwargs):
             raise AssertionError("discovery must not query persisted runtime type state")
@@ -478,7 +479,7 @@ class TestAgentCoreFederationClient:
 
         monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
         monkeypatch.setattr(client, "_list_runtime_summaries", _list_runtime_summaries)
-        monkeypatch.setattr(client, "_get_runtime_details", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(client, "_get_runtime_details", _async_return([]))
 
         result = await client.discover_runtime_entities(
             author_id=_TEST_AUTHOR_ID,
@@ -487,9 +488,71 @@ class TestAgentCoreFederationClient:
         )
 
         assert result == {"a2a_agents": [], "mcp_servers": [], "skipped_runtimes": []}
-        assert execute_calls == [
-            ("us-east-1", "arn:aws:iam::123456789012:role/TestRole"),
-            ("us-east-1", "arn:aws:iam::123456789012:role/TestRole"),
+        assert execute_calls == [("us-east-1", "arn:aws:iam::123456789012:role/TestRole")]
+
+    async def test_runtime_detail_failure_is_isolated_to_one_runtime(self):
+        client = AgentCoreFederationClient()
+        control_client = MagicMock()
+
+        def _get_agent_runtime(*, agentRuntimeId, agentRuntimeVersion):
+            if agentRuntimeId == "broken":
+                raise RuntimeError("detail unavailable")
+            return {"runtimeArn": f"arn:{agentRuntimeId}", "agentRuntimeVersion": agentRuntimeVersion}
+
+        control_client.get_agent_runtime.side_effect = _get_agent_runtime
+        executor = SimpleNamespace(execute=lambda operation: _await_value(operation(control_client)))
+        summaries = [
+            {"agentRuntimeId": "first", "agentRuntimeVersion": "1"},
+            {"agentRuntimeId": "broken", "agentRuntimeVersion": "1"},
+            {"agentRuntimeId": "third", "agentRuntimeVersion": "1"},
+        ]
+
+        details = await client._get_runtime_details(executor, summaries)
+
+        assert [detail["agentRuntimeId"] for detail in details] == ["first", "third"]
+        assert control_client.get_agent_runtime.call_count == 3
+
+    async def test_tag_failure_is_reported_as_skipped_runtime(self):
+        client = AgentCoreFederationClient()
+        control_client = MagicMock()
+
+        def _list_tags_for_resource(*, resourceArn):
+            if resourceArn == "arn:broken":
+                raise RuntimeError("tags unavailable")
+            return {"tags": {"env": "production"}}
+
+        control_client.list_tags_for_resource.side_effect = _list_tags_for_resource
+        executor = SimpleNamespace(execute=lambda operation: _await_value(operation(control_client)))
+        runtime_details = [
+            {
+                "runtimeArn": "arn:ok",
+                "agentRuntimeId": "ok",
+                "agentRuntimeName": "ok",
+                "protocolConfiguration": {"serverProtocol": "MCP"},
+            },
+            {
+                "runtimeArn": "arn:broken",
+                "agentRuntimeId": "broken",
+                "agentRuntimeName": "broken",
+                "protocolConfiguration": {"serverProtocol": "MCP"},
+            },
+        ]
+
+        matched, skipped = await client._filter_runtime_details_by_tags(
+            executor,
+            runtime_details,
+            {"env": "production"},
+        )
+
+        assert [detail["runtimeArn"] for detail in matched] == ["arn:ok"]
+        assert skipped == [
+            {
+                "runtimeArn": "arn:broken",
+                "runtimeId": "broken",
+                "runtimeName": "broken",
+                "serverProtocol": "MCP",
+                "reason": "tag_fetch_failed",
+            }
         ]
 
 
@@ -498,3 +561,7 @@ def _async_return(value):
         return value
 
     return _inner
+
+
+async def _await_value(value):
+    return value

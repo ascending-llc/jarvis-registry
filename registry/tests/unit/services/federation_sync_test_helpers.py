@@ -17,11 +17,15 @@ def _make_federation_sync_service() -> FederationSyncService:
     user_service.get_user_by_user_id = AsyncMock(
         return_value=SimpleNamespace(id=_DEFAULT_USER_OBJECT_ID, user_id="user-1")
     )
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.ensure_collection = AsyncMock()
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.ensure_collection = AsyncMock()
     return FederationSyncService(
         federation_crud_service=MagicMock(),
         federation_job_service=MagicMock(),
-        mcp_server_repo=MagicMock(),
-        a2a_agent_repo=MagicMock(),
+        mcp_server_repo=mcp_server_repo,
+        a2a_agent_repo=a2a_agent_repo,
         acl_service=MagicMock(),
         user_service=user_service,
     )

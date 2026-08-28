@@ -365,6 +365,20 @@ async def test_delete_source_skills_returns_real_deleted_counts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delete_source_skills_attempts_every_skill_before_raising() -> None:
+    source = SimpleNamespace(id=PydanticObjectId())
+    skills = [SimpleNamespace(id=PydanticObjectId()) for _ in range(3)]
+    service = _service()
+    service.list_live_skills = AsyncMock(return_value=skills)
+    service._delete_skill = AsyncMock(side_effect=[1, RuntimeError("delete failed"), 2])
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        await service.delete_source_skills(source)
+
+    assert service._delete_skill.await_count == 3
+
+
+@pytest.mark.asyncio
 async def test_apply_one_skill_shares_transaction_across_skill_files_and_acl(monkeypatch):
     client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext()))
     monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)

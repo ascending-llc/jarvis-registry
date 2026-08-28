@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7,6 +8,7 @@ import pytest
 from azure.ai.projects.models import AgentEndpointProtocol
 from beanie import PydanticObjectId
 
+from registry.core.config import settings
 from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry.services.federation.azure_foundry_discovery import AzureFoundryDiscoveryClient
 from registry_pkgs.models import A2AAgent
@@ -121,6 +123,33 @@ def _patch_httpx():
         "registry.services.federation.azure_foundry_discovery.httpx.AsyncClient",
         return_value=fake_client,
     )
+
+
+@pytest.mark.asyncio
+async def test_fetch_agent_details_respects_configured_concurrency(monkeypatch):
+    in_flight = 0
+    peak_in_flight = 0
+    two_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _get(name: str):
+        nonlocal in_flight, peak_in_flight
+        in_flight += 1
+        peak_in_flight = max(peak_in_flight, in_flight)
+        if in_flight == 2:
+            two_started.set()
+        await release.wait()
+        in_flight -= 1
+        return name
+
+    monkeypatch.setattr(settings, "azure_foundry_discovery_max_concurrency", 2)
+    project = SimpleNamespace(agents=SimpleNamespace(get=_get))
+    task = asyncio.create_task(AzureFoundryDiscoveryClient()._fetch_agent_details(project, ["a", "b", "c"]))
+    await asyncio.wait_for(two_started.wait(), timeout=1)
+
+    assert peak_in_flight == 2
+    release.set()
+    assert await task == ["a", "b", "c"]
 
 
 def _make_auth_stub() -> AzureFoundryAuthService:

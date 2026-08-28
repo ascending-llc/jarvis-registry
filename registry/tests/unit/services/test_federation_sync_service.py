@@ -616,6 +616,65 @@ async def test_run_sync_forwards_author_id_to_discover_entities(
 # T1 – single MCP create failure, others persist
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
+async def test_apply_sync_plan_finishes_deletes_before_starting_creates(
+    federation_sync_service: FederationSyncService,
+):
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    events: list[str] = []
+
+    async def _delete() -> None:
+        events.append("delete-start")
+        events.append("delete-finished")
+
+    async def _insert() -> None:
+        assert events == ["delete-start", "delete-finished"]
+        events.append("create-start")
+        created.id = PydanticObjectId()
+        events.append("create-finished")
+
+    async def _save() -> None:
+        assert events == ["delete-start", "delete-finished", "create-start", "create-finished"]
+        events.append("update-start")
+
+    stale = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock(side_effect=_delete))
+    created = SimpleNamespace(id=None, insert=AsyncMock(side_effect=_insert))
+    existing = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="old",
+        path="/old",
+        tags=[],
+        config={},
+        numTools=0,
+        federationMetadata=None,
+        save=AsyncMock(side_effect=_save),
+    )
+    discovered = SimpleNamespace(
+        serverName="updated",
+        path="/updated",
+        tags=[],
+        config={},
+        numTools=1,
+        federationMetadata=None,
+    )
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(deletedMcpServers=1, createdMcpServers=1),
+        federation_id=PydanticObjectId(),
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=1,
+        discovered_a2a_count=0,
+        mcp_deletes=[(stale, "arn:old")],
+        mcp_creates=[(created, "arn:new")],
+        mcp_updates=[(existing, discovered, "arn:updated")],
+    )
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+
+    await federation_sync_service._apply_sync_plan(sync_plan)
+
+    assert events == ["delete-start", "delete-finished", "create-start", "create-finished", "update-start"]
+
+
+@pytest.mark.asyncio
 async def test_single_mcp_create_failure_others_persist(
     federation_sync_service: FederationSyncService,
 ):
