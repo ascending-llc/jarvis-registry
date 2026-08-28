@@ -9,6 +9,9 @@ const getServerStatusById: (id: string) => Promise<TYPE.GetServerStatusByIdRespo
 const getOauthInitiate: (id: string) => Promise<TYPE.GetOauthInitiateResponse> = async id =>
   await Request.get(API.getOauthInitiate(id));
 
+const getOauthFlowStatus: (flowId: string) => Promise<TYPE.GetOauthFlowStatusResponse> = async flowId =>
+  await Request.get(API.getOauthFlowStatus(flowId));
+
 const getOauthReinit: (id: string) => Promise<TYPE.GetServerAuthUrlResponse> = async id =>
   await Request.post(API.getOauthReinit(id));
 
@@ -23,6 +26,7 @@ const getDiscover: (url: string, config?: object) => Promise<any> = async (url, 
 export default {
   getServerStatusById,
   getOauthInitiate,
+  getOauthFlowStatus,
   getOauthReinit,
   cancelAuth,
   revokeAuth,

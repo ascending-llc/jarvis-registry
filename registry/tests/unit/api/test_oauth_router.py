@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from registry.api.v1.mcp.oauth_router import router
 from registry.core.session_store import SessionStore
 from registry.deps import get_container
+from registry.schemas.common_api_schemas import OAuthFlowStatusResponse
 from registry.schemas.enums import OAuthFlowStatus
 from registry.services.oauth.mcp_service import MCPService
 from tests.conftest import make_container_factory
@@ -58,6 +59,12 @@ def _layer_b_flow(state: str = "valid-state") -> Mock:
     return flow
 
 
+def _layer_a_flow(state: str = "valid-state") -> Mock:
+    flow = _layer_b_flow(state)
+    flow.metadata.mcp_client_context = None
+    return flow
+
+
 # Make all mock methods async for oauth_service
 for attr in dir(mock_oauth_service):
     if attr.startswith("mock_") or attr in [
@@ -98,6 +105,7 @@ def client():
 
     mock_flow_manager.is_flow_expired = Mock(return_value=False)
     mock_flow_manager.consume_flow = Mock(side_effect=lambda flow_id, _state: mock_flow_manager.get_flow(flow_id))
+    mock_flow_manager.fail_flow = Mock()
 
     app = FastAPI()
 
@@ -207,16 +215,46 @@ class TestOAuthRouter:
 
     def test_get_oauth_status_success(self, client):
         """Test successful retrieval of OAuth status"""
-        # Mock status response
-        mock_status = {"flow_id": "test_user-1234567890", "status": "completed", "server_id": TEST_SERVER_ID}
+        mock_status = OAuthFlowStatusResponse(
+            status=OAuthFlowStatus.COMPLETED,
+            completed=True,
+            failed=False,
+            server_id=TEST_SERVER_ID,
+            user_id="test_user",
+            created_at=100.0,
+            completed_at=120.0,
+        )
         mock_mcp_service.oauth_service.get_flow_status = make_async(lambda *args, **kwargs: mock_status)
 
-        flow_id = "test_user-1234567890"
+        flow_id = f"test_user:{TEST_SERVER_ID}"
 
         response = client.get(f"/mcp/oauth/status/{flow_id}")
 
         assert response.status_code == 200
-        assert response.json() == mock_status
+        assert response.json() == mock_status.model_dump(mode="json")
+
+    def test_get_oauth_status_not_found_has_uniform_shape(self, client):
+        mock_status = OAuthFlowStatusResponse(status="not_found", completed=False, failed=False)
+        mock_mcp_service.oauth_service.get_flow_status = make_async(lambda *args, **kwargs: mock_status)
+
+        response = client.get(f"/mcp/oauth/status/test_user:{TEST_SERVER_ID}")
+
+        assert response.status_code == 200
+        assert response.json() == mock_status.model_dump(mode="json")
+        assert response.json()["completed"] is False
+        assert response.json()["failed"] is False
+
+    def test_get_oauth_status_unauthorized(self, client):
+        """Test OAuth status retrieval for another user's flow."""
+        response = client.get(f"/mcp/oauth/status/other_user:{TEST_SERVER_ID}")
+
+        assert response.status_code == 403
+
+    def test_get_oauth_status_rejects_user_id_prefix_collision(self, client):
+        """A user ID prefix without the flow separator must not grant ownership."""
+        response = client.get(f"/mcp/oauth/status/test_user_suffix:{TEST_SERVER_ID}")
+
+        assert response.status_code == 403
 
     def test_cancel_oauth_flow_success(self, client):
         """Test successful cancellation of OAuth flow"""
@@ -426,6 +464,18 @@ class TestOAuthRouter:
         assert "oauth-callback?type=error" in response.headers["location"]
         assert "serverPath=test_server" in response.headers["location"]
         assert "error=missing_code" in response.headers["location"]
+        mock_flow_manager.fail_flow.assert_not_called()
+
+    def test_oauth_callback_missing_code_marks_verified_layer_a_flow_failed(self, client):
+        flow = _layer_a_flow()
+        mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_flow_manager.get_flow = lambda _: flow
+
+        response = client.get("/mcp/test_server/oauth/callback?state=valid-state", follow_redirects=False)
+
+        assert response.status_code == 307
+        assert "error=missing_code" in response.headers["location"]
+        mock_flow_manager.fail_flow.assert_called_once_with("flow-1", "missing_code")
 
     def test_oauth_callback_missing_state(self, client):
         """Test OAuth callback with missing state parameter"""
@@ -435,11 +485,32 @@ class TestOAuthRouter:
         assert "oauth-callback?type=error" in response.headers["location"]
         assert "serverPath=test_server" in response.headers["location"]
         assert "error=missing_state" in response.headers["location"]
+        mock_flow_manager.fail_flow.assert_not_called()
+
+    def test_oauth_callback_provider_error_does_not_mutate_missing_flow(self, client):
+        mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_flow_manager.get_flow = lambda _: None
+
+        response = client.get(
+            "/mcp/test_server/oauth/callback?error=access_denied&state=valid-state",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "error=access_denied" in response.headers["location"]
+        mock_flow_manager.fail_flow.assert_not_called()
 
     def test_oauth_callback_provider_error(self, client):
         """Test OAuth callback with error from provider"""
+        flow = _layer_a_flow()
+
+        def fail_flow(_flow_id: str, error: str) -> None:
+            flow.status = OAuthFlowStatus.FAILED
+            flow.error = error
+
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: None
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: flow
+        mock_flow_manager.fail_flow.side_effect = fail_flow
         response = client.get(
             "/mcp/test_server/oauth/callback?error=access_denied&state=valid-state",
             follow_redirects=False,
@@ -449,6 +520,9 @@ class TestOAuthRouter:
         assert "oauth-callback?type=error" in response.headers["location"]
         assert "serverPath=test_server" in response.headers["location"]
         assert "error=access_denied" in response.headers["location"]
+        mock_flow_manager.fail_flow.assert_called_once_with("flow-1", "access_denied")
+        assert flow.status == OAuthFlowStatus.FAILED
+        assert flow.error == "access_denied"
 
     @pytest.mark.parametrize(
         ("callback_query", "expected_error", "expected_description"),
@@ -488,6 +562,7 @@ class TestOAuthRouter:
             "state": ["client-state"],
         }
         mock_flow_manager.consume_flow.assert_called_once_with("flow-1", "valid-state")
+        mock_flow_manager.fail_flow.assert_not_called()
 
     def test_oauth_callback_relays_sanitized_complete_failure_to_layer_b_client(self, client):
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
@@ -508,6 +583,7 @@ class TestOAuthRouter:
         assert query["state"] == ["client-state"]
         assert "provider secret" not in response.headers["location"]
         mock_flow_manager.consume_flow.assert_called_once_with("flow-1", "valid-state")
+        mock_flow_manager.fail_flow.assert_not_called()
 
     def test_oauth_callback_does_not_relay_provider_error_for_completed_layer_b_flow(self, client):
         flow = _layer_b_flow()
@@ -524,6 +600,7 @@ class TestOAuthRouter:
         assert "oauth-callback?type=error" in response.headers["location"]
         assert not response.headers["location"].startswith("http://localhost:33418/cb")
         mock_flow_manager.consume_flow.assert_not_called()
+        mock_flow_manager.fail_flow.assert_not_called()
 
     def test_oauth_callback_does_not_relay_provider_error_for_expired_layer_b_flow(self, client):
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
@@ -539,6 +616,7 @@ class TestOAuthRouter:
         assert "oauth-callback?type=error" in response.headers["location"]
         assert not response.headers["location"].startswith("http://localhost:33418/cb")
         mock_flow_manager.consume_flow.assert_not_called()
+        mock_flow_manager.fail_flow.assert_not_called()
 
     def test_oauth_callback_layer_b_error_state_is_consumed_after_first_relay(self, client):
         flow_holder = {"flow": _layer_b_flow()}
@@ -594,6 +672,7 @@ class TestOAuthRouter:
         assert response.status_code == 307
         assert "oauth-callback?type=error" in response.headers["location"]
         assert not response.headers["location"].startswith("http://localhost:33418/cb")
+        mock_flow_manager.fail_flow.assert_not_called()
 
     def test_oauth_callback_does_not_relay_complete_failure_for_state_mismatch(self, client):
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
@@ -610,10 +689,12 @@ class TestOAuthRouter:
         assert response.status_code == 307
         assert "oauth-callback?type=error" in response.headers["location"]
         assert not response.headers["location"].startswith("http://localhost:33418/cb")
+        mock_flow_manager.fail_flow.assert_not_called()
 
     def test_oauth_callback_complete_failure_without_layer_b_context_keeps_page_redirect(self, client):
+        flow = _layer_a_flow()
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: None
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: flow
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(
             lambda *args, **kwargs: (False, "upstream_failed")
         )
@@ -626,6 +707,7 @@ class TestOAuthRouter:
         assert response.status_code == 307
         assert "oauth-callback?type=error" in response.headers["location"]
         assert "error=upstream_failed" in response.headers["location"]
+        mock_flow_manager.fail_flow.assert_called_once_with("flow-1", "upstream_failed")
 
     def test_oauth_callback_unexpected_exception_keeps_page_redirect(self, client):
         mock_mcp_service.oauth_service.flow_manager.decode_state = Mock(side_effect=RuntimeError("unexpected"))

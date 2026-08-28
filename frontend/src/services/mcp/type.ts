@@ -24,6 +24,15 @@ export type GetOauthInitiateResponse = {
   userId: string;
 };
 
+export type OauthFlowStatusValue = 'pending' | 'completed' | 'failed' | 'not_found';
+
+export type GetOauthFlowStatusResponse = {
+  status: OauthFlowStatusValue;
+  completed: boolean;
+  failed: boolean;
+  error?: string | null;
+};
+
 export type GetServerAuthUrlResponse = {
   success: boolean;
   message: string;

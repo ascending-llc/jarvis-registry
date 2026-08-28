@@ -748,7 +748,9 @@ node type does not use them. This lets clients access any field without null che
   - `resolution` (required, string): Resolution strategy (`reuse_previous_output`, `rerun`)
   - `sourceNodeRunId` (optional, string): Source node run ID when reusing output (required when resolution is `reuse_previous_output`)
 
-**Response**: `202 Accepted`
+**Response**: `200 OK`
+
+When OAuth preflight succeeds, the workflow run is created and queued:
 ```json
 {
   "runId": "run-demo-id",
@@ -756,7 +758,30 @@ node type does not use them. This lets clients access any field without null che
   "status": "pending",
   "triggerSource": "manual",
   "startedAt": "2024-01-25T10:00:00Z",
-  "message": "Workflow run queued successfully"
+  "message": "Workflow run queued for execution",
+  "requiresReauth": false,
+  "pendingAuthorizations": []
+}
+```
+
+When one or more OAuth MCP servers require re-authorization, no workflow run is created:
+```json
+{
+  "runId": null,
+  "workflowDefinitionId": null,
+  "status": null,
+  "triggerSource": null,
+  "startedAt": null,
+  "message": "One or more MCP servers require OAuth re-authorization before this run can start",
+  "requiresReauth": true,
+  "pendingAuthorizations": [
+    {
+      "serverId": "mcp-server-id",
+      "serverName": "github",
+      "authUrl": "https://issuer.example/authorize?...",
+      "flowId": "user-id:mcp-server-id"
+    }
+  ]
 }
 ```
 
@@ -766,7 +791,10 @@ node type does not use them. This lets clients access any field without null che
 - `500` Internal server error
 
 **Important Notes**:
-- Run executes asynchronously, returns 202 immediately
+- The endpoint performs OAuth preflight before creating a run and always returns `200 OK`
+- OAuth preflight evaluates the exact workflow version requested by `version` (or the latest version when omitted)
+- If `requiresReauth` is `true`, no `WorkflowRun` exists; complete every pending authorization and retry the request
+- If `requiresReauth` is `false`, the run executes asynchronously after the response
 - **Workflow must be enabled before triggering** - disabled workflows will return a 400 error with message "Workflow is disabled. Please enable the workflow before triggering a run."
 - Use the Toggle Workflow endpoint (`POST /workflows/{id}/toggle`) to enable the workflow before triggering
 

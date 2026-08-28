@@ -16,6 +16,7 @@ from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentC
 from registry_pkgs.workflows import a2a_client, executor_resolver
 from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows.helpers import build_prompt
+from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
 
 
 def _jwt_config(**overrides) -> JwtSigningConfig:
@@ -83,6 +84,9 @@ class _FieldExpr:
 @pytest.mark.unit
 class TestExecutorResolver:
     """Tests for the orchestration layer"""
+
+    def test_builtin_executor_keys_match_supported_builtins(self) -> None:
+        assert frozenset({"echo", "set_value"}) == BUILTIN_EXECUTOR_KEYS
 
     @staticmethod
     def _patch_beanie_filters(monkeypatch: pytest.MonkeyPatch) -> None:

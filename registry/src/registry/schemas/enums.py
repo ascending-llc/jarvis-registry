@@ -7,7 +7,6 @@ class OAuthFlowStatus(StrEnum):
     PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
-    EXPIRED = "expired"
 
 
 class ConnectionState(StrEnum):

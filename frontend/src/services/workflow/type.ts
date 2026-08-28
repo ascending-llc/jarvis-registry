@@ -174,14 +174,28 @@ export interface TriggerWorkflowRunRequest {
   resolvedDependencies?: ResolvedDependency[];
 }
 
-export interface TriggerWorkflowRunResponse {
-  runId: string;
-  workflowDefinitionId: string;
-  status: WorkflowRunStatus;
-  triggerSource: string;
-  startedAt: string;
-  message: string;
+export interface PendingAuthorization {
+  serverId: string;
+  serverName: string;
+  authUrl: string;
+  flowId: string;
 }
+
+export type TriggerWorkflowRunResponse =
+  | {
+      requiresReauth: false;
+      runId: string;
+      workflowDefinitionId: string;
+      status: WorkflowRunStatus;
+      triggerSource: string;
+      startedAt: string;
+      message: string;
+    }
+  | {
+      requiresReauth: true;
+      pendingAuthorizations: PendingAuthorization[];
+      message: string;
+    };
 
 export interface GetWorkflowRunsListRequest {
   status?: WorkflowRunStatus;
