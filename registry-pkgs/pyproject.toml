@@ -46,6 +46,8 @@ dependencies = [
     "opentelemetry-instrumentation-logging>=0.65b0",
     # agno auto-instrumentation (OpenInference)
     "openinference-instrumentation-agno>=1.0.0",
+    # Azure Entra credentials for Azure AI Foundry federation auth
+    "azure-identity>=1.25.3",
 ]
 
 [build-system]
