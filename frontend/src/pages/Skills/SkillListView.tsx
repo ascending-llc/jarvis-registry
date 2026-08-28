@@ -1,8 +1,13 @@
-import { Menu, Transition } from '@headlessui/react';
-import { ChevronRightIcon, DocumentTextIcon, PencilSquareIcon, PlusIcon } from '@heroicons/react/24/outline';
+import {
+  ArrowPathIcon,
+  DocumentTextIcon,
+  PlusIcon,
+  ShareIcon,
+  TrashIcon,
+} from '@heroicons/react/24/outline';
 import type React from 'react';
-import { Fragment } from 'react';
 
+import IconButton from '@/components/IconButton';
 import type { SkillMetadata } from '@/services/skill/type';
 
 import { getSkillDisplayName } from './skillDraft';
@@ -10,11 +15,15 @@ import { getSkillDisplayName } from './skillDraft';
 type SkillListViewProps = {
   skills: SkillMetadata[];
   loading: boolean;
+  refreshing: boolean;
   error: string | null;
   hasActiveConditions: boolean;
   onRetry: () => void;
+  onRefresh: () => void;
   onOpenSkill: (skillId: string) => void;
   onCreate: () => void;
+  onShare: (skill: SkillMetadata) => void;
+  onDelete: (skill: SkillMetadata) => void;
 };
 
 const UPDATED_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
@@ -32,11 +41,15 @@ const formatUpdatedDate = (updatedAt?: string | null): string => {
 const SkillListView: React.FC<SkillListViewProps> = ({
   skills,
   loading,
+  refreshing,
   error,
   hasActiveConditions,
   onRetry,
+  onRefresh,
   onOpenSkill,
   onCreate,
+  onShare,
+  onDelete,
 }) => (
   <section className='flex min-h-0 flex-1 flex-col overflow-y-auto px-0 pt-2 md:px-8'>
     <div className='mb-2 flex flex-shrink-0 items-start justify-between gap-4'>
@@ -48,48 +61,37 @@ const SkillListView: React.FC<SkillListViewProps> = ({
         </p>
       </div>
 
-      <Menu as='div' className='relative flex-shrink-0'>
-        <Menu.Button
-          aria-label='Add skill'
-          className='inline-flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)] transition hover:text-[var(--jarvis-text-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)]'
+      <div className='flex flex-shrink-0 items-center gap-3'>
+        <IconButton
+          ariaLabel='Refresh skills'
+          tooltip='Refresh'
+          onClick={onRefresh}
+          disabled={refreshing}
+          spinning={refreshing}
+          className='flex h-10 w-10 items-center justify-center rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] text-[var(--jarvis-text)] transition-colors hover:bg-[var(--jarvis-card-muted)]'
         >
-          <PlusIcon className='h-4 w-4' />
-        </Menu.Button>
-        <Transition
-          as={Fragment}
-          enter='transition ease-out duration-100'
-          enterFrom='transform opacity-0 scale-95'
-          enterTo='transform opacity-100 scale-100'
-          leave='transition ease-in duration-75'
-          leaveFrom='transform opacity-100 scale-100'
-          leaveTo='transform opacity-0 scale-95'
+          <ArrowPathIcon className='h-4 w-4' />
+        </IconButton>
+        <IconButton
+          ariaLabel='Add skill'
+          tooltip='Add skill'
+          onClick={onCreate}
+          variant='solid'
+          className='flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--jarvis-primary)] text-white shadow-sm transition-colors hover:bg-[var(--jarvis-primary-hover)]'
         >
-          <Menu.Items className='absolute right-0 z-30 mt-2 w-[234px] origin-top-right rounded-[10px] border border-[color:var(--jarvis-border-strong)] bg-[var(--jarvis-card)] p-1.5 shadow-xl focus:outline-none'>
-            <Menu.Item>
-              {({ active }) => (
-                <button
-                  type='button'
-                  onClick={onCreate}
-                  className={`flex w-full items-center gap-3 rounded-[7px] p-2.5 text-left text-[13.5px] text-[var(--jarvis-text)] transition ${
-                    active ? 'bg-[var(--jarvis-card-muted)]' : ''
-                  }`}
-                >
-                  <PencilSquareIcon className='h-[15px] w-[15px] text-[var(--jarvis-muted)]' />
-                  Write skill instructions
-                </button>
-              )}
-            </Menu.Item>
-          </Menu.Items>
-        </Transition>
-      </Menu>
+          <PlusIcon className='h-5 w-5' />
+        </IconButton>
+      </div>
     </div>
 
     <div className='min-h-0 flex-1 overflow-x-auto'>
-      <div className='grid min-w-[560px] grid-cols-[2fr_1fr_1fr_30px] gap-3 border-b border-[color:var(--jarvis-border)] px-1 py-2.5 text-[13px] text-[var(--jarvis-muted)]'>
-        <span>Skill</span>
-        <span>Last updated</span>
-        <span>Author</span>
-        <span className='sr-only'>Open</span>
+      <div className='grid min-w-[640px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border)] px-1 py-2.5 text-[13px] text-[var(--jarvis-muted)]'>
+        <div className='grid min-w-0 grid-cols-[2fr_1fr_1fr] gap-3'>
+          <span>Skill</span>
+          <span>Last updated</span>
+          <span>Author</span>
+        </div>
+        <span className='sr-only'>Actions</span>
       </div>
 
       {loading && (
@@ -129,33 +131,62 @@ const SkillListView: React.FC<SkillListViewProps> = ({
       {!loading &&
         !error &&
         skills.map(skill => (
-          <button
-            type='button'
+          <div
             key={skill.id}
-            onClick={() => onOpenSkill(skill.id)}
-            className='grid min-w-[560px] w-full grid-cols-[2fr_1fr_1fr_30px] items-center gap-3 border-b border-[color:var(--jarvis-border-soft)] px-1 py-4 text-left transition hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--jarvis-primary)]'
+            className='group grid min-w-[640px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border-soft)] px-1 transition hover:bg-[var(--jarvis-card-muted)]'
           >
-            <span className='flex min-w-0 items-center gap-2.5'>
-              <span className='flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-[5px] bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]'>
-                <DocumentTextIcon className='h-3 w-3' />
+            <button
+              type='button'
+              onClick={() => onOpenSkill(skill.id)}
+              className='grid min-w-0 grid-cols-[2fr_1fr_1fr] items-center gap-3 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--jarvis-primary)]'
+            >
+              <span className='flex min-w-0 items-center gap-2.5'>
+                <span className='flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-[5px] bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]'>
+                  <DocumentTextIcon className='h-3 w-3' />
+                </span>
+                <span className='min-w-0 truncate text-[14.5px] font-medium text-[var(--jarvis-text-strong)]'>
+                  {getSkillDisplayName(skill)}
+                </span>
+                <span
+                  className={`ml-1 inline-flex flex-shrink-0 rounded-full px-2 py-[3px] text-[10.5px] font-semibold leading-none ${
+                    skill.enabled
+                      ? 'bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)]'
+                      : 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]'
+                  }`}
+                >
+                  {skill.enabled ? 'Enabled' : 'Disabled'}
+                </span>
               </span>
-              <span className='min-w-0 truncate text-[14.5px] font-medium text-[var(--jarvis-text-strong)]'>
-                {getSkillDisplayName(skill)}
+              <span className='text-[13.5px] text-[var(--jarvis-muted)]'>{formatUpdatedDate(skill.updatedAt)}</span>
+              <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>
+                {skill.authorName || '—'}
               </span>
-              <span
-                className={`ml-1 inline-flex flex-shrink-0 rounded-full px-2 py-[3px] text-[10.5px] font-semibold leading-none ${
-                  skill.enabled
-                    ? 'bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)]'
-                    : 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]'
-                }`}
-              >
-                {skill.enabled ? 'Enabled' : 'Disabled'}
-              </span>
+            </button>
+            <span className='flex items-center justify-end gap-0.5 pr-1'>
+              {skill.permissions?.SHARE === true && (
+                <IconButton
+                  ariaLabel={`Share ${getSkillDisplayName(skill)}`}
+                  tooltip='Share'
+                  onClick={() => onShare(skill)}
+                  size='card'
+                  className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
+                >
+                  <ShareIcon className='h-3.5 w-3.5' />
+                </IconButton>
+              )}
+              {skill.permissions?.DELETE === true && (
+                <IconButton
+                  ariaLabel={`Delete ${getSkillDisplayName(skill)}`}
+                  tooltip='Delete'
+                  onClick={() => onDelete(skill)}
+                  size='card'
+                  className='text-[var(--jarvis-danger-text)] hover:bg-[var(--jarvis-danger-soft)] hover:text-[var(--jarvis-danger)]'
+                >
+                  <TrashIcon className='h-3.5 w-3.5' />
+                </IconButton>
+              )}
             </span>
-            <span className='text-[13.5px] text-[var(--jarvis-muted)]'>{formatUpdatedDate(skill.updatedAt)}</span>
-            <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>{skill.authorName || '—'}</span>
-            <ChevronRightIcon className='h-3.5 w-3.5 justify-self-end text-[var(--jarvis-faint)]' />
-          </button>
+          </div>
         ))}
     </div>
   </section>

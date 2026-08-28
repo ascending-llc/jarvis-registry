@@ -4,6 +4,8 @@ import { useMemo, useState } from 'react';
 
 import type { SkillFileMetadata } from '@/services/skill/type';
 
+import { SKILL_MARKDOWN_PATH } from './constants';
+
 export type SkillFileTreeNode =
   | { type: 'file'; name: string; path: string }
   | { type: 'folder'; name: string; path: string; children: SkillFileTreeNode[] };
@@ -39,11 +41,11 @@ const materializeFolder = (folder: MutableFolder): SkillFileTreeNode[] => {
 
 export const buildSkillFileTree = (files: SkillFileMetadata[]): SkillFileTreeNode[] => {
   const root = createMutableFolder('');
-  root.files.add('SKILL.md');
+  root.files.add(SKILL_MARKDOWN_PATH);
 
   files.forEach(file => {
     const parts = file.relativePath.split('/').filter(Boolean);
-    if (parts.length === 0 || file.relativePath === 'SKILL.md') return;
+    if (parts.length === 0 || file.relativePath === SKILL_MARKDOWN_PATH) return;
 
     let folder = root;
     parts.slice(0, -1).forEach(part => {
@@ -61,8 +63,8 @@ export const buildSkillFileTree = (files: SkillFileMetadata[]): SkillFileTreeNod
 
   const nodes = materializeFolder(root);
   return nodes.sort((left, right) => {
-    if (left.path === 'SKILL.md') return -1;
-    if (right.path === 'SKILL.md') return 1;
+    if (left.path === SKILL_MARKDOWN_PATH) return -1;
+    if (right.path === SKILL_MARKDOWN_PATH) return 1;
     return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
   });
 };

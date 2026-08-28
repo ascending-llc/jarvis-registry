@@ -1,6 +1,7 @@
-import { ArrowLeftIcon, EyeIcon, PencilSquareIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { ArrowLeftIcon, EyeIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 
+import { SKILL_MARKDOWN_PATH } from './constants';
 import SkillCategoryMenu from './SkillCategoryMenu';
 import SkillContentPanel from './SkillContentPanel';
 import SkillFileTree from './SkillFileTree';
@@ -15,7 +16,6 @@ type SkillEditorViewProps = {
   editorMode: EditorMode;
   saving: boolean;
   toggling: boolean;
-  deleting: boolean;
   onBack: () => void;
   onRetry: () => void;
   onSelectFile: (path: string) => void;
@@ -24,8 +24,6 @@ type SkillEditorViewProps = {
   onDescriptionChange: (description: string) => void;
   onMarkdownChange: (markdown: string) => void;
   onCategoryChange: (category: string) => void;
-  onShare: () => void;
-  onDelete: () => void;
   onToggle: () => void;
   onReset: () => void;
   onSave: () => void;
@@ -39,7 +37,6 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
   editorMode,
   saving,
   toggling,
-  deleting,
   onBack,
   onRetry,
   onSelectFile,
@@ -48,8 +45,6 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
   onDescriptionChange,
   onMarkdownChange,
   onCategoryChange,
-  onShare,
-  onDelete,
   onToggle,
   onReset,
   onSave,
@@ -102,11 +97,10 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
   }
 
   const canEdit = draft.id === null || draft.permissions?.EDIT === true;
-  const canShare = draft.id !== null && draft.permissions?.SHARE === true;
-  const canDelete = draft.id !== null && draft.permissions?.DELETE === true;
+  const isSkillMarkdown = selectedPath === SKILL_MARKDOWN_PATH;
   const parsedMarkdown = draft.markdown.parsed;
   const markdownError = draft.markdown.invalidInput?.message ?? null;
-  const supportingFiles = draft.files.filter(file => file.relativePath !== 'SKILL.md');
+  const supportingFiles = draft.files.filter(file => file.relativePath !== SKILL_MARKDOWN_PATH);
   const selectedMetadata = draft.files.find(file => file.relativePath === selectedPath);
 
   return (
@@ -158,12 +152,12 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
         </div>
 
         <div className='relative flex flex-wrap items-center justify-end gap-2.5'>
-          {editorMode === 'preview' && (
+          {editorMode === 'preview' && canEdit && (
             <button
               type='button'
               role='switch'
               aria-checked={draft.enabled}
-              disabled={!canEdit || toggling || saving || deleting}
+              disabled={toggling || saving}
               onClick={onToggle}
               className='inline-flex items-center gap-2 text-[13px] text-[var(--jarvis-text)] disabled:cursor-not-allowed disabled:opacity-60'
             >
@@ -181,15 +175,11 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
               </span>
             </button>
           )}
-          {canEdit && (
+          {canEdit && isSkillMarkdown && (
             <button
               type='button'
-              disabled={saving || toggling || deleting}
-              onClick={() => {
-                const nextMode = editorMode === 'edit' ? 'preview' : 'edit';
-                if (nextMode === 'edit') onSelectFile('SKILL.md');
-                onEditorModeChange(nextMode);
-              }}
+              disabled={saving || toggling}
+              onClick={() => onEditorModeChange(editorMode === 'edit' ? 'preview' : 'edit')}
               className='inline-flex h-[38px] items-center gap-2 rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-3.5 text-[13px] font-semibold text-[var(--jarvis-text)] transition hover:border-[color:var(--jarvis-border-strong)] hover:bg-[var(--jarvis-card-muted)] disabled:cursor-not-allowed disabled:opacity-60'
             >
               {editorMode === 'edit' ? (
@@ -201,29 +191,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             </button>
           )}
           {editorMode === 'edit' && canEdit && (
-            <SkillCategoryMenu value={draft.category} disabled={saving || deleting} onChange={onCategoryChange} />
-          )}
-          {canShare && (
-            <button
-              type='button'
-              aria-label='Share skill'
-              disabled={saving || toggling || deleting}
-              onClick={onShare}
-              className='inline-flex h-[38px] w-[38px] items-center justify-center rounded-lg bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)] transition hover:text-[var(--jarvis-text)] disabled:cursor-not-allowed disabled:opacity-60'
-            >
-              <ShareIcon className='h-[15px] w-[15px]' />
-            </button>
-          )}
-          {canDelete && (
-            <button
-              type='button'
-              aria-label='Delete skill'
-              disabled={saving || toggling || deleting}
-              onClick={onDelete}
-              className='inline-flex h-[38px] w-[38px] items-center justify-center rounded-lg bg-[var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)] transition hover:bg-[var(--jarvis-danger)]/20 disabled:cursor-not-allowed disabled:opacity-60'
-            >
-              <TrashIcon className='h-[15px] w-[15px]' />
-            </button>
+            <SkillCategoryMenu value={draft.category} disabled={saving} onChange={onCategoryChange} />
           )}
         </div>
       </div>
@@ -246,22 +214,26 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             <span className='min-w-0 flex-1 truncate'>{parsedMarkdown.description || 'No description'}</span>
           </div>
         )}
-        <div
-          className={`mb-5 mt-2 text-xs ${markdownError ? 'text-[var(--jarvis-danger-text)]' : 'text-[var(--jarvis-faint)]'}`}
-        >
-          {markdownError ? (
-            <>Fix the SKILL.md frontmatter to resume Name and Description synchronization.</>
-          ) : (
-            <>
-              Synced with the <strong className='font-semibold text-[var(--jarvis-muted)]'>name</strong> and{' '}
-              <strong className='font-semibold text-[var(--jarvis-muted)]'>description</strong> fields at the top of the
-              markdown below.
-            </>
-          )}
-        </div>
+        {editorMode === 'edit' && canEdit && isSkillMarkdown && (
+          <div
+            className={`mt-2 text-xs ${
+              markdownError ? 'text-[var(--jarvis-danger-text)]' : 'text-[var(--jarvis-muted)]'
+            }`}
+          >
+            {markdownError ? (
+              <>Fix the SKILL.md frontmatter to resume Name and Description synchronization.</>
+            ) : (
+              <>
+                Synced with the <strong className='font-semibold text-[var(--jarvis-text)]'>name</strong> and{' '}
+                <strong className='font-semibold text-[var(--jarvis-text)]'>description</strong> fields at the top of the
+                markdown below.
+              </>
+            )}
+          </div>
+        )}
 
         <div
-          className={`min-w-0 items-start gap-4 ${supportingFiles.length > 0 ? 'flex flex-col md:flex-row' : 'flex'}`}
+          className={`mt-5 min-w-0 items-start gap-4 ${supportingFiles.length > 0 ? 'flex flex-col md:flex-row' : 'flex'}`}
         >
           {supportingFiles.length > 0 && (
             <aside className='w-full flex-none overflow-auto rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-2 md:w-[216px]'>
@@ -288,7 +260,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
           <div className='flex items-center gap-4'>
             <button
               type='button'
-              disabled={saving || toggling || deleting}
+              disabled={saving || toggling}
               onClick={onReset}
               className='px-1.5 py-2.5 text-[13.5px] font-semibold text-[var(--jarvis-muted)] transition hover:text-[var(--jarvis-text)] disabled:cursor-not-allowed disabled:opacity-60'
             >
@@ -296,7 +268,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             </button>
             <button
               type='button'
-              disabled={saving || toggling || deleting}
+              disabled={saving || toggling}
               onClick={onSave}
               className='min-w-[76px] rounded-lg bg-[var(--jarvis-primary)] px-[22px] py-2.5 text-[13.5px] font-bold text-white shadow-[0_4px_16px_rgba(124,58,237,0.25)] transition hover:bg-[#6d28d9] disabled:cursor-not-allowed disabled:opacity-60'
             >

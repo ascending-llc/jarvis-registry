@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import SERVICES from '@/services';
 import type { SkillFileContent, SkillFileMetadata } from '@/services/skill/type';
 
+import { SKILL_MARKDOWN_PATH } from './constants';
 import type { EditorMode } from './types';
 
 type SkillContentPanelProps = {
@@ -57,7 +58,7 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
   const [retryToken, setRetryToken] = useState(0);
   const cacheRef = useRef<Map<string, SkillFileContent>>(new Map());
   const requestSequenceRef = useRef(0);
-  const isSkillMarkdown = selectedPath === 'SKILL.md';
+  const isSkillMarkdown = selectedPath === SKILL_MARKDOWN_PATH;
 
   useEffect(() => {
     cacheRef.current.clear();

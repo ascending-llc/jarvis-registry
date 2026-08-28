@@ -10,8 +10,9 @@ import { useServer } from '@/contexts/ServerContext';
 import { APP_ROUTES } from '@/routes';
 import SERVICES from '@/services';
 import type { RequestErrorPayload, ValidationIssue } from '@/services/request';
-import type { SkillDetail } from '@/services/skill/type';
+import type { SkillDetail, SkillMetadata } from '@/services/skill/type';
 
+import { SKILL_MARKDOWN_PATH } from './constants';
 import DeleteSkillDialog from './DeleteSkillDialog';
 import SkillEditorView from './SkillEditorView';
 import SkillListView from './SkillListView';
@@ -63,6 +64,14 @@ const getUpdatedTimestamp = (updatedAt?: string | null): number => {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 };
 
+const removeSkillDeletePermission = (skill: SkillMetadata): SkillMetadata => {
+  if (!skill.permissions) return skill;
+  return {
+    ...skill,
+    permissions: { ...skill.permissions, DELETE: false },
+  };
+};
+
 const SkillsPage: React.FC = () => {
   const { user } = useAuth();
   const { showToast } = useGlobal();
@@ -80,12 +89,13 @@ const SkillsPage: React.FC = () => {
   const [draft, setDraft] = useState<SkillDraft | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<SkillPageError | null>(null);
-  const [selectedPath, setSelectedPath] = useState('SKILL.md');
+  const [selectedPath, setSelectedPath] = useState(SKILL_MARKDOWN_PATH);
   const [editorMode, setEditorMode] = useState<EditorMode>('preview');
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
-  const [shareOpen, setShareOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [shareTarget, setShareTarget] = useState<SkillMetadata | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SkillMetadata | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const detailRequestRef = useRef(0);
@@ -102,7 +112,7 @@ const SkillsPage: React.FC = () => {
       const nextDraft = createDraft(detail);
       setSnapshot(cloneDraft(nextDraft));
       setDraft(nextDraft);
-      setSelectedPath('SKILL.md');
+      setSelectedPath(SKILL_MARKDOWN_PATH);
       setEditorMode('preview');
     } catch (error) {
       if (detailRequestRef.current !== requestId) return;
@@ -116,8 +126,8 @@ const SkillsPage: React.FC = () => {
 
   useEffect(() => {
     detailRequestRef.current += 1;
-    setShareOpen(false);
-    setDeleteOpen(false);
+    setShareTarget(null);
+    setDeleteTarget(null);
     setDeleting(false);
 
     if (skillId && skipNextDetailLoadRef.current === skillId) {
@@ -127,7 +137,7 @@ const SkillsPage: React.FC = () => {
       return;
     }
 
-    setSelectedPath('SKILL.md');
+    setSelectedPath(SKILL_MARKDOWN_PATH);
 
     if (skillId) {
       void loadSkillDetail(skillId);
@@ -167,6 +177,21 @@ const SkillsPage: React.FC = () => {
   const navigateToSkill = (id: string, replace = false) =>
     navigate(`${APP_ROUTES.skills}?skill=${encodeURIComponent(id)}`, { replace });
 
+  const handleRefreshSkills = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await refreshSkillData(true);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleSelectFile = (path: string) => {
+    setSelectedPath(path);
+    if (path !== SKILL_MARKDOWN_PATH) setEditorMode('preview');
+  };
+
   const handleMarkdownChange = (markdown: string) => {
     setDraft(current => {
       if (!current) return current;
@@ -203,11 +228,6 @@ const SkillsPage: React.FC = () => {
       const permissions = current.permissions ?? { VIEW: true, EDIT: false, DELETE: false, SHARE: false };
       return { ...current, permissions: { ...permissions, EDIT: false } };
     });
-  };
-
-  const removeDraftDeletePermission = (current: SkillDraft | null): SkillDraft | null => {
-    if (!current?.permissions) return current;
-    return { ...current, permissions: { ...current.permissions, DELETE: false } };
   };
 
   const handleMutationError = (error: unknown, fallback: string) => {
@@ -310,31 +330,30 @@ const SkillsPage: React.FC = () => {
   };
 
   const handleDelete = async () => {
-    if (!draft?.id || deleting || saving || toggling) return;
+    if (!deleteTarget || deleting) return;
 
-    const deletedSkillId = draft.id;
+    const deletedSkillId = deleteTarget.id;
     setDeleting(true);
     try {
       await SERVICES.SKILL.deleteSkill(deletedSkillId);
-      setDeleteOpen(false);
+      setDeleteTarget(null);
       setSkills(current => current.filter(skill => skill.id !== deletedSkillId));
       showToast('Skill deleted successfully.', 'success');
-      navigateToList();
       await refreshSkillData(true);
     } catch (error) {
       const requestError = getRequestError(error);
       if (requestError.httpStatus === 403) {
-        setDraft(removeDraftDeletePermission);
-        setSnapshot(removeDraftDeletePermission);
-        setDeleteOpen(false);
+        setSkills(current =>
+          current.map(skill => (skill.id === deletedSkillId ? removeSkillDeletePermission(skill) : skill)),
+        );
+        setDeleteTarget(null);
         showToast('You no longer have permission to delete this skill.', 'error');
         return;
       }
       if (requestError.httpStatus === 404) {
-        setDeleteOpen(false);
+        setDeleteTarget(null);
         setSkills(current => current.filter(skill => skill.id !== deletedSkillId));
         showToast('This skill no longer exists.', 'error');
-        navigateToList();
         await refreshSkillData(true);
         return;
       }
@@ -347,7 +366,7 @@ const SkillsPage: React.FC = () => {
   const handleReset = () => {
     if (!snapshot) return;
     setDraft(cloneDraft(snapshot));
-    setSelectedPath('SKILL.md');
+    setSelectedPath(SKILL_MARKDOWN_PATH);
     setEditorMode(snapshot.id === null ? 'edit' : 'preview');
   };
 
@@ -369,21 +388,21 @@ const SkillsPage: React.FC = () => {
 
   return (
     <Layout searchConfig={searchConfig} skillsNavigation={skillsNavigation}>
-      {shareOpen && draft?.id && (
+      {shareTarget && (
         <ShareModal
-          itemName={draft.markdown.parsed.displayTitle || draft.stableName || 'Skill'}
-          resourceId={draft.id}
+          itemName={getSkillDisplayName(shareTarget)}
+          resourceId={shareTarget.id}
           resourceType='skill'
-          isOpen={shareOpen}
-          onClose={() => setShareOpen(false)}
+          isOpen={true}
+          onClose={() => setShareTarget(null)}
         />
       )}
-      {deleteOpen && draft?.id && (
+      {deleteTarget && (
         <DeleteSkillDialog
-          isOpen={deleteOpen}
-          skillName={draft.markdown.parsed.displayTitle || draft.stableName || 'this skill'}
+          isOpen={true}
+          skillName={getSkillDisplayName(deleteTarget)}
           deleting={deleting}
-          onCancel={() => setDeleteOpen(false)}
+          onCancel={() => setDeleteTarget(null)}
           onConfirm={() => void handleDelete()}
         />
       )}
@@ -391,11 +410,15 @@ const SkillsPage: React.FC = () => {
         <SkillListView
           skills={filteredSkills}
           loading={skillLoading}
+          refreshing={refreshing}
           error={skillError}
           hasActiveConditions={Boolean(searchTerm.trim()) || statusFilter !== 'all'}
           onRetry={() => void refreshSkillData()}
+          onRefresh={() => void handleRefreshSkills()}
           onOpenSkill={id => navigateToSkill(id)}
           onCreate={navigateToCreate}
+          onShare={setShareTarget}
+          onDelete={setDeleteTarget}
         />
       ) : (
         <SkillEditorView
@@ -406,17 +429,14 @@ const SkillsPage: React.FC = () => {
           editorMode={editorMode}
           saving={saving}
           toggling={toggling}
-          deleting={deleting}
           onBack={navigateToList}
           onRetry={() => skillId && void loadSkillDetail(skillId)}
-          onSelectFile={setSelectedPath}
+          onSelectFile={handleSelectFile}
           onEditorModeChange={setEditorMode}
           onNameChange={handleNameChange}
           onDescriptionChange={handleDescriptionChange}
           onMarkdownChange={handleMarkdownChange}
           onCategoryChange={handleCategoryChange}
-          onShare={() => setShareOpen(true)}
-          onDelete={() => setDeleteOpen(true)}
           onToggle={() => void handleToggle()}
           onReset={handleReset}
           onSave={() => void handleSave()}
