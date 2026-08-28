@@ -7,8 +7,8 @@ import pytest
 from azure.ai.projects.models import AgentEndpointProtocol
 from beanie import PydanticObjectId
 
-from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry.services.federation.azure_foundry_discovery import AzureFoundryDiscoveryClient
+from registry_pkgs.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import AgentConfig, WellKnownConfig
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
@@ -124,7 +124,7 @@ def _patch_httpx():
 
 
 def _make_auth_stub() -> AzureFoundryAuthService:
-    auth = AzureFoundryAuthService(_provider_config())
+    auth = AzureFoundryAuthService(_provider_config(), encryption_key=b"0" * 32)
     auth.credential = MagicMock(return_value=MagicMock())
     auth.build_headers = AsyncMock(return_value={"Authorization": "Bearer tok"})
     return auth

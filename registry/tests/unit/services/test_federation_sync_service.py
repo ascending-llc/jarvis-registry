@@ -122,6 +122,29 @@ async def test_azure_sync_dispatches_through_handler(federation_sync_service: Fe
 
 
 @pytest.mark.asyncio
+async def test_azure_handler_discover_entities_uses_shared_cache_auth_service():
+    """AzureAiFoundrySyncHandler resolves its auth through the shared cache (not a per-call build)
+    and hands that credential to the discovery client."""
+    federation = _make_federation(
+        FederationProviderType.AZURE_AI_FOUNDRY,
+        {"projectEndpoint": "https://example.projects.ai.azure.com"},
+    )
+    auth = object()
+    cache = MagicMock()
+    cache.get_auth_service = AsyncMock(return_value=auth)
+    discovery_client = MagicMock()
+    discovery_client.discover_a2a_agents = AsyncMock(return_value=["agent"])
+    handler = AzureAiFoundrySyncHandler(azure_client_cache=cache, discovery_client=discovery_client)
+
+    result = await handler.discover_entities(federation, author_id=_DEFAULT_USER_OBJECT_ID)
+
+    cache.get_auth_service.assert_awaited_once_with(federation.id)
+    assert discovery_client.discover_a2a_agents.await_args.kwargs["auth"] is auth
+    assert discovery_client.discover_a2a_agents.await_args.kwargs["author_id"] == _DEFAULT_USER_OBJECT_ID
+    assert result == {"a2a_agents": ["agent"], "mcp_servers": []}
+
+
+@pytest.mark.asyncio
 async def test_run_delete_marks_job_success_and_cleans_up_vectors(
     federation_sync_service: FederationSyncService,
     monkeypatch,

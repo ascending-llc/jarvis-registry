@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
@@ -26,7 +26,7 @@ def agent_document() -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_get_agent_by_path_queries_exact_slug(monkeypatch):
-    service = A2AAgentService()
+    service = A2AAgentService(azure_client_cache=MagicMock())
     find_one = AsyncMock(return_value=None)
     monkeypatch.setattr(A2AAgent, "find_one", find_one)
 
@@ -38,7 +38,7 @@ async def test_get_agent_by_path_queries_exact_slug(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_agent_by_path_does_not_normalize_invalid_slug(monkeypatch):
-    service = A2AAgentService()
+    service = A2AAgentService(azure_client_cache=MagicMock())
     find_one = AsyncMock(return_value=None)
     monkeypatch.setattr(A2AAgent, "find_one", find_one)
 
@@ -50,7 +50,7 @@ async def test_get_agent_by_path_does_not_normalize_invalid_slug(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_agent_duplicate_check_uses_normalized_path(monkeypatch):
-    service = A2AAgentService()
+    service = A2AAgentService(azure_client_cache=MagicMock())
     existing_agent = SimpleNamespace(id=PydanticObjectId())
     find_one = AsyncMock(return_value=existing_agent)
     fetch_card = AsyncMock()
@@ -75,7 +75,7 @@ async def test_create_agent_duplicate_check_uses_normalized_path(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_agent_rejects_root_path_before_database_lookup(monkeypatch):
-    service = A2AAgentService()
+    service = A2AAgentService(azure_client_cache=MagicMock())
     find_one = AsyncMock()
     fetch_card = AsyncMock()
 
@@ -99,7 +99,7 @@ async def test_create_agent_rejects_root_path_before_database_lookup(monkeypatch
 
 @pytest.mark.asyncio
 async def test_update_agent_normalizes_path_before_saving(monkeypatch, agent_document):
-    service = A2AAgentService()
+    service = A2AAgentService(azure_client_cache=MagicMock())
     get_agent = AsyncMock(return_value=agent_document)
     find_one = AsyncMock(return_value=None)
 
@@ -119,7 +119,7 @@ async def test_update_agent_normalizes_path_before_saving(monkeypatch, agent_doc
 
 @pytest.mark.asyncio
 async def test_update_agent_rejects_root_path_before_conflict_check(monkeypatch, agent_document):
-    service = A2AAgentService()
+    service = A2AAgentService(azure_client_cache=MagicMock())
     get_agent = AsyncMock(return_value=agent_document)
     find_one = AsyncMock()
 
@@ -137,7 +137,7 @@ async def test_update_agent_rejects_root_path_before_conflict_check(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_update_agent_duplicate_check_uses_normalized_path(monkeypatch, agent_document):
-    service = A2AAgentService()
+    service = A2AAgentService(azure_client_cache=MagicMock())
     conflicting_agent = SimpleNamespace(id=PydanticObjectId())
 
     monkeypatch.setattr(A2AAgent, "get", AsyncMock(return_value=agent_document))

@@ -11,6 +11,7 @@ from a2a.client import A2ACardResolver
 from azure.ai.projects.aio import AIProjectClient
 from beanie import PydanticObjectId
 
+from registry_pkgs.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import (
     TRANSPORT_JSONRPC,
@@ -19,8 +20,6 @@ from registry_pkgs.models.a2a_agent import (
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
 from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetadata
-
-from .azure_foundry_auth import AzureFoundryAuthService
 
 logger = logging.getLogger(__name__)
 
