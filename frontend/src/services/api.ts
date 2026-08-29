@@ -5,6 +5,7 @@ const SERVER_BASE_URL = `${BASE_URL}/servers`;
 const AGENT_BASE_URL = `${BASE_URL}/agents`;
 const FEDERATION_BASE_URL = `${BASE_URL}/federations`;
 const WORKFLOW_BASE_URL = `${BASE_URL}/workflows`;
+const SKILL_BASE_URL = `${BASE_URL}/skills`;
 
 const API = {
   // auth
@@ -89,6 +90,15 @@ const API = {
   replayWorkflowRun: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/replay`,
   rerunWorkflowNode: (id: string, runId: string, nodeId: string) =>
     `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/nodes/${nodeId}/rerun`,
+
+  // skill
+  getSkillsList: SKILL_BASE_URL,
+  getSkillDetail: (id: string) => `${SKILL_BASE_URL}/${id}`,
+  getSkillFile: (id: string, filePath: string) =>
+    `${SKILL_BASE_URL}/${id}/files/${filePath.split('/').map(encodeURIComponent).join('/')}`,
+  createSkill: SKILL_BASE_URL,
+  updateSkill: (id: string) => `${SKILL_BASE_URL}/${id}`,
+  toggleSkillState: (id: string) => `${SKILL_BASE_URL}/${id}/toggle`,
 
   // acl (permissions)
   searchPrincipals: `${BASE_URL}/permissions/search-principals`,

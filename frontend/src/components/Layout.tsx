@@ -12,6 +12,7 @@ import { Link, useLocation } from 'react-router-dom';
 import IconButton from '@/components/IconButton';
 import ServerConfigModal from '@/components/ServerConfigModal';
 import SERVICES from '@/services';
+import type { LayoutSearchConfig, SkillsNavigationConfig } from '@/types/layout';
 import logoDark from '../assets/jarvis_logo_w_text_dark_bkg.svg';
 import logoLight from '../assets/jarvis_logo_w_text_light_bkg.svg';
 import { useServer } from '../contexts/ServerContext';
@@ -20,6 +21,8 @@ import Sidebar from './Sidebar';
 
 interface LayoutProps {
   children: React.ReactNode;
+  searchConfig?: LayoutSearchConfig;
+  skillsNavigation?: SkillsNavigationConfig;
 }
 
 const isSubPagePath = (pathname: string): boolean => {
@@ -36,7 +39,7 @@ const isSubPagePath = (pathname: string): boolean => {
   );
 };
 
-const Layout: React.FC<LayoutProps> = ({ children }) => {
+const Layout: React.FC<LayoutProps> = ({ children, searchConfig, skillsNavigation }) => {
   const { theme, toggleTheme } = useTheme();
   const { viewMode, searchTerm, setSearchTerm, committedQuery, setCommittedQuery } = useServer();
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -45,15 +48,21 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
 
   const isDashboard = location.pathname === '/';
-  const showSearch = isDashboard;
+  const showSearch = isDashboard || Boolean(searchConfig);
   const isSubPage = isSubPagePath(location.pathname);
+  const activeSearchTerm = searchConfig?.value ?? searchTerm;
 
   const handleClearSearch = () => {
+    if (searchConfig) {
+      searchConfig.onClear();
+      return;
+    }
     setSearchTerm('');
     setCommittedQuery('');
   };
 
   const getPlaceholder = () => {
+    if (searchConfig) return searchConfig.placeholder;
     if (viewMode === 'servers') return 'Search servers, descriptions, or tags...';
     if (viewMode === 'agents') return 'Search agents, descriptions, or tags...';
     if (viewMode === 'external') return 'Search external providers...';
@@ -64,15 +73,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (searchTerm || committedQuery) {
-          setSearchTerm('');
-          setCommittedQuery('');
-        }
+        if (activeSearchTerm || (!searchConfig && committedQuery)) handleClearSearch();
       }
     };
 
     const handleMouseDown = (e: MouseEvent) => {
-      if (!searchTerm && !committedQuery) return;
+      if (!activeSearchTerm && (searchConfig || !committedQuery)) return;
 
       const target = e.target as Element;
       if (!target || typeof target.closest !== 'function') return;
@@ -84,8 +90,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       // Do not close if clicking inside a modal or portal
       if (target.closest('[role="dialog"]') || target.closest('[id^="headlessui-portal"]')) return;
 
-      setSearchTerm('');
-      setCommittedQuery('');
+      handleClearSearch();
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -95,7 +100,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('mousedown', handleMouseDown);
     };
-  }, [searchTerm, committedQuery, setSearchTerm, setCommittedQuery]);
+  }, [activeSearchTerm, committedQuery, searchConfig, setSearchTerm, setCommittedQuery]);
 
   useEffect(() => {
     getVersion();
@@ -158,17 +163,20 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     type='text'
                     placeholder={getPlaceholder()}
                     className='h-10 w-full rounded-xl border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-surface)] pl-10 pr-10 text-sm text-[var(--jarvis-text)] outline-none transition placeholder:text-[var(--jarvis-input-placeholder)] focus:border-[color:var(--jarvis-primary)] focus:bg-[var(--jarvis-input-bg-focus)] focus:ring-2 focus:ring-[color:var(--jarvis-primary-soft-hover)] shadow-sm'
-                    value={searchTerm}
-                    onChange={e => setSearchTerm(e.target.value)}
+                    value={activeSearchTerm}
+                    onChange={e =>
+                      searchConfig ? searchConfig.onChange(e.target.value) : setSearchTerm(e.target.value)
+                    }
                     onKeyDown={e => {
                       if (e.key === 'Enter') {
+                        if (searchConfig) return;
                         if (viewMode === 'workflow' || viewMode === 'external') return;
                         e.preventDefault();
                         setCommittedQuery(searchTerm.trim());
                       }
                     }}
                   />
-                  {searchTerm && (
+                  {activeSearchTerm && (
                     <button
                       onClick={handleClearSearch}
                       className='absolute inset-y-0 right-0 flex items-center pr-3 text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text)]'
@@ -211,7 +219,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       <div className='flex h-screen pt-16'>
         {/* Sidebar */}
-        <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} isSubPage={isSubPage} />
+        <Sidebar
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          isSubPage={isSubPage}
+          skillsNavigation={skillsNavigation}
+        />
 
         {/* Main content */}
         <main

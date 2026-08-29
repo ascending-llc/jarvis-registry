@@ -1,16 +1,20 @@
-import { GlobeAltIcon, QueueListIcon } from '@heroicons/react/24/outline';
+import { GlobeAltIcon, QueueListIcon, WrenchScrewdriverIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import AgentIcon from '@/assets/AgentIcon';
 import McpIcon from '@/assets/McpIcon';
 import { useServer } from '@/contexts/ServerContext';
+import { APP_ROUTES } from '@/routes';
+import SERVICES from '@/services';
+import type { ResourceStats, ResourceStatusFilter, SkillsNavigationConfig } from '@/types/layout';
 
 interface NavMenuProps {
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
+  skillsNavigation?: SkillsNavigationConfig;
 }
 
 /** Portal-based tooltip to escape overflow:hidden on the sidebar */
@@ -79,13 +83,40 @@ const filters = [
   { key: 'disabled', label: 'Disabled', colorClass: 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]' },
 ];
 
-const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
-  const [, setSearchParams] = useSearchParams();
+const EMPTY_STATS: ResourceStats = { total: 0, enabled: 0, disabled: 0 };
+
+const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNavigation }) => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [standaloneSkillStats, setStandaloneSkillStats] = useState<ResourceStats>(EMPTY_STATS);
   const { stats, agentStats, federationStats, workflowStats, viewMode, setViewMode, activeFilter, setActiveFilter } =
     useServer();
+  const isSkillsPage = location.pathname === APP_ROUTES.skills;
+
+  useEffect(() => {
+    if (skillsNavigation) return;
+
+    let active = true;
+    SERVICES.SKILL.getSkillsList()
+      .then(result => {
+        if (!active) return;
+        setStandaloneSkillStats({
+          total: result.skills.length,
+          enabled: result.skills.filter(skill => skill.enabled).length,
+          disabled: result.skills.filter(skill => !skill.enabled).length,
+        });
+      })
+      .catch(() => {
+        if (active) setStandaloneSkillStats(EMPTY_STATS);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [skillsNavigation]);
 
   const handleNavigation = (mode: 'servers' | 'agents' | 'workflow' | 'external') => {
-    if (viewMode === mode) {
+    if (!isSkillsPage && viewMode === mode) {
       if (window.innerWidth >= 768) {
         setSidebarOpen(!sidebarOpen);
       } else {
@@ -94,8 +125,43 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
       return;
     }
     setViewMode(mode);
-    setSearchParams(mode === 'servers' ? {} : { tab: mode }, { replace: true });
+    navigate(mode === 'servers' ? APP_ROUTES.root : `${APP_ROUTES.root}?tab=${mode}`);
     if (window.innerWidth < 768) setSidebarOpen(false);
+  };
+
+  const handleSkillsNavigation = () => {
+    if (isSkillsPage) {
+      const params = new URLSearchParams(location.search);
+      if (params.has('skill') || params.get('create') === 'true') {
+        navigate(APP_ROUTES.skills);
+        if (window.innerWidth < 768) setSidebarOpen(false);
+        return;
+      }
+      if (window.innerWidth >= 768) setSidebarOpen(!sidebarOpen);
+      else setSidebarOpen(false);
+      return;
+    }
+
+    navigate(APP_ROUTES.skills);
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  };
+
+  const displayedSkillStats = skillsNavigation?.stats ?? standaloneSkillStats;
+  const displayedFilter: ResourceStatusFilter = isSkillsPage
+    ? (skillsNavigation?.activeFilter ?? 'all')
+    : (activeFilter as ResourceStatusFilter);
+
+  const getCurrentStats = (): ResourceStats => {
+    if (isSkillsPage) return displayedSkillStats;
+    if (viewMode === 'servers') return stats;
+    if (viewMode === 'agents') return agentStats;
+    if (viewMode === 'workflow') return workflowStats;
+    return federationStats ?? EMPTY_STATS;
+  };
+
+  const handleFilterChange = (filter: ResourceStatusFilter) => {
+    if (isSkillsPage) skillsNavigation?.onFilterChange(filter);
+    else setActiveFilter(filter);
   };
 
   const collapsed = !sidebarOpen;
@@ -115,7 +181,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
         <NavButton
           label='MCP Servers'
           showTooltip={collapsed}
-          active={viewMode === 'servers'}
+          active={!isSkillsPage && viewMode === 'servers'}
           onClick={() => handleNavigation('servers')}
         >
           <McpIcon className='h-5 w-5 flex-shrink-0' />
@@ -134,7 +200,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
         <NavButton
           label='A2A Agents'
           showTooltip={collapsed}
-          active={viewMode === 'agents'}
+          active={!isSkillsPage && viewMode === 'agents'}
           onClick={() => handleNavigation('agents')}
         >
           <AgentIcon className='h-5 w-5 flex-shrink-0' />
@@ -150,10 +216,24 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
           </div>
         </NavButton>
 
+        <NavButton label='Skills' showTooltip={collapsed} active={isSkillsPage} onClick={handleSkillsNavigation}>
+          <WrenchScrewdriverIcon className='h-5 w-5 flex-shrink-0' />
+          <div
+            className={`flex flex-1 items-center justify-between overflow-hidden transition-all duration-300 ${
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
+            }`}
+          >
+            <span className='whitespace-nowrap'>Skills</span>
+            <span className='rounded-full bg-[var(--jarvis-bg)] px-2 py-0.5 text-sm font-semibold text-[var(--jarvis-muted)]'>
+              {displayedSkillStats.total}
+            </span>
+          </div>
+        </NavButton>
+
         <NavButton
           label='Workflow'
           showTooltip={collapsed}
-          active={viewMode === 'workflow'}
+          active={!isSkillsPage && viewMode === 'workflow'}
           onClick={() => handleNavigation('workflow')}
         >
           <QueueListIcon className='h-5 w-5 flex-shrink-0' />
@@ -172,7 +252,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
         <NavButton
           label='External Providers'
           showTooltip={collapsed}
-          active={viewMode === 'external'}
+          active={!isSkillsPage && viewMode === 'external'}
           onClick={() => handleNavigation('external')}
         >
           <GlobeAltIcon className='h-5 w-5 flex-shrink-0' />
@@ -190,67 +270,53 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
       </div>
 
       {/* Filter by status Section */}
-      <div
-        className={`space-y-1 overflow-hidden transition-all duration-300 ${
-          collapsed ? 'max-h-0 opacity-0 mt-0' : 'max-h-[500px] opacity-100 mt-6'
-        }`}
-      >
-        <div className='px-3 mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--jarvis-faint)]'>
-          Filter by status
-        </div>
-        <div className='space-y-1'>
-          {filters.map(filter => {
-            let count = 0;
-            if (viewMode === 'servers') {
-              if (filter.key === 'all') count = stats.total;
-              if (filter.key === 'enabled') count = stats.enabled;
-              if (filter.key === 'disabled') count = stats.disabled;
-            } else if (viewMode === 'agents') {
-              if (filter.key === 'all') count = agentStats.total;
-              if (filter.key === 'enabled') count = agentStats.enabled;
-              if (filter.key === 'disabled') count = agentStats.disabled;
-            } else if (viewMode === 'workflow') {
-              if (filter.key === 'all') count = workflowStats.total;
-              if (filter.key === 'enabled') count = workflowStats.enabled;
-              if (filter.key === 'disabled') count = workflowStats.disabled;
-            } else if (viewMode === 'external' && federationStats) {
-              if (filter.key === 'all') count = federationStats.total;
-              if (filter.key === 'enabled') count = federationStats.enabled;
-              if (filter.key === 'disabled') count = federationStats.disabled;
-            }
+      {(!isSkillsPage || skillsNavigation?.showStatusFilters) && (
+        <div
+          className={`space-y-1 overflow-hidden transition-all duration-300 ${
+            collapsed ? 'max-h-0 opacity-0 mt-0' : 'max-h-[500px] opacity-100 mt-6'
+          }`}
+        >
+          <div className='px-3 mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--jarvis-faint)]'>
+            Filter by status
+          </div>
+          <div className='space-y-1'>
+            {filters.map(filter => {
+              const currentStats = getCurrentStats();
+              const count = currentStats[filter.key as keyof ResourceStats];
 
-            return (
-              <button
-                key={filter.key}
-                onClick={() => setActiveFilter(filter.key)}
-                className={`w-full flex items-center px-2 py-1.5 rounded-md text-sm transition-colors ${
-                  activeFilter === filter.key
-                    ? 'bg-black/[0.08] dark:bg-white/[0.10] text-[var(--jarvis-text)]'
-                    : 'text-[var(--jarvis-muted)] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] hover:text-[var(--jarvis-text)]'
-                }`}
-              >
-                <div className='w-5 flex justify-center flex-shrink-0'>
-                  <div
-                    className={`w-2 h-2 rounded-full ${
-                      filter.key === 'all'
-                        ? 'bg-[var(--jarvis-primary)]'
-                        : filter.key === 'enabled'
-                          ? 'bg-[var(--jarvis-success-text)]'
-                          : filter.key === 'disabled'
-                            ? 'bg-[var(--jarvis-muted)]'
-                            : 'bg-[var(--jarvis-danger-text)]'
-                    }`}
-                  />
-                </div>
-                <div className='flex flex-1 items-center justify-between ml-3'>
-                  <span className='whitespace-nowrap'>{filter.label}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${filter.colorClass}`}>{count}</span>
-                </div>
-              </button>
-            );
-          })}
+              return (
+                <button
+                  key={filter.key}
+                  onClick={() => handleFilterChange(filter.key as ResourceStatusFilter)}
+                  className={`w-full flex items-center px-2 py-1.5 rounded-md text-sm transition-colors ${
+                    displayedFilter === filter.key
+                      ? 'bg-black/[0.08] dark:bg-white/[0.10] text-[var(--jarvis-text)]'
+                      : 'text-[var(--jarvis-muted)] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] hover:text-[var(--jarvis-text)]'
+                  }`}
+                >
+                  <div className='w-5 flex justify-center flex-shrink-0'>
+                    <div
+                      className={`w-2 h-2 rounded-full ${
+                        filter.key === 'all'
+                          ? 'bg-[var(--jarvis-primary)]'
+                          : filter.key === 'enabled'
+                            ? 'bg-[var(--jarvis-success-text)]'
+                            : filter.key === 'disabled'
+                              ? 'bg-[var(--jarvis-muted)]'
+                              : 'bg-[var(--jarvis-danger-text)]'
+                      }`}
+                    />
+                  </div>
+                  <div className='flex flex-1 items-center justify-between ml-3'>
+                    <span className='whitespace-nowrap'>{filter.label}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${filter.colorClass}`}>{count}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
