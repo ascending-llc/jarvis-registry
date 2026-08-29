@@ -12,6 +12,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   federation: 'External Registry',
   mcpServer: 'MCP Server',
   workflow: 'Workflow',
+  skill: 'Skill',
 };
 
 export const ShareModal: React.FC<ShareModalProps> = props => {
