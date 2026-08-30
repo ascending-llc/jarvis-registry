@@ -27,12 +27,12 @@ async def test_run_bounded_respects_limit_and_preserves_input_order() -> None:
 
     task = asyncio.create_task(run_bounded(range(4), _handler, limit=2))
     await asyncio.wait_for(first_pair_started.wait(), timeout=1)
-    assert peak_in_flight == 2
+    assert in_flight == 2
 
     release.set()
     outcomes = await task
 
-    assert peak_in_flight == 2
+    assert peak_in_flight <= 2
     assert [outcome.item for outcome in outcomes] == [0, 1, 2, 3]
     assert [outcome.result for outcome in outcomes] == [0, 10, 20, 30]
     assert all(outcome.ok for outcome in outcomes)
