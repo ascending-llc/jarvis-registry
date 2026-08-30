@@ -93,6 +93,16 @@ class TestTelemetrySetup:
         )
         mock_otel_deps["metrics"].set_meter_provider.assert_called_once()
 
+    def test_setup_metrics_identifies_deployment_environment(self, mock_otel_deps):
+        setup_metrics(
+            "test-service",
+            TelemetryConfig(deployment_environment="demo"),
+            enable_metrics=False,
+        )
+
+        _, kwargs = mock_otel_deps["resource"].create.call_args
+        assert kwargs["attributes"]["deployment.environment.name"] == "demo"
+
     def test_setup_metrics_disabled(self, mock_otel_deps):
         """Test setup with metrics disabled."""
         setup_metrics("test-service", TelemetryConfig(), enable_metrics=False)

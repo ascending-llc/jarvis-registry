@@ -3,15 +3,17 @@ import { XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { Fragment } from 'react';
 
+import type { SkillsNavigationConfig } from '@/types/layout';
 import Content from './Content';
 
 interface SidebarProps {
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
   isSubPage: boolean;
+  skillsNavigation?: SkillsNavigationConfig;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, isSubPage }) => {
+const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, isSubPage, skillsNavigation }) => {
   return (
     <>
       {/* Mobile sidebar only */}
@@ -58,7 +60,11 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, isSubPag
                   </Transition.Child>
 
                   <div className='flex grow flex-col gap-y-5 overflow-y-auto bg-[var(--jarvis-bg)] border-r border-[color:var(--jarvis-border)]'>
-                    <Content setSidebarOpen={setSidebarOpen} isSubPage={isSubPage} />
+                    <Content
+                      setSidebarOpen={setSidebarOpen}
+                      isSubPage={isSubPage}
+                      skillsNavigation={skillsNavigation}
+                    />
                   </div>
                 </Dialog.Panel>
               </Transition.Child>
@@ -74,7 +80,12 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, isSubPag
             isSubPage ? 'w-16' : sidebarOpen ? 'w-[272px]' : 'w-16'
           }`}
         >
-          <Content setSidebarOpen={setSidebarOpen} sidebarOpen={!isSubPage && sidebarOpen} isSubPage={isSubPage} />
+          <Content
+            setSidebarOpen={setSidebarOpen}
+            sidebarOpen={!isSubPage && sidebarOpen}
+            isSubPage={isSubPage}
+            skillsNavigation={skillsNavigation}
+          />
         </div>
       </div>
     </>

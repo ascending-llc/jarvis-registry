@@ -21,6 +21,22 @@ type RequestConfig = AxiosRequestConfig & {
   skipAuthRecovery?: boolean;
 };
 
+export type ValidationIssue = {
+  loc: Array<string | number>;
+  msg: string;
+  type: string;
+};
+
+export type RequestErrorPayload = {
+  detail?: string | ValidationIssue[];
+  httpStatus?: number;
+};
+
+const withHttpStatus = (data: object, httpStatus?: number): object => ({
+  ...data,
+  httpStatus,
+});
+
 let tokenInitPromise: Promise<GetTokenResponse> | null = null;
 let refreshTokenPromise: Promise<void> | null = null;
 
@@ -123,10 +139,15 @@ const request = async ({ url, method, data = {}, config = {} }: RequestType) => 
       throw (error as { originalData?: unknown }).originalData;
     }
     const axiosError = error as AxiosError;
-    if (axiosError.response?.data) {
-      throw axiosError.response.data;
+    const responseData = axiosError.response?.data;
+    const httpStatus = axiosError.response?.status;
+    if (responseData && typeof responseData === 'object' && !Array.isArray(responseData)) {
+      throw withHttpStatus(responseData, httpStatus);
     }
-    throw { detail: axiosError.message || 'Network Error' };
+    if (responseData) {
+      throw { detail: String(responseData), httpStatus } satisfies RequestErrorPayload;
+    }
+    throw { detail: axiosError.message || 'Network Error', httpStatus } satisfies RequestErrorPayload;
   }
 };
 

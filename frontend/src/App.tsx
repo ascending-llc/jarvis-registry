@@ -18,6 +18,7 @@ import Login from './pages/Login';
 import NotFound from './pages/NotFound';
 import OAuthCallback from './pages/OAuthCallback';
 import ServerRegistryOrEdit from './pages/ServerRegistryOrEdit';
+import SkillsPage from './pages/Skills';
 import TokenGeneration from './pages/TokenGeneration';
 import WorkflowRegistryOrEdit from './pages/WorkflowRegistryOrEdit';
 import { APP_ROUTES } from './routes';
@@ -160,6 +161,14 @@ const router = createBrowserRouter(
           <Layout>
             <WorkflowRegistryOrEdit />
           </Layout>
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: APP_ROUTES.skills,
+      element: (
+        <ProtectedRoute>
+          <SkillsPage />
         </ProtectedRoute>
       ),
     },

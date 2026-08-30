@@ -4,8 +4,9 @@ import AUTH from './auth';
 import FEDERATION from './federation';
 import MCP from './mcp';
 import SERVER from './server';
+import SKILL from './skill';
 import WORKFLOW from './workflow';
 
-const SERVICE = { AGENT, AUTH, MCP, SERVER, ACL, FEDERATION, WORKFLOW };
+const SERVICE = { AGENT, AUTH, MCP, SERVER, SKILL, ACL, FEDERATION, WORKFLOW };
 
 export default SERVICE;

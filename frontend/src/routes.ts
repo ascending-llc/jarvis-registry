@@ -17,6 +17,7 @@ export const APP_ROUTES = {
   federationEdit: '/federation-edit',
   workflowRegistry: '/workflow-registry',
   workflowEdit: '/workflow-edit',
+  skills: '/skills',
   generateToken: '/generate-token',
 } as const;
 

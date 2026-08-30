@@ -105,6 +105,10 @@ class TelemetryConfig(BaseModel):
         default="unknown",
         description="Build identifier (release tag or commit SHA) used as the OTel service.version resource attribute",
     )
+    deployment_environment: str | None = Field(
+        default=None,
+        description="Deployment environment used by application telemetry",
+    )
     otel_gateway_token: SecretStr = Field(
         default=SecretStr(""),
         description="Optional bearer token used when the OTLP gateway requires authentication",
@@ -154,6 +158,9 @@ class JarvisBaseSettings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    # ==================== Deployment ====================
+    deployment_environment: str | None = None
 
     # ==================== OAuth Session Settings ====================
     # Note: This is the maximum time between initiating OAuth flow and completing the callback.
@@ -384,6 +391,7 @@ class JarvisBaseSettings(BaseSettings):
             otel_prometheus_enabled=self.otel_prometheus_enabled,
             otel_prometheus_port=self.otel_prometheus_port,
             build_version=self.build_version,
+            deployment_environment=self.deployment_environment,
             otel_gateway_token=self.otel_gateway_token,
             otel_trace_hide_inputs=self.otel_trace_hide_inputs,
             otel_trace_hide_outputs=self.otel_trace_hide_outputs,

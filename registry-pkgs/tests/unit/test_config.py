@@ -37,6 +37,22 @@ def test_auth_server_redis_key_prefix_default_and_env_override() -> None:
 
 
 @pytest.mark.unit
+def test_deployment_environment_env_override_reaches_telemetry_config() -> None:
+    with patch.dict(
+        os.environ,
+        {
+            "DEPLOYMENT_ENVIRONMENT": "demo",
+            "X_JARVIS_REGISTRY_IMPORT_CHECKS": "disabled",
+        },
+        clear=True,
+    ):
+        settings = JarvisBaseSettings(_env_file=None)
+
+    assert settings.deployment_environment == "demo"
+    assert settings.telemetry_config.deployment_environment == "demo"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("client_id", ["", "   ", "user-generated"])
 def test_headless_agent_client_id_rejects_empty_and_interactive_values(client_id: str) -> None:
     with pytest.raises(ValidationError, match="headless_agent_client_id"):
