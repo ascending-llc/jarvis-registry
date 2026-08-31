@@ -52,7 +52,6 @@ dependencies = [
     "langchain-openai>=1.1.12",
     "aioboto3>=7.0.0",
     # microsoft azure
-    "azure-identity>=1.25.3",
     "azure-ai-projects>=2.1.0",
 ]
 
