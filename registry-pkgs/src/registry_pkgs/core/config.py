@@ -167,6 +167,11 @@ class JarvisBaseSettings(BaseSettings):
     # ==================== Signature (NOT related to JWT) ====================
     secret_key: str = ""
 
+    # ==================== Encryption ====================
+    # AES key (hex) for encrypting/decrypting federation and OAuth secrets. Shared across every
+    # Jarvis service (all read the same secret store); see encryption_key / _validate_creds_key.
+    creds_key: str = ""
+
     # ==================== JWT ====================
     jwt_private_key: str = ""  # PEM-encoded RSA private key (JWT_PRIVATE_KEY env var)
     jwt_public_key: str = ""  # PEM-encoded RSA public key (JWT_PUBLIC_KEY env var)
@@ -327,6 +332,24 @@ class JarvisBaseSettings(BaseSettings):
         if not self.secret_key:
             raise ValueError("SECRET_KEY must be set.")
         return self
+
+    @model_validator(mode="after")
+    def _validate_creds_key(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("CREDS_KEY validation is disabled. This should only happen in CI import checks.")
+            return self
+        if self.creds_key == "":
+            raise ValueError("CREDS_KEY must be set for encryption/decryption.")
+        try:
+            bytes.fromhex(self.creds_key)
+        except ValueError as exc:
+            # Do not include the key value — it would leak (near-)secret material into logs.
+            raise ValueError("CREDS_KEY must be a valid hex string.") from exc
+        return self
+
+    @cached_property
+    def encryption_key(self) -> bytes:
+        return bytes.fromhex(self.creds_key)
 
     def model_post_init(self, __context: Any) -> None:
         if self.auth_server_api_prefix:

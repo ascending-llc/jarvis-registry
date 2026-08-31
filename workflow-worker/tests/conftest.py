@@ -2,6 +2,7 @@
 
 import os
 
+os.environ.setdefault("X_JARVIS_REGISTRY_IMPORT_CHECKS", "disabled")
 os.environ.setdefault("CREDS_KEY", "00" * 16)
 
 

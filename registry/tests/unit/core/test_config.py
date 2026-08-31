@@ -61,6 +61,25 @@ class TestSettings:
             with pytest.raises(ValidationError, match="SECRET_KEY must be set"):
                 Settings(_env_file=None)
 
+    def test_creds_key_required(self):
+        """CREDS_KEY validation is inherited from JarvisBaseSettings (lifted from Settings)."""
+        env_without_creds_key = {k: v for k, v in _SETTINGS_ENV.items() if k != "CREDS_KEY"}
+        with patch.dict(os.environ, env_without_creds_key, clear=True):
+            with pytest.raises(ValidationError, match="CREDS_KEY must be set"):
+                Settings(_env_file=None)
+
+    def test_creds_key_must_be_hex(self):
+        with patch.dict(os.environ, {**_SETTINGS_ENV, "CREDS_KEY": "not-hex"}, clear=True):
+            with pytest.raises(ValidationError, match="CREDS_KEY must be a valid hex string"):
+                Settings(_env_file=None)
+
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
+    def test_encryption_key_decodes_creds_key(self):
+        # Trivial low-entropy key so the secret scanner does not flag the literal.
+        creds_key = "00" * 16
+        settings = Settings(creds_key=creds_key, _env_file=None)
+        assert settings.encryption_key == bytes.fromhex(creds_key)
+
     @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     def test_custom_secret_key(self):
         """Test using custom secret key."""
