@@ -46,9 +46,7 @@ class AzureFoundryDiscoveryClient:
         if not project_endpoint:
             raise ValueError("Azure AI Foundry providerConfig.projectEndpoint is required")
 
-        credential = auth.credential()
-
-        async with AIProjectClient(endpoint=project_endpoint, credential=credential) as project:
+        async with AIProjectClient(endpoint=project_endpoint, credential=auth) as project:
             names = await self._collect_agent_names(project, provider_config)
             details = await self._fetch_agent_details(project, names)
 
