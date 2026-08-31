@@ -24,6 +24,8 @@ from registry_pkgs.models.skill_sync_job import (
 )
 from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSourceStats
 
+from ..core.config import settings
+from ..utils.concurrency import run_bounded
 from .access_control_service import ACLService
 from .skill_sync_discovery_service import DiscoveredSkill, DiscoveryResult
 
@@ -80,68 +82,146 @@ class SkillSyncApplyService:
         )
         now = datetime.now(UTC)
 
-        for upstream_id, existing_skill in existing_by_upstream.items():
-            if upstream_id in present_upstream_ids:
-                continue
-            try:
-                await self._delete_skill(existing_skill)
-                summary.skillsDeleted += 1
-            except Exception as exc:
-                logger.exception("Failed to delete skill %s: %s", existing_skill.id, exc)
-                summary.skillsFailed += 1
-                metadata = existing_skill.sourceMetadata or {}
-                job.skillErrors.append(
-                    SkillSyncSkillError(
-                        skillPath=metadata.get("skillPath", upstream_id),
-                        upstreamId=metadata.get("upstreamId", upstream_id),
-                        errorCode=SkillSyncSkillErrorCode.DELETE_FAILED,
-                        errorMessage=str(exc),
-                        phase="delete",
-                    )
-                )
+        stale_skills = [
+            (upstream_id, existing_skill)
+            for upstream_id, existing_skill in existing_by_upstream.items()
+            if upstream_id not in present_upstream_ids
+        ]
+        await self._delete_stale_skills(stale_skills, summary, job)
+        await self._apply_skill_changes(
+            discovered_skills=discovery.skills,
+            existing_by_upstream=existing_by_upstream,
+            source_id_str=source_id_str,
+            source=source,
+            commit_sha=commit_sha,
+            request_snapshot=request_snapshot,
+            author_id=author_id,
+            now=now,
+            summary=summary,
+            job=job,
+        )
+        return summary
 
-        for discovered in discovery.skills:
-            try:
-                existing = existing_by_upstream.get(f"{source_id_str}:{discovered.upstream_id}")
-                created, file_counts = await self._apply_discovered_skill(
-                    existing=existing,
-                    discovered=discovered,
-                    source=source,
-                    commit_sha=commit_sha,
-                    request_snapshot=request_snapshot,
-                    author_id=author_id,
-                    now=now,
+    async def delete_source_skills(self, source: SkillSyncSource) -> SkillSyncApplySummary:
+        """Delete every live child skill together with its files and ACL atomically."""
+        summary = SkillSyncApplySummary()
+        skills = await self.list_live_skills(source.id)
+        outcomes = await run_bounded(
+            skills,
+            self._delete_skill,
+            limit=settings.skill_sync_apply_max_concurrency,
+        )
+        failures: list[Exception] = []
+        for outcome in outcomes:
+            if outcome.ok:
+                summary.skillsDeleted += 1
+                summary.filesDeleted += outcome.result or 0
+                continue
+            logger.error(
+                "Failed to delete source skill %s: %s",
+                outcome.item.id,
+                outcome.error,
+                exc_info=outcome.exc_info,
+            )
+            if outcome.error is not None:
+                failures.append(outcome.error)
+        if failures:
+            raise failures[0]
+        return summary
+
+    async def _delete_stale_skills(
+        self,
+        stale_skills: list[tuple[str, Skill]],
+        summary: SkillSyncApplySummary,
+        job: SkillSyncJob,
+    ) -> None:
+        async def _delete_one(item: tuple[str, Skill]) -> int:
+            return await self._delete_skill(item[1])
+
+        outcomes = await run_bounded(
+            stale_skills,
+            _delete_one,
+            limit=settings.skill_sync_apply_max_concurrency,
+        )
+        for outcome in outcomes:
+            upstream_id, skill = outcome.item
+            if outcome.ok:
+                summary.skillsDeleted += 1
+                continue
+            logger.error("Failed to delete skill %s: %s", skill.id, outcome.error, exc_info=outcome.exc_info)
+            summary.skillsFailed += 1
+            metadata = skill.sourceMetadata or {}
+            job.skillErrors.append(
+                SkillSyncSkillError(
+                    skillPath=metadata.get("skillPath", upstream_id),
+                    upstreamId=metadata.get("upstreamId", upstream_id),
+                    errorCode=SkillSyncSkillErrorCode.DELETE_FAILED,
+                    errorMessage=str(outcome.error),
+                    phase="delete",
                 )
-                if created:
-                    summary.skillsCreated += 1
-                    summary.filesCreated += file_counts[0] + file_counts[1]
-                else:
-                    summary.skillsUpdated += 1
-                    summary.filesUpdated += file_counts[0]
-                    summary.filesCreated += file_counts[1]
-                    summary.filesDeleted += file_counts[2]
-            except Exception as exc:
-                logger.exception("Failed to apply skill %s: %s", discovered.upstream_id, exc)
+            )
+
+    async def _apply_skill_changes(
+        self,
+        *,
+        discovered_skills: list[DiscoveredSkill],
+        existing_by_upstream: dict[str, Skill],
+        source_id_str: str,
+        source: SkillSyncSource,
+        commit_sha: str,
+        request_snapshot: SkillSyncFullRequestSnapshot,
+        author_id: PydanticObjectId,
+        now: datetime,
+        summary: SkillSyncApplySummary,
+        job: SkillSyncJob,
+    ) -> None:
+        async def _apply_one(discovered: DiscoveredSkill) -> tuple[bool, tuple[int, int, int]]:
+            existing = existing_by_upstream.get(f"{source_id_str}:{discovered.upstream_id}")
+            return await self._apply_discovered_skill(
+                existing=existing,
+                discovered=discovered,
+                source=source,
+                commit_sha=commit_sha,
+                request_snapshot=request_snapshot,
+                author_id=author_id,
+                now=now,
+            )
+
+        outcomes = await run_bounded(
+            discovered_skills,
+            _apply_one,
+            limit=settings.skill_sync_apply_max_concurrency,
+        )
+        for outcome in outcomes:
+            discovered = outcome.item
+            if not outcome.ok or outcome.result is None:
+                logger.error(
+                    "Failed to apply skill %s: %s",
+                    discovered.upstream_id,
+                    outcome.error,
+                    exc_info=outcome.exc_info,
+                )
                 summary.skillsFailed += 1
                 job.skillErrors.append(
                     SkillSyncSkillError(
                         skillPath=discovered.upstream_id,
                         upstreamId=discovered.upstream_id,
                         errorCode=SkillSyncSkillErrorCode.WRITE_FAILED,
-                        errorMessage=str(exc),
+                        errorMessage=str(outcome.error),
                         phase="apply",
                     )
                 )
-        return summary
+                continue
 
-    async def delete_source_skills(self, source: SkillSyncSource) -> SkillSyncApplySummary:
-        """Delete every live child skill together with its files and ACL atomically."""
-        summary = SkillSyncApplySummary()
-        for skill in await self.list_live_skills(source.id):
-            deleted_files = await self._delete_skill(skill)
-            summary.skillsDeleted += 1
-            summary.filesDeleted += deleted_files
-        return summary
+            created, file_counts = outcome.result
+            if created:
+                summary.skillsCreated += 1
+                summary.filesCreated += file_counts[0] + file_counts[1]
+            else:
+                summary.skillsUpdated += 1
+                summary.filesUpdated += file_counts[0]
+                summary.filesCreated += file_counts[1]
+                summary.filesDeleted += file_counts[2]
 
     @staticmethod
     async def list_live_skills(source_id: PydanticObjectId) -> list[Skill]:

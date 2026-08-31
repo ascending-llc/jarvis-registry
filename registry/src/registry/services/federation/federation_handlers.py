@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 from beanie import PydanticObjectId
@@ -17,6 +19,15 @@ from registry_pkgs.models.federation import (
 )
 
 from ...core.config import settings
+from ...utils.concurrency import run_bounded
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _EnrichmentItem:
+    kind: str
+    entity: Any
 
 
 class BaseFederationSyncHandler(ABC):
@@ -80,15 +91,22 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
     ) -> None:
         # Runtime enrichment needs the federation context because JWT mode is a
         # federation-level decision, not something stored on each child entity.
-        for server in discovered.get("mcp_servers", []):
-            await self.runtime_invoker.enrich_mcp_server(
-                server=server,
-                federation=federation,
-                region=region,
-                assume_role_arn=assume_role_arn,
-            )
+        items = [
+            *(_EnrichmentItem(kind="mcp", entity=server) for server in discovered.get("mcp_servers", [])),
+            *(_EnrichmentItem(kind="a2a", entity=agent) for agent in discovered.get("a2a_agents", [])),
+        ]
 
-        for agent in discovered.get("a2a_agents", []):
+        async def _enrich_one(item: _EnrichmentItem) -> None:
+            if item.kind == "mcp":
+                await self.runtime_invoker.enrich_mcp_server(
+                    server=item.entity,
+                    federation=federation,
+                    region=region,
+                    assume_role_arn=assume_role_arn,
+                )
+                return
+
+            agent = item.entity
             await self.runtime_invoker.enrich_a2a_agent(
                 agent=agent,
                 federation=federation,
@@ -99,6 +117,21 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
                 ),
                 region=region,
                 assume_role_arn=assume_role_arn,
+            )
+
+        outcomes = await run_bounded(
+            items,
+            _enrich_one,
+            limit=settings.federation_enrichment_max_concurrency,
+        )
+        for outcome in outcomes:
+            if outcome.ok:
+                continue
+            logger.error(
+                "Unexpected %s federation enrichment failure: %s",
+                outcome.item.kind,
+                outcome.error,
+                exc_info=outcome.exc_info,
             )
 
 

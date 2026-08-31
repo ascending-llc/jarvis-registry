@@ -289,6 +289,36 @@ async def test_sync_vector_index_after_commit_rebuilds_only_changed_runtimes(
 
 
 @pytest.mark.asyncio
+async def test_vector_collection_preflight_failure_isolated_by_resource_kind(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId())
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(createdMcpServers=1, createdAgents=1),
+        changed_mcp_runtime_arns={"arn:mcp:1"},
+        changed_a2a_runtime_arns={"arn:a2a:1"},
+    )
+    federation_sync_service._current_mcp_runtime_arns = AsyncMock(return_value=[])
+    federation_sync_service._current_a2a_runtime_arns = AsyncMock(return_value=[])
+    federation_sync_service.mcp_server_repo.ensure_collection = AsyncMock(side_effect=RuntimeError("mcp unavailable"))
+    federation_sync_service.a2a_agent_repo.ensure_collection = AsyncMock()
+    federation_sync_service._sync_mcp_vectors_for_runtime = AsyncMock()
+    federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock()
+
+    outcome = await federation_sync_service._sync_vector_index_after_commit(
+        federation=federation,
+        job=job,
+        mutation_result=mutation_result,
+    )
+
+    assert outcome.failed_changed_mcp_runtime_arns == {"arn:mcp:1"}
+    assert outcome.failed_changed_a2a_runtime_arns == set()
+    federation_sync_service._sync_mcp_vectors_for_runtime.assert_not_awaited()
+    federation_sync_service._sync_a2a_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:a2a:1")
+
+
+@pytest.mark.asyncio
 async def test_sync_vector_index_after_commit_rebuilds_missing_weaviate_docs_even_without_mongo_changes(
     federation_sync_service: FederationSyncService,
 ):
@@ -375,7 +405,14 @@ async def test_bookkeeping_transaction_returns_plan_with_enrichment_errors(
     result = await federation_sync_service._commit_bookkeeping_transaction(
         federation=federation,
         job=job,
-        discovered={"mcp_servers": [SimpleNamespace()], "a2a_agents": [SimpleNamespace()]},
+        discovered={
+            "mcp_servers": [SimpleNamespace()],
+            "a2a_agents": [SimpleNamespace()],
+            "skipped_runtimes": [
+                {"runtimeArn": "arn:transient", "reason": "detail_fetch_failed"},
+                {"runtimeArn": "arn:filtered", "reason": "tag_filter_mismatch"},
+            ],
+        },
         session=session,
     )
 
@@ -384,6 +421,7 @@ async def test_bookkeeping_transaction_returns_plan_with_enrichment_errors(
     assert federation_sync_service.federation_crud_service.mark_syncing.await_args.kwargs["last_sync"].status == (
         FederationSyncStatus.SYNCING
     )
+    assert federation_sync_service._build_sync_plan.await_args.kwargs["protected_runtime_arns"] == {"arn:transient"}
 
 
 def test_build_pending_last_sync_uses_pending_status():

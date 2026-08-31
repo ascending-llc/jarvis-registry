@@ -12,6 +12,52 @@ from registry.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+class AgentCoreControlExecutor:
+    """Reuse one control client within a discovery run with coordinated refresh."""
+
+    def __init__(
+        self,
+        *,
+        provider: "AgentCoreClientProvider",
+        region: str,
+        assume_role_arn: str | None,
+        client: Any,
+    ) -> None:
+        self._provider = provider
+        self._region = region
+        self._assume_role_arn = assume_role_arn
+        self._client = client
+        self._generation = 0
+        self._refresh_lock = asyncio.Lock()
+
+    async def execute(self, operation: Callable[[Any], Any]) -> Any:
+        """Execute one sync boto3 operation and retry once after token expiry."""
+        client = self._client
+        generation = self._generation
+        try:
+            return await asyncio.to_thread(operation, client)
+        except Exception as exc:
+            if not self._provider.is_expired_token_error(exc):
+                raise
+
+        refreshed_client = await self._refresh_client(generation)
+        return await asyncio.to_thread(operation, refreshed_client)
+
+    async def _refresh_client(self, failed_generation: int) -> Any:
+        async with self._refresh_lock:
+            if failed_generation != self._generation:
+                return self._client
+
+            logger.warning(
+                "AgentCore scoped control client credentials expired for region %s; refreshing and retrying once",
+                self._region,
+            )
+            await self._provider.invalidate_context(self._region, self._assume_role_arn)
+            self._client = await self._provider.get_control_client(self._region, self._assume_role_arn)
+            self._generation += 1
+            return self._client
+
+
 class AgentCoreClientProvider:
     """
     Centralized factory/cache for AgentCore AWS clients.
@@ -56,6 +102,21 @@ class AgentCoreClientProvider:
             await self._initialize_context(region, assume_role_arn)
             return self._control_clients[cache_key]
         return await asyncio.to_thread(self._build_control_client, region, assume_role_arn)
+
+    def create_scoped_control_executor(
+        self,
+        *,
+        region: str,
+        assume_role_arn: str | None,
+        client: Any,
+    ) -> AgentCoreControlExecutor:
+        """Create a request-scoped executor without caching assumed-role clients globally."""
+        return AgentCoreControlExecutor(
+            provider=self,
+            region=region,
+            assume_role_arn=assume_role_arn,
+            client=client,
+        )
 
     async def get_runtime_client(self, region: str, assume_role_arn: str | None = None) -> Any:
         cache_key = self._cache_key(region, assume_role_arn)

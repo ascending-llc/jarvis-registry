@@ -211,6 +211,67 @@ async def test_run_delete_records_vector_errors_in_job_but_still_succeeds(
 
 
 @pytest.mark.asyncio
+async def test_vector_cleanup_completes_mcp_before_a2a_collection_preflight(
+    federation_sync_service: FederationSyncService,
+):
+    mcp_runtime_arn = "arn:mcp:healthy"
+    a2a_runtime_arn = "arn:a2a:unavailable"
+    events: list[str] = []
+
+    async def _ensure_mcp_collection() -> None:
+        events.append("mcp-preflight")
+
+    async def _delete_mcp(_federation_id: str, _runtime_arn: str) -> None:
+        events.append("mcp-delete")
+
+    async def _ensure_a2a_collection() -> None:
+        events.append("a2a-preflight")
+        raise RuntimeError("a2a collection unavailable")
+
+    federation_sync_service.mcp_server_repo.ensure_collection = AsyncMock(side_effect=_ensure_mcp_collection)
+    federation_sync_service.mcp_server_repo.delete_by_runtime_identity = AsyncMock(side_effect=_delete_mcp)
+    federation_sync_service.a2a_agent_repo.ensure_collection = AsyncMock(side_effect=_ensure_a2a_collection)
+    federation_sync_service.a2a_agent_repo.delete_by_runtime_identity = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="a2a collection unavailable"):
+        await federation_sync_service._delete_vectors_for_federation(
+            "federation-1",
+            [mcp_runtime_arn],
+            [a2a_runtime_arn],
+        )
+
+    federation_sync_service.mcp_server_repo.delete_by_runtime_identity.assert_awaited_once_with(
+        "federation-1",
+        mcp_runtime_arn,
+    )
+    federation_sync_service.a2a_agent_repo.delete_by_runtime_identity.assert_not_awaited()
+    assert events == ["mcp-preflight", "mcp-delete", "a2a-preflight"]
+
+
+@pytest.mark.asyncio
+async def test_vector_cleanup_isolates_per_runtime_delete_failure(
+    federation_sync_service: FederationSyncService,
+):
+    attempted: list[str] = []
+
+    async def _delete(_federation_id: str, runtime_arn: str) -> None:
+        attempted.append(runtime_arn)
+        if runtime_arn == "arn:mcp:broken":
+            raise RuntimeError("delete failed")
+
+    federation_sync_service.mcp_server_repo.delete_by_runtime_identity = AsyncMock(side_effect=_delete)
+
+    errors = await federation_sync_service._delete_vectors_for_federation(
+        "federation-1",
+        ["arn:mcp:broken", "arn:mcp:healthy"],
+        [],
+    )
+
+    assert attempted == ["arn:mcp:broken", "arn:mcp:healthy"]
+    assert errors == ["mcp vector cleanup failed for arn:mcp:broken"]
+
+
+@pytest.mark.asyncio
 async def test_run_delete_restores_active_status_when_delete_fails(
     federation_sync_service: FederationSyncService,
     monkeypatch,
@@ -426,9 +487,15 @@ async def test_preview_manual_sync_does_not_mutate_or_create_jobs(federation_syn
     summary = FederationApplySummary(createdMcpServers=1)
     sync_plan = SimpleNamespace(summary=summary, discovered_mcp_count=1, discovered_a2a_count=0)
 
-    federation_sync_service._discover_entities = AsyncMock(
-        return_value={"mcp_servers": [SimpleNamespace()], "a2a_agents": []}
-    )
+    discovered = {
+        "mcp_servers": [SimpleNamespace()],
+        "a2a_agents": [],
+        "skipped_runtimes": [
+            {"runtimeArn": "arn:transient", "reason": "tag_fetch_failed"},
+            {"runtimeArn": "arn:filtered", "reason": "tag_filter_mismatch"},
+        ],
+    }
+    federation_sync_service._discover_entities = AsyncMock(return_value=discovered)
     federation_sync_service._build_sync_plan = AsyncMock(return_value=sync_plan)
     federation_sync_service.federation_job_service.create_job = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_pending = AsyncMock()
@@ -448,6 +515,7 @@ async def test_preview_manual_sync_does_not_mutate_or_create_jobs(federation_syn
     federation_sync_service.federation_crud_service.mark_sync_pending.assert_not_awaited()
     federation_sync_service.federation_crud_service.mark_syncing.assert_not_awaited()
     federation_sync_service._sync_vector_index_after_commit.assert_not_awaited()
+    assert federation_sync_service._build_sync_plan.await_args.kwargs["protected_runtime_arns"] == {"arn:transient"}
 
 
 @pytest.mark.asyncio
@@ -638,6 +706,65 @@ async def test_run_sync_forwards_author_id_to_discover_entities(
 # ---------------------------------------------------------------------------
 # T1 – single MCP create failure, others persist
 # ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_apply_sync_plan_finishes_deletes_before_starting_creates(
+    federation_sync_service: FederationSyncService,
+):
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    events: list[str] = []
+
+    async def _delete() -> None:
+        events.append("delete-start")
+        events.append("delete-finished")
+
+    async def _insert() -> None:
+        assert events == ["delete-start", "delete-finished"]
+        events.append("create-start")
+        created.id = PydanticObjectId()
+        events.append("create-finished")
+
+    async def _save() -> None:
+        assert events == ["delete-start", "delete-finished", "create-start", "create-finished"]
+        events.append("update-start")
+
+    stale = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock(side_effect=_delete))
+    created = SimpleNamespace(id=None, insert=AsyncMock(side_effect=_insert))
+    existing = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="old",
+        path="/old",
+        tags=[],
+        config={},
+        numTools=0,
+        federationMetadata=None,
+        save=AsyncMock(side_effect=_save),
+    )
+    discovered = SimpleNamespace(
+        serverName="updated",
+        path="/updated",
+        tags=[],
+        config={},
+        numTools=1,
+        federationMetadata=None,
+    )
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(deletedMcpServers=1, createdMcpServers=1),
+        federation_id=PydanticObjectId(),
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=1,
+        discovered_a2a_count=0,
+        mcp_deletes=[(stale, "arn:old")],
+        mcp_creates=[(created, "arn:new")],
+        mcp_updates=[(existing, discovered, "arn:updated")],
+    )
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+
+    await federation_sync_service._apply_sync_plan(sync_plan)
+
+    assert events == ["delete-start", "delete-finished", "create-start", "create-finished", "update-start"]
+
+
 @pytest.mark.asyncio
 async def test_single_mcp_create_failure_others_persist(
     federation_sync_service: FederationSyncService,

@@ -40,6 +40,8 @@ from registry_pkgs.models.federation_sync_job import (
     FederationSyncJob,
 )
 
+from ..core.config import settings
+from ..utils.concurrency import run_bounded
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
     AzureAiFoundrySyncHandler,
@@ -51,6 +53,7 @@ from .federation_job_service import FederationJobService
 logger = logging.getLogger(__name__)
 
 ACL_INHERITANCE_BATCH_SIZE = 500
+_STALE_PROTECTED_SKIP_REASONS = frozenset({"detail_fetch_failed", "tag_fetch_failed"})
 
 
 def _enum_value(value):
@@ -59,6 +62,15 @@ def _enum_value(value):
 
 def _acl_key_part(value: Any) -> str:
     return str(_enum_value(value))
+
+
+def _protected_runtime_arns(discovered: dict[str, list[Any]]) -> set[str]:
+    """Return transiently failed runtime ARNs that must not be treated as stale."""
+    return {
+        str(runtime_arn)
+        for skipped in discovered.get("skipped_runtimes", [])
+        if skipped.get("reason") in _STALE_PROTECTED_SKIP_REASONS and (runtime_arn := skipped.get("runtimeArn"))
+    }
 
 
 def _normalize_runtime_access(
@@ -133,6 +145,34 @@ class FederationSyncMutationResult:
     changed_a2a_runtime_arns: set[str] = field(default_factory=set)
     deleted_mcp_runtime_arns: set[str] = field(default_factory=set)
     deleted_a2a_runtime_arns: set[str] = field(default_factory=set)
+
+
+@dataclass(frozen=True, slots=True)
+class _DeleteItem:
+    kind: str
+    document: Any
+    runtime_arn: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CreateItem:
+    kind: str
+    document: Any
+    remote_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _UpdateItem:
+    kind: str
+    existing: Any
+    discovered: Any
+    remote_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _VectorItem:
+    kind: str
+    runtime_arn: str
 
 
 @dataclass
@@ -429,6 +469,7 @@ class FederationSyncService:
             federation=federation,
             discovered_mcp=discovered.get("mcp_servers", []),
             discovered_a2a=discovered.get("a2a_agents", []),
+            protected_runtime_arns=_protected_runtime_arns(discovered),
             session=None,
         )
         message = None
@@ -539,6 +580,7 @@ class FederationSyncService:
             federation=federation,
             discovered_mcp=discovered_mcp,
             discovered_a2a=discovered_a2a,
+            protected_runtime_arns=_protected_runtime_arns(discovered),
             session=session,
         )
         return sync_plan
@@ -691,6 +733,7 @@ class FederationSyncService:
         federation: Federation,
         discovered_mcp: list[Any],
         discovered_a2a: list[Any],
+        protected_runtime_arns: set[str] | None = None,
         session: AsyncClientSession | None = None,
     ) -> FederationSyncPlan:
         """Compare discovered resources against Mongo state without mutating it."""
@@ -724,6 +767,7 @@ class FederationSyncService:
         discovered_mcp_ids = self._classify_mcp_items(
             federation, discovered_mcp, existing_mcp_by_remote, existing_mcp_by_server_name, apply_summary, sync_plan
         )
+        discovered_mcp_ids.update(protected_runtime_arns or set())
         self._collect_stale_items(
             existing_mcp, discovered_mcp_ids, apply_summary, sync_plan.mcp_deletes, "deletedMcpServers"
         )
@@ -731,6 +775,7 @@ class FederationSyncService:
         discovered_a2a_ids = self._classify_a2a_items(
             federation, discovered_a2a, existing_a2a_by_remote, existing_a2a_by_path, apply_summary, sync_plan
         )
+        discovered_a2a_ids.update(protected_runtime_arns or set())
         self._collect_stale_items(
             existing_a2a, discovered_a2a_ids, apply_summary, sync_plan.a2a_deletes, "deletedAgents"
         )
@@ -1141,135 +1186,11 @@ class FederationSyncService:
             (ResourceType.REMOTE_AGENT, resource_id) for resource_id in sync_plan.a2a_pre_existing_acl_targets
         )
 
-        # --- Deletes ---
-        # Run first so that unique-indexed fields (serverName, path) are freed
-        # before new docs with the same name/path are inserted.
-        # Delete failures are logged but do NOT increment mongoApplyFailed*
-        # because deletes are not part of imported_total.
-        for stale, stale_runtime_arn in sync_plan.mcp_deletes:
-            try:
-                await stale.delete()
-                if stale_runtime_arn:
-                    mutation_result.changed_mcp_runtime_arns.add(stale_runtime_arn)
-                    mutation_result.deleted_mcp_runtime_arns.add(stale_runtime_arn)
-            except Exception as exc:
-                logger.exception(
-                    "Failed to delete MCP server: federation_id=%s runtime_arn=%s",
-                    sync_plan.federation_id,
-                    stale_runtime_arn,
-                )
-                self._record_apply_error(
-                    summary,
-                    f"MCP server delete failed (runtime_arn={stale_runtime_arn}): {exc}",
-                )
-
-        for stale, stale_runtime_arn in sync_plan.a2a_deletes:
-            try:
-                await stale.delete()
-                if stale_runtime_arn:
-                    mutation_result.changed_a2a_runtime_arns.add(stale_runtime_arn)
-                    mutation_result.deleted_a2a_runtime_arns.add(stale_runtime_arn)
-            except Exception as exc:
-                logger.exception(
-                    "Failed to delete A2A agent: federation_id=%s runtime_arn=%s",
-                    sync_plan.federation_id,
-                    stale_runtime_arn,
-                )
-                self._record_apply_error(
-                    summary,
-                    f"A2A agent delete failed (runtime_arn={stale_runtime_arn}): {exc}",
-                )
-
-        # --- Creates ---
-        for server, remote_id in sync_plan.mcp_creates:
-            try:
-                server.federationRefId = sync_plan.federation_id
-                await server.insert()
-                mutation_result.changed_mcp_runtime_arns.add(remote_id)
-                resources_for_acl_inheritance.append((ResourceType.MCPSERVER, server.id))
-            except Exception as exc:
-                logger.exception(
-                    "Failed to create MCP server: federation_id=%s remote_id=%s",
-                    sync_plan.federation_id,
-                    remote_id,
-                )
-                self._record_apply_error(
-                    summary,
-                    f"MCP server create failed (remote_id={remote_id}): {exc}",
-                )
-                summary.mongoApplyFailedMcpServers += 1
-
-        for agent, remote_id in sync_plan.a2a_creates:
-            try:
-                agent.federationRefId = sync_plan.federation_id
-                await agent.insert()
-                mutation_result.changed_a2a_runtime_arns.add(remote_id)
-                resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, agent.id))
-            except Exception as exc:
-                logger.exception(
-                    "Failed to create A2A agent: federation_id=%s remote_id=%s",
-                    sync_plan.federation_id,
-                    remote_id,
-                )
-                self._record_apply_error(
-                    summary,
-                    f"A2A agent create failed (remote_id={remote_id}): {exc}",
-                )
-                summary.mongoApplyFailedAgents += 1
-
-        # --- Updates ---
-        for existing, item, remote_id in sync_plan.mcp_updates:
-            try:
-                existing.serverName = item.serverName
-                existing.path = item.path
-                existing.tags = list(item.tags or [])
-                existing.config = dict(item.config or {})
-                existing.numTools = item.numTools
-                existing.federationMetadata = item.federationMetadata
-                await existing.save()
-                mutation_result.changed_mcp_runtime_arns.add(remote_id)
-                resources_for_acl_inheritance.append((ResourceType.MCPSERVER, existing.id))
-            except Exception as exc:
-                logger.exception(
-                    "Failed to update MCP server: federation_id=%s remote_id=%s",
-                    sync_plan.federation_id,
-                    remote_id,
-                )
-                self._record_apply_error(
-                    summary,
-                    f"MCP server update failed (remote_id={remote_id}): {exc}",
-                )
-                summary.mongoApplyFailedMcpServers += 1
-
-        for existing, item, remote_id in sync_plan.a2a_updates:
-            try:
-                existing.path = item.path
-                existing.card = item.card
-                existing.tags = list(item.tags or [])
-                existing.wellKnown = item.wellKnown
-                existing.federationMetadata = item.federationMetadata
-                if item.config and existing.config:
-                    if hasattr(item.config, "type"):
-                        existing.config.type = item.config.type
-                    if hasattr(item.config, "runtimeAccess"):
-                        existing.config.runtimeAccess = item.config.runtimeAccess
-                    existing.config.enabled = item.config.enabled
-                elif item.config:
-                    existing.config = item.config
-                await existing.save()
-                mutation_result.changed_a2a_runtime_arns.add(remote_id)
-                resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, existing.id))
-            except Exception as exc:
-                logger.exception(
-                    "Failed to update A2A agent: federation_id=%s remote_id=%s",
-                    sync_plan.federation_id,
-                    remote_id,
-                )
-                self._record_apply_error(
-                    summary,
-                    f"A2A agent update failed (remote_id={remote_id}): {exc}",
-                )
-                summary.mongoApplyFailedAgents += 1
+        # Fully await each phase before starting the next. Deletes must free
+        # unique-indexed names/paths before replacement documents are inserted.
+        await self._apply_delete_phase(sync_plan, mutation_result)
+        await self._apply_create_phase(sync_plan, mutation_result, resources_for_acl_inheritance)
+        await self._apply_update_phase(sync_plan, mutation_result, resources_for_acl_inheritance)
 
         # --- ACL inheritance ---
         # Degrade gracefully if ACL inheritance fails — resources are already
@@ -1297,6 +1218,200 @@ class FederationSyncService:
             )
 
         return mutation_result
+
+    async def _apply_delete_phase(
+        self,
+        sync_plan: FederationSyncPlan,
+        mutation_result: FederationSyncMutationResult,
+    ) -> None:
+        items = [
+            *(_DeleteItem("mcp", document, runtime_arn) for document, runtime_arn in sync_plan.mcp_deletes),
+            *(_DeleteItem("a2a", document, runtime_arn) for document, runtime_arn in sync_plan.a2a_deletes),
+        ]
+
+        async def _delete_one(item: _DeleteItem) -> None:
+            await item.document.delete()
+
+        outcomes = await run_bounded(
+            items,
+            _delete_one,
+            limit=settings.federation_mongo_apply_max_concurrency,
+        )
+        for outcome in outcomes:
+            item = outcome.item
+            if outcome.ok:
+                if item.runtime_arn:
+                    changed = (
+                        mutation_result.changed_mcp_runtime_arns
+                        if item.kind == "mcp"
+                        else mutation_result.changed_a2a_runtime_arns
+                    )
+                    deleted = (
+                        mutation_result.deleted_mcp_runtime_arns
+                        if item.kind == "mcp"
+                        else mutation_result.deleted_a2a_runtime_arns
+                    )
+                    changed.add(item.runtime_arn)
+                    deleted.add(item.runtime_arn)
+                continue
+
+            label = "MCP server" if item.kind == "mcp" else "A2A agent"
+            logger.error(
+                "Failed to delete %s: federation_id=%s runtime_arn=%s error=%s",
+                label,
+                sync_plan.federation_id,
+                item.runtime_arn,
+                outcome.error,
+                exc_info=outcome.exc_info,
+            )
+            self._record_apply_error(
+                mutation_result.summary,
+                f"{label} delete failed (runtime_arn={item.runtime_arn}): {outcome.error}",
+            )
+
+    async def _apply_create_phase(
+        self,
+        sync_plan: FederationSyncPlan,
+        mutation_result: FederationSyncMutationResult,
+        resources_for_acl_inheritance: list[tuple[str, Any]],
+    ) -> None:
+        items = [
+            *(_CreateItem("mcp", document, remote_id) for document, remote_id in sync_plan.mcp_creates),
+            *(_CreateItem("a2a", document, remote_id) for document, remote_id in sync_plan.a2a_creates),
+        ]
+
+        async def _create_one(item: _CreateItem) -> None:
+            item.document.federationRefId = sync_plan.federation_id
+            await item.document.insert()
+
+        outcomes = await run_bounded(
+            items,
+            _create_one,
+            limit=settings.federation_mongo_apply_max_concurrency,
+        )
+        for outcome in outcomes:
+            item = outcome.item
+            if outcome.ok:
+                changed = (
+                    mutation_result.changed_mcp_runtime_arns
+                    if item.kind == "mcp"
+                    else mutation_result.changed_a2a_runtime_arns
+                )
+                resource_type = ResourceType.MCPSERVER if item.kind == "mcp" else ResourceType.REMOTE_AGENT
+                changed.add(item.remote_id)
+                resources_for_acl_inheritance.append((resource_type, item.document.id))
+                continue
+
+            self._record_write_failure(
+                summary=mutation_result.summary,
+                kind=item.kind,
+                operation="create",
+                remote_id=item.remote_id,
+                federation_id=sync_plan.federation_id,
+                error=outcome.error,
+            )
+
+    async def _apply_update_phase(
+        self,
+        sync_plan: FederationSyncPlan,
+        mutation_result: FederationSyncMutationResult,
+        resources_for_acl_inheritance: list[tuple[str, Any]],
+    ) -> None:
+        items = [
+            *(
+                _UpdateItem("mcp", existing, discovered, remote_id)
+                for existing, discovered, remote_id in sync_plan.mcp_updates
+            ),
+            *(
+                _UpdateItem("a2a", existing, discovered, remote_id)
+                for existing, discovered, remote_id in sync_plan.a2a_updates
+            ),
+        ]
+
+        async def _update_one(item: _UpdateItem) -> None:
+            if item.kind == "mcp":
+                self._copy_mcp_update_fields(item.existing, item.discovered)
+            else:
+                self._copy_a2a_update_fields(item.existing, item.discovered)
+            await item.existing.save()
+
+        outcomes = await run_bounded(
+            items,
+            _update_one,
+            limit=settings.federation_mongo_apply_max_concurrency,
+        )
+        for outcome in outcomes:
+            item = outcome.item
+            if outcome.ok:
+                changed = (
+                    mutation_result.changed_mcp_runtime_arns
+                    if item.kind == "mcp"
+                    else mutation_result.changed_a2a_runtime_arns
+                )
+                resource_type = ResourceType.MCPSERVER if item.kind == "mcp" else ResourceType.REMOTE_AGENT
+                changed.add(item.remote_id)
+                resources_for_acl_inheritance.append((resource_type, item.existing.id))
+                continue
+
+            self._record_write_failure(
+                summary=mutation_result.summary,
+                kind=item.kind,
+                operation="update",
+                remote_id=item.remote_id,
+                federation_id=sync_plan.federation_id,
+                error=outcome.error,
+            )
+
+    @staticmethod
+    def _copy_mcp_update_fields(existing: Any, discovered: Any) -> None:
+        existing.serverName = discovered.serverName
+        existing.path = discovered.path
+        existing.tags = list(discovered.tags or [])
+        existing.config = dict(discovered.config or {})
+        existing.numTools = discovered.numTools
+        existing.federationMetadata = discovered.federationMetadata
+
+    @staticmethod
+    def _copy_a2a_update_fields(existing: Any, discovered: Any) -> None:
+        existing.path = discovered.path
+        existing.card = discovered.card
+        existing.tags = list(discovered.tags or [])
+        existing.wellKnown = discovered.wellKnown
+        existing.federationMetadata = discovered.federationMetadata
+        if discovered.config and existing.config:
+            if hasattr(discovered.config, "type"):
+                existing.config.type = discovered.config.type
+            if hasattr(discovered.config, "runtimeAccess"):
+                existing.config.runtimeAccess = discovered.config.runtimeAccess
+            existing.config.enabled = discovered.config.enabled
+        elif discovered.config:
+            existing.config = discovered.config
+
+    def _record_write_failure(
+        self,
+        *,
+        summary: FederationApplySummary,
+        kind: str,
+        operation: str,
+        remote_id: str,
+        federation_id: Any,
+        error: Exception | None,
+    ) -> None:
+        label = "MCP server" if kind == "mcp" else "A2A agent"
+        logger.error(
+            "Failed to %s %s: federation_id=%s remote_id=%s error=%s",
+            operation,
+            label,
+            federation_id,
+            remote_id,
+            error,
+            exc_info=(type(error), error, error.__traceback__) if error is not None else None,
+        )
+        self._record_apply_error(summary, f"{label} {operation} failed (remote_id={remote_id}): {error}")
+        if kind == "mcp":
+            summary.mongoApplyFailedMcpServers += 1
+        else:
+            summary.mongoApplyFailedAgents += 1
 
     async def _get_federation_acl_entries(
         self,
@@ -1557,43 +1672,75 @@ class FederationSyncService:
             getattr(self.a2a_agent_repo, "collection", "A2a_agents"),
         )
 
-        for runtime_arn in sorted(mcp_runtime_arns_to_rebuild):
-            try:
-                await self._sync_mcp_vectors_for_runtime(federation.id, runtime_arn)
-            except Exception as exc:
-                logger.exception(
-                    "MCP runtime vector rebuild failed: federation_id=%s job_id=%s runtime_arn=%s",
-                    federation.id,
-                    job.id,
-                    runtime_arn,
+        def _record_failure(item: _VectorItem, error: Exception) -> None:
+            logger.error(
+                "%s runtime vector rebuild failed: federation_id=%s job_id=%s runtime_arn=%s error=%s",
+                item.kind.upper(),
+                federation.id,
+                job.id,
+                item.runtime_arn,
+                error,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            outcome.error_messages.append(
+                f"{item.kind} runtime rebuild failed:{federation.id}:{item.runtime_arn}:{error}"
+            )
+            changed_arns = (
+                mutation_result.changed_mcp_runtime_arns
+                if item.kind == "mcp"
+                else mutation_result.changed_a2a_runtime_arns
+            )
+            deleted_arns = (
+                mutation_result.deleted_mcp_runtime_arns
+                if item.kind == "mcp"
+                else mutation_result.deleted_a2a_runtime_arns
+            )
+            if item.runtime_arn in changed_arns and item.runtime_arn not in deleted_arns:
+                failed_changed = (
+                    outcome.failed_changed_mcp_runtime_arns
+                    if item.kind == "mcp"
+                    else outcome.failed_changed_a2a_runtime_arns
                 )
-                error_msg = f"mcp runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}"
-                outcome.error_messages.append(error_msg)
-                is_changed = runtime_arn in mutation_result.changed_mcp_runtime_arns
-                is_delete = runtime_arn in mutation_result.deleted_mcp_runtime_arns
-                if is_changed and not is_delete:
-                    outcome.failed_changed_mcp_runtime_arns.add(runtime_arn)
-                else:
-                    outcome.failed_repair_only_runtime_arns.add(runtime_arn)
+                failed_changed.add(item.runtime_arn)
+                return
+            outcome.failed_repair_only_runtime_arns.add(item.runtime_arn)
 
-        for runtime_arn in sorted(a2a_runtime_arns_to_rebuild):
+        vector_items: list[_VectorItem] = []
+        collection_plans = (
+            ("mcp", self.mcp_server_repo, sorted(mcp_runtime_arns_to_rebuild)),
+            ("a2a", self.a2a_agent_repo, sorted(a2a_runtime_arns_to_rebuild)),
+        )
+        for kind, repository, runtime_arns in collection_plans:
+            if not runtime_arns:
+                continue
             try:
-                await self._sync_a2a_vectors_for_runtime(federation.id, runtime_arn)
+                await repository.ensure_collection()
             except Exception as exc:
-                logger.exception(
-                    "A2A runtime vector rebuild failed: federation_id=%s job_id=%s runtime_arn=%s",
-                    federation.id,
-                    job.id,
-                    runtime_arn,
-                )
-                error_msg = f"a2a runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}"
-                outcome.error_messages.append(error_msg)
-                is_changed = runtime_arn in mutation_result.changed_a2a_runtime_arns
-                is_delete = runtime_arn in mutation_result.deleted_a2a_runtime_arns
-                if is_changed and not is_delete:
-                    outcome.failed_changed_a2a_runtime_arns.add(runtime_arn)
-                else:
-                    outcome.failed_repair_only_runtime_arns.add(runtime_arn)
+                for runtime_arn in runtime_arns:
+                    _record_failure(_VectorItem(kind, runtime_arn), exc)
+                continue
+            vector_items.extend(_VectorItem(kind, runtime_arn) for runtime_arn in runtime_arns)
+
+        async def _sync_one(item: _VectorItem) -> None:
+            if item.kind == "mcp":
+                await self._sync_mcp_vectors_for_runtime(federation.id, item.runtime_arn)
+                return
+            await self._sync_a2a_vectors_for_runtime(federation.id, item.runtime_arn)
+
+        fan_out_results = await run_bounded(
+            vector_items,
+            _sync_one,
+            limit=settings.federation_vector_sync_max_concurrency,
+        )
+        for fan_out_result in fan_out_results:
+            if fan_out_result.ok:
+                continue
+            item = fan_out_result.item
+            error = fan_out_result.error
+            if error is None:
+                logger.error("Vector fan-out returned a failed result without an exception: item=%s", item)
+                continue
+            _record_failure(item, error)
 
         if not outcome.error_messages:
             logger.info(
@@ -1690,7 +1837,6 @@ class FederationSyncService:
 
     async def _sync_mcp_vectors_for_runtime(self, federation_id, runtime_arn: str) -> None:
         federation_id_str = str(federation_id)
-        await self.mcp_server_repo.ensure_collection()
         # Delete and rebuild one MCP runtime at a time. runtimeArn identifies the
         # concrete remote resource; federation_id prevents cross-federation deletes.
         await self.mcp_server_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
@@ -1711,7 +1857,6 @@ class FederationSyncService:
 
     async def _sync_a2a_vectors_for_runtime(self, federation_id, runtime_arn: str) -> None:
         federation_id_str = str(federation_id)
-        await self.a2a_agent_repo.ensure_collection()
         await self.a2a_agent_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
         current_agent = await A2AAgent.find_one(
             {
@@ -1758,24 +1903,57 @@ class FederationSyncService:
         by a future rebuild.
         """
         errors: list[str] = []
+        errors.extend(
+            await self._delete_vectors_for_resource_kind(
+                federation_id_str=federation_id_str,
+                kind="mcp",
+                repository=self.mcp_server_repo,
+                runtime_arns=mcp_runtime_arns,
+            )
+        )
+        errors.extend(
+            await self._delete_vectors_for_resource_kind(
+                federation_id_str=federation_id_str,
+                kind="a2a",
+                repository=self.a2a_agent_repo,
+                runtime_arns=a2a_runtime_arns,
+            )
+        )
+        return errors
 
-        if mcp_runtime_arns:
-            await self.mcp_server_repo.ensure_collection()
-            for arn in mcp_runtime_arns:
-                try:
-                    await self.mcp_server_repo.delete_by_runtime_identity(federation_id_str, arn)
-                except Exception as e:
-                    logger.exception("Failed to delete MCP vector records for runtime %s,e: %s", arn, str(e))
-                    errors.append(f"mcp vector cleanup failed for {arn}")
+    async def _delete_vectors_for_resource_kind(
+        self,
+        *,
+        federation_id_str: str,
+        kind: str,
+        repository: Any,
+        runtime_arns: list[str],
+    ) -> list[str]:
+        if not runtime_arns:
+            return []
 
-        if a2a_runtime_arns:
-            await self.a2a_agent_repo.ensure_collection()
-            for arn in a2a_runtime_arns:
-                try:
-                    await self.a2a_agent_repo.delete_by_runtime_identity(federation_id_str, arn)
-                except Exception as e:
-                    logger.error("Failed to delete A2A vector records for runtime %s ,e: %s", arn, str(e))
-                    errors.append(f"a2a vector cleanup failed for {arn}")
+        await repository.ensure_collection()
+
+        async def _delete_one(runtime_arn: str) -> None:
+            await repository.delete_by_runtime_identity(federation_id_str, runtime_arn)
+
+        outcomes = await run_bounded(
+            runtime_arns,
+            _delete_one,
+            limit=settings.federation_vector_sync_max_concurrency,
+        )
+        errors: list[str] = []
+        for outcome in outcomes:
+            if outcome.ok:
+                continue
+            logger.error(
+                "Failed to delete %s vector records for runtime %s: %s",
+                kind.upper(),
+                outcome.item,
+                outcome.error,
+                exc_info=outcome.exc_info,
+            )
+            errors.append(f"{kind} vector cleanup failed for {outcome.item}")
         return errors
 
     @staticmethod

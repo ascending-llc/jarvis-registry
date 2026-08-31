@@ -3,7 +3,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Self
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from registry_pkgs.core.config import (
     ChunkingConfig,
@@ -137,6 +137,14 @@ class Settings(JarvisBaseSettings):
     agentcore_get_agent_card_retry_attempts: int = 2
     agentcore_get_agent_card_retry_delay_seconds: float = 5.0
     agentcore_jwt_http_timeout_seconds: float = 20.0
+
+    # ==================== Sync Concurrency ====================
+    federation_discovery_max_concurrency: int = Field(default=10, gt=0)
+    federation_enrichment_max_concurrency: int = Field(default=5, gt=0)
+    federation_mongo_apply_max_concurrency: int = Field(default=15, gt=0)
+    federation_vector_sync_max_concurrency: int = Field(default=5, gt=0)
+    azure_foundry_discovery_max_concurrency: int = Field(default=10, gt=0)
+    skill_sync_apply_max_concurrency: int = Field(default=10, gt=0)
 
     # ==================== Azure OpenAI ====================
     azure_openai_api_key: str | None = None
