@@ -10,6 +10,7 @@ from a2a.client import A2ACardResolver
 from azure.ai.projects.aio import AIProjectClient
 from beanie import PydanticObjectId
 
+from registry_pkgs.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import (
     TRANSPORT_JSONRPC,
@@ -21,7 +22,6 @@ from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetad
 
 from ...core.config import settings
 from ...utils.concurrency import run_bounded
-from .azure_foundry_auth import AzureFoundryAuthService
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,7 @@ class AzureFoundryDiscoveryClient:
         if not project_endpoint:
             raise ValueError("Azure AI Foundry providerConfig.projectEndpoint is required")
 
-        credential = auth.credential()
-
-        async with AIProjectClient(endpoint=project_endpoint, credential=credential) as project:
+        async with AIProjectClient(endpoint=project_endpoint, credential=auth) as project:
             names = await self._collect_agent_names(project, provider_config)
             details = await self._fetch_agent_details(project, names)
 

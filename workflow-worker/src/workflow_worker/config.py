@@ -2,41 +2,26 @@ from functools import cached_property
 from typing import Self
 
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from registry_pkgs.core.config import JwtSigningConfig, MongoConfig, RedisConfig
+from registry_pkgs.core.config import JarvisBaseSettings, JwtSigningConfig, MongoConfig, RedisConfig
 
 
-class WorkerSettings(BaseSettings):
-    """Standalone worker settings loaded from the shared deployment environment."""
-
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+class WorkerSettings(JarvisBaseSettings):
+    """Standalone worker settings."""
 
     max_sleep_seconds: float = Field(default=30.0, validation_alias="WORKFLOW_WORKER_MAX_SLEEP_SECONDS", gt=0)
     max_concurrent_runs: int = Field(default=5, validation_alias="WORKFLOW_WORKER_MAX_CONCURRENT_RUNS", ge=1)
     max_claimed_runs: int = Field(default=10, validation_alias="WORKFLOW_WORKER_MAX_CLAIMED_RUNS", ge=1)
     lease_duration_seconds: int = Field(default=300, validation_alias="WORKFLOW_WORKER_LEASE_DURATION_SECONDS", ge=30)
 
-    mongo_uri: str = "mongodb://127.0.0.1:27017/jarvis"
-    mongodb_username: str = ""
-    mongodb_password: str = ""
     redis_uri: str = "redis://127.0.0.1:6379/1"
     redis_key_prefix: str = "jarvis-registry"
 
-    workflow_llm_model_id: str = Field(
-        default="amazon.nova-2-lite-v1:0",
-        validation_alias="AWS_WORKFLOW_LLM_MODEL",
-    )
+    workflow_llm_model_id: str = Field(default="amazon.nova-2-lite-v1:0", validation_alias="AWS_WORKFLOW_LLM_MODEL")
     aws_region: str = "us-east-1"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None
-
-    jwt_private_key: str = ""
-    jwt_issuer: str = "http://localhost:7860"
-    jwt_self_signed_kid: str = "self-signed-key-v1"
-    jwt_audience: str = "jarvis-services"
-    registry_app_name: str = "jarvis-registry-client"
 
     @model_validator(mode="after")
     def _validate_claim_capacity(self) -> Self:

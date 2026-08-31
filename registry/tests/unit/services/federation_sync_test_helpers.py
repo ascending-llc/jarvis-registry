@@ -28,6 +28,7 @@ def _make_federation_sync_service() -> FederationSyncService:
         a2a_agent_repo=a2a_agent_repo,
         acl_service=MagicMock(),
         user_service=user_service,
+        azure_client_cache=MagicMock(),
     )
 
 

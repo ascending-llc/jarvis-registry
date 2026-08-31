@@ -25,11 +25,13 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
         mongo_config=object(),
         redis_config=object(),
         redis_key_prefix="worker-prefix",
+        encryption_key=b"0" * 32,
     )
     redis_client = object()
     directive_queue = object()
     cancellation_manager = object()
     http_client = SimpleNamespace(aclose=AsyncMock())
+    azure_client_cache = SimpleNamespace(close=AsyncMock())
     runner = object()
     repository = object()
     loop = SimpleNamespace(add_signal_handler=MagicMock())
@@ -47,6 +49,7 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     monkeypatch.setattr(main, "MongoBackedCancellationManager", lambda **_kwargs: cancellation_manager)
     monkeypatch.setattr(main, "set_cancellation_manager", MagicMock())
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_kwargs: http_client)
+    monkeypatch.setattr(main, "AzureFoundryClientCache", lambda **_kwargs: azure_client_cache)
     monkeypatch.setattr(main, "_build_runner", lambda *_args: runner)
     monkeypatch.setattr(main.asyncio, "get_running_loop", lambda: loop)
     monkeypatch.setattr(main, "_run_scheduler_loop", run_scheduler_loop)
@@ -61,8 +64,35 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     assert run_scheduler_loop.await_args.args[2] is repository
     assert loop.add_signal_handler.call_count == 2
     http_client.aclose.assert_awaited_once_with()
+    azure_client_cache.close.assert_awaited_once_with()
     close_redis_client.assert_called_once_with(redis_client)
     close_mongodb.assert_awaited_once_with()
+
+
+def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_settings = SimpleNamespace(
+        workflow_llm_model_id="model",
+        aws_region="us-east-1",
+        aws_access_key_id=None,
+        aws_secret_access_key=None,
+        aws_session_token=None,
+        jwt_signing_config=object(),
+        redis_key_prefix="worker-prefix",
+    )
+    headers_provider = object()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(main, "settings", mock_settings)
+    monkeypatch.setattr(main, "AwsBedrock", lambda **_kwargs: object())
+    monkeypatch.setattr(main.MongoDB, "get_client", lambda: object())
+    monkeypatch.setattr(main.MongoDB, "database_name", "jarvis", raising=False)
+    monkeypatch.setattr(main, "make_a2a_headers_provider", lambda **kwargs: headers_provider)
+    monkeypatch.setattr(main, "WorkflowRunner", lambda **kwargs: captured.update(kwargs) or object())
+
+    azure_client_cache = object()
+    main._build_runner(object(), object(), object(), azure_client_cache)
+
+    assert captured["headers_provider"] is headers_provider
 
 
 @pytest.mark.asyncio

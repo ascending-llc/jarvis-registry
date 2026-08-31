@@ -9,8 +9,8 @@ from beanie import PydanticObjectId
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
-from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry.services.federation.azure_foundry_discovery import AzureFoundryDiscoveryClient
+from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import (
     AwsAgentCoreProviderConfig,
@@ -140,8 +140,10 @@ class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
 
     def __init__(
         self,
+        azure_client_cache: AzureFoundryClientCache,
         discovery_client: AzureFoundryDiscoveryClient | None = None,
     ):
+        self._azure_client_cache = azure_client_cache
         self.discovery_client = discovery_client or AzureFoundryDiscoveryClient()
 
     async def discover_entities(
@@ -151,11 +153,11 @@ class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
         author_id: PydanticObjectId,
     ) -> dict[str, list[Any]]:
         provider_config = AzureAiFoundryProviderConfig(**dict(federation.providerConfig or {}))
-        async with AzureFoundryAuthService(provider_config) as auth:
-            agents = await self.discovery_client.discover_a2a_agents(
-                provider_config=provider_config,
-                auth=auth,
-                author_id=author_id,
-            )
+        auth = await self._azure_client_cache.get_auth_service(federation.id)
+        agents = await self.discovery_client.discover_a2a_agents(
+            provider_config=provider_config,
+            auth=auth,
+            author_id=author_id,
+        )
         # Foundry hosted agents only expose A2A;
         return {"a2a_agents": agents, "mcp_servers": []}
