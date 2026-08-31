@@ -17,7 +17,6 @@ from registry_pkgs.federation.azure_foundry_client_cache import AzureEntraAuth, 
 from registry_pkgs.models.enums import FederationProviderType
 
 _KEY = b"0" * 32
-_SCOPE = "https://ai.azure.com/.default"
 _FED_GET = "registry_pkgs.federation.azure_foundry_client_cache.Federation.get"
 _CSC = "registry_pkgs.federation.azure_foundry_client_cache.ClientSecretCredential"
 _DAC = "registry_pkgs.federation.azure_foundry_client_cache.DefaultAzureCredential"
