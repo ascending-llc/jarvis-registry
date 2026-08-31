@@ -17,6 +17,7 @@ os.environ["AUTH_SERVER_EXTERNAL_URL"] = "http://localhost:8888"
 os.environ["AUTH_SERVER_API_PREFIX"] = "/auth"
 os.environ["AUTH_PROVIDER"] = "keycloak"
 os.environ["SECRET_KEY"] = "test-secret-key-for-testing"
+os.environ["CREDS_KEY"] = "00" * 16
 
 from registry_pkgs.testing.fixtures import setup_test_rsa_keys
 

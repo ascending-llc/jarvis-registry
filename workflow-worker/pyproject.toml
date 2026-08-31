@@ -21,6 +21,5 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.poe.tasks]
-start = { shell = "uv run python -m workflow_worker.main" }
 test = { shell = "uv run pytest tests" }
 test-cov = { shell = "uv run pytest tests --cov=workflow_worker --cov-report=term --cov-report=xml" }

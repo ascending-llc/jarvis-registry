@@ -147,9 +147,6 @@ class Settings(JarvisBaseSettings):
     azure_openai_llm_deployment: str = ""
     llm_model: str = "gpt-4"
 
-    # ==================== Encryption ====================
-    creds_key: str = ""
-
     # ==================== Entra Group Sync ====================
     # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
     # `entra_group_sync_enabled = False` if using Registry together with Jarvis Chat; `True` if using Registry by itself.
@@ -198,23 +195,6 @@ class Settings(JarvisBaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _validate_creds_key(self) -> Self:
-        if self.x_jarvis_registry_import_checks == "disabled":
-            logging.warning("CREDS_KEY validation is disabled. This should only happen in CI import checks.")
-
-            return self
-
-        if self.creds_key == "":
-            raise ValueError("CREDS_KEY must be set for encryption/decryption.")
-
-        try:
-            bytes.fromhex(self.creds_key)
-        except ValueError as exc:
-            raise ValueError(f"CREDS_KEY must be a valid hex string, but it is {self.creds_key}") from exc
-
-        return self
-
-    @model_validator(mode="after")
     def _validate_llm_model_id(self) -> Self:
         if self.x_jarvis_registry_import_checks == "disabled":
             logging.warning("LLM Model ID validation is disabled. This should only happen in CI import checks.")
@@ -237,10 +217,6 @@ class Settings(JarvisBaseSettings):
     @cached_property
     def registry_redirect_uri(self) -> str:
         return f"{self.registry_url.rstrip('/')}/redirect"
-
-    @cached_property
-    def encryption_key(self) -> bytes:
-        return bytes.fromhex(self.creds_key)
 
     @cached_property
     def is_local_dev(self) -> bool:

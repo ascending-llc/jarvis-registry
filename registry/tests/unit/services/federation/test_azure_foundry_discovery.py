@@ -7,8 +7,8 @@ import pytest
 from azure.ai.projects.models import AgentEndpointProtocol
 from beanie import PydanticObjectId
 
-from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry.services.federation.azure_foundry_discovery import AzureFoundryDiscoveryClient
+from registry_pkgs.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import AgentConfig, WellKnownConfig
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
@@ -124,10 +124,28 @@ def _patch_httpx():
 
 
 def _make_auth_stub() -> AzureFoundryAuthService:
-    auth = AzureFoundryAuthService(_provider_config())
-    auth.credential = MagicMock(return_value=MagicMock())
-    auth.build_headers = AsyncMock(return_value={"Authorization": "Bearer tok"})
-    return auth
+    # Facade over a mock cache — the discovery client passes this straight to AIProjectClient
+    # as its credential (get_token only); it no longer calls auth.credential().
+    cache = MagicMock()
+    cache.build_headers = AsyncMock(return_value={"Authorization": "Bearer tok"})
+    return AzureFoundryAuthService(PydanticObjectId(), cache)
+
+
+@pytest.mark.asyncio
+async def test_discover_passes_facade_directly_as_aiproject_credential():
+    agents_fake = _FakeAgents(summaries=[], details_map={})
+    auth = _make_auth_stub()
+    ai_project = patch(
+        "registry.services.federation.azure_foundry_discovery.AIProjectClient",
+        return_value=_FakeProjectClient(agents_fake),
+    )
+    with ai_project as project_cls, _patch_httpx():
+        await AzureFoundryDiscoveryClient().discover_a2a_agents(
+            provider_config=_provider_config(),
+            auth=auth,
+            author_id=AUTHOR_ID,
+        )
+    assert project_cls.call_args.kwargs["credential"] is auth  # facade passed directly, no .credential()
 
 
 def _make_fake_agent_card(card_data: dict, registry_fields: dict) -> SimpleNamespace:

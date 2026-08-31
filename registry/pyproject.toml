@@ -52,7 +52,6 @@ dependencies = [
     "langchain-openai>=1.1.12",
     "aioboto3>=7.0.0",
     # microsoft azure
-    "azure-identity>=1.25.3",
     "azure-ai-projects>=2.1.0",
 ]
 
@@ -75,9 +74,6 @@ registry = ["py.typed"]
 
 # Tasks of this specific workspace member should be run from the member directory, i.e. `./registry`.
 [tool.poe.tasks]
-# Development server
-dev = { shell = "uv run uvicorn registry.main:app --reload --host 0.0.0.0 --port 8000" }
-
 # Run all tests
 test = { shell = "uv run pytest tests/" }
 test-cov = { shell = "uv run pytest tests/ --cov=registry --cov-report=html --cov-report=term --cov-report=xml" }

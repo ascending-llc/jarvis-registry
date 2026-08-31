@@ -12,9 +12,11 @@ from redis import Redis
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
+from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
+from registry_pkgs.workflows.a2a_headers_provider import A2aHeadersProvider, make_a2a_headers_provider
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
@@ -29,11 +31,6 @@ from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.agent_scanner import AgentScannerService
 from .services.federation.a2a_client_registry import A2AClientRegistry
-from .services.federation.azure_foundry_proxy_auth import (
-    A2aHeadersProvider,
-    AzureFoundryClientCache,
-    make_a2a_headers_provider,
-)
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
@@ -280,6 +277,7 @@ class RegistryContainer:
         return A2AAgentService(
             a2a_agent_repo=self.a2a_agent_repo,
             jwt_config=self.settings.jwt_signing_config,
+            azure_client_cache=self.azure_foundry_client_cache,
         )
 
     @cached_property
@@ -306,19 +304,32 @@ class RegistryContainer:
         )
 
     @cached_property
+    def azure_foundry_client_cache(self) -> AzureFoundryClientCache:
+        """Process-wide, shared Azure Foundry credential/client cache.
+
+        Single source of Azure Entra credentials for every consumer (A2A headers,
+        federation sync, agent-card re-discovery, direct-proxy clients).
+        """
+        return AzureFoundryClientCache(
+            encryption_key=self.settings.encryption_key,
+            max_connections=self.settings.azure_foundry_max_connections,
+            max_keepalive_connections=self.settings.azure_foundry_max_keepalive_connections,
+        )
+
+    @cached_property
     def a2a_client_registry(self) -> A2AClientRegistry:
         return A2AClientRegistry(
             agentcore_registry=self.a2a_proxy_client_registry,
-            azure_client_cache=AzureFoundryClientCache(
-                max_connections=self.settings.azure_foundry_max_connections,
-                max_keepalive_connections=self.settings.azure_foundry_max_keepalive_connections,
-            ),
+            azure_client_cache=self.azure_foundry_client_cache,
         )
 
     @cached_property
     def a2a_headers_provider(self) -> A2aHeadersProvider:
-        """App-scoped A2A headers provider; resolves Azure Entra credentials fresh per call (no caching)."""
-        return make_a2a_headers_provider(jwt_config=self.settings.jwt_signing_config)
+        """App-scoped A2A headers provider; resolves Azure Entra credentials via the shared cache."""
+        return make_a2a_headers_provider(
+            jwt_config=self.settings.jwt_signing_config,
+            azure_client_cache=self.azure_foundry_client_cache,
+        )
 
     @cached_property
     def mcp_headers_provider(self) -> McpHeadersProvider:
@@ -460,6 +471,7 @@ class RegistryContainer:
             a2a_agent_repo=self.a2a_agent_repo,
             acl_service=self.acl_service,
             user_service=self.user_service,
+            azure_client_cache=self.azure_foundry_client_cache,
         )
 
     @cached_property

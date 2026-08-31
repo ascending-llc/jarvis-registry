@@ -11,6 +11,8 @@ from agno.run.cancel import set_cancellation_manager
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
+from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
+from registry_pkgs.workflows.a2a_headers_provider import make_a2a_headers_provider
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
 from registry_pkgs.workflows.runner import WorkflowRunner
@@ -57,13 +59,9 @@ def _build_runner(
     directive_queue: DirectiveQueue,
     redis_client: Any,
     http_client: httpx.AsyncClient,
+    azure_client_cache: AzureFoundryClientCache,
 ) -> WorkflowRunner:
-    """Construct the WorkflowRunner with an AWS Bedrock LLM for step-node execution.
-
-    Mirrors RegistryContainer.workflow_runner but runs standalone without the
-    FastAPI request context. A2A/MCP OAuth headers providers are not available
-    in this context — workflows using them will fail at execution time.
-    """
+    """Construct the workflow runner and its A2A authentication provider."""
     llm = AwsBedrock(
         id=settings.workflow_llm_model_id,
         aws_region=settings.aws_region,
@@ -72,8 +70,12 @@ def _build_runner(
         aws_session_token=settings.aws_session_token,
     )
     logger.warning(
-        "Scheduled runs do not supply A2A or MCP OAuth headers providers; "
-        "workflows using Azure Foundry agents or OAuth-protected MCP servers will fail at execution time"
+        "Scheduled runs do not supply an MCP OAuth headers provider; "
+        "workflows using OAuth-protected MCP servers will fail at execution time"
+    )
+    headers_provider = make_a2a_headers_provider(
+        jwt_config=settings.jwt_signing_config,
+        azure_client_cache=azure_client_cache,
     )
     return WorkflowRunner(
         llm=llm,
@@ -82,6 +84,7 @@ def _build_runner(
         jwt_config=settings.jwt_signing_config,
         directive_queue=directive_queue,
         a2a_httpx_client=http_client,
+        headers_provider=headers_provider,
         redis_client=redis_client,
         redis_key_prefix=settings.redis_key_prefix,
     )
@@ -167,7 +170,8 @@ async def main() -> None:
 
     # read=None: workflow runs can be long-lived (LLM inference, external API calls)
     http_client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0))
-    runner = _build_runner(directive_queue, redis_client, http_client)
+    azure_client_cache = AzureFoundryClientCache(encryption_key=settings.encryption_key)
+    runner = _build_runner(directive_queue, redis_client, http_client, azure_client_cache)
 
     # -- Register OS signals for graceful shutdown --
     # get_running_loop: obtain the event loop created by asyncio.run()
@@ -182,6 +186,7 @@ async def main() -> None:
         await _run_scheduler_loop(stop_event, runner, schedule_repository)
     finally:
         await http_client.aclose()
+        await azure_client_cache.close()
         close_redis_client(redis_client)
         await close_mongodb()
 

@@ -24,15 +24,18 @@ Run `uv sync` from project root, NOT this workspace member folder (`auth-server`
 
 ### Environment Variables
 
-Create a `.env` file in the `auth-server` directory.
+Create a `.env` file at the **project root** (`cp .env.example .env` from the repo root) — this
+is the same file docker-compose uses (`env_file: - .env`) for every service, including
+`auth-server`.
 
 ### Running the Server
 
-From this `auth-server` directory, run the following command.
+From the **project root** (not this `auth-server` directory — `AuthSettings` reads `.env` relative
+to the current working directory), run the following command.
 
 ```bash
-# Development mode with auto-reload (recommended)
-uv run poe dev
+# Development mode with auto-reload
+uv run uvicorn auth_server.server:app --reload --host 0.0.0.0 --port 8888
 ```
 
 The server will be available at:

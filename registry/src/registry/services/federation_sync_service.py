@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.database.mongodb import MongoDB
+from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, RegistryAccessRole, ResourceType
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.enums import (
@@ -198,6 +199,7 @@ class FederationSyncService:
         a2a_agent_repo,
         acl_service,
         user_service,
+        azure_client_cache: AzureFoundryClientCache,
     ):
         self.federation_crud_service = federation_crud_service
         self.federation_job_service = federation_job_service
@@ -208,7 +210,7 @@ class FederationSyncService:
 
         self.sync_handlers: dict[FederationProviderType, BaseFederationSyncHandler] = {
             FederationProviderType.AWS_AGENTCORE: AwsAgentCoreSyncHandler(),
-            FederationProviderType.AZURE_AI_FOUNDRY: AzureAiFoundrySyncHandler(),
+            FederationProviderType.AZURE_AI_FOUNDRY: AzureAiFoundrySyncHandler(azure_client_cache=azure_client_cache),
         }
 
     def get_sync_handler(self, provider_type: FederationProviderType) -> BaseFederationSyncHandler:

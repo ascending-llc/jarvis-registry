@@ -24,16 +24,14 @@ from registry.core.exceptions import (
     A2AAgentCardTransportException,
     A2AAgentCardUpstreamException,
 )
-from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.core.config import JwtSigningConfig
+from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
 from registry_pkgs.models.a2a_agent import (
     A2AAgent,
     AgentConfig,
     normalize_a2a_agent_path,
     strip_grpc_and_select_preferred_transport,
 )
-from registry_pkgs.models.enums import FederationProviderType
-from registry_pkgs.models.federation import AzureAiFoundryProviderConfig, Federation
 from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetadata
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.workflows.a2a_client import build_headers, is_azure_foundry_runtime
@@ -81,9 +79,12 @@ class A2AAgentService:
         self,
         a2a_agent_repo: A2AAgentRepository | None = None,
         jwt_config: JwtSigningConfig | None = None,
+        *,
+        azure_client_cache: AzureFoundryClientCache,
     ):
         self._a2a_agent_repo = a2a_agent_repo
         self._jwt_config = jwt_config
+        self._azure_client_cache = azure_client_cache
 
     @staticmethod
     def _path_conflict_message(input_path: Any, normalized_path: str) -> str:
@@ -294,20 +295,8 @@ class A2AAgentService:
             return None
 
         try:
-            federation = await Federation.get(agent.federationRefId)
-            if federation is None:
-                logger.warning(f"Federation {agent.federationRefId} not found for agent {agent_id}")
-                return None
-            if federation.providerType != FederationProviderType.AZURE_AI_FOUNDRY:
-                logger.warning(
-                    f"Federation {agent.federationRefId} for Azure Foundry agent {agent_id} "
-                    f"has unexpected providerType={federation.providerType!r}"
-                )
-                return None
-
-            provider_config = AzureAiFoundryProviderConfig(**(federation.providerConfig or {}))
-            async with AzureFoundryAuthService(provider_config) as auth:
-                return await auth.build_headers()
+            auth = await self._azure_client_cache.get_auth_service(agent.federationRefId)
+            return await auth.build_headers()
         except Exception as e:
             logger.warning(
                 f"Could not build Azure Entra auth headers for agent {agent_id} "

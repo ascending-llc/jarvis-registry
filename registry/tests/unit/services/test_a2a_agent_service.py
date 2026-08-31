@@ -10,7 +10,6 @@ from beanie import PydanticObjectId
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, NoSupportedTransportError
-from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.testing.federation_metadata import (
     make_agentcore_a2a_metadata,
     make_azure_foundry_metadata,
@@ -34,7 +33,7 @@ class _AsyncCM:
 
 def _service() -> A2AAgentService:
     # No repo -> the _schedule_* helpers return early (no asyncio.create_task).
-    return A2AAgentService(a2a_agent_repo=None)
+    return A2AAgentService(a2a_agent_repo=None, azure_client_cache=MagicMock())
 
 
 def _managed_card_agent(
@@ -305,7 +304,7 @@ async def test_update_agent_normalizes_existing_config_url_when_unchanged():
 
 @pytest.mark.asyncio
 async def test_update_agent_refetches_changed_card_url_with_auth_headers():
-    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace(), azure_client_cache=MagicMock())
     old_card = SimpleNamespace(
         name="Test Agent",
         description="old desc",
@@ -353,7 +352,7 @@ async def test_update_agent_refetches_changed_card_url_with_auth_headers():
 
 @pytest.mark.asyncio
 async def test_update_agent_refetches_without_auth_headers_when_header_build_fails():
-    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace(), azure_client_cache=MagicMock())
     old_card = SimpleNamespace(
         name="Test Agent",
         description="old desc",
@@ -576,7 +575,7 @@ async def test_resolve_card_passes_auth_headers_to_httpx_client():
 
 @pytest.mark.asyncio
 async def test_sync_wellknown_builds_and_passes_auth_headers():
-    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace(), azure_client_cache=MagicMock())
     old_card = SimpleNamespace(version="1.0.0", description="old", skills=[], capabilities={}, name="Test Agent")
     updated_card = SimpleNamespace(version="2.0.0", description="new", skills=[], capabilities={}, name="Test Agent")
 
@@ -603,105 +602,92 @@ async def test_sync_wellknown_builds_and_passes_auth_headers():
     assert resolve.await_args.kwargs["auth_headers"] == headers
 
 
+def _service_with_cache(cache: MagicMock) -> A2AAgentService:
+    return A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace(), azure_client_cache=cache)
+
+
 @pytest.mark.asyncio
 async def test_build_best_effort_auth_headers_builds_azure_entra_headers_for_foundry_agent():
-    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
     federation_id = PydanticObjectId()
     agent = SimpleNamespace(
         federationMetadata=make_azure_foundry_metadata(),
         federationRefId=federation_id,
         card=SimpleNamespace(),
     )
-    federation = SimpleNamespace(
-        providerType=FederationProviderType.AZURE_AI_FOUNDRY,
-        providerConfig={"projectEndpoint": "https://foundry.example.com"},
-    )
     headers = {"Authorization": "Bearer entra-token"}
     auth = SimpleNamespace(build_headers=AsyncMock(return_value=headers))
+    cache = MagicMock()
+    cache.get_auth_service = AsyncMock(return_value=auth)
+    service = _service_with_cache(cache)
 
-    with (
-        patch("registry.services.a2a_agent_service.Federation.get", AsyncMock(return_value=federation)) as get,
-        patch(
-            "registry.services.a2a_agent_service.AzureFoundryAuthService",
-            return_value=_AsyncCM(auth),
-        ) as auth_service,
-        patch("registry.services.a2a_agent_service.build_headers") as agentcore_headers,
-    ):
+    with patch("registry.services.a2a_agent_service.build_headers") as agentcore_headers:
         result = await service._build_best_effort_auth_headers(agent, "agent-id")
 
     assert result == headers
-    get.assert_awaited_once_with(federation_id)
-    auth_service.assert_called_once()
+    cache.get_auth_service.assert_awaited_once_with(federation_id)
     auth.build_headers.assert_awaited_once_with()
     agentcore_headers.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_build_best_effort_auth_headers_returns_none_when_federation_missing():
-    service = _service()
     federation_id = PydanticObjectId()
     agent = SimpleNamespace(
         federationMetadata=make_azure_foundry_metadata(),
         federationRefId=federation_id,
         card=SimpleNamespace(),
     )
+    cache = MagicMock()
+    # get_auth_service raises the same ValueError the inlined code used to (fed not found).
+    cache.get_auth_service = AsyncMock(side_effect=ValueError(f"Federation {federation_id} not found"))
+    service = _service_with_cache(cache)
 
-    with patch(
-        "registry.services.a2a_agent_service.Federation.get",
-        AsyncMock(return_value=None),
-    ) as get:
-        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+    result = await service._build_best_effort_auth_headers(agent, "agent-id")
 
     assert result is None
-    get.assert_awaited_once_with(federation_id)
+    cache.get_auth_service.assert_awaited_once_with(federation_id)
 
 
 @pytest.mark.asyncio
 async def test_build_best_effort_auth_headers_returns_none_without_federation_ref_id():
-    service = _service()
     agent = SimpleNamespace(
         federationMetadata=make_azure_foundry_metadata(),
         federationRefId=None,
         card=SimpleNamespace(),
     )
+    cache = MagicMock()
+    cache.get_auth_service = AsyncMock()
+    service = _service_with_cache(cache)
 
-    with patch("registry.services.a2a_agent_service.Federation.get", AsyncMock()) as get:
-        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+    result = await service._build_best_effort_auth_headers(agent, "agent-id")
 
     assert result is None
-    get.assert_not_awaited()
+    cache.get_auth_service.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_build_best_effort_auth_headers_rejects_non_azure_federation():
-    service = _service()
     federation_id = PydanticObjectId()
     agent = SimpleNamespace(
         federationMetadata=make_azure_foundry_metadata(),
         federationRefId=federation_id,
         card=SimpleNamespace(),
     )
-    federation = SimpleNamespace(
-        providerType=FederationProviderType.AWS_AGENTCORE,
-        providerConfig={},
-    )
+    cache = MagicMock()
+    cache.get_auth_service = AsyncMock(side_effect=ValueError("is not azure_ai_foundry"))
+    service = _service_with_cache(cache)
 
-    with (
-        patch(
-            "registry.services.a2a_agent_service.Federation.get",
-            AsyncMock(return_value=federation),
-        ),
-        patch("registry.services.a2a_agent_service.AzureFoundryAuthService") as auth_service,
-    ):
-        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+    result = await service._build_best_effort_auth_headers(agent, "agent-id")
 
     assert result is None
-    auth_service.assert_not_called()
+    cache.get_auth_service.assert_awaited_once_with(federation_id)
 
 
 @pytest.mark.asyncio
 async def test_build_best_effort_auth_headers_keeps_agentcore_path():
-    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    cache = MagicMock()
+    cache.get_auth_service = AsyncMock()
+    service = _service_with_cache(cache)
     agent = SimpleNamespace(
         federationMetadata=make_agentcore_a2a_metadata(),
         federationRefId=PydanticObjectId(),
@@ -709,34 +695,30 @@ async def test_build_best_effort_auth_headers_keeps_agentcore_path():
     )
     headers = {"Authorization": "Bearer agentcore-token"}
 
-    with (
-        patch("registry.services.a2a_agent_service.build_headers", return_value=headers) as build,
-        patch("registry.services.a2a_agent_service.Federation.get", AsyncMock()) as get,
-    ):
+    with patch("registry.services.a2a_agent_service.build_headers", return_value=headers) as build:
         result = await service._build_best_effort_auth_headers(agent, "agent-id")
 
     assert result == headers
     build.assert_called_once_with(agent, jwt_config=service._jwt_config)
-    get.assert_not_awaited()
+    cache.get_auth_service.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_build_best_effort_auth_headers_does_not_load_federation_for_manual_agent():
-    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    cache = MagicMock()
+    cache.get_auth_service = AsyncMock()
+    service = _service_with_cache(cache)
     agent = SimpleNamespace(
         federationMetadata=None,
         federationRefId=None,
         card=SimpleNamespace(),
     )
 
-    with (
-        patch("registry.services.a2a_agent_service.build_headers", return_value={}),
-        patch("registry.services.a2a_agent_service.Federation.get", AsyncMock()) as get,
-    ):
+    with patch("registry.services.a2a_agent_service.build_headers", return_value={}):
         result = await service._build_best_effort_auth_headers(agent, "agent-id")
 
     assert result == {}
-    get.assert_not_awaited()
+    cache.get_auth_service.assert_not_awaited()
 
 
 @pytest.mark.asyncio

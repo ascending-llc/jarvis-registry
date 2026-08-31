@@ -4,13 +4,12 @@ import httpx
 from beanie import PydanticObjectId
 
 from registry.core.a2a_proxy import A2AProxyClientRegistry
+from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
 from registry_pkgs.models.federation_metadata import A2AFederationMetadata, AgentCoreA2AFederationMetadata
 from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
-
-from .azure_foundry_proxy_auth import AzureFoundryClientCache
 
 
 def _is_agentcore_jwt(
