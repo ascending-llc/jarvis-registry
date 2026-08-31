@@ -26,6 +26,7 @@ __all__ = [
     "WORKFLOW_LATENCY_BUCKETS",
     "track_duration",
     "create_timed_context",
+    "get_trace_environment",
 ]
 
 
@@ -48,6 +49,12 @@ _OTLP_EXPORT_TIMEOUT_SECONDS = 5
 _TRACE_MAX_QUEUE_SIZE = 2048
 _TRACE_MAX_EXPORT_BATCH_SIZE = 512
 _TRACE_SCHEDULE_DELAY_MILLIS = 5000
+_trace_environment: str | None = None
+
+
+def get_trace_environment() -> str | None:
+    """Return the deployment environment configured for outbound trace calls."""
+    return _trace_environment
 
 
 def _otlp_headers(telemetry_config: TelemetryConfig) -> dict[str, str] | None:
@@ -233,7 +240,11 @@ def setup_tracing(
     Uses AgnoInstrumentor to auto-instrument all agno Agent/Model/Tool calls.
     Shares the same OTLP collector endpoint and Resource as setup_metrics().
     """
+    global _trace_environment
+
     logger.info("Setting up tracing...")
+    environment = telemetry_config.deployment_environment
+    _trace_environment = environment.strip() if environment and environment.strip() else None
     try:
         instrumentor_type, trace_config_type = _load_agno_instrumentation()
         current_provider = trace.get_tracer_provider()

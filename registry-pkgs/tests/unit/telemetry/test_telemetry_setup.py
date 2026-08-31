@@ -6,7 +6,7 @@ from opentelemetry.metrics import Histogram
 from opentelemetry.sdk.trace import TracerProvider
 
 from registry_pkgs.core.config import TelemetryConfig
-from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
+from registry_pkgs.telemetry import get_trace_environment, setup_metrics, setup_tracing, shutdown_telemetry
 
 
 @pytest.mark.unit
@@ -374,6 +374,18 @@ class TestSetupTracing:
         ):
             setup_tracing("test-service", TelemetryConfig())
             mock_set.assert_not_called()
+
+    def test_setup_tracing_configures_outbound_environment_before_instrumentation(self):
+        """A2A propagation remains configured even if optional instrumentation is unavailable."""
+        with (
+            patch("registry_pkgs.telemetry._trace_environment", None),
+            patch("registry_pkgs.telemetry._load_agno_instrumentation", side_effect=ImportError("missing")),
+        ):
+            setup_tracing(
+                "test-service",
+                TelemetryConfig(deployment_environment="demo"),
+            )
+            assert get_trace_environment() == "demo"
 
     def test_setup_tracing_uses_same_resource_as_metrics(self):
         """setup_tracing() uses _build_resource() with same args pattern as setup_metrics()."""
