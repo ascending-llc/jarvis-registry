@@ -12,7 +12,14 @@ _TOKEN_SCOPE = "https://ai.azure.com/.default"
 
 
 class AzureFoundryAuthService:
-    """Stable, per-federation facade over ``AzureFoundryClientCache``."""
+    """Stable, per-federation facade over ``AzureFoundryClientCache``.
+
+    Holds no azure.identity state itself — every call delegates to the cache, which owns
+    credential/token lifecycle. Implements the azure.core.credentials_async.AsyncTokenCredential
+    protocol (get_token/close/__aenter__/__aexit__) so instances can be passed directly as the
+    `credential=` argument to third-party SDK clients (e.g. AIProjectClient) without exposing a
+    raw azure-identity object.
+    """
 
     def __init__(self, federation_id: PydanticObjectId, cache: AzureFoundryClientCache) -> None:
         self._federation_id = federation_id
@@ -31,3 +38,12 @@ class AzureFoundryAuthService:
 
     async def build_headers(self, extra: dict[str, Any] | None = None) -> dict[str, str]:
         return await self._cache.build_headers(self._federation_id, extra=extra)
+
+    async def close(self) -> None:
+        """No-op: credential/token lifecycle is owned by AzureFoundryClientCache, not this facade."""
+
+    async def __aenter__(self) -> AzureFoundryAuthService:
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        await self.close()

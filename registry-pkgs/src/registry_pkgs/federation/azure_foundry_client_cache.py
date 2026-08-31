@@ -273,15 +273,45 @@ class AzureFoundryClientCache:
             return client
 
     async def invalidate(self, federation_id: PydanticObjectId) -> None:
-        """Drop a federation's cached client and credential state (closing any managed credential)."""
+        """Drop a federation's cached client; refresh credential state, mode-conditionally.
+
+        A `managed_identity`-mode federation that stays in that mode keeps its long-lived
+        `DefaultAzureCredential` untouched (nothing federation-derived to refresh, and rebuilding
+        it repeats expensive provider-chain discovery for no benefit) — otherwise a concurrent
+        caller mid-`get_token()` on the shared credential could hit a use-after-close failure when
+        this call tears it down. `client_secret`-mode federations, and any federation switching
+        mode, get a fresh state (dropping any cached token / closing any managed credential).
+        """
         lock = self._locks.setdefault(federation_id, asyncio.Lock())
         async with lock:
             client = self._clients.pop(federation_id, None)
             if client is not None:
                 await client.aclose()
-            state = self._states.pop(federation_id, None)
-            if state is not None and state.long_lived_credential is not None:
+
+            state = self._states.get(federation_id)
+            if state is None:
+                return
+
+            federation = await Federation.get(federation_id)
+            if federation is None:
+                self._states.pop(federation_id, None)
+                if state.long_lived_credential is not None:
+                    await state.long_lived_credential.close()
+                return
+
+            cfg = AzureAiFoundryProviderConfig(**(federation.providerConfig or {}))
+            new_mode = _resolve_mode(cfg)
+
+            if new_mode == AuthMode.MANAGED_IDENTITY and state.mode == AuthMode.MANAGED_IDENTITY:
+                state.provider_config = cfg
+                state.config_updated_at = federation.updatedAt
+                return
+
+            if state.long_lived_credential is not None:
                 await state.long_lived_credential.close()
+            self._states[federation_id] = _CredentialState(
+                provider_config=cfg, config_updated_at=federation.updatedAt, mode=new_mode
+            )
 
     async def close(self) -> None:
         clients = list(self._clients.values())

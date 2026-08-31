@@ -73,3 +73,22 @@ async def test_build_headers_delegates_to_cache():
     assert headers["Authorization"] == "Bearer h"
     assert headers["Foundry-Features"] == "HostedAgents=V1Preview"
     cache.build_headers.assert_awaited_once_with(fed, extra={"X": "1"})
+
+
+@pytest.mark.asyncio
+async def test_close_is_a_noop():
+    """The facade holds no state of its own to release — the cache owns credential lifecycle."""
+    facade = AzureFoundryAuthService(PydanticObjectId(), _cache())
+    await facade.close()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_satisfies_async_context_manager_protocol():
+    """Required for AzureFoundryAuthService to be usable as AIProjectClient's `credential=`,
+    which is typed as azure.core.credentials_async.AsyncTokenCredential."""
+    cache = _cache("abc")
+    facade = AzureFoundryAuthService(PydanticObjectId(), cache)
+
+    async with facade as entered:
+        assert entered is facade
+        assert await entered.access_token() == "abc"

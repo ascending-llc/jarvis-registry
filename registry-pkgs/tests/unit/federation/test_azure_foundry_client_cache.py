@@ -341,12 +341,14 @@ async def test_invalidate_client_secret_drops_cached_token():
 
 
 @pytest.mark.asyncio
-async def test_invalidate_managed_closes_and_rebuilds_credential():
-    """Adjusted behavior: invalidate closes the managed credential and rebuilds on next use."""
+async def test_invalidate_managed_identity_preserves_credential_identity():
+    """invalidate() must not tear down a still-valid, shared DefaultAzureCredential when the
+    federation stays in managed_identity mode: closing it here could race a concurrent caller's
+    in-flight get_token() call against the same credential — the exact hazard this cache's
+    mode-conditional design exists to avoid."""
     federation_id = PydanticObjectId()
-    first = _dac("m1")
-    second = _dac("m2")
-    dac_factory = MagicMock(side_effect=[first, second])
+    credential = _dac("m1")
+    dac_factory = MagicMock(return_value=credential)
     cache = _cache()
 
     with patch(_FED_GET, new=AsyncMock(return_value=_federation(_MI_CFG))), patch(_DAC, new=dac_factory):
@@ -354,8 +356,51 @@ async def test_invalidate_managed_closes_and_rebuilds_credential():
         await cache.invalidate(federation_id)
         await cache.get_access_token(federation_id)
 
-    first.close.assert_awaited_once()  # old managed credential closed on invalidate (no leak)
-    assert dac_factory.call_count == 2
+    credential.close.assert_not_awaited()  # same object identity before and after invalidate()
+    assert dac_factory.call_count == 1
+    assert cache._states[federation_id].long_lived_credential is credential
+    await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_invalidate_does_not_close_credential_during_in_flight_get_token():
+    """Regression for the reintroduced close-while-in-use hazard: invalidate() running while
+    another caller is mid-get_token() on the same shared managed_identity credential must not
+    close it out from under that caller."""
+    federation_id = PydanticObjectId()
+    token_requested = asyncio.Event()
+    release_token = asyncio.Event()
+    call_count = 0
+
+    async def get_token_side_effect(*_args, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AccessToken("first", int(time.time()) + 3600)
+        token_requested.set()
+        await release_token.wait()
+        return AccessToken("mtok", int(time.time()) + 3600)
+
+    credential = MagicMock()
+    credential.close = AsyncMock()
+    credential.get_token = AsyncMock(side_effect=get_token_side_effect)
+    dac_factory = MagicMock(return_value=credential)
+    cache = _cache()
+
+    with patch(_FED_GET, new=AsyncMock(return_value=_federation(_MI_CFG))), patch(_DAC, new=dac_factory):
+        await cache.get_access_token(federation_id)  # build state + credential up front
+
+        fetch_task = asyncio.create_task(cache.get_access_token(federation_id))
+        await token_requested.wait()  # fetch_task is now mid-get_token()
+
+        await cache.invalidate(federation_id)  # same mode, unrelated field edit
+        credential.close.assert_not_awaited()  # must not tear down the in-flight credential
+
+        release_token.set()
+        token = await fetch_task
+
+    assert token.token == "mtok"
+    credential.close.assert_not_awaited()
     await cache.close()
 
 
@@ -375,6 +420,27 @@ async def test_invalidate_mode_switch_client_secret_to_managed():
     assert t1.token == "cs"
     assert t2.token == "mi"
     assert cache._states[federation_id].mode == "managed_identity"
+    await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_invalidate_mode_switch_managed_to_client_secret_closes_credential():
+    federation_id = PydanticObjectId()
+    fed_get = AsyncMock(side_effect=[_federation(_MI_CFG), _federation(_CS_CFG)])
+    dac = _dac("mi")
+    dac_factory = MagicMock(return_value=dac)
+    csc_factory = MagicMock(return_value=_csc("cs"))
+    cache = _cache()
+
+    with patch(_FED_GET, new=fed_get), patch(_DAC, new=dac_factory), patch(_CSC, new=csc_factory):
+        t1 = await cache.get_access_token(federation_id)  # managed_identity
+        await cache.invalidate(federation_id)
+        t2 = await cache.get_access_token(federation_id)  # client_secret after config now sets a secret
+
+    assert t1.token == "mi"
+    assert t2.token == "cs"
+    dac.close.assert_awaited_once()  # old managed credential closed on mode switch away (no leak)
+    assert cache._states[federation_id].mode == "client_secret"
     await cache.close()
 
 
@@ -431,7 +497,10 @@ async def test_invalidate_cannot_interleave_get_client_build():
 
     assert client.is_closed
     assert federation_id not in cache._clients
-    assert federation_id not in cache._states
+    # client_secret mode always gets a fresh state on invalidate() (not removed outright) —
+    # the next access re-fetches a token rather than reusing a stale one.
+    assert federation_id in cache._states
+    assert cache._states[federation_id].cached_token is None
     await cache.close()
 
 
