@@ -57,6 +57,14 @@ def get_trace_environment() -> str | None:
     return _trace_environment
 
 
+def _normalize_deployment_environment(value: str | None) -> str | None:
+    """Strip whitespace and collapse a blank deployment environment to None."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def _otlp_headers(telemetry_config: TelemetryConfig) -> dict[str, str] | None:
     token = telemetry_config.otel_gateway_token.get_secret_value()
     if not token:
@@ -145,8 +153,9 @@ def _build_resource(service_name: str, telemetry_config: TelemetryConfig) -> Res
         SERVICE_NAME: service_name,
         _SERVICE_VERSION: telemetry_config.build_version,
     }
-    if telemetry_config.deployment_environment:
-        attributes[_DEPLOYMENT_ENVIRONMENT_NAME] = telemetry_config.deployment_environment
+    environment = _normalize_deployment_environment(telemetry_config.deployment_environment)
+    if environment:
+        attributes[_DEPLOYMENT_ENVIRONMENT_NAME] = environment
     return Resource.create(attributes=attributes)
 
 
@@ -243,8 +252,7 @@ def setup_tracing(
     global _trace_environment
 
     logger.info("Setting up tracing...")
-    environment = telemetry_config.deployment_environment
-    _trace_environment = environment.strip() if environment and environment.strip() else None
+    _trace_environment = _normalize_deployment_environment(telemetry_config.deployment_environment)
     try:
         instrumentor_type, trace_config_type = _load_agno_instrumentation()
         current_provider = trace.get_tracer_provider()
