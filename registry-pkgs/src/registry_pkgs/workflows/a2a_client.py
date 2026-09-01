@@ -25,6 +25,9 @@ from a2a.types import (
 )
 from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
+from opentelemetry import baggage
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
+from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
@@ -34,6 +37,7 @@ from registry_pkgs.models.federation_metadata import (
     AgentCoreA2AFederationMetadata,
     AzureFoundryFederationMetadata,
 )
+from registry_pkgs.telemetry import get_trace_environment
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +49,14 @@ _A2A_JWT_TTL_SECONDS = _A2A_TASK_BUDGET_SECONDS + 300
 _A2A_HTTP_TIMEOUT = httpx.Timeout(30.0, read=_A2A_TASK_BUDGET_SECONDS)
 # Preemptive backstop: a still-streaming send never reaches the poll loop's own check.
 _A2A_HARD_TIMEOUT_SECONDS = _A2A_TASK_BUDGET_SECONDS + 60
-_TRACE_CONTEXT_PROPAGATOR = TraceContextTextMapPropagator()
+_TRACE_CONTEXT_PROPAGATOR = CompositePropagator(
+    [
+        TraceContextTextMapPropagator(),
+        W3CBaggagePropagator(),
+    ]
+)
 _TRACE_CONTEXT_HEADERS = frozenset({"baggage", "traceparent", "tracestate"})
+_LANGFUSE_ENVIRONMENT_BAGGAGE_KEY = "langfuse.environment"
 
 HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
 ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
@@ -195,10 +205,21 @@ def _extra_call_headers(agent: A2AAgent) -> dict[str, str]:
 
 
 def _inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
-    """Return copied request headers containing only the current W3C traceparent."""
+    """Return copied headers with the current trace and controlled environment baggage."""
     outbound_headers = {key: value for key, value in headers.items() if key.lower() not in _TRACE_CONTEXT_HEADERS}
     try:
-        _TRACE_CONTEXT_PROPAGATOR.inject(outbound_headers)
+        outbound_context = baggage.clear()
+        environment = get_trace_environment()
+        if environment is not None:
+            outbound_context = baggage.set_baggage(
+                _LANGFUSE_ENVIRONMENT_BAGGAGE_KEY,
+                environment,
+                context=outbound_context,
+            )
+        _TRACE_CONTEXT_PROPAGATOR.inject(
+            outbound_headers,
+            context=outbound_context,
+        )
     except Exception:
         logger.warning("Failed to inject trace context into A2A request headers", exc_info=True)
     outbound_headers.pop("tracestate", None)

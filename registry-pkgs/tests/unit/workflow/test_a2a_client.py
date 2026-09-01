@@ -827,7 +827,10 @@ async def test_call_a2a_injects_current_trace_context_into_request_headers():
         trace_state=TraceState([("vendor", "state")]),
     )
 
-    with patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory):
+    with (
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client.get_trace_environment", return_value="demo"),
+    ):
         with use_span(NonRecordingSpan(span_context), end_on_exit=False):
             result = await call_a2a(agent, "test", headers_provider=headers_provider)
 
@@ -836,6 +839,7 @@ async def test_call_a2a_injects_current_trace_context_into_request_headers():
     headers = send_context.state["http_kwargs"]["headers"]
     assert headers == {
         "Authorization": "Bearer test-token",
+        "baggage": "langfuse.environment=demo",
         "traceparent": "00-00000000000000000000000000000001-0000000000000001-01",
     }
     assert provided_headers == {
