@@ -7,7 +7,6 @@ from beanie import PydanticObjectId
 import registry_pkgs.workflows.mcp_headers_provider as provider_module
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.oauth.headers import HeaderBuildConfig
-from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider
 
 
 def _cfg() -> HeaderBuildConfig:
@@ -46,7 +45,7 @@ def _auth_context() -> dict[str, object]:
 async def test_provider_builds_headers(monkeypatch: pytest.MonkeyPatch):
     build_headers = AsyncMock(return_value={"Authorization": "Bearer downstream"})
     monkeypatch.setattr(provider_module, "build_authenticated_headers", build_headers)
-    provider = McpHeadersProvider(
+    provider = provider_module.McpHeadersProvider(
         oauth_service=SimpleNamespace(),
         cfg=_cfg(),
         scope_resolver=lambda ctx: list(ctx.get("scopes") or []),
@@ -63,7 +62,7 @@ async def test_provider_builds_headers(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.asyncio
 async def test_provider_requires_auth_context():
-    provider = McpHeadersProvider(
+    provider = provider_module.McpHeadersProvider(
         oauth_service=SimpleNamespace(),
         cfg=_cfg(),
         scope_resolver=lambda ctx: [],
@@ -76,7 +75,7 @@ async def test_provider_requires_auth_context():
 async def test_provider_non_interactive_propagates_flag(monkeypatch: pytest.MonkeyPatch):
     build_headers = AsyncMock(return_value={})
     monkeypatch.setattr(provider_module, "build_authenticated_headers", build_headers)
-    provider = McpHeadersProvider(
+    provider = provider_module.McpHeadersProvider(
         oauth_service=SimpleNamespace(),
         cfg=_cfg(),
         scope_resolver=lambda ctx: [],
