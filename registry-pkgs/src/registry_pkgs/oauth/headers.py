@@ -122,7 +122,7 @@ async def build_complete_headers_for_server(
 
     # 1. Add custom headers FIRST (lowest priority)
     custom_headers = normalize_headers(decrypted_config.get("headers"))
-    logger.info(f"custom headers: {custom_headers}")
+    logger.debug("Custom header keys for %s: %s", server.serverName, list(custom_headers))
     if custom_headers:
         headers.update(custom_headers)
 

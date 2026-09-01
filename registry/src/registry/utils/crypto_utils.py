@@ -19,7 +19,6 @@ from registry_pkgs.core.crypto_utils import decrypt_auth_fields as _decrypt_auth
 from registry_pkgs.core.crypto_utils import decrypt_value as _decrypt_value
 from registry_pkgs.core.crypto_utils import encrypt_auth_fields as _encrypt_auth_fields
 from registry_pkgs.core.crypto_utils import encrypt_value as _encrypt_value
-from registry_pkgs.core.crypto_utils import is_encrypted  # noqa: F401  re-exported for existing callers
 from registry_pkgs.core.jwt_tokens import mint_crud_session_token, verify_crud_session_token
 from registry_pkgs.core.jwt_utils import (
     ExpiredSignatureError,

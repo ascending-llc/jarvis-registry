@@ -109,7 +109,7 @@ def test_build_mcp_headers_provider_is_non_interactive(monkeypatch: pytest.Monke
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(main, "settings", mock_settings)
-    monkeypatch.setattr(main, "UserService", lambda: object())
+    monkeypatch.setattr(main, "UserService", object)
     monkeypatch.setattr(main, "TokenService", lambda **_kwargs: object())
     monkeypatch.setattr(main, "FlowStateManager", lambda **_kwargs: object())
     monkeypatch.setattr(main, "MCPOAuthService", lambda **_kwargs: object())

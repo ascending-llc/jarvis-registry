@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -349,6 +350,22 @@ class TestBuildCompleteHeaders:
             assert headers["X-Custom-Header"] == "value1"
             assert headers["X-Another-Header"] == "value2"
             assert headers["Content-Type"] == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_custom_header_logs_keys_without_values(self, mock_custom_headers_server, caplog):
+        """Test custom header logs expose keys but never decrypted values."""
+        secret_value = "sensitive-header-value"
+        mock_custom_headers_server.config = {"headers": [{"Authorization": secret_value}]}
+        caplog.set_level(logging.DEBUG, logger="registry_pkgs.oauth.headers")
+
+        with patch("registry_pkgs.oauth.headers.decrypt_auth_fields") as mock_decrypt:
+            mock_decrypt.return_value = mock_custom_headers_server.config
+
+            await _bch(Mock(), mock_custom_headers_server, None)
+
+        assert "custom-headers-server" in caplog.text
+        assert "Authorization" in caplog.text
+        assert secret_value not in caplog.text
 
     @pytest.mark.asyncio
     async def test_oauth_with_custom_headers(self, mock_oauth_server):
