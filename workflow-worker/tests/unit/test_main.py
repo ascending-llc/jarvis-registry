@@ -80,6 +80,7 @@ def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPa
         redis_key_prefix="worker-prefix",
     )
     headers_provider = object()
+    mcp_headers_provider = object()
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(main, "settings", mock_settings)
@@ -87,12 +88,38 @@ def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(main.MongoDB, "get_client", lambda: object())
     monkeypatch.setattr(main.MongoDB, "database_name", "jarvis", raising=False)
     monkeypatch.setattr(main, "make_a2a_headers_provider", lambda **kwargs: headers_provider)
+    monkeypatch.setattr(main, "_build_mcp_headers_provider", lambda _redis: mcp_headers_provider)
     monkeypatch.setattr(main, "WorkflowRunner", lambda **kwargs: captured.update(kwargs) or object())
 
     azure_client_cache = object()
     main._build_runner(object(), object(), object(), azure_client_cache)
 
     assert captured["headers_provider"] is headers_provider
+    assert captured["mcp_headers_provider"] is mcp_headers_provider
+
+
+def test_build_mcp_headers_provider_is_non_interactive(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_settings = SimpleNamespace(
+        encryption_key=b"0" * 32,
+        registry_app_name="jarvis-registry",
+        registry_client_url="http://localhost:5173",
+        redis_key_prefix="worker-prefix",
+        jwt_signing_config=object(),
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(main, "settings", mock_settings)
+    monkeypatch.setattr(main, "UserService", lambda: object())
+    monkeypatch.setattr(main, "TokenService", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "FlowStateManager", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "MCPOAuthService", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "make_mcp_headers_provider", lambda **kwargs: captured.update(kwargs) or object())
+
+    main._build_mcp_headers_provider(object())
+
+    # Scheduled runs must be non-interactive so no Redis OAuth flow is minted.
+    assert captured["interactive"] is False
+    assert captured["scope_resolver"]({"scopes": ["servers-read"]}) == ["servers-read"]
 
 
 @pytest.mark.asyncio

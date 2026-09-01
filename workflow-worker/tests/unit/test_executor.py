@@ -81,7 +81,7 @@ async def test_execute_schedule_finishes_only_the_claimed_lease(monkeypatch: pyt
     schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
     definition = SimpleNamespace(id=PydanticObjectId())
     run = SimpleNamespace(id=PydanticObjectId())
-    claimed = SimpleNamespace(initial_input={"user_text": "generate report"})
+    claimed = SimpleNamespace(initial_input={"user_text": "generate report"}, created_by=PydanticObjectId())
     monkeypatch.setattr(
         executor,
         "_prepare_scheduled_run",
@@ -98,7 +98,7 @@ async def test_execute_schedule_finishes_only_the_claimed_lease(monkeypatch: pyt
     runner.run.assert_awaited_once_with(
         definition_id=str(definition.id),
         user_text="generate report",
-        auth_context=None,
+        auth_context=executor._scheduled_run_auth_context(claimed.created_by),
         existing_run_id=str(run.id),
     )
     finish.assert_awaited_once_with(schedule, run, WorkflowRunStatus.COMPLETED, repository)
@@ -127,7 +127,7 @@ async def test_execute_schedule_persists_runner_failure(monkeypatch: pytest.Monk
     schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
     definition = SimpleNamespace(id=PydanticObjectId())
     run = SimpleNamespace(id=PydanticObjectId())
-    claimed = SimpleNamespace(initial_input={"user_text": "generate report"})
+    claimed = SimpleNamespace(initial_input={"user_text": "generate report"}, created_by=PydanticObjectId())
     monkeypatch.setattr(
         executor,
         "_prepare_scheduled_run",
@@ -145,6 +145,18 @@ async def test_execute_schedule_persists_runner_failure(monkeypatch: pytest.Monk
 
     mark_failed.assert_awaited_once_with(run, error)
     finish.assert_awaited_once_with(schedule, run, WorkflowRunStatus.FAILED, repository)
+
+
+def test_scheduled_run_auth_context_uses_creator_as_user_id() -> None:
+    created_by = PydanticObjectId()
+
+    ctx = executor._scheduled_run_auth_context(created_by)
+
+    assert ctx["user_id"] == str(created_by)
+    assert ctx["client_id"] == "workflow-worker"
+    assert ctx["groups"] == []
+    assert ctx["scopes"] == []
+    assert ctx["auth_source"] == "workflow_schedule"
 
 
 @pytest.mark.asyncio

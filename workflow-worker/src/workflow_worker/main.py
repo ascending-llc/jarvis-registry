@@ -12,9 +12,15 @@ from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
+from registry_pkgs.oauth.flow_state_manager import FlowStateManager
+from registry_pkgs.oauth.headers import HeaderBuildConfig
+from registry_pkgs.oauth.oauth_service import MCPOAuthService
+from registry_pkgs.oauth.token_service import TokenService
+from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.workflows.a2a_headers_provider import make_a2a_headers_provider
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
+from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 from workflow_worker.config import settings
@@ -69,10 +75,6 @@ def _build_runner(
         aws_secret_access_key=settings.aws_secret_access_key,
         aws_session_token=settings.aws_session_token,
     )
-    logger.warning(
-        "Scheduled runs do not supply an MCP OAuth headers provider; "
-        "workflows using OAuth-protected MCP servers will fail at execution time"
-    )
     headers_provider = make_a2a_headers_provider(
         jwt_config=settings.jwt_signing_config,
         azure_client_cache=azure_client_cache,
@@ -85,8 +87,39 @@ def _build_runner(
         directive_queue=directive_queue,
         a2a_httpx_client=http_client,
         headers_provider=headers_provider,
+        mcp_headers_provider=_build_mcp_headers_provider(redis_client),
         redis_client=redis_client,
         redis_key_prefix=settings.redis_key_prefix,
+    )
+
+
+def _build_mcp_headers_provider(redis_client: Any) -> McpHeadersProvider:
+    """Build the non-interactive MCP OAuth headers provider for scheduled runs."""
+    user_service = UserService()
+    token_service = TokenService(user_service=user_service, encryption_key=settings.encryption_key)
+    flow_state_manager = FlowStateManager(
+        redis_client=redis_client,
+        redis_key_prefix=settings.redis_key_prefix,
+    )
+    oauth_service = MCPOAuthService(
+        flow_manager=flow_state_manager,
+        token_service_instance=token_service,
+        registry_app_name=settings.registry_app_name,
+        base_redirect_url=settings.registry_client_url,
+        encryption_key=settings.encryption_key,
+    )
+    cfg = HeaderBuildConfig(
+        registry_app_name=settings.registry_app_name,
+        redis_key_prefix=settings.redis_key_prefix,
+        jwt_signing_config=settings.jwt_signing_config,
+        encryption_key=settings.encryption_key,
+    )
+    return make_mcp_headers_provider(
+        oauth_service=oauth_service,
+        cfg=cfg,
+        scope_resolver=lambda ctx: list(ctx.get("scopes") or []),
+        redis_client=redis_client,
+        interactive=False,
     )
 
 
