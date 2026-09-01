@@ -17,15 +17,16 @@ from httpx._decoders import SUPPORTED_DECODERS
 from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
+from registry_pkgs.core.exceptions import InternalServerException, UrlElicitationRequiredException
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import NoSupportedTransportError
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.oauth.oauth_service import MCPOAuthService
+from registry_pkgs.oauth.types import ClientBranding
 
 from ..auth.dependencies import CurrentUser, UserContextDict
-from ..auth.oauth.types import ClientBranding
 from ..core.config import settings
-from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ..deps import (
     get_a2a_agent_service,
     get_a2a_client_registry,
@@ -37,13 +38,13 @@ from ..deps import (
     get_redis_client,
     get_server_service,
 )
-from ..mcpgw.tools.utils import build_authenticated_headers, get_target_url, parse_elicitation_id
+from ..mcpgw.tools.utils import get_target_url, parse_elicitation_id
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
 from ..services.federation.a2a_client_registry import A2AClientRegistry
 from ..services.generated_token_policy import is_consent_exempt
-from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
+from ..utils.mcp_headers import build_authenticated_headers
 
 logger = logging.getLogger(__name__)
 

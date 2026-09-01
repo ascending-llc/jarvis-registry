@@ -6,9 +6,9 @@ from uuid import UUID
 
 import pytest
 
-from registry.auth.oauth.flow_state_manager import FlowStateManager
-from registry.auth.oauth.types import ClientBranding, StateMetadata
-from registry.schemas.enums import OAuthFlowStatus
+from registry_pkgs.oauth.flow_state_manager import FlowStateManager
+from registry_pkgs.oauth.schemas import OAuthFlowStatus
+from registry_pkgs.oauth.types import ClientBranding, StateMetadata
 
 
 @pytest.mark.unit
@@ -17,7 +17,7 @@ class TestFlowStateManager:
 
     def test_init_default_values(self):
         """Test initialization with default values."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
 
         assert manager._flow_ttl == 600
         assert manager._memory_flows == {}
@@ -25,14 +25,14 @@ class TestFlowStateManager:
 
     def test_init_fallback_to_memory(self):
         """Test initialization with memory fallback."""
-        manager = FlowStateManager(fallback_to_memory=True)
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry", fallback_to_memory=True)
 
         # Should initialize with memory storage when Redis is unavailable
         assert manager._memory_flows is not None
 
     def test_generate_flow_id(self):
         """Test flow ID generation."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         user_id = "test-user"
         server_name = "test-server"
 
@@ -43,7 +43,7 @@ class TestFlowStateManager:
 
     def test_encode_decode_state(self) -> None:
         """Test encoding and decoding state parameter."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
 
         # Encode/decode with flow_id
         flow_id = "test-flow-id"
@@ -85,7 +85,7 @@ class TestFlowStateManager:
 
     def test_decode_state_invalid_format(self):
         """Test decoding invalid state format."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
 
         with pytest.raises(ValueError, match="state is not valid base64url encoded JSON string"):
             manager.decode_state("not encoded JSON string")
@@ -100,7 +100,7 @@ class TestFlowStateManager:
 
     def test_create_flow_metadata(self):
         """Test creating flow metadata."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
 
         server_name = "test-server"
         server_path = "/test-server"
@@ -151,7 +151,7 @@ class TestFlowStateManager:
 
     def test_create_flow_success(self):
         """Test successful flow creation."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -186,7 +186,7 @@ class TestFlowStateManager:
 
     def test_get_flow_found(self):
         """Test retrieving an existing flow."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -222,7 +222,7 @@ class TestFlowStateManager:
 
     def test_get_flow_not_found(self):
         """Test retrieving a non-existent flow."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "non-existent-flow"
 
         result = manager.get_flow(flow_id)
@@ -231,7 +231,7 @@ class TestFlowStateManager:
 
     def test_is_flow_expired(self):
         """Test checking if flow is expired."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -267,7 +267,7 @@ class TestFlowStateManager:
 
     def test_complete_flow_success(self):
         """Test successfully completing a flow."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -295,7 +295,7 @@ class TestFlowStateManager:
         manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Complete the flow
-        from registry.schemas.oauth_schema import OAuthTokens
+        from registry_pkgs.oauth.schemas import OAuthTokens
 
         tokens = OAuthTokens(access_token="test-token", token_type="Bearer", expires_in=3600)
         manager.complete_flow(flow_id, tokens)
@@ -308,10 +308,10 @@ class TestFlowStateManager:
 
     def test_complete_flow_not_found(self):
         """Test completing a non-existent flow."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "non-existent-flow"
 
-        from registry.schemas.oauth_schema import OAuthTokens
+        from registry_pkgs.oauth.schemas import OAuthTokens
 
         tokens = OAuthTokens(access_token="test-token", token_type="Bearer", expires_in=3600)
 
@@ -320,7 +320,7 @@ class TestFlowStateManager:
 
     def test_fail_flow_success(self):
         """Test successfully failing a flow."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -359,7 +359,7 @@ class TestFlowStateManager:
 
     def test_fail_flow_not_found(self):
         """Test failing a non-existent flow."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "non-existent-flow"
         error_message = "Authentication failed"
 
@@ -368,7 +368,7 @@ class TestFlowStateManager:
 
     def test_delete_flow_success(self):
         """Test successfully deleting a flow."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -406,7 +406,7 @@ class TestFlowStateManager:
 
     def test_cancel_user_flow(self):
         """Test cancelling a user flow."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -444,7 +444,7 @@ class TestFlowStateManager:
 
     def test_get_user_flows(self):
         """Test getting user flows."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         server_name = "test-server"
         server_id = "test-server"
         user_id = "test-user"
@@ -484,7 +484,7 @@ class TestFlowStateManager:
     @pytest.mark.asyncio
     async def test_cleanup_expired_flows(self):
         """Test cleanup of expired flows."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
 
         # Create some flows
         flows = []
@@ -531,7 +531,7 @@ class TestFlowStateManagerIntegration:
 
     def test_full_flow_lifecycle(self):
         """Test a complete OAuth flow lifecycle."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
         user_id = "test-user"
         server_name = "test-server"
         server_id = "test-server"
@@ -566,7 +566,7 @@ class TestFlowStateManagerIntegration:
         assert flow.status == OAuthFlowStatus.PENDING
 
         # Complete the flow
-        from registry.schemas.oauth_schema import OAuthTokens
+        from registry_pkgs.oauth.schemas import OAuthTokens
 
         tokens = OAuthTokens(
             access_token="test-access-token", refresh_token="test-refresh-token", token_type="Bearer", expires_in=3600
@@ -586,7 +586,7 @@ class TestFlowStateManagerIntegration:
 
     def test_concurrent_flows(self):
         """Test handling multiple concurrent flows."""
-        manager = FlowStateManager()
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
 
         # Create multiple flows
         flows = []

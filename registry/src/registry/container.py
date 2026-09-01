@@ -13,15 +13,20 @@ from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
+from registry_pkgs.oauth.flow_state_manager import FlowStateManager
+from registry_pkgs.oauth.oauth_service import MCPOAuthService
+from registry_pkgs.oauth.token_service import TokenService
+from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 from registry_pkgs.workflows.a2a_headers_provider import A2aHeadersProvider, make_a2a_headers_provider
 from registry_pkgs.workflows.control import DirectiveQueue
+from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 
-from .auth.oauth.flow_state_manager import FlowStateManager
+from .auth.dependencies import effective_scopes_from_context
 from .auth.oauth.reconnection import OAuthReconnectionManager
 from .core.a2a_proxy import A2AProxyClientRegistry
 from .core.mcp_client import MCPClientService
@@ -44,9 +49,7 @@ from .services.group_directory_client import (
 from .services.group_service import GroupService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
-from .services.oauth.oauth_service import MCPOAuthService
 from .services.oauth.status_resolver import ConnectionStatusResolver
-from .services.oauth.token_service import TokenService
 from .services.search.base import VectorSearchService
 from .services.search.service import SearchService
 from .services.security_scanner import SecurityScannerService
@@ -62,12 +65,11 @@ from .services.skill_sync_oauth_service import SkillSyncOAuthService
 from .services.skill_sync_service import SkillSyncService
 from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .services.skill_sync_token_service import SkillSyncTokenService
-from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
-from .services.workflow_mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
 from .services.workflow_schedule_service import WorkflowScheduleService
 from .services.workflow_service import WorkflowService
 from .services.workflow_shutdown import cancel_in_flight_runs
+from .utils.mcp_headers import get_header_build_config
 
 if TYPE_CHECKING:
     from .core.config import Settings
@@ -182,11 +184,14 @@ class RegistryContainer:
 
     @cached_property
     def token_service(self) -> TokenService:
-        return TokenService(user_service=self.user_service)
+        return TokenService(user_service=self.user_service, encryption_key=self.settings.encryption_key)
 
     @cached_property
     def flow_state_manager(self) -> FlowStateManager:
-        return FlowStateManager(redis_client=self.redis_client)
+        return FlowStateManager(
+            redis_client=self.redis_client,
+            redis_key_prefix=self.settings.redis_key_prefix,
+        )
 
     @cached_property
     def oauth_client_store(self) -> OAuthClientStore:
@@ -237,7 +242,13 @@ class RegistryContainer:
 
     @cached_property
     def oauth_service(self) -> MCPOAuthService:
-        return MCPOAuthService(flow_manager=self.flow_state_manager, token_service_instance=self.token_service)
+        return MCPOAuthService(
+            flow_manager=self.flow_state_manager,
+            token_service_instance=self.token_service,
+            registry_app_name=self.settings.registry_app_name,
+            base_redirect_url=self.settings.registry_client_url,
+            encryption_key=self.settings.encryption_key,
+        )
 
     @cached_property
     def connection_service(self) -> MCPConnectionService:
@@ -336,7 +347,10 @@ class RegistryContainer:
         """App-scoped MCP headers provider for manually-registered workflow MCP servers."""
         return make_mcp_headers_provider(
             oauth_service=self.oauth_service,
+            cfg=get_header_build_config(),
+            scope_resolver=effective_scopes_from_context,
             redis_client=self.redis_client,
+            interactive=True,
         )
 
     @cached_property

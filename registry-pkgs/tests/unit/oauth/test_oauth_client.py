@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
-from registry.auth.oauth.oauth_client import OAuthClient
-from registry.schemas.oauth_schema import (
+from registry_pkgs.oauth.oauth_client import OAuthClient
+from registry_pkgs.oauth.schemas import (
     MCPOAuthFlowMetadata,
     OAuthClientInformation,
     OAuthMetadata,
@@ -20,11 +20,11 @@ class TestOAuthClientBasicMethods:
     @pytest.fixture
     def oauth_client(self):
         """Create OAuthClient instance"""
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     def test_init(self):
         """Test OAuthClient initialization"""
-        client = OAuthClient()
+        client = OAuthClient(registry_app_name="Test Registry")
         assert client._clients == {}
 
     def test_generate_code_verifier(self, oauth_client):
@@ -60,7 +60,7 @@ class TestOAuthClientRegisterClient:
     @pytest.fixture
     def oauth_client(self):
         """Create OAuthClient instance"""
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     @pytest.fixture
     def mock_metadata(self):
@@ -224,10 +224,8 @@ class TestOAuthClientRegisterClient:
             assert result.client_secret == "secret_ghi"
 
     @pytest.mark.asyncio
-    @patch("registry.auth.oauth.oauth_client.settings")
-    async def test_register_client_uses_settings_app_name(self, mock_settings, oauth_client, mock_metadata):
-        """Test registration includes app name from settings"""
-        mock_settings.registry_app_name = "Test Registry"
+    async def test_register_client_uses_settings_app_name(self, oauth_client, mock_metadata):
+        """Test registration includes the injected registry_app_name (fixture uses 'Test Registry')"""
         mock_response = Mock()
         mock_response.is_success = True
         mock_response.json.return_value = {
@@ -260,7 +258,7 @@ class TestOAuthClientDCRHelperMethods:
     @pytest.fixture
     def oauth_client(self):
         """Create OAuthClient instance"""
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     def test_negotiate_grant_types_with_refresh_token(self, oauth_client):
         """Test grant type negotiation when refresh_token is supported"""
@@ -382,7 +380,7 @@ class TestOAuthClientAuthorizationUrl:
     @pytest.fixture
     def oauth_client(self):
         """Create OAuthClient instance"""
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     @pytest.fixture
     def mock_flow_metadata(self):
@@ -436,7 +434,7 @@ class TestOAuthClientTokenExchange:
     @pytest.fixture
     def oauth_client(self):
         """Create OAuthClient instance"""
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     @pytest.fixture
     def mock_flow_metadata(self):
@@ -511,7 +509,7 @@ class TestOAuthClientRefreshTokens:
     @pytest.fixture
     def oauth_client(self):
         """Create OAuthClient instance"""
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     @pytest.mark.asyncio
     async def test_refresh_tokens_success(self, oauth_client):
@@ -539,7 +537,7 @@ class TestOAuthClientRefreshTokens:
         )
         mock_authlib_client.aclose = AsyncMock()
 
-        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client", return_value=mock_authlib_client):
+        with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client", return_value=mock_authlib_client):
             tokens = await oauth_client.refresh_tokens(oauth_config, refresh_token)
 
             # Verify tokens
@@ -582,7 +580,7 @@ class TestOAuthClientRefreshTokens:
         )
         mock_authlib_client.aclose = AsyncMock()
 
-        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client", return_value=mock_authlib_client):
+        with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client", return_value=mock_authlib_client):
             tokens = await oauth_client.refresh_tokens(oauth_config, old_refresh_token)
 
             # Verify old refresh_token is kept
@@ -599,7 +597,7 @@ class TestGetClientAuthMethodSelection:
 
     @pytest.fixture
     def oauth_client(self):
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     def _make_flow_metadata(self, auth_methods):
         flow_metadata = Mock(spec=MCPOAuthFlowMetadata)
@@ -618,7 +616,7 @@ class TestGetClientAuthMethodSelection:
     def test_prefers_post_when_both_methods_available(self, oauth_client):
         """When both methods are supported, client_secret_post is chosen."""
         flow_metadata = self._make_flow_metadata(["client_secret_post", "client_secret_basic"])
-        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+        with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
             mock_cls.return_value = Mock()
             oauth_client._get_client(flow_metadata)
         assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_post"
@@ -626,7 +624,7 @@ class TestGetClientAuthMethodSelection:
     def test_prefers_post_even_when_basic_listed_first(self, oauth_client):
         """client_secret_post wins regardless of list ordering."""
         flow_metadata = self._make_flow_metadata(["client_secret_basic", "client_secret_post"])
-        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+        with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
             mock_cls.return_value = Mock()
             oauth_client._get_client(flow_metadata)
         assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_post"
@@ -634,7 +632,7 @@ class TestGetClientAuthMethodSelection:
     def test_uses_basic_when_only_basic_available(self, oauth_client):
         """Falls back to client_secret_basic when post is absent from the supported list."""
         flow_metadata = self._make_flow_metadata(["client_secret_basic"])
-        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+        with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
             mock_cls.return_value = Mock()
             oauth_client._get_client(flow_metadata)
         assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_basic"
@@ -642,7 +640,7 @@ class TestGetClientAuthMethodSelection:
     def test_defaults_to_post_when_no_methods_advertised(self, oauth_client):
         """Defaults to client_secret_post when supported list is empty."""
         flow_metadata = self._make_flow_metadata([])
-        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+        with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
             mock_cls.return_value = Mock()
             oauth_client._get_client(flow_metadata)
         assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_post"
@@ -650,7 +648,7 @@ class TestGetClientAuthMethodSelection:
     def test_defaults_to_post_when_methods_is_none(self, oauth_client):
         """Defaults to client_secret_post when token_endpoint_auth_methods_supported is None."""
         flow_metadata = self._make_flow_metadata(None)
-        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+        with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
             mock_cls.return_value = Mock()
             oauth_client._get_client(flow_metadata)
         assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_post"
@@ -661,7 +659,7 @@ class TestBuildAuthorizationUrlResourceIndicator:
 
     @pytest.fixture
     def oauth_client(self):
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     def _make_flow_metadata(self, resource_url=None):
         flow_metadata = Mock(spec=MCPOAuthFlowMetadata)
@@ -703,7 +701,7 @@ class TestExchangeCodeForTokensResourceIndicator:
 
     @pytest.fixture
     def oauth_client(self):
-        return OAuthClient()
+        return OAuthClient(registry_app_name="Test Registry")
 
     def _make_flow_metadata(self, resource_url=None):
         flow_metadata = Mock(spec=MCPOAuthFlowMetadata)

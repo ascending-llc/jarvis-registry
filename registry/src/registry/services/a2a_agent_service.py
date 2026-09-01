@@ -18,13 +18,13 @@ from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
-from registry.core.exceptions import (
+from registry_pkgs.core.config import JwtSigningConfig
+from registry_pkgs.core.exceptions import (
     A2AAgentCardNotFoundException,
     A2AAgentCardParseException,
     A2AAgentCardTransportException,
     A2AAgentCardUpstreamException,
 )
-from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
 from registry_pkgs.models.a2a_agent import (
     A2AAgent,

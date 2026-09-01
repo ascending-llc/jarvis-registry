@@ -12,7 +12,7 @@ from starlette.requests import Request
 
 from registry.api.proxy_routes import proxy_to_mcp_server
 from registry.core.config import settings
-from registry.core.exceptions import UrlElicitationRequiredException
+from registry_pkgs.core.exceptions import UrlElicitationRequiredException
 
 USER_ID = "507f1f77bcf86cd799439011"
 

@@ -40,7 +40,6 @@ from registry import settings  # noqa: E402
 from registry.services.access_control_service import ACLService, load_role_cache  # noqa: E402
 from registry.services.group_directory_client import KeycloakGroupDirectoryClient  # noqa: E402
 from registry.services.group_service import GroupService  # noqa: E402
-from registry.services.user_service import UserService  # noqa: E402
 from registry_pkgs.core.config import MongoConfig  # noqa: E402
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt  # noqa: E402
 from registry_pkgs.database.mongodb import MongoDB  # noqa: E402
@@ -55,6 +54,7 @@ from registry_pkgs.models.workflow import (  # noqa: E402
     WorkflowNode,
     WorkflowRun,
 )
+from registry_pkgs.oauth.user_service import UserService  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("real_mcp_a2a_e2e")

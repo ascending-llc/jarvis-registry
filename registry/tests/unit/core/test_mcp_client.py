@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from registry.core.exceptions import MisimplementedSpecException
 from registry.core.mcp_client import (
     _get_from_sse,
     _get_from_streamable_http,
@@ -16,6 +15,7 @@ from registry.core.mcp_client import (
     initialize_mcp,
 )
 from registry.core.mcp_config import MCPClientConfig
+from registry_pkgs.core.exceptions import MisimplementedSpecException
 
 
 @pytest.mark.unit

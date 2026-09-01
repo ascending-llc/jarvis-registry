@@ -17,10 +17,10 @@ from registry_pkgs.models import (
 from registry_pkgs.models.enums import PermissionBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
+from registry_pkgs.oauth.user_service import UserService
 
 from ..schemas.acl_schema import PermissionPrincipalOut, PrincipalDetailOut, ResourcePermissions, RoleOut
 from .group_service import GroupService
-from .user_service import UserService
 
 logger = logging.getLogger(__name__)
 

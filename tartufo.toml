@@ -128,4 +128,9 @@ exclude-signatures = [
     {signature = 'c72defc4e901de19821a7608e0f845ad3f5a26320b330abec1233191919fdf47', reason = 'OTEL histogram bucket boundaries are numeric arrays, not credentials'},
     {signature = '561e4d65e220362b61c6c35541a40710574dc2b03fc185d6ccaab0962e0bfce4', reason = 'OTel tracing setup code with BatchSpanProcessor config constants, not credentials'},
     {signature = '489507678cb679b1ede8492ec458aed91d29a84a9fa4316f889f4c77b62209e4', reason = 'workflow metrics test file with OTel SDK test fixtures and bucket boundaries, not credentials'},
+    {signature = 'c0992cdd71cd7d8d6550e7dbc4d90b85aac07c6f2f8f8e4c4473e44ad5acf18e', reason = 'OAuth client unit test moved to registry-pkgs (AS-1811) uses synthetic client secrets, not credentials'},
+    {signature = 'b775520fbea430dba46d2fd5e600f62a156726639ad838fe492cb1381c599f19', reason = 'OAuth service unit test moved to registry-pkgs (AS-1811) uses mocked tokens/secrets, not credentials'},
+    {signature = '53b54a4bcb801bb7e90592f9faca70126d06304d2b1b924a9df2c06d6784d2c9', reason = 'token service unit test moved to registry-pkgs (AS-1811) uses mock encrypted tokens, not credentials'},
+    {signature = '42236bdc78f13898514f25cd3fa2e8dcde1112595a917e1e3207ae195fe63249', reason = 'crypto_utils unit test (AS-1811) auth-field fixtures use synthetic secrets, not credentials'},
+    {signature = 'ebcee0c2ab0cc8f1b5fc75759f8531043f98a39d219813eaf847e3e3023fa87f', reason = 'crypto_utils unit test (AS-1811) auth-field fixtures use synthetic secrets, not credentials'},
 ]

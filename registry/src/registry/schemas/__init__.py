@@ -1,5 +1,14 @@
 """Models for the registry service."""
 
+from registry_pkgs.oauth.schemas import (
+    MCPOAuthFlowMetadata,
+    OAuthClientInformation,
+    OAuthFlow,
+    OAuthMetadata,
+    OAuthProtectedResourceMetadata,
+    OAuthTokens,
+)
+
 from .anthropic_schema import (
     ErrorResponse,
     Package,
@@ -17,14 +26,6 @@ from .errors import (
     APIErrorResponse,
     ErrorCode,
     create_error_detail,
-)
-from .oauth_schema import (
-    MCPOAuthFlowMetadata,
-    OAuthClientInformation,
-    OAuthFlow,
-    OAuthMetadata,
-    OAuthProtectedResourceMetadata,
-    OAuthTokens,
 )
 
 __all__ = [

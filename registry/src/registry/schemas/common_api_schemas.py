@@ -8,12 +8,10 @@ All schemas use camelCase for API input/output and for MongoDB storage,
 following the same pattern as Server Management and A2A Agent APIs.
 """
 
-from typing import Literal
-
 from pydantic import Field, field_validator
 
 from .case_conversion import APIBaseModel
-from .enums import OAuthFlowStatus, TokenPurpose
+from .enums import TokenPurpose
 
 # ==================== Auth Schemas ====================
 
@@ -128,16 +126,3 @@ class OAuthTokensResponse(APIBaseModel):
     """Response schema for OAuth tokens"""
 
     tokens: dict = Field(..., description="OAuth tokens")
-
-
-class OAuthFlowStatusResponse(APIBaseModel):
-    """Status of an OAuth flow, including the absence of an expired or unknown flow."""
-
-    status: OAuthFlowStatus | Literal["not_found"]
-    completed: bool
-    failed: bool
-    error: str | None = None
-    server_id: str | None = None
-    user_id: str | None = None
-    created_at: float | None = None
-    completed_at: float | None = None

@@ -12,10 +12,10 @@ from mcp.types import (
 )
 
 from registry.core.config import settings
-from registry.core.exceptions import InternalServerException
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
+from registry_pkgs.core.exceptions import InternalServerException
 
 
 class _PermissiveAccessibleSet:

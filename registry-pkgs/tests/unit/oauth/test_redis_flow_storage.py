@@ -2,14 +2,14 @@
 
 from unittest.mock import ANY, Mock
 
-from registry.auth.oauth.redis_flow_storage import RedisFlowStorage
-from registry.schemas.oauth_schema import OAuthFlow
+from registry_pkgs.oauth.redis_flow_storage import RedisFlowStorage
+from registry_pkgs.oauth.schemas import OAuthFlow
 
 
 def test_consume_flow_reads_and_deletes_in_one_transaction() -> None:
     redis = Mock()
     redis.eval.return_value = ["flow_id", "flow-1"]
-    storage = RedisFlowStorage(redis)
+    storage = RedisFlowStorage(redis, redis_key_prefix="jarvis-registry")
     expected_flow = Mock(spec=OAuthFlow)
     storage._deserialize_flow = Mock(return_value=expected_flow)
 
@@ -29,7 +29,7 @@ def test_consume_flow_reads_and_deletes_in_one_transaction() -> None:
 def test_consume_flow_returns_none_when_another_request_consumed_it_first() -> None:
     redis = Mock()
     redis.eval.return_value = []
-    storage = RedisFlowStorage(redis)
+    storage = RedisFlowStorage(redis, redis_key_prefix="jarvis-registry")
 
     assert storage.consume_flow("flow-1", "expected-state") is None
 
@@ -37,6 +37,6 @@ def test_consume_flow_returns_none_when_another_request_consumed_it_first() -> N
 def test_consume_flow_returns_none_when_transaction_fails() -> None:
     redis = Mock()
     redis.eval.side_effect = RuntimeError("Redis unavailable")
-    storage = RedisFlowStorage(redis)
+    storage = RedisFlowStorage(redis, redis_key_prefix="jarvis-registry")
 
     assert storage.consume_flow("flow-1", "expected-state") is None

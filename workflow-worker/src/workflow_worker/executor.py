@@ -6,6 +6,7 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.models import WorkflowDefinition, WorkflowRun, WorkflowSchedule
 from registry_pkgs.models.enums import WorkflowRunStatus
+from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.helpers import extract_user_text
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
@@ -175,6 +176,26 @@ async def _finish_schedule(
         logger.info("Schedule %s was deleted or its lease was superseded before completion", schedule.id)
 
 
+def _scheduled_run_auth_context(created_by: PydanticObjectId) -> UserContextDict:
+    """Build the auth_context a scheduled run presents to mcp_headers_provider.
+
+    There is no live user session for a schedule-triggered run; user_id (the only field
+    build_authenticated_headers requires) is the WorkflowSchedule's creator. The remaining
+    fields are placeholders — a scheduled run has no scopes/groups to contribute, and the
+    provider's OAuth path keys solely off user_id.
+    """
+    return UserContextDict(
+        user_id=str(created_by),
+        client_id="workflow-worker",
+        username=None,
+        groups=[],
+        scopes=[],
+        auth_method="schedule",
+        provider="workflow-worker",
+        auth_source="workflow_schedule",
+    )
+
+
 async def _execute_schedule(
     schedule: WorkflowSchedule,
     runner: WorkflowRunner,
@@ -194,7 +215,7 @@ async def _execute_schedule(
         updated_run, _ = await runner.run(
             definition_id=str(definition.id),
             user_text=extract_user_text(claimed.initial_input),
-            auth_context=None,
+            auth_context=_scheduled_run_auth_context(claimed.created_by),
             existing_run_id=str(run.id),
         )
         final_status = updated_run.status

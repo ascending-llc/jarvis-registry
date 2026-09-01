@@ -4,10 +4,10 @@ from urllib.parse import urlencode
 import httpx
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
-from registry.auth.oauth.flow_state_manager import FlowStateManager
-from registry.schemas.oauth_schema import OAuthTokens
 from registry.utils.crypto_utils import decrypt_value
 from registry_pkgs.models.skill_sync_source import SkillSyncSource
+from registry_pkgs.oauth.flow_state_manager import FlowStateManager
+from registry_pkgs.oauth.schemas import OAuthTokens
 
 from .skill_sync_token_service import SkillSyncTokenService
 
