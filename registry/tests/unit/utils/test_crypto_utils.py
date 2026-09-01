@@ -11,11 +11,10 @@ from registry.utils.crypto_utils import (
     encrypt_value,
     generate_access_token,
     generate_refresh_token,
-    is_encrypted,
     verify_access_token,
     verify_refresh_token,
 )
-from registry_pkgs.core.crypto_utils import ENCRYPTED_VALUE_PATTERN
+from registry_pkgs.core.crypto_utils import ENCRYPTED_VALUE_PATTERN, is_encrypted
 from registry_pkgs.core.jwt_tokens import (
     TOKEN_CLASS_CLAIM,
     TOKEN_CLASS_CRUD_SESSION,
