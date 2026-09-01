@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
@@ -25,7 +26,7 @@ from a2a.types import (
 )
 from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
-from opentelemetry import baggage
+from opentelemetry import baggage, trace
 from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
@@ -57,6 +58,8 @@ _TRACE_CONTEXT_PROPAGATOR = CompositePropagator(
 )
 _TRACE_CONTEXT_HEADERS = frozenset({"baggage", "traceparent", "tracestate"})
 _LANGFUSE_ENVIRONMENT_BAGGAGE_KEY = "langfuse.environment"
+_LANGFUSE_TRACE_NAME_BAGGAGE_KEY = "langfuse.trace.name"
+_LANGFUSE_TRACE_TAGS_BAGGAGE_KEY = "langfuse.trace.tags"
 
 HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
 ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
@@ -205,7 +208,7 @@ def _extra_call_headers(agent: A2AAgent) -> dict[str, str]:
 
 
 def _inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
-    """Return copied headers with the current trace and controlled environment baggage."""
+    """Return copied headers with the current trace and controlled Langfuse baggage."""
     outbound_headers = {key: value for key, value in headers.items() if key.lower() not in _TRACE_CONTEXT_HEADERS}
     try:
         outbound_context = baggage.clear()
@@ -216,6 +219,22 @@ def _inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
                 environment,
                 context=outbound_context,
             )
+        span_attributes = getattr(trace.get_current_span(), "attributes", None)
+        if isinstance(span_attributes, Mapping):
+            trace_name = span_attributes.get(_LANGFUSE_TRACE_NAME_BAGGAGE_KEY)
+            if isinstance(trace_name, str) and trace_name:
+                outbound_context = baggage.set_baggage(
+                    _LANGFUSE_TRACE_NAME_BAGGAGE_KEY,
+                    trace_name,
+                    context=outbound_context,
+                )
+            trace_tags = span_attributes.get(_LANGFUSE_TRACE_TAGS_BAGGAGE_KEY)
+            if isinstance(trace_tags, (list, tuple)) and trace_tags:
+                outbound_context = baggage.set_baggage(
+                    _LANGFUSE_TRACE_TAGS_BAGGAGE_KEY,
+                    json.dumps(trace_tags, separators=(",", ":")),
+                    context=outbound_context,
+                )
         _TRACE_CONTEXT_PROPAGATOR.inject(
             outbound_headers,
             context=outbound_context,
