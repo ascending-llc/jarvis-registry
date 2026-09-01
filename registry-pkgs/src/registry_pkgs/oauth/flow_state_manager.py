@@ -9,19 +9,19 @@ from uuid import uuid4
 
 from redis import Redis
 
-from ...auth.oauth.oauth_utils import parse_scope, scope_to_string
-from ...auth.oauth.redis_flow_storage import RedisFlowStorage
-from ...auth.oauth.types import OAuthFlowState, StateMetadata
-from ...schemas.enums import OAuthFlowStatus
-from ...schemas.oauth_schema import (
+from .oauth_utils import parse_scope, scope_to_string
+from .redis_flow_storage import RedisFlowStorage
+from .schemas import (
     MCPClientContext,
     MCPOAuthFlowMetadata,
     OAuthClientInformation,
     OAuthFlow,
+    OAuthFlowStatus,
     OAuthMetadata,
     OAuthProtectedResourceMetadata,
     OAuthTokens,
 )
+from .types import OAuthFlowState, StateMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +33,20 @@ class FlowStateManager:
 
     DEFAULT_FLOW_TTL = 600  # Flow time-to-live in seconds (10 minutes)
 
-    def __init__(self, redis_client: Redis | None = None, fallback_to_memory: bool = True):
+    def __init__(
+        self,
+        redis_client: Redis | None = None,
+        *,
+        redis_key_prefix: str,
+        fallback_to_memory: bool = True,
+    ):
         """
         Initialize FlowStateManager with Redis backend
 
         Args:
+            redis_client: Redis client (memory fallback used when None/unavailable)
+            redis_key_prefix: Namespace prefix for flow keys (caller-supplied;
+                e.g. settings.redis_key_prefix)
             fallback_to_memory: If True, use memory storage when Redis unavailable
         """
         self._lock = asyncio.Lock()
@@ -50,7 +59,7 @@ class FlowStateManager:
         try:
             if redis_client:
                 redis_client.ping()
-                self._redis_storage = RedisFlowStorage(redis_client)
+                self._redis_storage = RedisFlowStorage(redis_client, redis_key_prefix=redis_key_prefix)
                 self._use_redis = True
 
                 logger.info("FlowStateManager initialized with Redis storage")

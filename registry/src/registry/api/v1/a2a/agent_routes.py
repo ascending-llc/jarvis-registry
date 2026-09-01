@@ -15,12 +15,6 @@ from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 
 from registry.auth.dependencies import CurrentUser
-from registry.core.exceptions import (
-    A2AAgentCardNotFoundException,
-    A2AAgentCardParseException,
-    A2AAgentCardTransportException,
-    A2AAgentCardUpstreamException,
-)
 from registry.core.telemetry_decorators import track_registry_operation
 from registry.deps import get_a2a_agent_service, get_acl_service
 from registry.schemas.a2a_agent_api_schemas import (
@@ -36,6 +30,12 @@ from registry.schemas.a2a_agent_api_schemas import (
     convert_to_detail,
     convert_to_list_item,
     convert_to_skills_response,
+)
+from registry_pkgs.core.exceptions import (
+    A2AAgentCardNotFoundException,
+    A2AAgentCardParseException,
+    A2AAgentCardTransportException,
+    A2AAgentCardUpstreamException,
 )
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType, ResourceType

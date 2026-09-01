@@ -46,7 +46,6 @@ from registry.schemas.workflow_api_schemas import (
 )
 from registry.schemas.workflow_schemas import NodeRunListResponse, NodeRunSummary, RunStatusResponse
 from registry.services.access_control_service import ACLService
-from registry.services.oauth.oauth_service import MCPOAuthService
 from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_executor import execute_workflow_run_background
 from registry.services.workflow_reauth_service import collect_pending_oauth_authorizations
@@ -55,6 +54,7 @@ from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 logger = logging.getLogger(__name__)

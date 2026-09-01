@@ -7,10 +7,10 @@ from fastapi import status as http_status
 
 from registry.schemas.errors import ErrorCode, create_error_detail
 from registry.schemas.workflow_api_schemas import PendingAuthorization
-from registry.services.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.models.enums import McpAuthMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowDefinition, collect_executor_keys
+from registry_pkgs.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
 
 logger = logging.getLogger(__name__)

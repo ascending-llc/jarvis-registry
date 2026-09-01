@@ -3,18 +3,19 @@ from typing import Any
 
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-from ...auth.oauth import FlowStateManager, parse_scope
-from ...auth.oauth.oauth_client import OAuthClient
-from ...auth.oauth.oauth_utils import get_default_redirect_uri
-from ...auth.oauth.types import StateMetadata
-from ...schemas.common_api_schemas import OAuthFlowStatusResponse
-from ...schemas.enums import OAuthFlowStatus
-from ...schemas.oauth_schema import (
+from ..core.crypto_utils import decrypt_auth_fields
+from .errors import OAuthReAuthRequiredError
+from .flow_state_manager import FlowStateManager
+from .oauth_client import OAuthClient
+from .oauth_utils import get_default_redirect_uri, parse_scope
+from .schemas import (
     MCPClientContext,
+    OAuthFlowStatus,
+    OAuthFlowStatusResponse,
     OAuthTokens,
 )
-from ...services.oauth.token_service import TokenService
-from ...utils.crypto_utils import decrypt_auth_fields
+from .token_service import TokenService
+from .types import StateMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,27 @@ class MCPOAuthService:
         self,
         flow_manager: FlowStateManager,
         token_service_instance: TokenService,
+        *,
+        registry_app_name: str,
+        base_redirect_url: str,
+        encryption_key: bytes,
     ):
+        """
+        Args:
+            flow_manager: OAuth flow state manager
+            token_service_instance: Token storage/retrieval service
+            registry_app_name: Client name for dynamic client registration
+                (caller-supplied; e.g. settings.registry_app_name)
+            base_redirect_url: Base URL for OAuth callback redirect URIs
+                (caller-supplied; e.g. settings.registry_client_url)
+            encryption_key: AES key bytes for decrypting server auth config
+                (caller-supplied; e.g. settings.encryption_key)
+        """
         self.flow_manager = flow_manager
         self.token_service = token_service_instance
-        self.oauth_client = OAuthClient()
+        self.oauth_client = OAuthClient(registry_app_name)
+        self._base_redirect_url = base_redirect_url
+        self._encryption_key = encryption_key
 
     def _merge_oauth_config(
         self, oauth_config: dict[str, Any], oauth_metadata: dict[str, Any] | None = None
@@ -173,7 +191,7 @@ class MCPOAuthService:
 
                 try:
                     # Build OAuth metadata for DCR
-                    from ...schemas.oauth_schema import OAuthMetadata, OAuthProtectedResourceMetadata
+                    from .schemas import OAuthMetadata, OAuthProtectedResourceMetadata
 
                     metadata_obj = OAuthMetadata(
                         issuer=oauth_metadata.get("issuer"),
@@ -199,7 +217,9 @@ class MCPOAuthService:
                         )
 
                     # Generate redirect_uri (use configured or default)
-                    redirect_uri = oauth_config.get("redirect_uri") or get_default_redirect_uri(path=server.path)
+                    redirect_uri = oauth_config.get("redirect_uri") or get_default_redirect_uri(
+                        path=server.path, base_url=self._base_redirect_url
+                    )
 
                     # Call DCR endpoint
                     client_info = await self.oauth_client.register_client(
@@ -257,7 +277,9 @@ class MCPOAuthService:
             else:
                 logger.debug(f"[OAuth] Using static credentials for {server.serverName}")
                 # Note that decrypt_auth_fields expects the `.config` field of an ExtendedMCPServer document object.
-                oauth_config = decrypt_auth_fields({"oauth": oauth_config})["oauth"]
+                oauth_config = decrypt_auth_fields({"oauth": oauth_config}, encryption_key=self._encryption_key)[
+                    "oauth"
+                ]
 
             oauth_config = self._merge_oauth_config(oauth_config, oauth_metadata)
 
@@ -285,7 +307,7 @@ class MCPOAuthService:
                 code_verifier=code_verifier,
                 oauth_config=oauth_config,
                 flow_id=flow_id,
-                redirect_uri=get_default_redirect_uri(path=server.path),
+                redirect_uri=get_default_redirect_uri(path=server.path, base_url=self._base_redirect_url),
                 state_metadata=state_metadata,
                 mcp_client_context=mcp_client_context,
                 device_code=device_code,
@@ -417,6 +439,7 @@ class MCPOAuthService:
         server: ExtendedMCPServer,
         *,
         state_metadata: StateMetadata | None = None,
+        interactive: bool = True,
     ) -> tuple[str | None, str | None, str | None]:
         """
         Get valid access token with automatic refresh and re-authentication flow
@@ -424,16 +447,20 @@ class MCPOAuthService:
         This method implements the complete token lifecycle:
         1. Try to use existing access token (if not expired)
         2. If expired, try to refresh using refresh token
-        3. If refresh fails, return OAuth required error to initiate new flow
+        3. If refresh fails, initiate a new OAuth flow (interactive callers) or raise
+           OAuthReAuthRequiredError directly (non-interactive callers)
 
         Args:
             user_id: User ID
             server: MCPServer document
+            interactive: When False (e.g. scheduled workflow runs with no human to complete
+                a flow), skip initiate_oauth_flow entirely and raise OAuthReAuthRequiredError
+                with auth_url=None instead of minting a Redis flow record no one can complete.
 
         Returns:
             Tuple of (access_token, auth_url, error_message)
             - (token, None, None) if token is valid or refreshed successfully
-            - (None, auth_url, None) if re-authentication is needed
+            - (None, auth_url, None) if re-authentication is needed (interactive only)
             - (None, None, error) if an error occurred
         """
         try:
@@ -466,7 +493,18 @@ class MCPOAuthService:
             else:
                 logger.info(f"No refresh token available for {user_id}/{server_name}")
 
-            # 3. Both access and refresh failed - initiate new OAuth flow
+            # 3. Both access and refresh failed.
+            if not interactive:
+                logger.info(
+                    f"Re-authorization required for {user_id}/{server_name} (non-interactive; no flow initiated)"
+                )
+                raise OAuthReAuthRequiredError(
+                    f"OAuth re-authentication required for {server_name} (non-interactive caller)",
+                    auth_url=None,
+                    server_name=server_name,
+                )
+
+            # Interactive caller: initiate a new OAuth flow to mint an auth_url.
             logger.info(f"Initiating new OAuth flow for {user_id}/{server_name}")
             flow_id, auth_url, flow_error = await self.initiate_oauth_flow(
                 user_id, server, state_metadata=state_metadata
@@ -477,6 +515,9 @@ class MCPOAuthService:
 
             return None, auth_url, None
 
+        except OAuthReAuthRequiredError:
+            # Non-interactive re-auth signal must propagate, not be flattened into an error tuple.
+            raise
         except Exception as e:
             logger.error(f"Error getting valid access token: {e}", exc_info=True)
             return None, None, str(e)
@@ -665,7 +706,7 @@ class MCPOAuthService:
                 return False, f"Server '{server_id}' OAuth configuration not found"
 
             # Note that decrypt_auth_fields expects the `.config` field of an ExtendedMCPServer document object.
-            oauth_config = decrypt_auth_fields({"oauth": oauth_config})["oauth"]
+            oauth_config = decrypt_auth_fields({"oauth": oauth_config}, encryption_key=self._encryption_key)["oauth"]
             oauth_metadata = mcp_server.config.get("oauthMetadata")
             oauth_config = self._merge_oauth_config(oauth_config, oauth_metadata)
 
@@ -797,7 +838,7 @@ class MCPOAuthService:
                 }
 
             # Note that decrypt_auth_fields expects the `.config` field of an ExtendedMCPServer document object.
-            oauth_config = decrypt_auth_fields({"oauth": oauth_config})["oauth"]
+            oauth_config = decrypt_auth_fields({"oauth": oauth_config}, encryption_key=self._encryption_key)["oauth"]
             oauth_metadata = server.config.get("oauthMetadata")
             oauth_config = self._merge_oauth_config(oauth_config, oauth_metadata)
 

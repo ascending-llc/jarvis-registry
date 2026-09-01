@@ -7,9 +7,11 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from beanie import PydanticObjectId
 
-from registry.schemas.oauth_schema import OAuthClientInformation, OAuthTokens
-from registry.services.oauth.token_service import TokenService
 from registry_pkgs.models import Token, TokenType
+from registry_pkgs.oauth.schemas import OAuthClientInformation, OAuthTokens
+from registry_pkgs.oauth.token_service import TokenService
+
+_TEST_ENCRYPTION_KEY = bytes.fromhex("00" * 16)  # AES-128 test key
 
 
 class TestTokenServiceBasicMethods:
@@ -18,7 +20,7 @@ class TestTokenServiceBasicMethods:
     @pytest.fixture
     def token_service(self):
         """Create TokenService instance"""
-        return TokenService(user_service=Mock())
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     @pytest.fixture
     def mock_user(self):
@@ -89,7 +91,7 @@ class TestTokenServiceStoreTokens:
     @pytest.fixture
     def token_service(self):
         """Create TokenService instance"""
-        return TokenService(user_service=Mock())
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     @pytest.fixture
     def mock_user(self):
@@ -119,7 +121,7 @@ class TestTokenServiceStoreTokens:
         mock_token.insert = AsyncMock()
 
         with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            with patch("registry.services.oauth.token_service.Token") as MockToken:
+            with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
                 MockToken.find_one = AsyncMock(return_value=None)
                 MockToken.return_value = mock_token
 
@@ -143,7 +145,7 @@ class TestTokenServiceStoreTokens:
         mock_token.insert = AsyncMock()
 
         with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            with patch("registry.services.oauth.token_service.Token") as MockToken:
+            with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
                 MockToken.find_one = AsyncMock(return_value=None)
                 MockToken.return_value = mock_token
 
@@ -195,7 +197,7 @@ class TestTokenServiceGetTokens:
     @pytest.fixture
     def token_service(self):
         """Create TokenService instance"""
-        return TokenService(user_service=Mock())
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     @pytest.fixture
     def mock_access_token(self):
@@ -273,7 +275,7 @@ class TestTokenServiceDeleteTokens:
     @pytest.fixture
     def token_service(self):
         """Create TokenService instance"""
-        return TokenService(user_service=Mock())
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     @pytest.mark.asyncio
     async def test_delete_oauth_tokens_all_three_types(self, token_service):
@@ -321,7 +323,7 @@ class TestTokenServiceTokenStatus:
     @pytest.fixture
     def token_service(self):
         """Create TokenService instance"""
-        return TokenService(user_service=Mock())
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     @pytest.mark.asyncio
     async def test_is_access_token_expired_true(self, token_service):
@@ -373,14 +375,16 @@ class TestTokenServiceTokenStatus:
 
         with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
             with patch.object(Token, "find_one", AsyncMock(return_value=valid_token)):
-                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                with patch("registry_pkgs.oauth.token_service.decrypt_value") as mock_decrypt:
                     mock_decrypt.return_value = "decrypted_token"
 
                     token, is_valid = await token_service.get_access_token_status("test_user", "notion")
 
                     assert token == valid_token
                     assert is_valid is True
-                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_token")
+                    mock_decrypt.assert_called_once_with(
+                        "encrypted_iv:encrypted_token", encryption_key=_TEST_ENCRYPTION_KEY
+                    )
 
     @pytest.mark.asyncio
     async def test_get_refresh_token_status(self, token_service):
@@ -391,14 +395,16 @@ class TestTokenServiceTokenStatus:
 
         with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
             with patch.object(Token, "find_one", AsyncMock(return_value=valid_token)):
-                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                with patch("registry_pkgs.oauth.token_service.decrypt_value") as mock_decrypt:
                     mock_decrypt.return_value = "decrypted_refresh_token"
 
                     token, is_valid = await token_service.get_refresh_token_status("test_user", "notion")
 
                     assert token == valid_token
                     assert is_valid is True
-                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_refresh_token")
+                    mock_decrypt.assert_called_once_with(
+                        "encrypted_iv:encrypted_refresh_token", encryption_key=_TEST_ENCRYPTION_KEY
+                    )
 
 
 class TestTokenServiceHelperMethods:
@@ -407,7 +413,7 @@ class TestTokenServiceHelperMethods:
     @pytest.fixture
     def token_service(self):
         """Create TokenService instance"""
-        return TokenService(user_service=Mock())
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     def test_calculate_expiration(self, token_service):
         """Test calculating expiration datetime from expires_in"""
@@ -471,7 +477,7 @@ class TestTokenServiceClientCredentials:
     @pytest.fixture
     def token_service(self):
         """Create TokenService instance"""
-        return TokenService(user_service=Mock())
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     @pytest.fixture
     def mock_user(self):
@@ -520,12 +526,12 @@ class TestTokenServiceClientCredentials:
         # Mock user service
         with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
             # Mock Token constructor and find_one
-            with patch("registry.services.oauth.token_service.Token") as MockToken:
+            with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
                 MockToken.find_one = AsyncMock(return_value=None)
                 MockToken.return_value = mock_token
 
                 # Mock encrypt_value
-                with patch("registry.services.oauth.token_service.encrypt_value") as mock_encrypt:
+                with patch("registry_pkgs.oauth.token_service.encrypt_value") as mock_encrypt:
                     mock_encrypt.return_value = "encrypted_iv:encrypted_ciphertext"
 
                     result = await token_service.store_oauth_client_credentials(
@@ -567,7 +573,7 @@ class TestTokenServiceClientCredentials:
             # Mock Token.find_one to return existing token
             with patch.object(Token, "find_one", AsyncMock(return_value=existing_token)):
                 # Mock encrypt_value
-                with patch("registry.services.oauth.token_service.encrypt_value") as mock_encrypt:
+                with patch("registry_pkgs.oauth.token_service.encrypt_value") as mock_encrypt:
                     mock_encrypt.return_value = "updated_encrypted_iv:updated_ciphertext"
 
                     result = await token_service.store_oauth_client_credentials(
@@ -603,7 +609,7 @@ class TestTokenServiceClientCredentials:
             # Mock Token.find_one
             with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
                 # Mock decrypt_auth_fields to return decrypted JSON
-                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                with patch("registry_pkgs.oauth.token_service.decrypt_value") as mock_decrypt:
                     mock_decrypt.return_value = client_info_json
 
                     client_info, metadata = await token_service.get_oauth_client_credentials(
@@ -611,7 +617,7 @@ class TestTokenServiceClientCredentials:
                     )
 
                     # Verify decryption was called
-                    mock_decrypt.assert_called_once_with(mock_token.token)
+                    mock_decrypt.assert_called_once_with(mock_token.token, encryption_key=_TEST_ENCRYPTION_KEY)
 
                     # Verify result
                     assert isinstance(client_info, OAuthClientInformation)
@@ -703,10 +709,10 @@ class TestTokenServiceClientCredentials:
 
         # Mock user service
         with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            with patch("registry.services.oauth.token_service.Token", side_effect=capture_token_creation) as MockToken:
+            with patch("registry_pkgs.oauth.token_service.Token", side_effect=capture_token_creation) as MockToken:
                 MockToken.find_one = AsyncMock(return_value=None)
 
-                with patch("registry.services.oauth.token_service.encrypt_value", return_value="encrypted"):
+                with patch("registry_pkgs.oauth.token_service.encrypt_value", return_value="encrypted"):
                     await token_service.store_oauth_client_credentials(
                         user_id=user_id,
                         service_name=service_name,
@@ -729,7 +735,7 @@ class TestTokenServiceEncryption:
     @pytest.fixture
     def token_service(self):
         """Create TokenService instance"""
-        return TokenService(user_service=Mock())
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     @pytest.fixture
     def mock_user(self):
@@ -763,11 +769,11 @@ class TestTokenServiceEncryption:
 
         # Mock encrypt_value to verify it's called
         with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            with patch("registry.services.oauth.token_service.Token") as MockToken:
+            with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
                 MockToken.find_one = AsyncMock(return_value=None)
                 MockToken.return_value = mock_token
 
-                with patch("registry.services.oauth.token_service.encrypt_value") as mock_encrypt_value:
+                with patch("registry_pkgs.oauth.token_service.encrypt_value") as mock_encrypt_value:
                     mock_encrypt_value.return_value = "encrypted_value_result"
 
                     await token_service.store_oauth_client_credentials(
@@ -790,11 +796,11 @@ class TestTokenServiceEncryption:
     async def test_store_oauth_access_token_encrypts_token(self, token_service, mock_user, mock_oauth_tokens):
         """Test that store_oauth_access_token encrypts the access token"""
         with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            with patch("registry.services.oauth.token_service.encrypt_value") as mock_encrypt:
+            with patch("registry_pkgs.oauth.token_service.encrypt_value") as mock_encrypt:
                 mock_encrypt.return_value = "encrypted_iv:encrypted_access_token"
 
                 # Capture Token constructor call
-                with patch("registry.services.oauth.token_service.Token") as MockToken:
+                with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
                     mock_token_instance = Mock(spec=Token)
                     mock_token_instance.insert = AsyncMock()
                     MockToken.return_value = mock_token_instance
@@ -807,7 +813,7 @@ class TestTokenServiceEncryption:
                     )
 
                     # Verify encrypt_value was called with the access token
-                    mock_encrypt.assert_called_once_with("test_access_token_plain")
+                    mock_encrypt.assert_called_once_with("test_access_token_plain", encryption_key=_TEST_ENCRYPTION_KEY)
 
                     # Verify Token was constructed with encrypted token
                     MockToken.assert_called_once()
@@ -818,11 +824,11 @@ class TestTokenServiceEncryption:
     async def test_store_oauth_refresh_token_encrypts_token(self, token_service, mock_user, mock_oauth_tokens):
         """Test that store_oauth_refresh_token encrypts the refresh token"""
         with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            with patch("registry.services.oauth.token_service.encrypt_value") as mock_encrypt:
+            with patch("registry_pkgs.oauth.token_service.encrypt_value") as mock_encrypt:
                 mock_encrypt.return_value = "encrypted_iv:encrypted_refresh_token"
 
                 # Capture Token constructor call
-                with patch("registry.services.oauth.token_service.Token") as MockToken:
+                with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
                     mock_token_instance = Mock(spec=Token)
                     mock_token_instance.email = None
                     mock_token_instance.insert = AsyncMock()
@@ -836,7 +842,9 @@ class TestTokenServiceEncryption:
                     )
 
                     # Verify encrypt_value was called with the refresh token
-                    mock_encrypt.assert_called_once_with("test_refresh_token_plain")
+                    mock_encrypt.assert_called_once_with(
+                        "test_refresh_token_plain", encryption_key=_TEST_ENCRYPTION_KEY
+                    )
 
                     # Verify Token was constructed with encrypted token
                     MockToken.assert_called_once()
@@ -853,13 +861,15 @@ class TestTokenServiceEncryption:
 
         with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
             with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
-                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                with patch("registry_pkgs.oauth.token_service.decrypt_value") as mock_decrypt:
                     mock_decrypt.return_value = "decrypted_access_token"
 
                     result = await token_service.get_oauth_access_token("test_user", "test_service")
 
                     # Verify decrypt_value was called
-                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_access_token")
+                    mock_decrypt.assert_called_once_with(
+                        "encrypted_iv:encrypted_access_token", encryption_key=_TEST_ENCRYPTION_KEY
+                    )
 
                     # Verify the token was decrypted
                     assert result.token == "decrypted_access_token"
@@ -874,13 +884,15 @@ class TestTokenServiceEncryption:
 
         with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
             with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
-                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                with patch("registry_pkgs.oauth.token_service.decrypt_value") as mock_decrypt:
                     mock_decrypt.return_value = "decrypted_refresh_token"
 
                     result = await token_service.get_oauth_refresh_token("test_user", "test_service")
 
                     # Verify decrypt_value was called
-                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_refresh_token")
+                    mock_decrypt.assert_called_once_with(
+                        "encrypted_iv:encrypted_refresh_token", encryption_key=_TEST_ENCRYPTION_KEY
+                    )
 
                     # Verify the token was decrypted
                     assert result.token == "decrypted_refresh_token"
@@ -894,13 +906,15 @@ class TestTokenServiceEncryption:
 
         with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
             with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
-                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                with patch("registry_pkgs.oauth.token_service.decrypt_value") as mock_decrypt:
                     mock_decrypt.return_value = "decrypted_access_token"
 
                     token, is_valid = await token_service.get_access_token_status("test_user", "test_service")
 
                     # Verify decrypt_value was called
-                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_access_token")
+                    mock_decrypt.assert_called_once_with(
+                        "encrypted_iv:encrypted_access_token", encryption_key=_TEST_ENCRYPTION_KEY
+                    )
 
                     # Verify the token was decrypted
                     assert token.token == "decrypted_access_token"
@@ -915,13 +929,15 @@ class TestTokenServiceEncryption:
 
         with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
             with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
-                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                with patch("registry_pkgs.oauth.token_service.decrypt_value") as mock_decrypt:
                     mock_decrypt.return_value = "decrypted_refresh_token"
 
                     token, is_valid = await token_service.get_refresh_token_status("test_user", "test_service")
 
                     # Verify decrypt_value was called
-                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_refresh_token")
+                    mock_decrypt.assert_called_once_with(
+                        "encrypted_iv:encrypted_refresh_token", encryption_key=_TEST_ENCRYPTION_KEY
+                    )
 
                     # Verify the token was decrypted
                     assert token.token == "decrypted_refresh_token"
@@ -932,7 +948,7 @@ class TestTokenServiceEncryption:
         """Test that encrypted tokens have the expected format with colon separator"""
         with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
             # Use real encrypt_value function
-            with patch("registry.services.oauth.token_service.Token") as MockToken:
+            with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
                 mock_token_instance = Mock(spec=Token)
                 mock_token_instance.insert = AsyncMock()
                 MockToken.return_value = mock_token_instance

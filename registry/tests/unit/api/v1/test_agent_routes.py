@@ -410,7 +410,7 @@ async def test_refresh_agent_capabilities_transport_error():
     from fastapi import HTTPException
 
     from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
-    from registry.core.exceptions import A2AAgentCardTransportException
+    from registry_pkgs.core.exceptions import A2AAgentCardTransportException
 
     agent_id = str(PydanticObjectId())
     user_context = {"user_id": str(PydanticObjectId())}
@@ -442,7 +442,7 @@ async def test_refresh_agent_capabilities_upstream_error():
     from fastapi import HTTPException
 
     from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
-    from registry.core.exceptions import A2AAgentCardUpstreamException
+    from registry_pkgs.core.exceptions import A2AAgentCardUpstreamException
 
     agent_id = str(PydanticObjectId())
     user_context = {"user_id": str(PydanticObjectId())}

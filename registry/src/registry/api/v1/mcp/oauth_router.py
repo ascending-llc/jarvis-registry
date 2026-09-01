@@ -28,11 +28,18 @@ from registry_pkgs.core.redirect_uri import (
     redirect_uri_matches,
     validate_registration_redirect_uri,
 )
+from registry_pkgs.oauth.flow_state_manager import FlowStateManager
+from registry_pkgs.oauth.schemas import (
+    MCPClientContext,
+    OAuthFlow,
+    OAuthFlowStatus,
+    OAuthFlowStatusResponse,
+)
+from registry_pkgs.oauth.token_service import TokenService
+from registry_pkgs.oauth.types import ClientBranding
 
 from ....auth.dependencies import CurrentUser
-from ....auth.oauth.flow_state_manager import FlowStateManager
 from ....auth.oauth.reconnection import OAuthReconnectionManager
-from ....auth.oauth.types import ClientBranding
 from ....constants import DownstreamOAuthConstants
 from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
@@ -49,21 +56,18 @@ from ....deps import (
     get_token_service,
 )
 from ....schemas.common_api_schemas import (
-    OAuthFlowStatusResponse,
     OAuthInitiateResponse,
     OAuthMetadataDiscoverResponse,
     OAuthOperationResponse,
     OAuthTokensResponse,
 )
-from ....schemas.enums import ConnectionState, OAuthFlowStatus
-from ....schemas.oauth_schema import MCPClientContext, OAuthFlow
+from ....schemas.enums import ConnectionState
 from ....services.oauth.downstream_device_service import (
     DeviceAuthorizationError,
     create_device_authorization,
     mark_device_approved,
 )
 from ....services.oauth.mcp_service import MCPService
-from ....services.oauth.token_service import TokenService
 from ....services.server_service import ServerServiceV1
 from ....utils.schema_converter import convert_dict_keys_to_camel
 

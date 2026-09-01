@@ -1,58 +1,31 @@
 """Unit tests for OAuth utility functions."""
 
-from unittest.mock import patch
-
 import pytest
 
-from registry.auth.oauth.oauth_utils import get_default_redirect_uri, parse_scope, scope_to_string
+from registry_pkgs.oauth.oauth_utils import get_default_redirect_uri, parse_scope, scope_to_string
 
 
 class TestGetDefaultRedirectUri:
-    """Tests for get_default_redirect_uri utility function"""
+    """Tests for get_default_redirect_uri utility function (base_url now caller-supplied)"""
 
-    @patch("registry.auth.oauth.oauth_utils.settings")
-    def test_get_default_redirect_uri_with_leading_slash(self, mock_settings):
-        """Test redirect URI construction with path that has leading slash"""
-        mock_settings.registry_client_url = "http://localhost:7860"
-
-        result = get_default_redirect_uri("/notion")
-
+    def test_get_default_redirect_uri_with_leading_slash(self):
+        result = get_default_redirect_uri("/notion", base_url="http://localhost:7860")
         assert result == "http://localhost:7860/api/v1/mcp/notion/oauth/callback"
 
-    @patch("registry.auth.oauth.oauth_utils.settings")
-    def test_get_default_redirect_uri_without_leading_slash(self, mock_settings):
-        """Test redirect URI construction with path without leading slash"""
-        mock_settings.registry_client_url = "http://localhost:7860"
-
-        result = get_default_redirect_uri("brave")
-
+    def test_get_default_redirect_uri_without_leading_slash(self):
+        result = get_default_redirect_uri("brave", base_url="http://localhost:7860")
         assert result == "http://localhost:7860/api/v1/mcp/brave/oauth/callback"
 
-    @patch("registry.auth.oauth.oauth_utils.settings")
-    def test_get_default_redirect_uri_with_trailing_slash(self, mock_settings):
-        """Test redirect URI construction with path that has trailing slash"""
-        mock_settings.registry_client_url = "http://localhost:7860"
-
-        result = get_default_redirect_uri("/github/")
-
+    def test_get_default_redirect_uri_with_trailing_slash(self):
+        result = get_default_redirect_uri("/github/", base_url="http://localhost:7860")
         assert result == "http://localhost:7860/api/v1/mcp/github/oauth/callback"
 
-    @patch("registry.auth.oauth.oauth_utils.settings")
-    def test_get_default_redirect_uri_production_url(self, mock_settings):
-        """Test redirect URI construction with production URL"""
-        mock_settings.registry_client_url = "https://registry.example.com"
-
-        result = get_default_redirect_uri("/google-drive")
-
+    def test_get_default_redirect_uri_production_url(self):
+        result = get_default_redirect_uri("/google-drive", base_url="https://registry.example.com")
         assert result == "https://registry.example.com/api/v1/mcp/google-drive/oauth/callback"
 
-    @patch("registry.auth.oauth.oauth_utils.settings")
-    def test_get_default_redirect_uri_with_port(self, mock_settings):
-        """Test redirect URI construction with custom port"""
-        mock_settings.registry_client_url = "http://localhost:3000"
-
-        result = get_default_redirect_uri("slack")
-
+    def test_get_default_redirect_uri_with_port(self):
+        result = get_default_redirect_uri("slack", base_url="http://localhost:3000")
         assert result == "http://localhost:3000/api/v1/mcp/slack/oauth/callback"
 
 

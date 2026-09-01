@@ -1,8 +1,9 @@
 import asyncio
 import logging
 
+from registry_pkgs.oauth.oauth_service import MCPOAuthService
+
 from .connection_service import MCPConnectionService
-from .oauth_service import MCPOAuthService
 
 logger = logging.getLogger(__name__)
 

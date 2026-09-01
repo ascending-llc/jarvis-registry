@@ -1,6 +1,3 @@
-"""Shared exception types for MCP gateway and core client logic."""
-
-
 class McpGatewayException(Exception):
     """Base class for gateway and MCP proxy runtime exceptions."""
 

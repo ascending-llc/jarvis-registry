@@ -8,9 +8,9 @@ from fastapi import HTTPException
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.services.access_control_service import ACLService
 from registry.services.group_service import GroupService
-from registry.services.user_service import UserService
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import PermissionBits, RoleBits
+from registry_pkgs.oauth.user_service import UserService
 
 
 class TestACLService:
@@ -804,7 +804,7 @@ class TestACLService:
         mock_group.find.return_value.limit.assert_called_once_with(5)
 
     @pytest.mark.asyncio
-    @patch("registry.services.user_service.User")
+    @patch("registry_pkgs.oauth.user_service.User")
     async def test_search_users_applies_limit(self, mock_user):
         mock_user.find.return_value.limit.return_value.to_list = AsyncMock(return_value=[])
 

@@ -9,9 +9,8 @@ from fastapi.testclient import TestClient
 from registry.api.v1.mcp.oauth_router import router
 from registry.core.session_store import SessionStore
 from registry.deps import get_container
-from registry.schemas.common_api_schemas import OAuthFlowStatusResponse
-from registry.schemas.enums import OAuthFlowStatus
 from registry.services.oauth.mcp_service import MCPService
+from registry_pkgs.oauth.schemas import OAuthFlowStatus, OAuthFlowStatusResponse
 from tests.conftest import make_container_factory
 
 # Valid MongoDB ObjectId for testing (24 hex characters)

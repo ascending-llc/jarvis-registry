@@ -24,8 +24,9 @@ from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from redis import Redis
 
+from registry_pkgs.core.exceptions import MisimplementedSpecException
+
 from .config import settings
-from .exceptions import MisimplementedSpecException
 
 # Internal imports
 from .mcp_config import MCPClientConfig

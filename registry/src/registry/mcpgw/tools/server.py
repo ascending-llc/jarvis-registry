@@ -27,11 +27,7 @@ from mcp.types import (
 from pydantic import Field
 from pydantic.networks import AnyUrl
 
-from registry_pkgs.models import ResourceType
-
-from ...auth.dependencies import UserContextDict
-from ...core.config import settings
-from ...core.exceptions import (
+from registry_pkgs.core.exceptions import (
     ConsentRequiredException,
     DownstreamHttpFailureException,
     InternalServerException,
@@ -39,6 +35,10 @@ from ...core.exceptions import (
     MisimplementedSpecException,
     UrlElicitationRequiredException,
 )
+from registry_pkgs.models import ResourceType
+
+from ...auth.dependencies import UserContextDict
+from ...core.config import settings
 from ...core.mcp_client import call_tool_via_sse_ephemeral
 from ...core.telemetry_decorators import (
     PromptExecutionMetricsContext,
@@ -47,6 +47,7 @@ from ...core.telemetry_decorators import (
 )
 from ...services.access_control_service import ACLService
 from ...services.generated_token_policy import is_consent_exempt
+from ...utils.mcp_headers import build_authenticated_headers
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
 from ..tracing import trace_tool_execution
@@ -55,7 +56,6 @@ from .utils import (
     _build_url_elicitation_result,
     _extract_authenticated_user_context,
     _get_state_metadata,
-    build_authenticated_headers,
     forward_notification,
     get_target_url,
     parse_data_field,

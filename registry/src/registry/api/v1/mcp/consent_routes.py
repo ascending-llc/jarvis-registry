@@ -10,6 +10,7 @@ from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 from registry_pkgs.core.redirect_uri import build_oauth_error_redirect_url
 from registry_pkgs.core.scopes import get_scope_description
+from registry_pkgs.oauth.schemas import ConsentScopeDisplay, DownstreamConsentContext
 
 from ....auth.dependencies import CurrentUser
 from ....constants import DownstreamOAuthConstants
@@ -24,7 +25,6 @@ from ....deps import (
     get_server_service,
     get_session_store,
 )
-from ....schemas.oauth_schema import ConsentScopeDisplay, DownstreamConsentContext
 from ....services.a2a_agent_service import A2AAgentService
 from ....services.oauth.downstream_device_service import (
     DeviceCodeNotFoundError,

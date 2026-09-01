@@ -8,8 +8,7 @@ import httpx
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
-from ...core.config import settings
-from ...schemas.oauth_schema import (
+from .schemas import (
     MCPOAuthFlowMetadata,
     OAuthClientInformation,
     OAuthMetadata,
@@ -23,9 +22,15 @@ logger = logging.getLogger(__name__)
 class OAuthClient:
     """OAuth client using Authlib for RFC-compliant OAuth 2.0 operations."""
 
-    def __init__(self):
-        """Initialize OAuth client."""
+    def __init__(self, registry_app_name: str):
+        """Initialize OAuth client.
+
+        Args:
+            registry_app_name: Client name advertised during dynamic client registration
+                (caller-supplied; e.g. settings.registry_app_name).
+        """
         self._clients: dict[str, AsyncOAuth2Client] = {}
+        self._registry_app_name = registry_app_name
 
     def generate_code_verifier(self) -> str:
         """Generate PKCE code_verifier using secure random generator."""
@@ -298,7 +303,7 @@ class OAuthClient:
 
         # Build client metadata
         client_metadata = {
-            "client_name": settings.registry_app_name,
+            "client_name": self._registry_app_name,
             "redirect_uris": [redirect_uri] if redirect_uri else [],
             "grant_types": self._negotiate_grant_types(metadata),
             "response_types": metadata.response_types_supported or ["code"],

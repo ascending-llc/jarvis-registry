@@ -4,6 +4,9 @@ from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
+from registry_pkgs.oauth.oauth_service import MCPOAuthService
+from registry_pkgs.oauth.token_service import TokenService
+from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .auth.oauth.reconnection import OAuthReconnectionManager
@@ -20,9 +23,7 @@ from .services.federation_sync_service import FederationSyncService
 from .services.group_service import GroupService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
-from .services.oauth.oauth_service import MCPOAuthService
 from .services.oauth.status_resolver import ConnectionStatusResolver
-from .services.oauth.token_service import TokenService
 from .services.search.service import SearchService
 from .services.server_service import ServerServiceV1
 from .services.skill_service import SkillService
@@ -31,7 +32,6 @@ from .services.skill_sync_oauth_service import SkillSyncOAuthService
 from .services.skill_sync_service import SkillSyncService
 from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .services.skill_sync_token_service import SkillSyncTokenService
-from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_schedule_service import WorkflowScheduleService
 from .services.workflow_service import WorkflowService

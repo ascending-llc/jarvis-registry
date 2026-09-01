@@ -14,12 +14,12 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from registry_pkgs.core.jwt_utils import decode_jwt
 from registry_pkgs.core.scopes import filter_known_groups, map_groups_to_scopes
+from registry_pkgs.oauth.user_service import UserService
 
 from ..constants import MAX_RETURN_PATH_LENGTH
 from ..core.config import settings
 from ..deps import check_if_https, get_group_service, get_user_service
 from ..services.group_service import GroupService
-from ..services.user_service import UserService
 from ..utils.crypto_utils import (
     ABSOLUTE_SESSION_EXPIRES_SECONDS,
     REFRESH_TOKEN_EXPIRES_SECONDS,

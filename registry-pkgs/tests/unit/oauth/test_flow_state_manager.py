@@ -2,8 +2,8 @@
 
 import pytest
 
-from registry.auth.oauth.flow_state_manager import FlowStateManager
-from registry.schemas.oauth_schema import OAuthFlow, OAuthProtectedResourceMetadata
+from registry_pkgs.oauth.flow_state_manager import FlowStateManager
+from registry_pkgs.oauth.schemas import OAuthFlow, OAuthProtectedResourceMetadata
 
 
 class TestCreateFlowMetadataResourceResolution:
@@ -17,7 +17,7 @@ class TestCreateFlowMetadataResourceResolution:
 
     @pytest.fixture
     def manager(self):
-        return FlowStateManager(fallback_to_memory=True)
+        return FlowStateManager(redis_key_prefix="jarvis-registry", fallback_to_memory=True)
 
     def _base_oauth_config(self, **overrides) -> dict:
         config: dict = {
@@ -98,7 +98,7 @@ class TestCreateFlowMetadataResourceResolution:
 
 class TestConsumeFlow:
     def test_memory_flow_is_returned_once(self) -> None:
-        manager = FlowStateManager(fallback_to_memory=True)
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry", fallback_to_memory=True)
         flow = OAuthFlow(
             flow_id="flow-1",
             server_id="server-1",
@@ -113,7 +113,7 @@ class TestConsumeFlow:
         assert manager.consume_flow(flow.flow_id, "state") is None
 
     def test_memory_flow_is_not_consumed_for_mismatched_state(self) -> None:
-        manager = FlowStateManager(fallback_to_memory=True)
+        manager = FlowStateManager(redis_key_prefix="jarvis-registry", fallback_to_memory=True)
         flow = OAuthFlow(
             flow_id="flow-1",
             server_id="server-1",

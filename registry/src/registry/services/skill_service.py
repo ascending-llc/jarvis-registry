@@ -1,11 +1,8 @@
 """Business logic for Skill CRUD, sync-down, and ACL enforcement."""
 
-# ruff: noqa: UP045 -- Repository guidance requires explicit Optional[T] annotations.
-
 import base64
 import logging
 from datetime import UTC, datetime
-from typing import Optional
 
 from beanie import PydanticObjectId
 from fastapi import HTTPException, status
@@ -17,6 +14,7 @@ from registry_pkgs.models import ExtendedSkillFile as SkillFile
 from registry_pkgs.models import PrincipalType, SkillSource
 from registry_pkgs.models.enums import RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.oauth.user_service import UserService
 
 from ..schemas.acl_schema import ResourcePermissions
 from ..schemas.skill_api_schemas import (
@@ -27,7 +25,6 @@ from ..schemas.skill_api_schemas import (
     SkillUpdateRequest,
 )
 from .access_control_service import ACLService
-from .user_service import UserService
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +33,7 @@ _UNAVAILABLE_FILE_REASON = "File content is not available in Registry because it
 _FRONTMATTER_FIELDS = {"name", "description", "alwaysApply", "userInvocable", "disableModelInvocation", "allowedTools"}
 
 
-def _require_user_id(user_id: Optional[str]) -> PydanticObjectId:
+def _require_user_id(user_id: str | None) -> PydanticObjectId:
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authenticated user ID is required")
     try:
@@ -57,7 +54,7 @@ def _file_metadata(skill_file: SkillFile) -> SkillFileMetadataResponse:
     )
 
 
-def _registry_file_text(skill_file: SkillFile) -> Optional[str]:
+def _registry_file_text(skill_file: SkillFile) -> str | None:
     if skill_file.body is None or skill_file.isBinary:
         return None
     try:
@@ -146,10 +143,10 @@ class SkillService:
 
     async def list_skills(
         self,
-        user_id: Optional[str],
+        user_id: str | None,
         *,
-        enabled: Optional[bool] = None,
-        file_count: Optional[int] = None,
+        enabled: bool | None = None,
+        file_count: int | None = None,
     ) -> list[tuple[Skill, ResourcePermissions]]:
         object_user_id = _require_user_id(user_id)
         accessible_ids = await self.acl_service.get_accessible_resource_ids(
@@ -181,7 +178,7 @@ class SkillService:
     async def get_skill(
         self,
         skill_id: PydanticObjectId,
-        user_id: Optional[str],
+        user_id: str | None,
     ) -> tuple[Skill, list[SkillFile], ResourcePermissions]:
         skill = await self._get_existing_skill(skill_id)
         permissions = await self.acl_service.check_user_permission(
@@ -196,7 +193,7 @@ class SkillService:
     async def get_skill_with_files(
         self,
         skill_id: PydanticObjectId,
-        user_id: Optional[str],
+        user_id: str | None,
     ) -> tuple[Skill, list[SkillFileResponse]]:
         skill, files, _permissions = await self.get_skill(skill_id, user_id)
         return skill, [_sync_file_response(skill_file) for skill_file in files]
@@ -205,7 +202,7 @@ class SkillService:
         self,
         skill_id: PydanticObjectId,
         relative_path: str,
-        user_id: Optional[str],
+        user_id: str | None,
     ) -> SkillFileContentResponse:
         await self._get_existing_skill(skill_id)
         await self.acl_service.check_user_permission(
@@ -241,8 +238,8 @@ class SkillService:
     async def create_skill(
         self,
         data: SkillCreateRequest,
-        user_id: Optional[str],
-        author_name: Optional[str],
+        user_id: str | None,
+        author_name: str | None,
     ) -> tuple[Skill, ResourcePermissions]:
         object_user_id = _require_user_id(user_id)
         user = await self.user_service.get_user_by_user_id(str(object_user_id))
@@ -297,7 +294,7 @@ class SkillService:
         self,
         skill_id: PydanticObjectId,
         data: SkillUpdateRequest,
-        user_id: Optional[str],
+        user_id: str | None,
     ) -> tuple[Skill, list[SkillFile], ResourcePermissions]:
         object_user_id = _require_user_id(user_id)
         # _get_existing_skill loads the document via find_one, which seeds Beanie's
@@ -360,7 +357,7 @@ class SkillService:
 
         return skill, await self._list_skill_files(skill_id), permissions
 
-    async def delete_skill(self, skill_id: PydanticObjectId, user_id: Optional[str]) -> None:
+    async def delete_skill(self, skill_id: PydanticObjectId, user_id: str | None) -> None:
         skill = await self._get_existing_skill(skill_id)
         async with MongoDB.get_client().start_session() as mongo_session:
             async with await mongo_session.start_transaction():
@@ -388,7 +385,7 @@ class SkillService:
         self,
         skill_id: PydanticObjectId,
         enabled: bool,
-        user_id: Optional[str],
+        user_id: str | None,
     ) -> Skill:
         skill = await self._get_existing_skill(skill_id)
         await self.acl_service.check_user_permission(
