@@ -66,8 +66,8 @@ def _shutdown_telemetry_safe() -> None:
     """Best-effort telemetry shutdown that never raises."""
     try:
         shutdown_telemetry()
-    except Exception as exc:
-        logger.warning("Failed to shutdown telemetry: %s", exc)
+    except Exception:
+        logger.warning("Failed to shutdown telemetry", exc_info=True)
 
 
 def _initialize_telemetry() -> None:
@@ -76,12 +76,12 @@ def _initialize_telemetry() -> None:
     try:
         setup_metrics("mcp-gateway-registry", settings.telemetry_config)
         initialize_workflow_metrics(settings.telemetry_config)
-    except Exception as exc:
-        logger.warning("Failed to initialize metrics: %s", exc)
+    except Exception:
+        logger.warning("Failed to initialize metrics", exc_info=True)
     try:
         setup_tracing("mcp-gateway-registry", settings.telemetry_config)
-    except Exception as exc:
-        logger.warning("Failed to initialize tracing: %s", exc)
+    except Exception:
+        logger.warning("Failed to initialize tracing", exc_info=True)
     try:
         configure_structured_logging(
             "registry",
@@ -89,8 +89,8 @@ def _initialize_telemetry() -> None:
             service_name="mcp-gateway-registry",
             service_version=settings.telemetry_config.build_version,
         )
-    except Exception as exc:
-        logger.warning("Failed to configure structured logging: %s", exc)
+    except Exception:
+        logger.warning("Failed to configure structured logging", exc_info=True)
 
 
 async def _startup_container(app: FastAPI) -> _RuntimeResources:
