@@ -86,6 +86,27 @@ async def test_peek_next_deadline_reads_earliest_claimable_schedule(monkeypatch:
 
 
 @pytest.mark.asyncio
+async def test_peek_next_deadline_makes_naive_datetime_utc_aware(monkeypatch: pytest.MonkeyPatch) -> None:
+    naive_deadline = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=5)
+    collection = SimpleNamespace(find_one=AsyncMock(return_value={"next_run_at": naive_deadline}))
+    repository = _repository(monkeypatch, collection)
+
+    result = await repository.peek_next_deadline()
+
+    assert result is not None
+    assert result.tzinfo is UTC
+    assert result == naive_deadline.replace(tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_peek_next_deadline_returns_none_when_no_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    collection = SimpleNamespace(find_one=AsyncMock(return_value=None))
+    repository = _repository(monkeypatch, collection)
+
+    assert await repository.peek_next_deadline() is None
+
+
+@pytest.mark.asyncio
 async def test_renew_and_load_claim_use_same_fencing_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     schedule_id = PydanticObjectId()
     claimed = object()

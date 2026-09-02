@@ -65,7 +65,10 @@ class WorkflowScheduleRepository:
             projection={"next_run_at": 1},
             sort=[("next_run_at", 1)],
         )
-        return document["next_run_at"] if document is not None else None
+        if document is None:
+            return None
+        next_run_at = document["next_run_at"]
+        return next_run_at if next_run_at.tzinfo is not None else next_run_at.replace(tzinfo=UTC)
 
     async def renew_claim(
         self,
