@@ -161,3 +161,151 @@ def decrypt_value(encrypted_value: str, *, encryption_key: bytes) -> str:
     except Exception as e:
         logger.error(f"Decryption failed: {e}", exc_info=True)
         raise Exception(f"Failed to decrypt value: {e}")
+
+
+def encrypt_auth_fields(config: dict, *, encryption_key: bytes | None) -> dict:
+    """
+    Encrypt sensitive authentication fields in server config.
+
+    Handles two authentication patterns:
+    1. oauth.client_secret - OAuth client secret
+    2. apiKey.key - API key value
+
+    Args:
+        config: Server configuration dictionary
+        encryption_key: AES key bytes (caller-supplied; not read from any settings).
+            Pass ``None`` when no key is configured — fields are then left as plaintext
+            and a warning is logged.
+
+    Returns:
+        dict: Config with encrypted sensitive fields
+
+    Note:
+        If ``encryption_key`` is None, values will be stored as plaintext.
+        A warning will be logged in this case.
+    """
+    if not config:
+        return config
+
+    config = config.copy()
+
+    if encryption_key is None:
+        logger.warning(
+            "CREDS_KEY configuration is not set. "
+            "Sensitive authentication fields will be stored as PLAINTEXT. "
+            "Set CREDS_KEY environment variable to enable encryption of credentials."
+        )
+        return config
+
+    try:
+        # Handle oauth field
+        if "oauth" in config and isinstance(config["oauth"], dict):
+            oauth = config["oauth"].copy()
+
+            if "client_secret" in oauth:
+                client_secret = oauth["client_secret"]
+                if client_secret and not is_encrypted(str(client_secret)):
+                    # Only encrypt if not already encrypted
+                    try:
+                        oauth["client_secret"] = encrypt_value(str(client_secret), encryption_key=encryption_key)
+                        config["oauth"] = oauth
+                        logger.debug("Encrypted oauth.client_secret")
+                    except Exception as encrypt_error:
+                        logger.error(f"Failed to encrypt oauth.client_secret: {encrypt_error}")
+                        # Keep plaintext value
+
+        # Handle apiKey field
+        if "apiKey" in config and isinstance(config["apiKey"], dict):
+            api_key = config["apiKey"].copy()
+
+            if "key" in api_key:
+                key_value = api_key["key"]
+                if key_value and ":" not in str(key_value):
+                    # Only encrypt if not already encrypted
+                    try:
+                        api_key["key"] = encrypt_value(str(key_value), encryption_key=encryption_key)
+                        config["apiKey"] = api_key
+                        logger.debug("Encrypted apiKey.key")
+                    except Exception as encrypt_error:
+                        logger.error(f"Failed to encrypt apiKey.key: {encrypt_error}")
+                        # Keep plaintext value
+
+    except Exception as e:
+        logger.error(f"Failed to encrypt auth fields: {e}", exc_info=True)
+        # Return original config if encryption fails
+        return config
+
+    return config
+
+
+def decrypt_auth_fields(config: dict, *, encryption_key: bytes | None) -> dict:
+    """
+    Decrypt sensitive authentication fields in server config.
+
+    Handles two authentication patterns:
+    1. oauth.client_secret - OAuth client secret
+    2. apiKey.key - API key value
+
+    Args:
+        config: Server configuration dictionary with encrypted fields
+        encryption_key: AES key bytes (caller-supplied; not read from any settings).
+            Pass ``None`` when no key is configured — encrypted values are then returned
+            as-is (still encrypted) and a warning is logged.
+
+    Returns:
+        dict: Config with decrypted sensitive fields
+
+    Note:
+        If ``encryption_key`` is None, encrypted values will be returned as-is (still
+        encrypted). This prevents the API from crashing when no key is configured.
+    """
+    if not config:
+        return config
+
+    config = config.copy()
+
+    if encryption_key is None:
+        logger.warning(
+            "CREDS_KEY configuration is not set. "
+            "Encrypted authentication fields will be returned as-is (still encrypted). "
+            "Set CREDS_KEY environment variable to decrypt sensitive credentials."
+        )
+        return config
+
+    try:
+        # Handle oauth field
+        if "oauth" in config and isinstance(config["oauth"], dict):
+            oauth = config["oauth"].copy()
+
+            if "client_secret" in oauth:
+                client_secret = oauth["client_secret"]
+                if client_secret:
+                    try:
+                        oauth["client_secret"] = decrypt_value(str(client_secret), encryption_key=encryption_key)
+                        config["oauth"] = oauth
+                        logger.debug("Decrypted oauth.client_secret")
+                    except Exception as decrypt_error:
+                        logger.warning(f"Failed to decrypt oauth.client_secret: {decrypt_error}")
+                        # Keep encrypted value
+
+        # Handle apiKey field
+        if "apiKey" in config and isinstance(config["apiKey"], dict):
+            api_key = config["apiKey"].copy()
+
+            if "key" in api_key:
+                key_value = api_key["key"]
+                if key_value:
+                    try:
+                        api_key["key"] = decrypt_value(str(key_value), encryption_key=encryption_key)
+                        config["apiKey"] = api_key
+                        logger.debug("Decrypted apiKey.key")
+                    except Exception as decrypt_error:
+                        logger.warning(f"Failed to decrypt apiKey.key: {decrypt_error}")
+                        # Keep encrypted value
+
+    except Exception as e:
+        logger.error(f"Failed to decrypt auth fields: {e}", exc_info=True)
+        # Return original config if decryption fails
+        return config
+
+    return config

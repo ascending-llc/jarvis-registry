@@ -5,7 +5,8 @@ from beanie import PydanticObjectId
 from bson.errors import InvalidId
 from pymongo.asynchronous.client_session import AsyncClientSession
 
-from registry.utils.crypto_utils import encrypt_value, is_encrypted
+from registry.utils.crypto_utils import encrypt_value
+from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import (
     SkillSyncProviderType,
     SkillSyncSourceStatus,

@@ -12,7 +12,6 @@ ODM Schema:
 """
 
 import asyncio
-import base64
 import json
 import logging
 from datetime import UTC, datetime
@@ -20,36 +19,31 @@ from typing import Any
 
 from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
-from redis import Redis
 
-from registry_pkgs.core.agentcore_jwt import parse_agentcore_runtime_access, sign_agentcore_jwt
 from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
 )
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
-from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
-
-from ..auth.oauth.types import StateMetadata
-from ..core.config import settings
-from ..core.mcp_client import get_oauth_metadata_from_server
-from ..core.telemetry_decorators import track_tool_discovery
-from ..schemas.errors import (
+from registry_pkgs.oauth.errors import (
     AuthenticationError,
     MissingUserIdError,
     OAuthReAuthRequiredError,
     OAuthTokenError,
 )
+from registry_pkgs.oauth.token_service import TokenService
+from registry_pkgs.oauth.user_service import UserService
+from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
+
+from ..core.mcp_client import get_oauth_metadata_from_server
+from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.server_api_schemas import (
     ServerCreateRequest,
     ServerUpdateRequest,
 )
-from ..utils.crypto_utils import decrypt_auth_fields, encrypt_auth_fields
+from ..utils.crypto_utils import encrypt_auth_fields
+from ..utils.mcp_headers import build_complete_headers_for_server
 from ..utils.schema_converter import convert_dict_keys_to_snake
-from ..utils.utils import generate_server_name_from_title, normalize_headers
-from .oauth.oauth_service import MCPOAuthService
-from .oauth.token_service import TokenService
-from .user_service import UserService
+from ..utils.utils import generate_server_name_from_title
 
 logger = logging.getLogger(__name__)
 
@@ -85,237 +79,6 @@ def _build_server_info_for_mcp_client(config: dict[str, Any], tags: list[str]) -
         server_info["apiKey"] = config["apiKey"]
 
     return server_info
-
-
-async def build_complete_headers_for_server(
-    oauth_service: MCPOAuthService,
-    server: ExtendedMCPServer,
-    user_id: str | None = None,
-    *,
-    state_metadata: StateMetadata | None = None,
-    redis_client: Redis | None = None,
-) -> dict[str, str]:
-    """
-    Build complete HTTP headers with ALL authentication types.
-    Consolidates OAuth, apiKey, custom header, and AgentCore Runtime auth logic in one place.
-
-    This eliminates duplicate header building across server_service, proxy_routes, and health_service.
-
-    Args:
-        oauth_service: OAuth service for OAuth token management
-        server: Server document containing config
-        user_id: User ID for OAuth token retrieval (required for OAuth servers)
-        state_metadata: OAuth flow state metadata
-        redis_client: Redis client for JWT token caching
-
-    Returns:
-        Complete headers dictionary ready for HTTP requests
-
-    Raises:
-        MissingUserIdError: If OAuth server requires user_id but none provided
-        OAuthReAuthRequiredError: If OAuth re-authentication is needed
-        OAuthTokenError: If OAuth token retrieval/refresh fails
-        AuthenticationError: For other authentication failures
-    """
-
-    config = server.config or {}
-    decrypted_config = decrypt_auth_fields(config)
-
-    # Start with base MCP headers
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": settings.registry_app_name,
-    }
-
-    # 1. Add custom headers FIRST (lowest priority)
-    custom_headers = normalize_headers(decrypted_config.get("headers"))
-    logger.info(f"custom headers: {custom_headers}")
-    if custom_headers:
-        headers.update(custom_headers)
-
-    # 2. Check AgentCore Runtime authentication (for federated AgentCore MCP servers)
-    runtime_access_config = decrypted_config.get("runtimeAccess")
-
-    if runtime_access_config:
-        # AgentCore Runtime server with runtimeAccess configuration
-        try:
-            # Parse runtime access config
-            access_config = parse_agentcore_runtime_access(runtime_access_config)
-
-            # Only handle JWT mode for now (IAM support can be added later if needed)
-            if access_config.mode == AgentCoreRuntimeAccessMode.JWT:
-                logger.info(f"Building JWT token for AgentCore Runtime server {server.serverName}")
-
-                cache_key = f"{settings.redis_key_prefix}:agentcore_jwt:{server.id}"
-                token = sign_agentcore_jwt(
-                    access_config.jwt,
-                    subject=settings.registry_app_name,
-                    signing=settings.jwt_signing_config,
-                    cache_key=cache_key,
-                    redis_client=redis_client,
-                )
-                headers["Authorization"] = f"Bearer {token}"
-                logger.info(f"Added AgentCore Runtime JWT for {server.serverName}")
-                return headers
-
-            elif access_config.mode == AgentCoreRuntimeAccessMode.IAM:
-                raise NotImplementedError(
-                    f"IAM authentication not yet supported for AgentCore Runtime server {server.serverName}"
-                )
-            else:
-                logger.warning(f"Unknown runtime access mode '{access_config.mode}' for server {server.serverName}")
-        except NotImplementedError:
-            raise
-        except Exception as exc:
-            logger.exception(f"Failed to build AgentCore Runtime authentication for {server.serverName}")
-            raise AuthenticationError(f"Failed to authenticate with AgentCore Runtime: {exc}")
-    elif decrypted_config.get("authProvider") == "bedrock-agentcore":
-        # Server has authProvider but no runtimeAccess configuration
-        logger.warning(
-            f"Server {server.serverName} has authProvider='bedrock-agentcore' "
-            f"but missing runtimeAccess configuration. Skipping runtime authentication."
-        )
-
-    # 3. Check OAuth and add OAuth headers (high priority, overrides custom headers)
-    requires_oauth = decrypted_config.get("requiresOAuth", False) or "oauth" in decrypted_config
-
-    if requires_oauth:
-        if not user_id:
-            raise MissingUserIdError(
-                f"User ID required for OAuth server {server.serverName}",
-                server_name=server.serverName,
-            )
-
-        logger.info(f"Building OAuth headers for {server.serverName}")
-
-        # Validate and merge OAuth metadata with config.oauth as source of truth
-        # This ensures correct authorization_servers are used for token validation
-        oauth_config = decrypted_config.get("oauth")
-        raw_oauth_metadata = decrypted_config.get("oauthMetadata", {})
-
-        oauth_metadata = _validate_and_merge_oauth_metadata(
-            oauth_config=oauth_config, oauth_metadata=raw_oauth_metadata
-        )
-
-        # Update server's oauthMetadata in-memory for this request
-        # This ensures OAuth service uses correct authorization_servers
-        if oauth_metadata:
-            config["oauthMetadata"] = oauth_metadata
-            server.config = config
-            logger.debug(
-                f"Validated OAuth metadata for token retrieval: authorization_servers={oauth_metadata.get('authorization_servers')}"
-            )
-
-        # Get OAuth token (handles refresh automatically)
-        access_token, auth_url, error = await oauth_service.get_valid_access_token(
-            user_id=user_id, server=server, state_metadata=state_metadata
-        )
-
-        if auth_url:
-            raise OAuthReAuthRequiredError(
-                f"OAuth re-authentication required for {server.serverName}",
-                auth_url=auth_url,
-                server_name=server.serverName,
-            )
-
-        if error:
-            raise OAuthTokenError(
-                f"OAuth token error for {server.serverName}: {error}",
-                server_name=server.serverName,
-            )
-
-        if not access_token:
-            raise OAuthTokenError(
-                f"No valid OAuth token available for {server.serverName}",
-                server_name=server.serverName,
-            )
-
-        # Override any existing Authorization header with OAuth Bearer token
-        # This ensures OAuth always takes priority over custom headers
-        headers["Authorization"] = f"Bearer {access_token}"
-        logger.debug(f"OAuth Bearer token added for {server.serverName} (overrides any custom Authorization header)")
-        return headers
-
-    # 4. Handle apiKey authentication (if not OAuth or AgentCore Runtime)
-    api_key_config = decrypted_config.get("apiKey")
-    if api_key_config and isinstance(api_key_config, dict):
-        key_value = api_key_config.get("key")
-        authorization_type = api_key_config.get("authorization_type", "bearer").lower()
-
-        if key_value:
-            if authorization_type == "bearer":
-                headers["Authorization"] = f"Bearer {key_value}"
-                logger.debug(f"Added Bearer apiKey for {server.serverName}")
-            elif authorization_type == "basic":
-                # Handle base64 encoding
-                try:
-                    base64.b64decode(key_value, validate=True)
-                    # Already base64 encoded
-                    headers["Authorization"] = f"Basic {key_value}"
-                    logger.debug(f"Added Basic auth (pre-encoded) for {server.serverName}")
-                except Exception:
-                    # Not base64 encoded, encode it
-                    encoded_key = base64.b64encode(key_value.encode()).decode()
-                    headers["Authorization"] = f"Basic {encoded_key}"
-                    logger.debug(f"Added Basic auth (auto-encoded) for {server.serverName}")
-            elif authorization_type == "custom":
-                custom_header = api_key_config.get("custom_header")
-                if custom_header:
-                    headers[custom_header] = key_value
-                    logger.debug(f"Added custom auth header '{custom_header}' for {server.serverName}")
-                else:
-                    logger.warning(
-                        f"apiKey with authorization_type='custom' but no custom_header for {server.serverName}"
-                    )
-            else:
-                logger.warning(
-                    f"Unknown authorization_type: {authorization_type}, defaulting to Bearer for {server.serverName}"
-                )
-                headers["Authorization"] = f"Bearer {key_value}"
-
-    return headers
-
-
-def _validate_and_merge_oauth_metadata(
-    oauth_config: dict[str, Any] | None, oauth_metadata: dict[str, Any] | None
-) -> dict[str, Any]:
-    """
-    Merge OAuth metadata using database config.oauth as authoritative source.
-
-    Database config.oauth (configured by admin) always takes priority over
-    MCP server's .well-known metadata to prevent incorrect configurations.
-
-    Args:
-        oauth_config: OAuth configuration from registry database (config.oauth) - AUTHORITATIVE
-        oauth_metadata: OAuth metadata from MCP server's /.well-known endpoint
-
-    Returns:
-        Merged OAuth metadata with database config.oauth overriding server metadata
-
-    Example:
-        Database config.oauth.authorization_servers: ["https://accounts.google.com"]
-        Server metadata.authorization_servers: ["http://localhost:3080/"]  # WRONG
-        Result: authorization_servers = ["https://accounts.google.com"] (from database config)
-    """
-    # If neither metadata nor config is provided, return empty dict
-    if not oauth_metadata and not oauth_config:
-        return {}
-
-    # If no server metadata, return database config as-is
-    if not oauth_metadata and oauth_config:
-        return oauth_config.copy()
-
-    # If no database config, use server metadata as-is
-    if oauth_metadata and not oauth_config:
-        return oauth_metadata.copy()
-
-    # Both server metadata and database config exist:
-    # start with server metadata, then override with database config fields
-    merged_metadata: dict[str, Any] = oauth_metadata.copy()  # type: ignore[union-attr]
-    merged_metadata.update(oauth_config)  # type: ignore[arg-type]
-
-    return merged_metadata
 
 
 def _get_current_utc_time() -> datetime:

@@ -4,9 +4,7 @@ import time
 
 from redis import Redis
 
-from ...core.config import settings
-from ...schemas.enums import OAuthFlowStatus
-from ...schemas.oauth_schema import MCPOAuthFlowMetadata, OAuthFlow, OAuthTokens
+from .schemas import MCPOAuthFlowMetadata, OAuthFlow, OAuthFlowStatus, OAuthTokens
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +27,17 @@ class RedisFlowStorage:
 
     DEFAULT_TTL = 600  # 10 minutes
 
-    def __init__(self, redis_client: Redis):
+    def __init__(self, redis_client: Redis, *, redis_key_prefix: str):
         """
         Initialize storage with Redis client
+
+        Args:
+            redis_client: Redis client
+            redis_key_prefix: Namespace prefix for flow keys (caller-supplied;
+                e.g. settings.redis_key_prefix)
         """
         self.redis = redis_client
-        self.key_prefix = f"{settings.redis_key_prefix}:oauth_flow:flow:"
+        self.key_prefix = f"{redis_key_prefix}:oauth_flow:flow:"
 
     def _make_key(self, flow_id: str) -> str:
         """Generate Redis key for flow"""

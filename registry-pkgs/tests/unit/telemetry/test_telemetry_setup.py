@@ -6,7 +6,7 @@ from opentelemetry.metrics import Histogram
 from opentelemetry.sdk.trace import TracerProvider
 
 from registry_pkgs.core.config import TelemetryConfig
-from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
+from registry_pkgs.telemetry import get_trace_environment, setup_metrics, setup_tracing, shutdown_telemetry
 
 
 @pytest.mark.unit
@@ -102,6 +102,26 @@ class TestTelemetrySetup:
 
         _, kwargs = mock_otel_deps["resource"].create.call_args
         assert kwargs["attributes"]["deployment.environment.name"] == "demo"
+
+    def test_setup_metrics_strips_deployment_environment_whitespace(self, mock_otel_deps):
+        setup_metrics(
+            "test-service",
+            TelemetryConfig(deployment_environment="  demo  "),
+            enable_metrics=False,
+        )
+
+        _, kwargs = mock_otel_deps["resource"].create.call_args
+        assert kwargs["attributes"]["deployment.environment.name"] == "demo"
+
+    def test_setup_metrics_omits_deployment_environment_when_blank_after_strip(self, mock_otel_deps):
+        setup_metrics(
+            "test-service",
+            TelemetryConfig(deployment_environment="   "),
+            enable_metrics=False,
+        )
+
+        _, kwargs = mock_otel_deps["resource"].create.call_args
+        assert "deployment.environment.name" not in kwargs["attributes"]
 
     def test_setup_metrics_disabled(self, mock_otel_deps):
         """Test setup with metrics disabled."""
@@ -374,6 +394,40 @@ class TestSetupTracing:
         ):
             setup_tracing("test-service", TelemetryConfig())
             mock_set.assert_not_called()
+
+    def test_setup_tracing_configures_outbound_environment_before_instrumentation(self):
+        """A2A propagation remains configured even if optional instrumentation is unavailable."""
+        with (
+            patch("registry_pkgs.telemetry._trace_environment", None),
+            patch("registry_pkgs.telemetry._load_agno_instrumentation", side_effect=ImportError("missing")),
+        ):
+            setup_tracing(
+                "test-service",
+                TelemetryConfig(deployment_environment="demo"),
+            )
+            assert get_trace_environment() == "demo"
+
+    def test_setup_tracing_normalizes_deployment_environment_like_setup_metrics(self):
+        """setup_tracing()'s outbound environment matches _build_resource()'s normalization."""
+        with (
+            patch("registry_pkgs.telemetry._trace_environment", None),
+            patch("registry_pkgs.telemetry._load_agno_instrumentation", side_effect=ImportError("missing")),
+        ):
+            setup_tracing(
+                "test-service",
+                TelemetryConfig(deployment_environment="  demo  "),
+            )
+            assert get_trace_environment() == "demo"
+
+        with (
+            patch("registry_pkgs.telemetry._trace_environment", None),
+            patch("registry_pkgs.telemetry._load_agno_instrumentation", side_effect=ImportError("missing")),
+        ):
+            setup_tracing(
+                "test-service",
+                TelemetryConfig(deployment_environment="   "),
+            )
+            assert get_trace_environment() is None
 
     def test_setup_tracing_uses_same_resource_as_metrics(self):
         """setup_tracing() uses _build_resource() with same args pattern as setup_metrics()."""

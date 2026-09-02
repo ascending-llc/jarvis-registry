@@ -6,10 +6,10 @@ from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
 from pydantic import Field
 
+from registry_pkgs.core.exceptions import InternalServerException
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
 
 from ...auth.dependencies import UserContextDict
-from ...core.exceptions import InternalServerException
 from ...services.search.service import SearchRequest
 from ..core.types import McpAppContext
 from ..tracing import DiscoveryKind, trace_discovery

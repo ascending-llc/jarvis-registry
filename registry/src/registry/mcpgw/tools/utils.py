@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
@@ -32,20 +32,14 @@ from mcp.types import (
     ToolListChangedNotification,
 )
 from pydantic import ValidationError
-from redis import Redis
 
+from registry_pkgs.core.exceptions import InternalServerException
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.oauth.flow_state_manager import FlowStateManager
+from registry_pkgs.oauth.types import ClientBranding, StateMetadata
 
-from ...auth.dependencies import UserContextDict, effective_scopes_from_context
-from ...auth.oauth.flow_state_manager import FlowStateManager
-from ...auth.oauth.types import ClientBranding, StateMetadata
-from ...core.exceptions import InternalServerException, UrlElicitationRequiredException
-from ...schemas.errors import AuthenticationError, OAuthReAuthRequiredError, OAuthTokenError
-from ...services.server_service import build_complete_headers_for_server
+from ...auth.dependencies import UserContextDict
 from ..core.types import McpAppContext
-
-if TYPE_CHECKING:
-    from ...services.oauth.oauth_service import MCPOAuthService
 
 logger = logging.getLogger(__name__)
 
@@ -242,107 +236,6 @@ def parse_data_field(
         return obj, "notification"
     else:
         return {}, "irrelevant"
-
-
-async def build_authenticated_headers(
-    oauth_service: MCPOAuthService,
-    server: ExtendedMCPServer,
-    auth_context: UserContextDict,
-    additional_headers: dict[str, str] | None = None,
-    *,
-    state_metadata: StateMetadata | None = None,
-    redis_client: Redis | None = None,
-) -> dict[str, str]:
-    """
-    Build complete headers with authentication for MCP server requests.
-    Consolidates auth logic used by all proxy endpoints.
-
-    Supports multiple authentication types:
-    - AgentCore Runtime: JWT authentication for federated AgentCore MCP servers (with caching)
-    - OAuth: External access token (RFC 6750) for MCP server resource access
-    - Internal JWT: Gateway-to-MCP authentication (always included)
-    - API Key: Bearer/Basic/Custom API key authentication
-
-    Args:
-        oauth_service: OAuth service for OAuth token management
-        server: MCP server document
-        auth_context: Gateway authentication context (user, client_id, scopes, jwt_token)
-        additional_headers: Optional additional headers to merge
-        state_metadata: OAuth flow state metadata
-        redis_client: Redis client for JWT token caching
-
-    Returns:
-        Complete headers dict with authentication
-
-    Raises:
-        UrlElicitationRequiredException: If user needs to perform out-of-band re-auth process.
-        InternalServerException: If UserContextDict.user_id is None, or if there is unexpected exception
-          when building OAuth token on behalf of user.
-    """
-    # Validate user_id is present (auth-server always includes it in JWT)
-    if auth_context["user_id"] is None:
-        logger.error(f"Missing user_id in auth_context. Available keys: {list(auth_context.keys())}")
-        raise InternalServerException("Invalid authentication context: missing user_id")
-
-    # Build base headers (filter out empty values to avoid httpx errors)
-    effective_scopes = effective_scopes_from_context(auth_context)
-    headers: dict[str, str] = {
-        "X-User-Id": auth_context.get("user_id") or "",
-        "X-Username": auth_context.get("username") or "",
-        "X-Scopes": " ".join(effective_scopes),
-    }
-    # Remove empty header values (httpx requires non-empty strings)
-    headers = {k: v for k, v in headers.items() if v}
-
-    # Merge additional headers if provided
-    if additional_headers:
-        headers.update(additional_headers)
-
-    # Build complete authentication headers (OAuth, apiKey, custom, AgentCore Runtime)
-    try:
-        user_id = auth_context["user_id"]  # Already validated above
-        auth_headers = await build_complete_headers_for_server(
-            oauth_service,
-            server,
-            user_id,
-            state_metadata=state_metadata,
-            redis_client=redis_client,
-        )
-
-        # Merge auth headers with case-insensitive override logic
-        # Protected headers that won't be overridden by auth headers
-        protected_headers = {"x-user-id", "x-username", "x-client-id", "x-scopes", "accept"}
-
-        # Build a case-insensitive map of existing header names to their original keys
-        lowercase_header_map = {k.lower(): k for k in headers}
-
-        for auth_key, auth_value in auth_headers.items():
-            auth_key_lower = auth_key.lower()
-            if auth_key_lower in protected_headers:
-                continue
-
-            # Remove any existing header with same name (case-insensitive)
-            existing_key = lowercase_header_map.get(auth_key_lower)
-            if existing_key is not None:
-                headers.pop(existing_key, None)
-
-            # Add/override with the auth header and update the lowercase map
-            headers[auth_key] = auth_value
-            lowercase_header_map[auth_key_lower] = auth_key
-
-        logger.debug(f"Built complete authentication headers for {server.serverName}")
-        return headers
-
-    except OAuthReAuthRequiredError as exc:
-        logger.debug(f"in-session re-auth required for server {exc.server_name}")
-
-        raise UrlElicitationRequiredException(
-            "OAuth re-authentication required", auth_url=exc.auth_url, server_name=exc.server_name
-        )
-    except (OAuthTokenError, AuthenticationError):
-        logger.exception("unexpected OAuth token exception")
-
-        raise InternalServerException("internal server error when building OAuth token on behalf of user")
 
 
 def get_target_url(server: ExtendedMCPServer) -> str:

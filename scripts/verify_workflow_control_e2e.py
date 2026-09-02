@@ -54,23 +54,135 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from registry import settings
 from registry.schemas.workflow_api_schemas import (
+    CanvasInput,
     HumanReviewConfig,
     StepConfigInput,
     UserInputFieldSchema,
+    ViewportInput,
     WorkflowCreateRequest,
     WorkflowNodeInput,
     WorkflowUpdateRequest,
     convert_node_to_input,
 )
+
+# Required workflow canvas metadata (added to WorkflowCreateRequest by a later schema rev).
+_CANVAS = CanvasInput(viewport=ViewportInput())
+
+# create_workflow now validates that every executor key resolves to an enabled MCP server
+# (or A2A agent). These modules use mock executors, so seed lightweight enabled MCP servers
+# for the keys they reference, tagged with a marker so cleanup can remove exactly them.
+_E2E_EXECUTOR_MARKER = "__as1543_e2e_executor__"
+_EXECUTOR_KEYS = (
+    "tool",
+    "tool-c1",
+    "tool-c11",
+    "tool-c2-after",
+    "tool-c2-gate",
+    "tool-c3-after",
+    "tool-c3-gate",
+    "tool-c4-false",
+    "tool-c4-true",
+    "tool-c5-after",
+    "tool-c5-collect",
+    "tool-c6-cons",
+    "tool-c6-prod",
+    "tool-c7",
+    "tool-c8-1",
+    "tool-c8-2",
+    "tool-c8-3",
+    "tool-c9-f",
+    "tool-c9-t",
+    "tool-d1a",
+    "tool-d1b",
+    "tool-d2",
+    "tool-e1",
+    "tool-e1-h",
+    "tool-f1",
+    "tool-f2",
+    "tool-g1-a",
+    "tool-g1-b",
+    "tool-g3",
+    "tool-h1-a",
+    "tool-h1-b",
+    "tool-i2",
+    "tool-i3",
+    "tool-j1",
+    "tool-j1-after",
+    "tool-j2",
+    "tool-j3",
+    "tool-k1-flaky",
+    "tool-k2-always",
+    "tool-k3-after",
+    "tool-k3-skip",
+    "tool-k4-fail",
+    "tool-v1",
+    "tool-v2",
+    "tool-v2b",
+    "tool-v3",
+    "tool-v3b",
+    "tool-v3c",
+    "tool-x",
+    "tool-c10-tech",
+    "tool-c10-gen",
+)
+
+
+async def _seed_executor_servers(acl_service: ACLService) -> None:
+    """Register the mock executor keys as enabled MCP servers (with VIEW ACL for the test users).
+
+    create_workflow now both validates that each executor key resolves to an enabled MCP
+    server AND authorizes that the creator has VIEW on it — so seed the servers and grant
+    USER_A/USER_B OWNER on each.
+    """
+    existing = {
+        s.serverName: s.id
+        for s in await ExtendedMCPServer.find({"serverName": {"$in": list(_EXECUTOR_KEYS)}}).to_list()
+    }
+    for key in _EXECUTOR_KEYS:
+        server_id = existing.get(key)
+        if server_id is None:
+            server = ExtendedMCPServer(
+                serverName=key,
+                path=f"/{key}",
+                config={
+                    "enabled": True,
+                    "url": f"http://mock/{key}",
+                    "type": "streamable-http",
+                    _E2E_EXECUTOR_MARKER: True,
+                },
+                author=USER_A,
+            )
+            await server.insert()
+            server_id = server.id
+        for principal in (USER_A, USER_B):
+            await acl_service.grant_permission(
+                principal_type=PrincipalType.USER,
+                principal_id=principal,
+                resource_type=RegistryResourceType.MCP_SERVER,
+                resource_id=server_id,
+                perm_bits=RoleBits.OWNER,
+            )
+
+
+async def _cleanup_executor_servers() -> None:
+    servers = await ExtendedMCPServer.find({f"config.{_E2E_EXECUTOR_MARKER}": True}).to_list()
+    server_ids = [s.id for s in servers]
+    if server_ids:
+        db = MongoDB.get_database()
+        await db.get_collection("aclentries").delete_many(
+            {"resourceType": RegistryResourceType.MCP_SERVER.value, "resourceId": {"$in": server_ids}}
+        )
+        await ExtendedMCPServer.find({f"config.{_E2E_EXECUTOR_MARKER}": True}).delete()
+
+
 from registry.services.access_control_service import ACLService, load_role_cache
 from registry.services.group_directory_client import KeycloakGroupDirectoryClient
 from registry.services.group_service import GroupService
-from registry.services.user_service import UserService
 from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_service import WorkflowService
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models import PrincipalType
+from registry_pkgs.models import ExtendedMCPServer, PrincipalType
 from registry_pkgs.models.enums import (
     OnRejectPolicy,
     OnTimeoutPolicy,
@@ -80,6 +192,7 @@ from registry_pkgs.models.enums import (
 )
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
+from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.runner import WorkflowRunner
@@ -260,8 +373,8 @@ async def _make_workflow(
     *,
     creator: PydanticObjectId = USER_A,
 ) -> WorkflowDefinition:
-    req = WorkflowCreateRequest(name=PREFIX + name, description="e2e", nodes=nodes)
-    workflow = await workflow_service.create_workflow(data=req)
+    req = WorkflowCreateRequest(name=PREFIX + name, description="e2e", nodes=nodes, canvas=_CANVAS)
+    workflow = await workflow_service.create_workflow(data=req, user_id=creator)
     await acl_service.grant_permission(
         principal_type=PrincipalType.USER,
         principal_id=creator,
@@ -269,10 +382,13 @@ async def _make_workflow(
         resource_id=workflow.id,
         perm_bits=RoleBits.OWNER,
     )
+    # trigger_workflow_run now requires the workflow to be enabled; new workflows default to disabled.
+    await workflow_service.toggle_workflow_status(str(workflow.id), enabled=True)
     return workflow
 
 
 def _step_input(name: str, executor_key: str = "tool-x", **kw) -> WorkflowNodeInput:
+    kw.setdefault("stepObjective", "e2e step objective")  # step nodes require a step objective
     return WorkflowNodeInput(name=name, nodeType="step", executorKey=executor_key, **kw)
 
 
@@ -354,7 +470,8 @@ async def module_a(workflow_service, control_service, acl_service) -> Report:
 
     # A1: creator gets OWNER (permBits=15)
     workflow = await workflow_service.create_workflow(
-        data=WorkflowCreateRequest(name=PREFIX + "acl-creator", description="", nodes=nodes)
+        data=WorkflowCreateRequest(name=PREFIX + "acl-creator", description="", nodes=nodes, canvas=_CANVAS),
+        user_id=USER_A,
     )
     await acl_service.grant_permission(
         principal_type=PrincipalType.USER,
@@ -429,6 +546,7 @@ async def module_b(workflow_service, control_service, acl_service) -> Report:
     updated = await workflow_service.update_workflow(
         str(wf.id),
         WorkflowUpdateRequest(name=wf.name, description=wf.description, nodes=nodes_v2),
+        user_id=USER_A,
     )
     r.check("B2 PUT bumps to version=2", updated.version == 2, f"version={updated.version}")
 
@@ -468,6 +586,7 @@ async def module_b(workflow_service, control_service, acl_service) -> Report:
     await workflow_service.update_workflow(
         str(wf.id),
         WorkflowUpdateRequest(name=wf.name, description=wf.description, nodes=nodes_v3),
+        user_id=USER_A,
     )
     run1_reloaded = await WorkflowRun.get(PydanticObjectId(str(run1.id)))
     r.check(
@@ -722,8 +841,28 @@ async def module_c(workflow_service, control_service, acl_service, queue, runner
         nodeType="router",
         conditionCel="'tech'",  # default selector ignored when user_input picks
         choices=[
-            {"name": "tech", "steps": [{"name": "tech-leg", "nodeType": "step", "executorKey": "tool-c10-tech"}]},
-            {"name": "general", "steps": [{"name": "general-leg", "nodeType": "step", "executorKey": "tool-c10-gen"}]},
+            {
+                "name": "tech",
+                "steps": [
+                    {
+                        "name": "tech-leg",
+                        "nodeType": "step",
+                        "executorKey": "tool-c10-tech",
+                        "stepObjective": "e2e step",
+                    }
+                ],
+            },
+            {
+                "name": "general",
+                "steps": [
+                    {
+                        "name": "general-leg",
+                        "nodeType": "step",
+                        "executorKey": "tool-c10-gen",
+                        "stepObjective": "e2e step",
+                    }
+                ],
+            },
         ],
         humanReview=_hitl_input(requiresUserInput=True),
     )
@@ -928,6 +1067,7 @@ async def module_e(workflow_service, control_service, acl_service, queue, runner
             description="updated",
             nodes=[convert_node_to_input(n) for n in hitl_wf.nodes],
         ),
+        user_id=USER_A,
     )
 
     await workflow_service.delete_workflow(str(hitl_wf.id))
@@ -1169,7 +1309,8 @@ async def module_i(workflow_service, control_service, acl_service, queue, runner
     try:
         bad = WorkflowNodeInput(name="bad", nodeType="condition", trueSteps=[_step_input("x", "tool")])
         await workflow_service.create_workflow(
-            data=WorkflowCreateRequest(name=PREFIX + "i4-bad", description="", nodes=[bad])
+            data=WorkflowCreateRequest(name=PREFIX + "i4-bad", description="", nodes=[bad], canvas=_CANVAS),
+            user_id=USER_A,
         )
         r.check("I4 400 on invalid node shape", False, "no exception raised")
     except (ValueError, HTTPException) as exc:
@@ -1401,6 +1542,7 @@ async def cleanup() -> None:
     await db.get_collection("aclentries").delete_many(
         {"resourceType": RegistryResourceType.WORKFLOW.value, "principalId": {"$in": [USER_A, USER_B]}}
     )
+    await _cleanup_executor_servers()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1432,7 +1574,6 @@ async def amain(selected: list[str], keep_data: bool) -> int:
         ),
     )
 
-    workflow_service = WorkflowService()
     queue = DirectiveQueue()
     runner = _build_runner(queue)
     acl_service = ACLService(
@@ -1440,6 +1581,8 @@ async def amain(selected: list[str], keep_data: bool) -> int:
         group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
         role_cache=await load_role_cache(),
     )
+    workflow_service = WorkflowService(acl_service=acl_service)
+    await _seed_executor_servers(acl_service)
     control_service = WorkflowControlService(directive_queue=queue, runner_factory=lambda: runner)
 
     reports: list[Report] = []

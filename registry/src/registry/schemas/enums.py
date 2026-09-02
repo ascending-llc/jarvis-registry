@@ -1,14 +1,6 @@
 from enum import StrEnum
 
 
-class OAuthFlowStatus(StrEnum):
-    """OAuth flow status"""
-
-    PENDING = "pending"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
 class ConnectionState(StrEnum):
     """Connection state enumeration"""
 

@@ -1,10 +1,32 @@
 import time
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from enum import StrEnum
+from typing import Any, Literal, TypedDict
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
-from .enums import OAuthFlowStatus
+
+class OAuthFlowStatus(StrEnum):
+    """OAuth flow status"""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class OAuthFlowStatusResponse(BaseModel):
+    """Status of an OAuth flow, including the absence of an expired or unknown flow."""
+
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
+    status: OAuthFlowStatus | Literal["not_found"]
+    completed: bool
+    failed: bool
+    error: str | None = None
+    server_id: str | None = None
+    user_id: str | None = None
+    created_at: float | None = None
+    completed_at: float | None = None
 
 
 class MCPClientContext(TypedDict):

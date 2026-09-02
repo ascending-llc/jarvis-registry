@@ -3,13 +3,11 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from bson import ObjectId
 
-from registry.auth.oauth import FlowStateManager
-from registry.schemas.common_api_schemas import OAuthFlowStatusResponse
-from registry.schemas.enums import OAuthFlowStatus
-from registry.schemas.oauth_schema import OAuthTokens
-from registry.services.oauth.oauth_service import MCPOAuthService
-from registry.services.oauth.token_service import TokenService
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.oauth import FlowStateManager
+from registry_pkgs.oauth.oauth_service import MCPOAuthService
+from registry_pkgs.oauth.schemas import OAuthFlowStatus, OAuthFlowStatusResponse, OAuthTokens
+from registry_pkgs.oauth.token_service import TokenService
 
 
 class TestMCPOAuthService:
@@ -35,7 +33,13 @@ class TestMCPOAuthService:
     @pytest.fixture
     def oauth_service(self, mock_flow_manager, mock_oauth_client, mock_token_service):
         """Create MCPOAuthService instance with mocked dependencies"""
-        service = MCPOAuthService(flow_manager=mock_flow_manager, token_service_instance=mock_token_service)
+        service = MCPOAuthService(
+            flow_manager=mock_flow_manager,
+            token_service_instance=mock_token_service,
+            registry_app_name="jarvis-registry",
+            base_redirect_url="http://localhost:7860",
+            encryption_key=bytes.fromhex("00" * 16),
+        )
         service.oauth_client = mock_oauth_client
         return service
 
@@ -96,6 +100,9 @@ class TestMCPOAuthService:
         service = MCPOAuthService(
             flow_manager=mock_flow_manager,
             token_service_instance=injected_token_service,
+            registry_app_name="jarvis-registry",
+            base_redirect_url="http://localhost:7860",
+            encryption_key=bytes.fromhex("00" * 16),
         )
         service.oauth_client = mock_oauth_client
 
@@ -114,7 +121,7 @@ class TestMCPOAuthService:
             },
         }
 
-        from registry.schemas.oauth_schema import OAuthClientInformation
+        from registry_pkgs.oauth.schemas import OAuthClientInformation
 
         mock_client_info = OAuthClientInformation(
             client_id="dcr_registered_client_123",
@@ -320,7 +327,7 @@ class TestMCPOAuthService:
         )
 
         # Mock crypto utils
-        with patch("registry.services.oauth.oauth_service.decrypt_auth_fields", return_value=mock_server.config):
+        with patch("registry_pkgs.oauth.oauth_service.decrypt_auth_fields", return_value=mock_server.config):
             flow_id, auth_url, error = await oauth_service.initiate_oauth_flow(user_id, mock_server)
 
             assert flow_id == "test_flow_id"
@@ -358,7 +365,7 @@ class TestMCPOAuthService:
         }
 
         # Mock DCR registration
-        from registry.schemas.oauth_schema import OAuthClientInformation
+        from registry_pkgs.oauth.schemas import OAuthClientInformation
 
         mock_client_info = OAuthClientInformation(
             client_id="dcr_registered_client_123",
@@ -633,6 +640,37 @@ class TestMCPOAuthService:
         assert token == "refreshed_access_token"
         assert auth_url is None
         assert error is None
+
+    @pytest.mark.asyncio
+    async def test_get_valid_access_token_non_interactive_raises_without_flow(self, oauth_service, mock_server):
+        """interactive=False: unrefreshable token raises OAuthReAuthRequiredError, mints no flow."""
+        from registry_pkgs.oauth.errors import OAuthReAuthRequiredError
+
+        oauth_service.token_service.is_access_token_expired = AsyncMock(return_value=True)
+        oauth_service.token_service.has_refresh_token = AsyncMock(return_value=False)
+        oauth_service.initiate_oauth_flow = AsyncMock()
+
+        with pytest.raises(OAuthReAuthRequiredError) as exc_info:
+            await oauth_service.get_valid_access_token("test_user", mock_server, interactive=False)
+
+        assert exc_info.value.auth_url is None
+        assert exc_info.value.server_name == mock_server.serverName
+        # No Redis OAuth flow record is minted for a caller that can't complete it.
+        oauth_service.initiate_oauth_flow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_valid_access_token_interactive_still_initiates_flow(self, oauth_service, mock_server):
+        """interactive=True (default): unrefreshable token still mints a flow + auth_url."""
+        oauth_service.token_service.is_access_token_expired = AsyncMock(return_value=True)
+        oauth_service.token_service.has_refresh_token = AsyncMock(return_value=False)
+        oauth_service.initiate_oauth_flow = AsyncMock(return_value=("flow-1", "https://auth.example/url", None))
+
+        token, auth_url, error = await oauth_service.get_valid_access_token("test_user", mock_server)
+
+        assert token is None
+        assert auth_url == "https://auth.example/url"
+        assert error is None
+        oauth_service.initiate_oauth_flow.assert_awaited_once()
 
     # Tests for refresh_token method
     @pytest.mark.asyncio

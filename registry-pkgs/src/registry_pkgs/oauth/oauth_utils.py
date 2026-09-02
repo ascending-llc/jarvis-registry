@@ -1,24 +1,23 @@
-from ...core.config import settings
-
-
-def get_default_redirect_uri(path: str) -> str:
+def get_default_redirect_uri(path: str, *, base_url: str) -> str:
     """
     Get default redirect URI for OAuth callback.
 
-    Constructs redirect URI using registry_url from settings and the provided MCP server path.
+    Constructs redirect URI using the caller-supplied base URL and the provided MCP server path.
     Automatically prepends /api/v1/mcp to the path.
 
     Args:
         path: The MCP server path (e.g., "/notion", "/brave")
+        base_url: The registry client base URL (caller-supplied; e.g. settings.registry_client_url)
 
     Returns:
         Redirect URI string with /oauth/callback appended
 
     Examples:
-        get_default_redirect_uri("/notion") → http://localhost:7860/api/v1/mcp/notion/oauth/callback
-        get_default_redirect_uri("brave")   → http://localhost:7860/api/v1/mcp/brave/oauth/callback
+        get_default_redirect_uri("/notion", base_url="http://localhost:7860")
+            → http://localhost:7860/api/v1/mcp/notion/oauth/callback
+        get_default_redirect_uri("brave", base_url="http://localhost:7860")
+            → http://localhost:7860/api/v1/mcp/brave/oauth/callback
     """
-    base_url = settings.registry_client_url
     # Ensure path starts with / and doesn't end with /
     normalized_path = path.strip("/")
     return f"{base_url}/api/v1/mcp/{normalized_path}/oauth/callback"

@@ -22,6 +22,7 @@ from a2a.types import (
     TransportProtocol,
 )
 from beanie import PydanticObjectId
+from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState, use_span
 
 from registry_pkgs.core.config import JwtSigningConfig
@@ -827,7 +828,10 @@ async def test_call_a2a_injects_current_trace_context_into_request_headers():
         trace_state=TraceState([("vendor", "state")]),
     )
 
-    with patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory):
+    with (
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client.get_trace_environment", return_value="demo"),
+    ):
         with use_span(NonRecordingSpan(span_context), end_on_exit=False):
             result = await call_a2a(agent, "test", headers_provider=headers_provider)
 
@@ -836,6 +840,7 @@ async def test_call_a2a_injects_current_trace_context_into_request_headers():
     headers = send_context.state["http_kwargs"]["headers"]
     assert headers == {
         "Authorization": "Bearer test-token",
+        "baggage": "langfuse.environment=demo",
         "traceparent": "00-00000000000000000000000000000001-0000000000000001-01",
     }
     assert provided_headers == {
@@ -844,6 +849,32 @@ async def test_call_a2a_injects_current_trace_context_into_request_headers():
         "Traceparent": "00-00000000000000000000000000000002-0000000000000002-01",
         "Tracestate": "old=value",
     }
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_injects_current_langfuse_trace_attributes():
+    agent = _make_agent()
+    mock_factory, mock_client = _mock_client([_msg("ok")])
+    tracer = TracerProvider().get_tracer(__name__)
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client.get_trace_environment", return_value="demo"),
+    ):
+        with tracer.start_as_current_span(
+            "a2a.agent.execute",
+            attributes={
+                "langfuse.trace.name": "AgentRun",
+                "langfuse.trace.tags": ["registry", "agent"],
+            },
+        ):
+            result = await call_a2a(agent, "test")
+
+    assert result.success is True
+    send_context = mock_client.send_message.call_args.kwargs["context"]
+    assert send_context.state["http_kwargs"]["headers"]["baggage"] == (
+        "langfuse.environment=demo,langfuse.trace.name=AgentRun,langfuse.trace.tags=%5B%22registry%22%2C%22agent%22%5D"
+    )
 
 
 @pytest.mark.asyncio

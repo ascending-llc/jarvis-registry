@@ -6,10 +6,10 @@ from typing import Any
 import httpx
 from beanie import PydanticObjectId
 
-from registry.schemas.oauth_schema import OAuthTokens
 from registry.utils.crypto_utils import decrypt_value, encrypt_value
 from registry_pkgs.models import Token
 from registry_pkgs.models.token_type import TokenType
+from registry_pkgs.oauth.schemas import OAuthTokens
 
 logger = logging.getLogger(__name__)
 

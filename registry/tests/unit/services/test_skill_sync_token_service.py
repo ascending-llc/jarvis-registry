@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 
-from registry.schemas.oauth_schema import OAuthTokens
 from registry.services.skill_sync_token_service import SkillSyncTokenService, build_skill_sync_token_identifier
 from registry_pkgs.models.token_type import TokenType
+from registry_pkgs.oauth.schemas import OAuthTokens
 
 
 def _make_token(token: str = "encrypted-value", expires_in_seconds: int = 3600):

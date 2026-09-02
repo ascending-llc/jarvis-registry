@@ -15,9 +15,10 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from registry_pkgs.core.crypto_utils import decrypt_auth_fields as _decrypt_auth_fields
 from registry_pkgs.core.crypto_utils import decrypt_value as _decrypt_value
+from registry_pkgs.core.crypto_utils import encrypt_auth_fields as _encrypt_auth_fields
 from registry_pkgs.core.crypto_utils import encrypt_value as _encrypt_value
-from registry_pkgs.core.crypto_utils import is_encrypted  # re-exported unchanged (no key needed)
 from registry_pkgs.core.jwt_tokens import mint_crud_session_token, verify_crud_session_token
 from registry_pkgs.core.jwt_utils import (
     ExpiredSignatureError,
@@ -46,150 +47,19 @@ def decrypt_value(encrypted_value: str) -> str:
     return _decrypt_value(encrypted_value, encryption_key=settings.encryption_key)
 
 
+def _auth_fields_key() -> bytes | None:
+    """Registry encryption key for auth-field crypto, or None when CREDS_KEY is unset."""
+    return settings.encryption_key if settings.creds_key else None
+
+
 def encrypt_auth_fields(config: dict) -> dict:
-    """
-    Encrypt sensitive authentication fields in server config.
-
-    Handles two authentication patterns:
-    1. oauth.client_secret - OAuth client secret
-    2. apiKey.key - API key value
-
-    Args:
-        config: Server configuration dictionary
-
-    Returns:
-        dict: Config with encrypted sensitive fields
-
-    Note:
-        If CREDS_KEY is not set, values will be stored as plaintext.
-        A warning will be logged in this case.
-    """
-    if not config:
-        return config
-
-    config = config.copy()
-
-    # Check if CREDS_KEY is available
-    if not settings.creds_key:
-        logger.warning(
-            "CREDS_KEY configuration is not set. "
-            "Sensitive authentication fields will be stored as PLAINTEXT. "
-            "Set CREDS_KEY environment variable to enable encryption of credentials."
-        )
-        return config
-
-    try:
-        # Handle oauth field
-        if "oauth" in config and isinstance(config["oauth"], dict):
-            oauth = config["oauth"].copy()
-
-            if "client_secret" in oauth:
-                # Encrypt OAuth client_secret
-                client_secret = oauth["client_secret"]
-                if client_secret and not is_encrypted(str(client_secret)):
-                    # Only encrypt if not already encrypted
-                    try:
-                        oauth["client_secret"] = encrypt_value(str(client_secret))
-                        config["oauth"] = oauth
-                        logger.debug("Encrypted oauth.client_secret")
-                    except Exception as encrypt_error:
-                        logger.error(f"Failed to encrypt oauth.client_secret: {encrypt_error}")
-                        # Keep plaintext value
-
-        # Handle apiKey field
-        if "apiKey" in config and isinstance(config["apiKey"], dict):
-            api_key = config["apiKey"].copy()
-
-            if "key" in api_key:
-                key_value = api_key["key"]
-                if key_value and ":" not in str(key_value):
-                    # Only encrypt if not already encrypted
-                    try:
-                        api_key["key"] = encrypt_value(str(key_value))
-                        config["apiKey"] = api_key
-                        logger.debug("Encrypted apiKey.key")
-                    except Exception as encrypt_error:
-                        logger.error(f"Failed to encrypt apiKey.key: {encrypt_error}")
-                        # Keep plaintext value
-
-    except Exception as e:
-        logger.error(f"Failed to encrypt auth fields: {e}", exc_info=True)
-        # Return original config if encryption fails
-        return config
-
-    return config
+    """Encrypt sensitive auth fields with the registry encryption key."""
+    return _encrypt_auth_fields(config, encryption_key=_auth_fields_key())
 
 
 def decrypt_auth_fields(config: dict) -> dict:
-    """
-    Decrypt sensitive authentication fields in server config.
-
-    Handles two authentication patterns:
-    1. oauth.client_secret - OAuth client secret
-    2. apiKey.key - API key value
-
-    Args:
-        config: Server configuration dictionary with encrypted fields
-
-    Returns:
-        dict: Config with decrypted sensitive fields
-
-    Note:
-        If CREDS_KEY is not set, encrypted values will be returned as-is (still encrypted).
-        This prevents the API from crashing when CREDS_KEY is not configured.
-    """
-    if not config:
-        return config
-
-    config = config.copy()
-
-    # Check if CREDS_KEY is available
-    if not settings.creds_key:
-        logger.warning(
-            "CREDS_KEY configuration is not set. "
-            "Encrypted authentication fields will be returned as-is (still encrypted). "
-            "Set CREDS_KEY environment variable to decrypt sensitive credentials."
-        )
-        return config
-
-    try:
-        # Handle oauth field
-        if "oauth" in config and isinstance(config["oauth"], dict):
-            oauth = config["oauth"].copy()
-
-            if "client_secret" in oauth:
-                # Decrypt OAuth client_secret
-                client_secret = oauth["client_secret"]
-                if client_secret:
-                    try:
-                        oauth["client_secret"] = decrypt_value(str(client_secret))
-                        config["oauth"] = oauth
-                        logger.debug("Decrypted oauth.client_secret")
-                    except Exception as decrypt_error:
-                        logger.warning(f"Failed to decrypt oauth.client_secret: {decrypt_error}")
-                        # Keep encrypted value
-
-        # Handle apiKey field
-        if "apiKey" in config and isinstance(config["apiKey"], dict):
-            api_key = config["apiKey"].copy()
-
-            if "key" in api_key:
-                key_value = api_key["key"]
-                if key_value:
-                    try:
-                        api_key["key"] = decrypt_value(str(key_value))
-                        config["apiKey"] = api_key
-                        logger.debug("Decrypted apiKey.key")
-                    except Exception as decrypt_error:
-                        logger.warning(f"Failed to decrypt apiKey.key: {decrypt_error}")
-                        # Keep encrypted value
-
-    except Exception as e:
-        logger.error(f"Failed to decrypt auth fields: {e}", exc_info=True)
-        # Return original config if decryption fails
-        return config
-
-    return config
+    """Decrypt sensitive auth fields with the registry encryption key."""
+    return _decrypt_auth_fields(config, encryption_key=_auth_fields_key())
 
 
 def generate_access_token(

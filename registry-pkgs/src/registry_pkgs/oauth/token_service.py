@@ -7,16 +7,23 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.models import Token, TokenType, User
 
-from ...schemas.oauth_schema import OAuthClientInformation, OAuthTokens
-from ...services.user_service import UserService
-from ...utils.crypto_utils import decrypt_value, encrypt_value
+from ..core.crypto_utils import decrypt_value, encrypt_value
+from .schemas import OAuthClientInformation, OAuthTokens
+from .user_service import UserService
 
 logger = logging.getLogger(__name__)
 
 
 class TokenService:
-    def __init__(self, user_service: UserService):
+    def __init__(self, user_service: UserService, *, encryption_key: bytes):
+        """
+        Args:
+            user_service: User lookup service
+            encryption_key: AES key bytes for token encryption/decryption
+                (caller-supplied; e.g. settings.encryption_key)
+        """
         self.user_service = user_service
+        self._encryption_key = encryption_key
 
     async def get_user(self, user_id: str) -> User | None:
         user = await self.user_service.get_user_by_user_id(user_id)
@@ -75,7 +82,7 @@ class TokenService:
         user_obj_id = str(user.id)
 
         # Encrypt the access token
-        encrypted_token = encrypt_value(tokens.access_token)
+        encrypted_token = encrypt_value(tokens.access_token, encryption_key=self._encryption_key)
 
         # Calculate expiration time
         expires_at = self._calculate_expiration(tokens.expires_in)
@@ -144,7 +151,7 @@ class TokenService:
         user_obj_id = str(user.id)
 
         # Encrypt the refresh token
-        encrypted_token = encrypt_value(tokens.refresh_token)
+        encrypted_token = encrypt_value(tokens.refresh_token, encryption_key=self._encryption_key)
 
         # Refresh tokens typically have a longer expiration time, set to 1 year here
         # Or set according to OAuth provider configuration
@@ -248,7 +255,7 @@ class TokenService:
 
         # Decrypt the token value before returning
         if token and token.token:
-            token.token = decrypt_value(token.token)
+            token.token = decrypt_value(token.token, encryption_key=self._encryption_key)
 
         return token
 
@@ -288,7 +295,7 @@ class TokenService:
 
         # Decrypt the token value before returning
         if token and token.token:
-            token.token = decrypt_value(token.token)
+            token.token = decrypt_value(token.token, encryption_key=self._encryption_key)
 
         return token
 
@@ -482,7 +489,7 @@ class TokenService:
 
         # Decrypt the token value before returning
         if token.token:
-            token.token = decrypt_value(token.token)
+            token.token = decrypt_value(token.token, encryption_key=self._encryption_key)
 
         is_valid = not self._is_token_expired(token)
         return token, is_valid
@@ -512,7 +519,7 @@ class TokenService:
 
         # Decrypt the token value before returning
         if token.token:
-            token.token = decrypt_value(token.token)
+            token.token = decrypt_value(token.token, encryption_key=self._encryption_key)
 
         is_valid = not self._is_token_expired(token)
         return token, is_valid
@@ -602,7 +609,7 @@ class TokenService:
         client_info_json = json.dumps(client_info.model_dump())
 
         # 2. Encrypt the JSON directly (not using encrypt_auth_fields which only handles specific fields)
-        encrypted = encrypt_value(client_info_json)
+        encrypted = encrypt_value(client_info_json, encryption_key=self._encryption_key)
 
         # 3. Set 1 year expiry
         expires_at = datetime.now(UTC) + timedelta(days=365)
@@ -670,7 +677,7 @@ class TokenService:
             return None, None
 
         # Decrypt
-        decrypted = decrypt_value(token_doc.token)
+        decrypted = decrypt_value(token_doc.token, encryption_key=self._encryption_key)
 
         # Parse JSON to OAuthClientInformation
         client_info_dict = json.loads(decrypted)

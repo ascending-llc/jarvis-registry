@@ -158,6 +158,9 @@ nav:
       - Measure AI Agent ROI: explore-agentic/playbooks/ai-agent-roi.md
   - Changelog:
     - Overview: changelog/index.md
+    - asc0.5.7: changelog/asc0.5.7.md
+    - asc0.5.6: changelog/asc0.5.6.md
+    - asc0.5.5: changelog/asc0.5.5.md
     - asc0.5.4: changelog/asc0.5.4.md
     - asc0.5.3: changelog/asc0.5.3.md
     - asc0.5.2: changelog/asc0.5.2.md

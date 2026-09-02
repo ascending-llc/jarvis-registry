@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 
-from ...schemas.oauth_schema import OAuthTokens
+from registry_pkgs.oauth.schemas import OAuthTokens
 
 logger = logging.getLogger(__name__)
 
