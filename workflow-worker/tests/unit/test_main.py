@@ -156,7 +156,7 @@ async def test_main_shuts_down_telemetry_after_scheduler_drains(monkeypatch: pyt
     monkeypatch.setattr(main.MongoDB, "get_database", object)
     monkeypatch.setattr(main, "WorkflowScheduleRepository", lambda _database: object())
     monkeypatch.setattr(main, "create_redis_client", lambda _config: object())
-    monkeypatch.setattr(main, "DirectiveQueue", lambda: object())
+    monkeypatch.setattr(main, "DirectiveQueue", object)
     monkeypatch.setattr(main, "MongoBackedCancellationManager", lambda **_kwargs: object())
     monkeypatch.setattr(main, "set_cancellation_manager", MagicMock())
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_kwargs: SimpleNamespace(aclose=AsyncMock()))
