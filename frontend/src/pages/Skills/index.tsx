@@ -217,6 +217,10 @@ const SkillsPage: React.FC = () => {
     setDraft(current => (current ? { ...current, category } : current));
   };
 
+  const handleAlwaysApplyChange = () => {
+    setDraft(current => (current ? { ...current, alwaysApply: !current.alwaysApply } : current));
+  };
+
   const updateListFromDetail = (detail: SkillDetail) => {
     const metadata = metadataFromDetail(detail);
     setSkills(current => [metadata, ...current.filter(skill => skill.id !== metadata.id)]);
@@ -437,6 +441,8 @@ const SkillsPage: React.FC = () => {
           onDescriptionChange={handleDescriptionChange}
           onMarkdownChange={handleMarkdownChange}
           onCategoryChange={handleCategoryChange}
+          alwaysApply={draft?.alwaysApply ?? false}
+          onAlwaysApplyChange={handleAlwaysApplyChange}
           onToggle={() => void handleToggle()}
           onReset={handleReset}
           onSave={() => void handleSave()}

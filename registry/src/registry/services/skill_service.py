@@ -5,10 +5,11 @@
 import base64
 import logging
 from datetime import UTC, datetime
-from typing import Optional
+from typing import Any, Optional
 
 from beanie import PydanticObjectId
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 from pymongo.errors import DuplicateKeyError
 
 from registry_pkgs.database.mongodb import MongoDB
@@ -18,6 +19,7 @@ from registry_pkgs.models import PrincipalType, SkillSource
 from registry_pkgs.models.enums import RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 
+from ..models.skill_frontmatter import ClaudeCodeSkillFrontmatter, parse_claude_code_frontmatter
 from ..schemas.acl_schema import ResourcePermissions
 from ..schemas.skill_api_schemas import (
     SkillCreateRequest,
@@ -33,7 +35,20 @@ logger = logging.getLogger(__name__)
 
 _REGISTRY_FILE_SOURCE = "registry-inline"
 _UNAVAILABLE_FILE_REASON = "File content is not available in Registry because it was created in Jarvis Chat."
-_FRONTMATTER_FIELDS = {"name", "description", "alwaysApply", "userInvocable", "disableModelInvocation", "allowedTools"}
+
+
+def _build_frontmatter(
+    name: str,
+    description: str,
+    raw_frontmatter: dict[str, Any],
+) -> ClaudeCodeSkillFrontmatter:
+    return parse_claude_code_frontmatter(
+        {
+            **raw_frontmatter,
+            "name": name,
+            "description": description,
+        }
+    )
 
 
 def _require_user_id(user_id: Optional[str]) -> PydanticObjectId:
@@ -259,12 +274,26 @@ class SkillService:
         if await Skill.find_one(duplicate_query):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A skill with this name already exists")
 
+        try:
+            validated_frontmatter = _build_frontmatter(data.name, data.description, data.frontmatter)
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Invalid frontmatter: {e.errors(include_url=False)}",
+            ) from e
+
         now = datetime.now(UTC)
         skill = Skill(
-            **data.model_dump(),
+            **data.model_dump(exclude={"frontmatter"}),
             author=object_user_id,
             authorName=resolved_author_name,
-            frontmatter=self._frontmatter_from_create(data),
+            frontmatter=validated_frontmatter.model_dump(
+                exclude={"name", "description"},
+                exclude_none=True,
+            ),
+            disableModelInvocation=validated_frontmatter.disableModelInvocation,
+            userInvocable=validated_frontmatter.userInvocable,
+            allowedTools=validated_frontmatter.allowedTools,
             path=data.name,
             source=SkillSource.INLINE,
             enabled=True,
@@ -306,14 +335,15 @@ class SkillService:
         # Chat-only fields that are not modelled on ExtendedSkill.
         skill = await self._get_existing_skill(skill_id)
         updates = data.model_dump(exclude_unset=True)
-        _nullable_fields = {"displayTitle", "allowedTools"}
+        frontmatter_update = updates.pop("frontmatter", None)
+        _nullable_fields = {"displayTitle"}
         invalid_nulls = [k for k, v in updates.items() if v is None and k not in _nullable_fields]
         if invalid_nulls:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Fields cannot be null: {', '.join(sorted(invalid_nulls))}",
             )
-        if not updates:
+        if not updates and frontmatter_update is None:
             permissions = await self.acl_service.check_user_permission(
                 user_id=object_user_id,
                 resource_type=RegistryResourceType.SKILL.value,
@@ -349,7 +379,25 @@ class SkillService:
                         setattr(skill, field_name, value)
                     if "name" in updates:
                         skill.path = updates["name"]
-                    self._update_frontmatter(skill, updates)
+                    if frontmatter_update is not None:
+                        try:
+                            validated_frontmatter = _build_frontmatter(
+                                skill.name,
+                                skill.description,
+                                frontmatter_update,
+                            )
+                        except ValidationError as e:
+                            raise HTTPException(
+                                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail=f"Invalid frontmatter: {e.errors(include_url=False)}",
+                            ) from e
+                        skill.frontmatter = validated_frontmatter.model_dump(
+                            exclude={"name", "description"},
+                            exclude_none=True,
+                        )
+                        skill.disableModelInvocation = validated_frontmatter.disableModelInvocation
+                        skill.userInvocable = validated_frontmatter.userInvocable
+                        skill.allowedTools = validated_frontmatter.allowedTools
                     skill.version += 1
                     skill.updatedAt = datetime.now(UTC)
                     await skill.save(session=mongo_session)
@@ -413,18 +461,6 @@ class SkillService:
     async def _list_skill_files(skill_id: PydanticObjectId) -> list[SkillFile]:
         files = await SkillFile.find({"skillId": skill_id}).to_list()
         return sorted(files, key=lambda skill_file: skill_file.relativePath)
-
-    @staticmethod
-    def _frontmatter_from_create(data: SkillCreateRequest) -> dict:
-        dumped = data.model_dump()
-        return {k: dumped[k] for k in _FRONTMATTER_FIELDS if k in dumped}
-
-    @staticmethod
-    def _update_frontmatter(skill: Skill, updates: dict) -> None:
-        frontmatter = dict(skill.frontmatter)
-        for field_name in _FRONTMATTER_FIELDS.intersection(updates):
-            frontmatter[field_name] = updates[field_name]
-        skill.frontmatter = frontmatter
 
 
 def skill_file_metadata(skill_file: SkillFile) -> SkillFileMetadataResponse:

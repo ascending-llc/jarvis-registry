@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from registry_pkgs.models.enums import SkillSyncSkillErrorCode
 from registry_pkgs.models.skill_sync_job import SkillSyncDiscoverySummary, SkillSyncSkillError
 
-from ..models.skill_frontmatter import SkillFrontmatter
+from ..models.skill_frontmatter import ClaudeCodeSkillFrontmatter, parse_claude_code_frontmatter
 from .skill_sync_github_service import ExtractedAuxFile, ExtractedSkillFolder, ExtractionResult
 
 logger = logging.getLogger(__name__)
@@ -21,15 +21,11 @@ class DiscoveredSkill:
     upstream_id: str
     name: str
     description: str
-    display_title: str | None
     body: str
     frontmatter: dict[str, Any]
-    category: str
-    always_apply: bool
     user_invocable: bool
     disable_model_invocation: bool
     allowed_tools: list[str] | None
-    tags: list[str]
     files: list[ExtractedAuxFile] = field(default_factory=list)
 
 
@@ -125,7 +121,7 @@ def _process_skill_folder(
 
     raw_frontmatter, body = parsed
     try:
-        frontmatter = SkillFrontmatter.model_validate(raw_frontmatter)
+        frontmatter: ClaudeCodeSkillFrontmatter = parse_claude_code_frontmatter(raw_frontmatter)
     except ValidationError as exc:
         name_missing = any(error["loc"] == ("name",) for error in exc.errors())
         return SkillSyncSkillError(
@@ -164,15 +160,15 @@ def _process_skill_folder(
         upstream_id=path,
         name=frontmatter.name,
         description=frontmatter.description,
-        display_title=frontmatter.displayTitle,
         body=body,
-        frontmatter=frontmatter.model_dump(exclude_unset=True, exclude_none=True),
-        category=frontmatter.category,
-        always_apply=frontmatter.alwaysApply,
+        frontmatter=frontmatter.model_dump(
+            exclude={"name", "description"},
+            exclude_unset=True,
+            exclude_none=True,
+        ),
         user_invocable=frontmatter.userInvocable,
         disable_model_invocation=frontmatter.disableModelInvocation,
         allowed_tools=frontmatter.allowedTools,
-        tags=frontmatter.tags,
         files=folder.aux_files,
     )
 

@@ -22,6 +22,7 @@ export type SkillDraft = {
   stableName: string;
   markdown: SkillMarkdownState;
   category: string;
+  alwaysApply: boolean;
   enabled: boolean;
   version: number | null;
   authorName: string;

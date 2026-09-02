@@ -26,6 +26,27 @@ export type SkillCategory = (typeof SKILL_CATEGORIES)[number]['label'];
 
 export const DEFAULT_SKILL_CATEGORY: SkillCategory = 'Misc.';
 
+const CLAUDE_CODE_FRONTMATTER_KEBAB_KEYS: Record<string, string> = {
+  allowedTools: 'allowed-tools',
+  disallowedTools: 'disallowed-tools',
+  argumentHint: 'argument-hint',
+  disableModelInvocation: 'disable-model-invocation',
+  userInvocable: 'user-invocable',
+};
+
+const CLAUDE_CODE_FRONTMATTER_CAMEL_KEYS = Object.fromEntries(
+  Object.entries(CLAUDE_CODE_FRONTMATTER_KEBAB_KEYS).map(([camelKey, kebabKey]) => [kebabKey, camelKey]),
+);
+
+const REGISTRY_BOOKKEEPING_FRONTMATTER_KEYS = new Set([
+  'name',
+  'description',
+  'displayTitle',
+  'category',
+  'alwaysApply',
+  'tags',
+]);
+
 export const DEFAULT_SKILL_MARKDOWN = `---
 name:
 description:
@@ -49,7 +70,7 @@ type SkillMarkdownSegments = {
 
 const FRONTMATTER_PATTERN = /^---(?:\r?\n)([\s\S]*?)(?:\r?\n)---(?=\r?\n|$)/;
 
-const splitSkillMarkdown = (markdown: string): SkillMarkdownSegments => {
+export const splitSkillMarkdown = (markdown: string): SkillMarkdownSegments => {
   const match = FRONTMATTER_PATTERN.exec(markdown);
   if (!match) throw new Error('SKILL.md must start with valid YAML frontmatter.');
 
@@ -79,16 +100,33 @@ const toParsedSkillMarkdown = (frontmatter: { [key: string]: JsonValue }, body: 
 const getMarkdownErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : 'Invalid SKILL.md frontmatter.';
 
-const getFrontmatterBoolean = (frontmatter: { [key: string]: JsonValue }, key: string, fallback: boolean): boolean => {
-  const value = frontmatter[key];
-  return typeof value === 'boolean' ? value : fallback;
+const normalizeFrontmatterKeys = (frontmatter: {
+  [key: string]: JsonValue | undefined;
+}): { [key: string]: JsonValue } => {
+  const normalized: { [key: string]: JsonValue } = {};
+  for (const [key, value] of Object.entries(frontmatter)) {
+    if (value === undefined) continue;
+    normalized[CLAUDE_CODE_FRONTMATTER_CAMEL_KEYS[key] ?? key] = value;
+  }
+  return normalized;
 };
 
-const getAllowedTools = (frontmatter: { [key: string]: JsonValue }): string[] | null => {
-  const value = frontmatter.allowedTools;
-  if (value === null || value === undefined) return null;
-  return Array.isArray(value) && value.every((item): item is string => typeof item === 'string') ? [...value] : null;
+const firstDefined = (...values: (JsonValue | undefined)[]): JsonValue | undefined =>
+  values.find(value => value !== undefined);
+
+const parseInlineBodyFrontmatter = (body: string): { frontmatter: { [key: string]: JsonValue }; body: string } => {
+  try {
+    const parsed = parseSkillMarkdown(body);
+    return { frontmatter: parsed.frontmatter, body: parsed.body };
+  } catch {
+    return { frontmatter: {}, body };
+  }
 };
+
+const toKebabCaseFrontmatter = (frontmatter: { [key: string]: JsonValue }): { [key: string]: JsonValue } =>
+  Object.fromEntries(
+    Object.entries(frontmatter).map(([key, value]) => [CLAUDE_CODE_FRONTMATTER_KEBAB_KEYS[key] ?? key, value]),
+  );
 
 export const isSkillCategory = (value: string): value is SkillCategory =>
   SKILL_CATEGORIES.some(category => category.label === value);
@@ -138,17 +176,30 @@ export const applySkillMarkdownInput = (state: SkillMarkdownState, value: string
 };
 
 export const composeSkillMarkdown = (detail: SkillDetail): string => {
-  const frontmatter = {
-    ...detail.frontmatter,
-    name: getSkillDisplayName(detail),
-    description: detail.description,
-    alwaysApply: detail.alwaysApply,
-    userInvocable: detail.userInvocable,
-    disableModelInvocation: detail.disableModelInvocation,
-    allowedTools: detail.allowedTools ?? null,
+  const inlineBody = parseInlineBodyFrontmatter(detail.body);
+  const inlineFrontmatter = normalizeFrontmatterKeys(inlineBody.frontmatter);
+  const storedFrontmatter = normalizeFrontmatterKeys(detail.frontmatter);
+  const frontmatter: { [key: string]: JsonValue } = {
+    ...inlineFrontmatter,
+    ...storedFrontmatter,
   };
-  const yaml = stringify(frontmatter, { lineWidth: 0 }).trimEnd();
-  const body = detail.body ? `\n\n${detail.body.replace(/^\n+/, '')}` : '';
+
+  for (const key of REGISTRY_BOOKKEEPING_FRONTMATTER_KEYS) delete frontmatter[key];
+  frontmatter.name = getSkillDisplayName(detail);
+  frontmatter.description = detail.description;
+  frontmatter.allowedTools =
+    firstDefined(storedFrontmatter.allowedTools, detail.allowedTools, inlineFrontmatter.allowedTools) ?? null;
+  frontmatter.disableModelInvocation =
+    firstDefined(
+      storedFrontmatter.disableModelInvocation,
+      detail.disableModelInvocation,
+      inlineFrontmatter.disableModelInvocation,
+    ) ?? false;
+  frontmatter.userInvocable =
+    firstDefined(storedFrontmatter.userInvocable, detail.userInvocable, inlineFrontmatter.userInvocable) ?? true;
+
+  const yaml = stringify(toKebabCaseFrontmatter(frontmatter), { lineWidth: 0 }).trimEnd();
+  const body = inlineBody.body ? `\n${inlineBody.body.replace(/^\n+/, '')}` : '';
   return `---\n${yaml}\n---${body}`;
 };
 
@@ -181,6 +232,7 @@ export const createDraft = (detail: SkillDetail, markdown = composeSkillMarkdown
   stableName: detail.name,
   markdown: createSkillMarkdownState(markdown),
   category: normalizeSkillCategory(detail.category),
+  alwaysApply: detail.alwaysApply,
   enabled: detail.enabled,
   version: detail.version,
   authorName: detail.authorName,
@@ -193,6 +245,7 @@ export const createEmptyDraft = (authorName: string): SkillDraft => ({
   stableName: '',
   markdown: createSkillMarkdownState(DEFAULT_SKILL_MARKDOWN),
   category: DEFAULT_SKILL_CATEGORY,
+  alwaysApply: false,
   enabled: false,
   version: null,
   authorName,
@@ -244,10 +297,8 @@ export const toCreateRequest = (draft: SkillDraft): CreateSkillRequest => {
     body: parsed.body,
     category: draft.category,
     tags: [],
-    alwaysApply: getFrontmatterBoolean(parsed.frontmatter, 'alwaysApply', false),
-    userInvocable: getFrontmatterBoolean(parsed.frontmatter, 'userInvocable', true),
-    disableModelInvocation: getFrontmatterBoolean(parsed.frontmatter, 'disableModelInvocation', false),
-    allowedTools: getAllowedTools(parsed.frontmatter),
+    alwaysApply: draft.alwaysApply,
+    frontmatter: parsed.frontmatter,
   };
 };
 
@@ -258,10 +309,8 @@ export const toUpdateRequest = (draft: SkillDraft): UpdateSkillRequest => {
     description: parsed.description,
     body: parsed.body,
     category: draft.category,
-    alwaysApply: getFrontmatterBoolean(parsed.frontmatter, 'alwaysApply', false),
-    userInvocable: getFrontmatterBoolean(parsed.frontmatter, 'userInvocable', true),
-    disableModelInvocation: getFrontmatterBoolean(parsed.frontmatter, 'disableModelInvocation', false),
-    allowedTools: getAllowedTools(parsed.frontmatter),
+    alwaysApply: draft.alwaysApply,
+    frontmatter: parsed.frontmatter,
   };
 };
 

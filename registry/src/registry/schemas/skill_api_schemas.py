@@ -5,33 +5,30 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..models.skill_frontmatter import SKILL_NAME_PATTERN
 from .acl_schema import ResourcePermissions
 
 
 class SkillCreateRequest(BaseModel):
-    name: str = Field(..., max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    name: str = Field(..., max_length=64, pattern=SKILL_NAME_PATTERN)
     displayTitle: str | None = Field(default=None, max_length=128)
     description: str = Field(..., max_length=1024)
     body: str = Field(default="", max_length=100_000)
     category: str = Field(default="", max_length=128)
     tags: list[str] = Field(default_factory=list)
     alwaysApply: bool = False
-    userInvocable: bool = True
-    disableModelInvocation: bool = False
-    allowedTools: list[str] | None = None
+    frontmatter: dict[str, Any] = Field(default_factory=dict)
 
 
 class SkillUpdateRequest(BaseModel):
-    name: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    name: str | None = Field(default=None, max_length=64, pattern=SKILL_NAME_PATTERN)
     displayTitle: str | None = Field(default=None, max_length=128)
     description: str | None = Field(default=None, max_length=1024)
     body: str | None = Field(default=None, max_length=100_000)
     category: str | None = Field(default=None, max_length=128)
     tags: list[str] | None = None
     alwaysApply: bool | None = None
-    userInvocable: bool | None = None
-    disableModelInvocation: bool | None = None
-    allowedTools: list[str] | None = None
+    frontmatter: dict[str, Any] | None = None
 
 
 class SkillToggleRequest(BaseModel):

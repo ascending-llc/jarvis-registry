@@ -1,8 +1,11 @@
+// @vitest-environment jsdom
+
 import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, test, vi } from 'vitest';
 
 import SkillEditorView from './SkillEditorView';
 
-jest.mock('react-markdown', () => ({
+vi.mock('react-markdown', () => ({
   __esModule: true,
   default: ({ components }) => {
     const fixtureUrl = `https://example.com/${'unbroken-path/'.repeat(30)}`;
@@ -25,11 +28,11 @@ jest.mock('react-markdown', () => ({
   },
 }));
 
-jest.mock('@/services', () => ({
+vi.mock('@/services', () => ({
   __esModule: true,
   default: {
     SKILL: {
-      getSkillFile: jest.fn(),
+      getSkillFile: vi.fn(),
     },
   },
 }));
@@ -67,6 +70,7 @@ const createDraft = () => ({
     invalidInput: null,
   },
   category: 'Code',
+  alwaysApply: true,
   enabled: true,
   version: 1,
   authorName: 'Test author',
@@ -87,30 +91,31 @@ const createDraft = () => ({
   },
 });
 
-const renderView = () => {
+const renderView = ({ editorMode = 'preview', canEdit = true } = {}) => {
+  const draft = createDraft();
+  if (!canEdit) draft.permissions.EDIT = false;
   document.body.innerHTML = renderToStaticMarkup(
     <SkillEditorView
-      draft={createDraft()}
+      draft={draft}
       loading={false}
       error={null}
       selectedPath='SKILL.md'
-      editorMode='preview'
+      editorMode={editorMode}
       saving={false}
       toggling={false}
-      deleting={false}
-      onBack={jest.fn()}
-      onRetry={jest.fn()}
-      onSelectFile={jest.fn()}
-      onEditorModeChange={jest.fn()}
-      onNameChange={jest.fn()}
-      onDescriptionChange={jest.fn()}
-      onMarkdownChange={jest.fn()}
-      onCategoryChange={jest.fn()}
-      onShare={jest.fn()}
-      onDelete={jest.fn()}
-      onToggle={jest.fn()}
-      onReset={jest.fn()}
-      onSave={jest.fn()}
+      alwaysApply={draft.alwaysApply}
+      onBack={vi.fn()}
+      onRetry={vi.fn()}
+      onSelectFile={vi.fn()}
+      onEditorModeChange={vi.fn()}
+      onNameChange={vi.fn()}
+      onDescriptionChange={vi.fn()}
+      onMarkdownChange={vi.fn()}
+      onCategoryChange={vi.fn()}
+      onAlwaysApplyChange={vi.fn()}
+      onToggle={vi.fn()}
+      onReset={vi.fn()}
+      onSave={vi.fn()}
     />,
   );
 
@@ -148,7 +153,9 @@ describe('SkillEditorView overflow containment', () => {
     const inlineCode = Array.from(section.querySelectorAll('code')).find(
       element => !element.parentElement?.matches('pre'),
     );
-    const codeBlock = section.querySelector('pre');
+    const codeBlock = Array.from(section.querySelectorAll('pre')).find(element =>
+      element.textContent?.includes('block-code-token'),
+    );
     const image = section.querySelector('img');
 
     expectClasses(paragraph ?? null, ['break-words']);
@@ -156,5 +163,30 @@ describe('SkillEditorView overflow containment', () => {
     expectClasses(inlineCode ?? null, ['[overflow-wrap:anywhere]']);
     expectClasses(codeBlock, ['max-w-full', 'overflow-auto']);
     expectClasses(image, ['h-auto', 'max-w-full']);
+  });
+
+  test('shows the full frontmatter block in preview mode', () => {
+    const section = renderView();
+    const frontmatter = Array.from(section.querySelectorAll('pre')).find(element =>
+      element.textContent?.includes('name: Overflow fixture'),
+    );
+
+    expect(frontmatter?.textContent).toContain('description:');
+    expect(frontmatter?.textContent).toMatch(/^---\n/);
+    expect(frontmatter?.textContent).toMatch(/\n---$/);
+
+    const readOnlyFrontmatter = Array.from(renderView({ canEdit: false }).querySelectorAll('pre')).find(element =>
+      element.textContent?.includes('name: Overflow fixture'),
+    );
+    expect(readOnlyFrontmatter).toBeDefined();
+  });
+
+  test('shows Always Apply only to editors in edit mode', () => {
+    const editableSection = renderView({ editorMode: 'edit' });
+    const alwaysApply = editableSection.querySelector('[role="switch"][aria-label="Always apply"]');
+    expect(alwaysApply?.getAttribute('aria-checked')).toBe('true');
+
+    expect(renderView({ editorMode: 'preview' }).querySelector('[aria-label="Always apply"]')).toBeNull();
+    expect(renderView({ editorMode: 'edit', canEdit: false }).querySelector('[aria-label="Always apply"]')).toBeNull();
   });
 });

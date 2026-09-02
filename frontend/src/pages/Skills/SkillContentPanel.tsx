@@ -14,6 +14,7 @@ type SkillContentPanelProps = {
   selectedPath: string;
   markdown: string;
   markdownBody: string;
+  frontmatterSource: string;
   markdownError: string | null;
   editorMode: EditorMode;
   canEdit: boolean;
@@ -47,6 +48,7 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
   selectedPath,
   markdown,
   markdownBody,
+  frontmatterSource,
   markdownError,
   editorMode,
   canEdit,
@@ -201,57 +203,64 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
                 {markdown}
               </pre>
             ) : (
-              <ReactMarkdown
-                components={{
-                  h1: ({ children }) => (
-                    <h1 className='mb-4 text-2xl font-bold text-[var(--jarvis-text-strong)]'>{children}</h1>
-                  ),
-                  h2: ({ children }) => (
-                    <h2 className='mb-2.5 mt-5 text-base font-bold text-[var(--jarvis-text-strong)]'>{children}</h2>
-                  ),
-                  h3: ({ children }) => (
-                    <h3 className='mb-2 mt-4 text-[15px] font-bold text-[var(--jarvis-text-strong)]'>{children}</h3>
-                  ),
-                  p: ({ children }) => (
-                    <p className='mb-4 min-w-0 break-words text-[14.5px] leading-[1.75] text-[var(--jarvis-text)]'>
-                      {children}
-                    </p>
-                  ),
-                  ul: ({ children }) => <ul className='my-0 min-w-0 list-disc space-y-2 pl-5'>{children}</ul>,
-                  ol: ({ children }) => <ol className='my-0 min-w-0 list-decimal space-y-2 pl-5'>{children}</ol>,
-                  li: ({ children }) => (
-                    <li className='min-w-0 break-words text-sm leading-[1.6] text-[var(--jarvis-text)]'>{children}</li>
-                  ),
-                  strong: ({ children }) => (
-                    <strong className='font-bold text-[var(--jarvis-text-strong)]'>{children}</strong>
-                  ),
-                  pre: ({ children }) => (
-                    <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
-                      {children}
-                    </pre>
-                  ),
-                  code: ({ children }) => (
-                    <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
-                      {children}
-                    </code>
-                  ),
-                  a: ({ children, href }) => (
-                    <a
-                      href={href}
-                      target='_blank'
-                      rel='noreferrer'
-                      className='break-words text-[var(--jarvis-primary-text)] underline'
-                    >
-                      {children}
-                    </a>
-                  ),
-                  img: ({ src, alt, title }) => (
-                    <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
-                  ),
-                }}
-              >
-                {markdownBody}
-              </ReactMarkdown>
+              <>
+                <pre className='mb-6 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--jarvis-card-muted)] p-4 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'>
+                  {`---\n${frontmatterSource}\n---`}
+                </pre>
+                <ReactMarkdown
+                  components={{
+                    h1: ({ children }) => (
+                      <h1 className='mb-4 text-2xl font-bold text-[var(--jarvis-text-strong)]'>{children}</h1>
+                    ),
+                    h2: ({ children }) => (
+                      <h2 className='mb-2.5 mt-5 text-base font-bold text-[var(--jarvis-text-strong)]'>{children}</h2>
+                    ),
+                    h3: ({ children }) => (
+                      <h3 className='mb-2 mt-4 text-[15px] font-bold text-[var(--jarvis-text-strong)]'>{children}</h3>
+                    ),
+                    p: ({ children }) => (
+                      <p className='mb-4 min-w-0 break-words text-[14.5px] leading-[1.75] text-[var(--jarvis-text)]'>
+                        {children}
+                      </p>
+                    ),
+                    ul: ({ children }) => <ul className='my-0 min-w-0 list-disc space-y-2 pl-5'>{children}</ul>,
+                    ol: ({ children }) => <ol className='my-0 min-w-0 list-decimal space-y-2 pl-5'>{children}</ol>,
+                    li: ({ children }) => (
+                      <li className='min-w-0 break-words text-sm leading-[1.6] text-[var(--jarvis-text)]'>
+                        {children}
+                      </li>
+                    ),
+                    strong: ({ children }) => (
+                      <strong className='font-bold text-[var(--jarvis-text-strong)]'>{children}</strong>
+                    ),
+                    pre: ({ children }) => (
+                      <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
+                        {children}
+                      </pre>
+                    ),
+                    code: ({ children }) => (
+                      <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
+                        {children}
+                      </code>
+                    ),
+                    a: ({ children, href }) => (
+                      <a
+                        href={href}
+                        target='_blank'
+                        rel='noreferrer'
+                        className='break-words text-[var(--jarvis-primary-text)] underline'
+                      >
+                        {children}
+                      </a>
+                    ),
+                    img: ({ src, alt, title }) => (
+                      <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
+                    ),
+                  }}
+                >
+                  {markdownBody}
+                </ReactMarkdown>
+              </>
             )}
           </div>
         )}
