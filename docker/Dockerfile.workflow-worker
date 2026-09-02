@@ -9,6 +9,10 @@ ENV PYTHONUNBUFFERED=1 \
     BUILD_VERSION=${BUILD_VERSION}
 
 WORKDIR /app
+
+COPY ./config/metrics/registry.yml /app/config/metrics/registry.yml
+ENV OTEL_METRICS_CONFIG_PATH=/app/config/metrics/registry.yml
+
 COPY ./build-artifacts /opt/build/
 RUN pip install --only-binary :all: -r /opt/build/requirements-workflow-worker.txt
 RUN pip install --no-deps --no-index --find-links /opt/build/ workflow-worker registry-pkgs

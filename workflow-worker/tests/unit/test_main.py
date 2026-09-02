@@ -39,8 +39,12 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     run_scheduler_loop = AsyncMock()
     close_mongodb = AsyncMock()
     close_redis_client = MagicMock()
+    initialize_telemetry = MagicMock()
+    shutdown_telemetry_safe = MagicMock()
 
     monkeypatch.setattr(main, "settings", mock_settings)
+    monkeypatch.setattr(main, "_initialize_telemetry", initialize_telemetry)
+    monkeypatch.setattr(main, "_shutdown_telemetry_safe", shutdown_telemetry_safe)
     monkeypatch.setattr(main, "init_mongodb", init_mongodb)
     monkeypatch.setattr(main.MongoDB, "get_database", object)
     monkeypatch.setattr(main, "WorkflowScheduleRepository", lambda _database: repository)
@@ -67,6 +71,105 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     azure_client_cache.close.assert_awaited_once_with()
     close_redis_client.assert_called_once_with(redis_client)
     close_mongodb.assert_awaited_once_with()
+    initialize_telemetry.assert_called_once_with()
+    shutdown_telemetry_safe.assert_called_once_with()
+
+
+def test_initialize_telemetry_is_best_effort_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every telemetry setup call may fail without crashing the worker startup."""
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("collector unreachable")
+
+    mock_settings = SimpleNamespace(
+        telemetry_config=SimpleNamespace(build_version="1.2.3"),
+        configure_logging=boom,
+    )
+
+    monkeypatch.setattr(main, "settings", mock_settings)
+    monkeypatch.setattr(main, "configure_structured_logging", boom)
+    monkeypatch.setattr(main, "setup_metrics", boom)
+    monkeypatch.setattr(main, "initialize_workflow_metrics", boom)
+    monkeypatch.setattr(main, "setup_tracing", boom)
+
+    # Must not raise even though every underlying call blows up.
+    main._initialize_telemetry()
+
+
+def test_initialize_telemetry_wires_setup_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    telemetry_config = SimpleNamespace(build_version="9.9.9")
+    baseline_logging = MagicMock()
+    mock_settings = SimpleNamespace(telemetry_config=telemetry_config, configure_logging=baseline_logging)
+    configure_logging = MagicMock()
+    setup_metrics = MagicMock()
+    init_metrics = MagicMock()
+    setup_tracing = MagicMock()
+
+    monkeypatch.setattr(main, "settings", mock_settings)
+    monkeypatch.setattr(main, "configure_structured_logging", configure_logging)
+    monkeypatch.setattr(main, "setup_metrics", setup_metrics)
+    monkeypatch.setattr(main, "initialize_workflow_metrics", init_metrics)
+    monkeypatch.setattr(main, "setup_tracing", setup_tracing)
+
+    main._initialize_telemetry()
+
+    baseline_logging.assert_called_once_with("workflow_worker")
+    configure_logging.assert_called_once_with(
+        "workflow_worker",
+        "registry_pkgs",
+        service_name="workflow-worker",
+        service_version="9.9.9",
+    )
+    setup_metrics.assert_called_once_with("workflow-worker", telemetry_config)
+    init_metrics.assert_called_once_with(telemetry_config)
+    setup_tracing.assert_called_once_with("workflow-worker", telemetry_config)
+
+
+def test_shutdown_telemetry_safe_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom() -> None:
+        raise RuntimeError("shutdown failed")
+
+    monkeypatch.setattr(main, "shutdown_telemetry", boom)
+
+    # Must swallow the failure so graceful shutdown always completes.
+    main._shutdown_telemetry_safe()
+
+
+@pytest.mark.asyncio
+async def test_main_shuts_down_telemetry_after_scheduler_drains(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Telemetry shutdown must run only after the scheduler loop (which drains in-flight runs) returns."""
+    call_order: list[str] = []
+    mock_settings = SimpleNamespace(
+        mongo_config=object(),
+        redis_config=object(),
+        redis_key_prefix="worker-prefix",
+        encryption_key=b"0" * 32,
+    )
+
+    async def scheduler_loop(*_args: object) -> None:
+        call_order.append("scheduler")
+
+    monkeypatch.setattr(main, "settings", mock_settings)
+    monkeypatch.setattr(main, "_initialize_telemetry", MagicMock())
+    monkeypatch.setattr(main, "_shutdown_telemetry_safe", lambda: call_order.append("shutdown"))
+    monkeypatch.setattr(main, "init_mongodb", AsyncMock())
+    monkeypatch.setattr(main.MongoDB, "get_database", object)
+    monkeypatch.setattr(main, "WorkflowScheduleRepository", lambda _database: object())
+    monkeypatch.setattr(main, "create_redis_client", lambda _config: object())
+    monkeypatch.setattr(main, "DirectiveQueue", lambda: object())
+    monkeypatch.setattr(main, "MongoBackedCancellationManager", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "set_cancellation_manager", MagicMock())
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_kwargs: SimpleNamespace(aclose=AsyncMock()))
+    monkeypatch.setattr(main, "AzureFoundryClientCache", lambda **_kwargs: SimpleNamespace(close=AsyncMock()))
+    monkeypatch.setattr(main, "_build_runner", lambda *_args: object())
+    monkeypatch.setattr(main.asyncio, "get_running_loop", lambda: SimpleNamespace(add_signal_handler=MagicMock()))
+    monkeypatch.setattr(main, "_run_scheduler_loop", scheduler_loop)
+    monkeypatch.setattr(main, "close_redis_client", MagicMock())
+    monkeypatch.setattr(main, "close_mongodb", AsyncMock())
+
+    await main.main()
+
+    assert call_order == ["scheduler", "shutdown"]
 
 
 def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPatch) -> None:
