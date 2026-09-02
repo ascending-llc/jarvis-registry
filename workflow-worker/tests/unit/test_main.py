@@ -86,7 +86,9 @@ def test_initialize_telemetry_is_best_effort_on_failure(monkeypatch: pytest.Monk
         configure_logging=boom,
     )
 
+    basic_config = MagicMock()
     monkeypatch.setattr(main, "settings", mock_settings)
+    monkeypatch.setattr(main.logging, "basicConfig", basic_config)
     monkeypatch.setattr(main, "configure_structured_logging", boom)
     monkeypatch.setattr(main, "setup_metrics", boom)
     monkeypatch.setattr(main, "initialize_workflow_metrics", boom)
@@ -94,6 +96,8 @@ def test_initialize_telemetry_is_best_effort_on_failure(monkeypatch: pytest.Monk
 
     # Must not raise even though every underlying call blows up.
     main._initialize_telemetry()
+
+    basic_config.assert_called_once()
 
 
 def test_initialize_telemetry_wires_setup_calls(monkeypatch: pytest.MonkeyPatch) -> None:

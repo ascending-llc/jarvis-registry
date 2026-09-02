@@ -107,6 +107,18 @@ async def test_peek_next_deadline_returns_none_when_no_schedule(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("document", [{}, {"next_run_at": None}])
+async def test_peek_next_deadline_returns_none_on_missing_next_run_at(
+    monkeypatch: pytest.MonkeyPatch,
+    document: dict[str, object],
+) -> None:
+    collection = SimpleNamespace(find_one=AsyncMock(return_value=document))
+    repository = _repository(monkeypatch, collection)
+
+    assert await repository.peek_next_deadline() is None
+
+
+@pytest.mark.asyncio
 async def test_renew_and_load_claim_use_same_fencing_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     schedule_id = PydanticObjectId()
     claimed = object()

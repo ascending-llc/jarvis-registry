@@ -67,7 +67,9 @@ class WorkflowScheduleRepository:
         )
         if document is None:
             return None
-        next_run_at = document["next_run_at"]
+        next_run_at = document.get("next_run_at")
+        if next_run_at is None:
+            return None
         return next_run_at if next_run_at.tzinfo is not None else next_run_at.replace(tzinfo=UTC)
 
     async def renew_claim(

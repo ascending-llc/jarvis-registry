@@ -40,6 +40,12 @@ def _initialize_telemetry() -> None:
     try:
         settings.configure_logging("workflow_worker")
     except Exception:
+        # Emergency fallback: if even baseline logging config fails, install a root handler so
+        # startup/shutdown diagnostics are not silently dropped when nothing else configures one.
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
+        )
         logger.warning("Failed to configure baseline logging", exc_info=True)
     try:
         configure_structured_logging(
