@@ -1,8 +1,15 @@
 # AgentCore Federation
 AgentCore Federation connects an external Amazon Bedrock AgentCore gateway to Jarvis Registry so platform admins can import and govern resources from one control plane.
 
-<div style="text-align: center; margin: 1.5rem 0;">
-	<iframe width="560" height="315" src="https://www.youtube.com/embed/JTziFEg1vg0?si=a9sk-xjsflr1C6W7" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+<div style="text-align: center; margin: 1.5rem 0; position: relative; display: inline-block;">
+	<a href="https://ascendingdc.com/jarvis-ai/videos/aws-agentcore-federation-with-jarvis-registry-access-governed-agents-from-any-interface/" target="_blank" rel="noopener noreferrer" style="display: inline-block; position: relative;">
+		<img src="https://img.youtube.com/vi/JTziFEg1vg0/maxresdefault.jpg" alt="AgentCore Federation — watch demo" style="max-width:100%; height:auto; display:block; border-radius:8px;" />
+		<span style="position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,0.5); width:84px; height:84px; border-radius:50%; display:flex; align-items:center; justify-content:center;">
+			<svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+				<path d="M8 5v14l11-7L8 5z" fill="#fff" />
+			</svg>
+		</span>
+	</a>
 </div>
 
 This page focuses on the operational flow:
@@ -66,3 +73,7 @@ Security enforcement (authentication, RBAC, ACL) remains consistent for federate
 - [A2A Agent Registry](a2a-registry.md) — Sharing and lifecycle for agent resources
 - [Registry Endpoint](registry-endpoint.md) — How clients discover and invoke federated resources
 - [Federation Guide](../design/federation.md) — Detailed federation architecture and workflow
+
+**Product page & demo**
+
+- Federation demo and product notes on ASCENDING: [AgentCore & AI Foundry federation](https://ascendingdc.com/jarvis-ai/agent-gateway/agentcore-aifoundry-federation/).

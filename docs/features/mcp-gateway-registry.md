@@ -131,3 +131,7 @@ See [Registry Endpoint](registry-endpoint.md) for the full integration guide, in
 - [Registry Endpoint](registry-endpoint.md) — Connect any AI copilot to the gateway
 - [A2A Agent Registry](a2a-registry.md) — Register autonomous agents alongside MCP servers
 - [Security Control Design](../design/security-design.md) — How authentication, RBAC, and ACL compose
+
+**Product page & demo**
+
+- See the MCP Gateway product page and demos on ASCENDING: [MCP Gateway](https://ascendingdc.com/jarvis-ai/mcp-gateway/).

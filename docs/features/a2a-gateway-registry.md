@@ -126,3 +126,7 @@ That means Jarvis Registry gives you a single control plane for both:
 - [MCP Server Registry](mcp-registry.md) — Register MCP tools and services alongside agents
 - [A2A Agent API](../design/a2a-agent-api-design.md) — Detailed API and response model
 - [Security Control Design](../design/security-design.md) — How authentication, RBAC, and ACL compose
+
+**Product pages & demos**
+
+- Learn more and see demos on ASCENDING: [Agent Registry](https://ascendingdc.com/jarvis-ai/agent-registry/) and [Agent Gateway](https://ascendingdc.com/jarvis-ai/agent-gateway/).

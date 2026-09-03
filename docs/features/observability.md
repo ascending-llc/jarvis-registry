@@ -138,3 +138,7 @@ When agents run in the same virtual private network as the gateway (for example,
 - [Security Control Design](../design/security-design.md) — How authentication, RBAC, and ACL compose across the platform
 - [AgentCore Federation](agentcore-federation.md) — Connecting Amazon Bedrock AgentCore gateways to the registry
 - [Registry Endpoint](registry-endpoint.md) — How clients discover and invoke resources through the gateway
+
+**Product page & demo**
+
+- Learn more about governed AI and product demos on ASCENDING: [Governed AI product page](https://ascendingdc.com/jarvis-ai/governed-ai/).
