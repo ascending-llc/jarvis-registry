@@ -5,7 +5,7 @@ import { SKILL_MARKDOWN_PATH } from './constants';
 import SkillCategoryMenu from './SkillCategoryMenu';
 import SkillContentPanel from './SkillContentPanel';
 import SkillFileTree from './SkillFileTree';
-import { formatSkillVersion, getSkillMarkdownInput } from './skillDraft';
+import { formatSkillVersion, getSkillMarkdownInput, splitSkillMarkdown } from './skillDraft';
 import type { EditorMode, SkillDraft, SkillPageError } from './types';
 
 type SkillEditorViewProps = {
@@ -24,6 +24,8 @@ type SkillEditorViewProps = {
   onDescriptionChange: (description: string) => void;
   onMarkdownChange: (markdown: string) => void;
   onCategoryChange: (category: string) => void;
+  alwaysApply: boolean;
+  onAlwaysApplyChange: () => void;
   onToggle: () => void;
   onReset: () => void;
   onSave: () => void;
@@ -45,6 +47,8 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
   onDescriptionChange,
   onMarkdownChange,
   onCategoryChange,
+  alwaysApply,
+  onAlwaysApplyChange,
   onToggle,
   onReset,
   onSave,
@@ -100,6 +104,12 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
   const isSkillMarkdown = selectedPath === SKILL_MARKDOWN_PATH;
   const parsedMarkdown = draft.markdown.parsed;
   const markdownError = draft.markdown.invalidInput?.message ?? null;
+  let frontmatterSource = '';
+  try {
+    frontmatterSource = splitSkillMarkdown(getSkillMarkdownInput(draft.markdown)).frontmatterSource;
+  } catch {
+    // The preview renders the raw invalid Markdown below, so no frontmatter source is needed.
+  }
   const supportingFiles = draft.files.filter(file => file.relativePath !== SKILL_MARKDOWN_PATH);
   const selectedMetadata = draft.files.find(file => file.relativePath === selectedPath);
 
@@ -191,7 +201,31 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             </button>
           )}
           {editorMode === 'edit' && canEdit && (
-            <SkillCategoryMenu value={draft.category} disabled={saving} onChange={onCategoryChange} />
+            <>
+              <button
+                type='button'
+                role='switch'
+                aria-label='Always apply'
+                aria-checked={alwaysApply}
+                disabled={saving}
+                onClick={onAlwaysApplyChange}
+                className='inline-flex items-center gap-2 text-[13px] text-[var(--jarvis-text)] disabled:cursor-not-allowed disabled:opacity-60'
+              >
+                <span>Always Apply</span>
+                <span
+                  className={`relative h-[22px] w-[38px] flex-shrink-0 rounded-full transition ${
+                    alwaysApply ? 'bg-[var(--jarvis-primary)]' : 'bg-[var(--jarvis-border-strong)]'
+                  }`}
+                >
+                  <span
+                    className={`absolute left-0 top-0.5 h-[18px] w-[18px] rounded-full bg-white shadow transition-transform ${
+                      alwaysApply ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </span>
+              </button>
+              <SkillCategoryMenu value={draft.category} disabled={saving} onChange={onCategoryChange} />
+            </>
           )}
         </div>
       </div>
@@ -225,8 +259,8 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             ) : (
               <>
                 Synced with the <strong className='font-semibold text-[var(--jarvis-text)]'>name</strong> and{' '}
-                <strong className='font-semibold text-[var(--jarvis-text)]'>description</strong> fields at the top of the
-                markdown below.
+                <strong className='font-semibold text-[var(--jarvis-text)]'>description</strong> fields at the top of
+                the markdown below.
               </>
             )}
           </div>
@@ -245,6 +279,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             selectedPath={selectedPath}
             markdown={getSkillMarkdownInput(draft.markdown)}
             markdownBody={parsedMarkdown.body}
+            frontmatterSource={frontmatterSource}
             markdownError={markdownError}
             editorMode={editorMode}
             canEdit={canEdit}

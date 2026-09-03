@@ -2,6 +2,7 @@ import { PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import SERVICES from '@/services';
 import type { SkillFileContent, SkillFileMetadata } from '@/services/skill/type';
@@ -14,6 +15,7 @@ type SkillContentPanelProps = {
   selectedPath: string;
   markdown: string;
   markdownBody: string;
+  frontmatterSource: string;
   markdownError: string | null;
   editorMode: EditorMode;
   canEdit: boolean;
@@ -47,6 +49,7 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
   selectedPath,
   markdown,
   markdownBody,
+  frontmatterSource,
   markdownError,
   editorMode,
   canEdit,
@@ -201,57 +204,83 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
                 {markdown}
               </pre>
             ) : (
-              <ReactMarkdown
-                components={{
-                  h1: ({ children }) => (
-                    <h1 className='mb-4 text-2xl font-bold text-[var(--jarvis-text-strong)]'>{children}</h1>
-                  ),
-                  h2: ({ children }) => (
-                    <h2 className='mb-2.5 mt-5 text-base font-bold text-[var(--jarvis-text-strong)]'>{children}</h2>
-                  ),
-                  h3: ({ children }) => (
-                    <h3 className='mb-2 mt-4 text-[15px] font-bold text-[var(--jarvis-text-strong)]'>{children}</h3>
-                  ),
-                  p: ({ children }) => (
-                    <p className='mb-4 min-w-0 break-words text-[14.5px] leading-[1.75] text-[var(--jarvis-text)]'>
-                      {children}
-                    </p>
-                  ),
-                  ul: ({ children }) => <ul className='my-0 min-w-0 list-disc space-y-2 pl-5'>{children}</ul>,
-                  ol: ({ children }) => <ol className='my-0 min-w-0 list-decimal space-y-2 pl-5'>{children}</ol>,
-                  li: ({ children }) => (
-                    <li className='min-w-0 break-words text-sm leading-[1.6] text-[var(--jarvis-text)]'>{children}</li>
-                  ),
-                  strong: ({ children }) => (
-                    <strong className='font-bold text-[var(--jarvis-text-strong)]'>{children}</strong>
-                  ),
-                  pre: ({ children }) => (
-                    <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
-                      {children}
-                    </pre>
-                  ),
-                  code: ({ children }) => (
-                    <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
-                      {children}
-                    </code>
-                  ),
-                  a: ({ children, href }) => (
-                    <a
-                      href={href}
-                      target='_blank'
-                      rel='noreferrer'
-                      className='break-words text-[var(--jarvis-primary-text)] underline'
-                    >
-                      {children}
-                    </a>
-                  ),
-                  img: ({ src, alt, title }) => (
-                    <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
-                  ),
-                }}
-              >
-                {markdownBody}
-              </ReactMarkdown>
+              <>
+                <pre className='mb-6 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--jarvis-card-muted)] p-4 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'>
+                  {`---\n${frontmatterSource}\n---`}
+                </pre>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    h1: ({ children }) => (
+                      <h1 className='mb-4 text-2xl font-bold text-[var(--jarvis-text-strong)]'>{children}</h1>
+                    ),
+                    h2: ({ children }) => (
+                      <h2 className='mb-2.5 mt-5 text-base font-bold text-[var(--jarvis-text-strong)]'>{children}</h2>
+                    ),
+                    h3: ({ children }) => (
+                      <h3 className='mb-2 mt-4 text-[15px] font-bold text-[var(--jarvis-text-strong)]'>{children}</h3>
+                    ),
+                    p: ({ children }) => (
+                      <p className='mb-4 min-w-0 break-words text-[14.5px] leading-[1.75] text-[var(--jarvis-text)]'>
+                        {children}
+                      </p>
+                    ),
+                    ul: ({ children }) => <ul className='my-0 min-w-0 list-disc space-y-2 pl-5'>{children}</ul>,
+                    ol: ({ children }) => <ol className='my-0 min-w-0 list-decimal space-y-2 pl-5'>{children}</ol>,
+                    li: ({ children }) => (
+                      <li className='min-w-0 break-words text-sm leading-[1.6] text-[var(--jarvis-text)]'>
+                        {children}
+                      </li>
+                    ),
+                    strong: ({ children }) => (
+                      <strong className='font-bold text-[var(--jarvis-text-strong)]'>{children}</strong>
+                    ),
+                    pre: ({ children }) => (
+                      <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
+                        {children}
+                      </pre>
+                    ),
+                    code: ({ children }) => (
+                      <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
+                        {children}
+                      </code>
+                    ),
+                    a: ({ children, href }) => (
+                      <a
+                        href={href}
+                        target='_blank'
+                        rel='noreferrer'
+                        className='break-words text-[var(--jarvis-primary-text)] underline'
+                      >
+                        {children}
+                      </a>
+                    ),
+                    img: ({ src, alt, title }) => (
+                      <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
+                    ),
+                    table: ({ children }) => (
+                      <div className='mb-4 max-w-full overflow-auto rounded-lg border border-[color:var(--jarvis-border)]'>
+                        <table className='w-full min-w-max border-collapse text-left text-[13px]'>{children}</table>
+                      </div>
+                    ),
+                    thead: ({ children }) => (
+                      <thead className='bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text-strong)]'>
+                        {children}
+                      </thead>
+                    ),
+                    tbody: ({ children }) => (
+                      <tbody className='divide-y divide-[color:var(--jarvis-border)]'>{children}</tbody>
+                    ),
+                    tr: ({ children }) => <tr>{children}</tr>,
+                    th: ({ children }) => <th className='min-w-0 break-words px-3 py-2 font-bold'>{children}</th>,
+                    td: ({ children }) => (
+                      <td className='min-w-0 break-words px-3 py-2 text-[var(--jarvis-text)]'>{children}</td>
+                    ),
+                  }}
+                >
+                  {markdownBody}
+                </ReactMarkdown>
+              </>
             )}
           </div>
         )}

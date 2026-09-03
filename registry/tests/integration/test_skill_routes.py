@@ -111,13 +111,20 @@ def test_create_skill_returns_201(skill_app):
 
     response = skill_app.client.post(
         "/api/v1/skills",
-        json={"name": "test-skill", "description": "A test skill", "body": "# Test"},
+        json={
+            "name": "test-skill",
+            "description": "A test skill",
+            "body": "# Test",
+            "frontmatter": {"allowed-tools": ["Read"], "license": "MIT"},
+        },
     )
 
     assert response.status_code == 201
     assert response.json()["source"] == "inline"
     assert response.json()["displayTitle"] == "Test Skill"
     skill_app.service.create_skill.assert_awaited_once()
+    request = skill_app.service.create_skill.await_args.kwargs["data"]
+    assert request.frontmatter == {"allowed-tools": ["Read"], "license": "MIT"}
 
 
 def test_get_skill_returns_file_metadata_without_content(skill_app):
@@ -133,6 +140,14 @@ def test_get_skill_returns_file_metadata_without_content(skill_app):
 
 def test_get_sync_content_preserves_cli_shape(skill_app):
     skill = _make_skill()
+    skill.frontmatter = {
+        "allowedTools": ["Bash(git add *)", "Bash(git status *)"],
+        "disallowedTools": "Write",
+        "argumentHint": "[pull-request]",
+        "arguments": ["subcommand"],
+        "future-field": {"enabled": True},
+    }
+    skill.allowedTools = ["Bash(git add *)", "Bash(git status *)"]
     file_response = SkillFileResponse(
         relativePath="references/guide.md",
         content="# Guide",
@@ -147,6 +162,8 @@ def test_get_sync_content_preserves_cli_shape(skill_app):
 
     assert response.status_code == 200
     assert response.json()["body"] == "# Test"
+    assert response.json()["frontmatter"] == skill.frontmatter
+    assert response.json()["allowedTools"] == skill.allowedTools
     assert response.json()["files"][0]["content"] == "# Guide"
 
 
@@ -175,6 +192,21 @@ def test_update_skill_returns_incremented_version(skill_app):
 
     assert response.status_code == 200
     assert response.json()["version"] == 2
+
+
+def test_update_skill_accepts_frontmatter_only(skill_app):
+    skill = _make_skill()
+    skill.frontmatter = {"license": "MIT"}
+    skill_app.service.update_skill.return_value = (skill, [], _PERMISSIONS)
+
+    response = skill_app.client.patch(
+        f"/api/v1/skills/{skill.id}",
+        json={"frontmatter": {"license": "MIT"}},
+    )
+
+    assert response.status_code == 200
+    request = skill_app.service.update_skill.await_args.kwargs["data"]
+    assert request.frontmatter == {"license": "MIT"}
 
 
 def test_delete_skill_returns_204(skill_app):

@@ -111,38 +111,85 @@ def test_discover_with_auxiliary_files(tmp_path):
 
 
 def test_discover_frontmatter_fields(tmp_path):
-    content = _md(
-        "test-skill",
-        "Test desc",
-        "Body here",
-        category="devops",
-        alwaysApply=True,
-        userInvocable=False,
-        disableModelInvocation=True,
-        tags=["tag1", "tag2"],
-        displayTitle="Test Skill Title",
-    )
+    content = """---
+name: test-skill
+description: Test desc
+allowed-tools:
+  - Read
+  - Grep
+argument-hint: "[pull-request]"
+user-invocable: false
+disable-model-invocation: true
+license: MIT
+---
+Body here"""
     folder = _skill_folder(tmp_path, "skills/test", content)
     result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
     skill = result.skills[0]
-    assert skill.category == "devops"
-    assert skill.always_apply is True
     assert skill.user_invocable is False
     assert skill.disable_model_invocation is True
-    assert skill.tags == ["tag1", "tag2"]
-    assert skill.display_title == "Test Skill Title"
+    assert skill.allowed_tools == ["Read", "Grep"]
+    assert skill.frontmatter == {
+        "allowedTools": ["Read", "Grep"],
+        "license": "MIT",
+        "argumentHint": "[pull-request]",
+        "disableModelInvocation": True,
+        "userInvocable": False,
+    }
+
+
+def test_discover_preserves_unrecognized_frontmatter_at_top_level(tmp_path):
+    folder = _skill_folder(
+        tmp_path,
+        "skills/custom",
+        "---\nname: custom\ndescription: Custom\nfoo: bar\narguments:\n  - subcommand\n"
+        "disallowed-tools: Write\nmetadata:\n  owner: platform\ndisplayTitle: Nested title\n"
+        "category: Nested category\nalwaysApply: true\ntags:\n  - nested\n---\nBody",
+    )
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+
+    assert result.skills[0].frontmatter == {
+        "foo": "bar",
+        "arguments": ["subcommand"],
+        "disallowedTools": "Write",
+        "metadata": {"owner": "platform"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("allowed_tools", "expected"),
+    [
+        ("Read Grep", ["Read", "Grep"]),
+        ("Read, Grep", ["Read", "Grep"]),
+        (
+            "Bash(git add *) Bash(git commit *) Bash(git status *)",
+            ["Bash(git add *)", "Bash(git commit *)", "Bash(git status *)"],
+        ),
+    ],
+)
+def test_discover_accepts_allowed_tools_string(tmp_path, allowed_tools, expected):
+    folder = _skill_folder(
+        tmp_path,
+        "skills/tools",
+        _md("tools", **{"allowed-tools": allowed_tools}),
+    )
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+
+    assert result.errors == []
+    assert result.skills[0].allowed_tools == expected
+    assert result.skills[0].frontmatter["allowedTools"] == expected
 
 
 def test_discover_defaults(tmp_path):
     folder = _skill_folder(tmp_path, "skills/minimal", _md("minimal", "Minimal skill"))
     result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
     skill = result.skills[0]
-    assert skill.category == "general"
-    assert skill.always_apply is False
     assert skill.user_invocable is True
     assert skill.disable_model_invocation is False
     assert skill.allowed_tools is None
-    assert skill.tags == []
+    assert skill.frontmatter == {}
 
 
 # ── error cases ───────────────────────────────────────────────
@@ -225,7 +272,7 @@ def test_quoted_false_boolean_is_rejected(tmp_path):
     folder = _skill_folder(
         tmp_path,
         "skills/bad-bool",
-        '---\nname: bad-bool\ndescription: A skill\nalwaysApply: "false"\n---\nBody',
+        '---\nname: bad-bool\ndescription: A skill\nuser-invocable: "false"\n---\nBody',
     )
 
     result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
@@ -237,8 +284,7 @@ def test_quoted_false_boolean_is_rejected(tmp_path):
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("tags", "not-a-list"),
-        ("allowedTools", "not-a-list"),
+        ("allowedTools", 123),
         ("description", 123),
     ],
 )
@@ -251,6 +297,16 @@ def test_invalid_frontmatter_field_type_is_rejected(tmp_path, field, value):
 
     assert result.skills == []
     assert result.errors[0].errorCode == SkillSyncSkillErrorCode.SKILL_PARSE_FAILED
+
+
+@pytest.mark.parametrize("name", ["has/slash", "has\\backslash", "..", "UPPER", "has space"])
+def test_invalid_skill_name_is_rejected(tmp_path, name):
+    folder = _skill_folder(tmp_path, "skills/invalid-name", _md(name))
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+
+    assert result.skills == []
+    assert result.errors[0].errorCode == SkillSyncSkillErrorCode.SKILL_NAME_MISSING
 
 
 def test_oversized_skill_paths_become_errors():

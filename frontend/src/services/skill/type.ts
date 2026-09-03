@@ -1,5 +1,20 @@
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
+export type ClaudeCodeSkillFrontmatter = {
+  allowedTools?: string[] | null;
+  license?: string | null;
+  compatibility?: string | null;
+  metadata?: { [key: string]: JsonValue } | null;
+  argumentHint?: string | null;
+  disableModelInvocation?: boolean;
+  userInvocable?: boolean;
+  model?: string | null;
+  context?: string | null;
+  agent?: string | null;
+  hooks?: { [key: string]: JsonValue } | null;
+  [key: string]: JsonValue | undefined;
+};
+
 export type SkillPermissions = {
   VIEW: boolean;
   EDIT: boolean;
@@ -41,7 +56,7 @@ export type SkillMetadata = {
 
 export type SkillDetail = Omit<SkillMetadata, 'path' | 'deletedAt'> & {
   body: string;
-  frontmatter: { [key: string]: JsonValue };
+  frontmatter: ClaudeCodeSkillFrontmatter;
   userInvocable: boolean;
   disableModelInvocation: boolean;
   allowedTools?: string[] | null;
@@ -69,9 +84,7 @@ export type CreateSkillRequest = {
   category: string;
   tags: string[];
   alwaysApply: boolean;
-  userInvocable: boolean;
-  disableModelInvocation: boolean;
-  allowedTools?: string[] | null;
+  frontmatter: ClaudeCodeSkillFrontmatter;
 };
 
 export type UpdateSkillRequest = Partial<CreateSkillRequest>;

@@ -338,12 +338,9 @@ class SkillSyncApplyService:
     ) -> Skill:
         skill = Skill(
             name=discovered.name,
-            displayTitle=discovered.display_title,
             description=discovered.description,
             body=discovered.body,
             frontmatter=discovered.frontmatter,
-            category=discovered.category,
-            alwaysApply=discovered.always_apply,
             userInvocable=discovered.user_invocable,
             disableModelInvocation=discovered.disable_model_invocation,
             allowedTools=discovered.allowed_tools,
@@ -363,7 +360,6 @@ class SkillSyncApplyService:
                 "syncStatus": "synced",
             },
             path=discovered.upstream_id,
-            tags=discovered.tags,
             enabled=True,
             createdByRegistry=True,
             fileCount=len(discovered.files),
@@ -392,16 +388,12 @@ class SkillSyncApplyService:
         *,
         session: AsyncClientSession,
     ) -> None:
-        existing.displayTitle = discovered.display_title
         existing.description = discovered.description
         existing.body = discovered.body
         existing.frontmatter = discovered.frontmatter
-        existing.category = discovered.category
-        existing.alwaysApply = discovered.always_apply
         existing.userInvocable = discovered.user_invocable
         existing.disableModelInvocation = discovered.disable_model_invocation
         existing.allowedTools = discovered.allowed_tools
-        existing.tags = discovered.tags
         existing.fileCount = len(discovered.files)
         existing.path = discovered.upstream_id
         existing.sourceMetadata = {

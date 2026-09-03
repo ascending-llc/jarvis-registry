@@ -50,15 +50,11 @@ def _discovered(*, files=None) -> DiscoveredSkill:
         upstream_id="skills/demo",
         name="demo",
         description="Demo skill",
-        display_title="Demo",
         body="Instructions",
-        frontmatter={"name": "demo", "description": "Demo skill"},
-        category="general",
-        always_apply=False,
+        frontmatter={"license": "MIT"},
         user_invocable=True,
         disable_model_invocation=False,
         allowed_tools=["read"],
-        tags=["demo"],
         files=files or [],
     )
 
@@ -297,13 +293,17 @@ async def test_create_skill_uses_snapshot_metadata_and_grants_owner():
     assert result is created
     assert metadata["upstreamId"] == f"{source.id}:skills/demo"
     assert (metadata["owner"], metadata["repo"], metadata["ref"]) == ("octocat", "skills", "main")
+    assert skill_model.call_args.kwargs["frontmatter"] == {"license": "MIT"}
+    assert skill_model.call_args.kwargs["allowedTools"] == ["read"]
+    for bookkeeping_field in ("displayTitle", "category", "alwaysApply", "tags"):
+        assert bookkeeping_field not in skill_model.call_args.kwargs
     acl_service.grant_permission.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_update_skill_replaces_synced_fields_and_increments_version():
+async def test_update_skill_replaces_synced_fields_and_preserves_registry_bookkeeping():
     existing = SimpleNamespace(
-        displayTitle=None,
+        displayTitle="Manual title",
         description="old",
         body="old",
         frontmatter={},
@@ -312,7 +312,7 @@ async def test_update_skill_replaces_synced_fields_and_increments_version():
         userInvocable=False,
         disableModelInvocation=True,
         allowedTools=None,
-        tags=[],
+        tags=["manual"],
         fileCount=0,
         path="old",
         sourceMetadata={"sourceId": "source-1"},
@@ -321,10 +321,15 @@ async def test_update_skill_replaces_synced_fields_and_increments_version():
         save=AsyncMock(),
     )
     now = datetime.now(UTC)
+    discovered = _discovered()
+    discovered.display_title = "Synced title"
+    discovered.category = "synced"
+    discovered.always_apply = False
+    discovered.tags = ["synced"]
 
     await SkillSyncApplyService._update_skill(
         existing,
-        _discovered(),
+        discovered,
         "a" * 40,
         _snapshot(),
         now,
@@ -332,8 +337,14 @@ async def test_update_skill_replaces_synced_fields_and_increments_version():
     )
 
     assert existing.description == "Demo skill"
+    assert existing.frontmatter == {"license": "MIT"}
+    assert existing.allowedTools == ["read"]
     assert existing.path == "skills/demo"
     assert existing.version == 5
+    assert existing.displayTitle == "Manual title"
+    assert existing.category == "old"
+    assert existing.alwaysApply is True
+    assert existing.tags == ["manual"]
     assert existing.sourceMetadata["sourceId"] == "source-1"
     assert existing.sourceMetadata["commitSha"] == "a" * 40
     existing.save.assert_awaited_once()
