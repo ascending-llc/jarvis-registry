@@ -8,7 +8,11 @@ from pydantic import ValidationError
 from registry_pkgs.models.enums import SkillSyncSkillErrorCode
 from registry_pkgs.models.skill_sync_job import SkillSyncDiscoverySummary, SkillSyncSkillError
 
-from ..models.skill_frontmatter import ClaudeCodeSkillFrontmatter, parse_claude_code_frontmatter
+from ..models.skill_frontmatter import (
+    ClaudeCodeSkillFrontmatter,
+    dump_claude_code_frontmatter,
+    parse_claude_code_frontmatter,
+)
 from .skill_sync_github_service import ExtractedAuxFile, ExtractedSkillFolder, ExtractionResult
 
 logger = logging.getLogger(__name__)
@@ -161,11 +165,7 @@ def _process_skill_folder(
         name=frontmatter.name,
         description=frontmatter.description,
         body=body,
-        frontmatter=frontmatter.model_dump(
-            exclude={"name", "description"},
-            exclude_unset=True,
-            exclude_none=True,
-        ),
+        frontmatter=dump_claude_code_frontmatter(frontmatter, exclude_unset=True),
         user_invocable=frontmatter.userInvocable,
         disable_model_invocation=frontmatter.disableModelInvocation,
         allowed_tools=frontmatter.allowedTools,

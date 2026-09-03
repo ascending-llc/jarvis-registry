@@ -20,6 +20,15 @@ _MERGE_ALIASES = {
     "user-invocable": "userInvocable",
 }
 
+_REGISTRY_BOOKKEEPING_FIELDS = {
+    "name",
+    "description",
+    "displayTitle",
+    "category",
+    "alwaysApply",
+    "tags",
+}
+
 
 def _tokenize_allowed_tools(value: str) -> list[str]:
     """Split allowed-tools on separators outside parenthesized tool specifiers."""
@@ -78,3 +87,16 @@ def parse_claude_code_frontmatter(raw: dict[str, Any]) -> ClaudeCodeSkillFrontma
     """Normalize merge-ambiguous aliases, validate known fields, and pass extras through."""
     normalized = {_MERGE_ALIASES.get(key, key): value for key, value in raw.items()}
     return ClaudeCodeSkillFrontmatter.model_validate(normalized)
+
+
+def dump_claude_code_frontmatter(
+    frontmatter: ClaudeCodeSkillFrontmatter,
+    *,
+    exclude_unset: bool = False,
+) -> dict[str, Any]:
+    """Serialize portable frontmatter without Registry-only bookkeeping fields."""
+    return frontmatter.model_dump(
+        exclude=_REGISTRY_BOOKKEEPING_FIELDS,
+        exclude_unset=exclude_unset,
+        exclude_none=True,
+    )

@@ -143,7 +143,8 @@ def test_discover_preserves_unrecognized_frontmatter_at_top_level(tmp_path):
         tmp_path,
         "skills/custom",
         "---\nname: custom\ndescription: Custom\nfoo: bar\narguments:\n  - subcommand\n"
-        "disallowed-tools: Write\nmetadata:\n  owner: platform\n---\nBody",
+        "disallowed-tools: Write\nmetadata:\n  owner: platform\ndisplayTitle: Nested title\n"
+        "category: Nested category\nalwaysApply: true\ntags:\n  - nested\n---\nBody",
     )
 
     result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))

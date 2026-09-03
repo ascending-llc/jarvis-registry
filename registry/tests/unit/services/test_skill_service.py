@@ -216,6 +216,10 @@ async def test_create_inserts_skill_and_grants_owner(mock_skill_cls, mock_mongod
             "user-invocable": False,
             "license": "MIT",
             "custom": "value",
+            "displayTitle": "Nested title",
+            "category": "Nested category",
+            "alwaysApply": True,
+            "tags": ["nested"],
         },
     )
 
@@ -280,6 +284,8 @@ async def test_update_accepts_frontmatter_only_and_replaces_existing_value(
         frontmatter={
             "allowed-tools": "Read, Grep",
             "foo": "bar",
+            "alwaysApply": True,
+            "tags": ["nested"],
         }
     )
 
@@ -309,13 +315,19 @@ async def test_update_invalid_frontmatter_returns_422_without_saving(
     _configure_transaction(mock_mongodb)
     service = SkillService(acl_service, user_service)
     service._get_existing_skill = AsyncMock(return_value=skill)
-    data = SkillUpdateRequest(frontmatter={"allowedTools": 123})
+    data = SkillUpdateRequest(
+        description="Must not be applied",
+        frontmatter={"allowedTools": 123},
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await service.update_skill(skill.id, data, _USER_ID)
 
     assert exc_info.value.status_code == 422
     assert "Invalid frontmatter" in exc_info.value.detail
+    assert skill.description == "description"
+    assert skill.frontmatter == {"license": "Apache-2.0"}
+    assert skill.version == 1
     skill.save.assert_not_awaited()
 
 

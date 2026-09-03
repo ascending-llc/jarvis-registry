@@ -5,7 +5,11 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from registry.models.skill_frontmatter import ClaudeCodeSkillFrontmatter, parse_claude_code_frontmatter
+from registry.models.skill_frontmatter import (
+    ClaudeCodeSkillFrontmatter,
+    dump_claude_code_frontmatter,
+    parse_claude_code_frontmatter,
+)
 
 
 def test_accepts_canonical_kebab_case_and_dumps_camel_case() -> None:
@@ -66,6 +70,28 @@ def test_preserves_unknown_keys_at_top_level_without_mutating_input() -> None:
     assert frontmatter.metadata == {"foo": "explicit", "owner": "platform"}
     assert frontmatter.model_dump()["foo"] == "top-level"
     assert raw == original
+
+
+def test_dump_excludes_registry_bookkeeping_and_preserves_open_fields() -> None:
+    frontmatter = parse_claude_code_frontmatter(
+        {
+            "name": "portable-skill",
+            "description": "Portable",
+            "displayTitle": "Display title",
+            "category": "Code",
+            "alwaysApply": True,
+            "tags": ["review"],
+            "arguments": ["subcommand"],
+            "future-field": {"enabled": True},
+        }
+    )
+
+    assert dump_claude_code_frontmatter(frontmatter) == {
+        "disableModelInvocation": False,
+        "userInvocable": True,
+        "arguments": ["subcommand"],
+        "future-field": {"enabled": True},
+    }
 
 
 @pytest.mark.parametrize(

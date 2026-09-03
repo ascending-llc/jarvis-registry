@@ -176,6 +176,55 @@ Body`;
     expect(createRequest).not.toHaveProperty('disableModelInvocation');
   });
 
+  test('round-trips a pasted skill after a normalized API save and reload', () => {
+    const pastedMarkdown = `---
+name: round-trip-skill
+description: Round-trip description
+allowed-tools: Bash(git add *) Bash(git status *)
+disallowed-tools: Write
+argument-hint: "[pull-request]"
+arguments:
+  - subcommand
+future-field:
+  enabled: true
+---
+# Instructions`;
+    const createRequest = toCreateRequest(createDraft(makeDetail(), pastedMarkdown));
+    const normalizedAllowedTools = ['Bash(git add *)', 'Bash(git status *)'];
+    const reloadedMarkdown = composeSkillMarkdown(
+      makeDetail({
+        name: createRequest.name,
+        displayTitle: createRequest.displayTitle,
+        description: createRequest.description,
+        body: createRequest.body,
+        allowedTools: normalizedAllowedTools,
+        frontmatter: {
+          allowedTools: normalizedAllowedTools,
+          disallowedTools: 'Write',
+          argumentHint: '[pull-request]',
+          arguments: ['subcommand'],
+          'future-field': { enabled: true },
+          disableModelInvocation: false,
+          userInvocable: true,
+        },
+      }),
+    );
+
+    const reloaded = parseSkillMarkdown(reloadedMarkdown);
+    expect(reloaded.body).toBe('# Instructions');
+    expect(reloaded.frontmatter).toMatchObject({
+      name: 'round-trip-skill',
+      description: 'Round-trip description',
+      'allowed-tools': normalizedAllowedTools,
+      'disallowed-tools': 'Write',
+      'argument-hint': '[pull-request]',
+      arguments: ['subcommand'],
+      'future-field': { enabled: true },
+    });
+    expect(reloaded.frontmatter).not.toHaveProperty('metadata');
+    expect(reloaded.frontmatter).not.toHaveProperty('alwaysApply');
+  });
+
   test('initializes alwaysApply from detail and defaults new drafts to false', () => {
     expect(createDraft(makeDetail({ alwaysApply: true })).alwaysApply).toBe(true);
     expect(createEmptyDraft('Author').alwaysApply).toBe(false);

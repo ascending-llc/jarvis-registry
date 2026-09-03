@@ -140,6 +140,14 @@ def test_get_skill_returns_file_metadata_without_content(skill_app):
 
 def test_get_sync_content_preserves_cli_shape(skill_app):
     skill = _make_skill()
+    skill.frontmatter = {
+        "allowedTools": ["Bash(git add *)", "Bash(git status *)"],
+        "disallowedTools": "Write",
+        "argumentHint": "[pull-request]",
+        "arguments": ["subcommand"],
+        "future-field": {"enabled": True},
+    }
+    skill.allowedTools = ["Bash(git add *)", "Bash(git status *)"]
     file_response = SkillFileResponse(
         relativePath="references/guide.md",
         content="# Guide",
@@ -154,6 +162,8 @@ def test_get_sync_content_preserves_cli_shape(skill_app):
 
     assert response.status_code == 200
     assert response.json()["body"] == "# Test"
+    assert response.json()["frontmatter"] == skill.frontmatter
+    assert response.json()["allowedTools"] == skill.allowedTools
     assert response.json()["files"][0]["content"] == "# Guide"
 
 

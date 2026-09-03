@@ -18,7 +18,11 @@ from registry_pkgs.models.enums import RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.oauth.user_service import UserService
 
-from ..models.skill_frontmatter import ClaudeCodeSkillFrontmatter, parse_claude_code_frontmatter
+from ..models.skill_frontmatter import (
+    ClaudeCodeSkillFrontmatter,
+    dump_claude_code_frontmatter,
+    parse_claude_code_frontmatter,
+)
 from ..schemas.acl_schema import ResourcePermissions
 from ..schemas.skill_api_schemas import (
     SkillCreateRequest,
@@ -285,10 +289,7 @@ class SkillService:
             **data.model_dump(exclude={"frontmatter"}),
             author=object_user_id,
             authorName=resolved_author_name,
-            frontmatter=validated_frontmatter.model_dump(
-                exclude={"name", "description"},
-                exclude_none=True,
-            ),
+            frontmatter=dump_claude_code_frontmatter(validated_frontmatter),
             disableModelInvocation=validated_frontmatter.disableModelInvocation,
             userInvocable=validated_frontmatter.userInvocable,
             allowedTools=validated_frontmatter.allowedTools,
@@ -373,15 +374,12 @@ class SkillService:
                                 status_code=status.HTTP_409_CONFLICT,
                                 detail="A skill with this name already exists",
                             )
-                    for field_name, value in updates.items():
-                        setattr(skill, field_name, value)
-                    if "name" in updates:
-                        skill.path = updates["name"]
+                    validated_frontmatter = None
                     if frontmatter_update is not None:
                         try:
                             validated_frontmatter = _build_frontmatter(
-                                skill.name,
-                                skill.description,
+                                updates.get("name", skill.name),
+                                updates.get("description", skill.description),
                                 frontmatter_update,
                             )
                         except ValidationError as e:
@@ -389,10 +387,12 @@ class SkillService:
                                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                                 detail=f"Invalid frontmatter: {e.errors(include_url=False)}",
                             ) from e
-                        skill.frontmatter = validated_frontmatter.model_dump(
-                            exclude={"name", "description"},
-                            exclude_none=True,
-                        )
+                    for field_name, value in updates.items():
+                        setattr(skill, field_name, value)
+                    if "name" in updates:
+                        skill.path = updates["name"]
+                    if validated_frontmatter is not None:
+                        skill.frontmatter = dump_claude_code_frontmatter(validated_frontmatter)
                         skill.disableModelInvocation = validated_frontmatter.disableModelInvocation
                         skill.userInvocable = validated_frontmatter.userInvocable
                         skill.allowedTools = validated_frontmatter.allowedTools
