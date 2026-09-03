@@ -8,6 +8,7 @@ import httpx
 from agno.models.aws import AwsBedrock
 from agno.run.cancel import set_cancellation_manager
 
+from registry_pkgs.core.structured_logging import configure_structured_logging
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
@@ -17,6 +18,8 @@ from registry_pkgs.oauth.headers import HeaderBuildConfig
 from registry_pkgs.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.user_service import UserService
+from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
+from registry_pkgs.telemetry.workflow_metrics import initialize_workflow_metrics
 from registry_pkgs.workflows.a2a_headers_provider import make_a2a_headers_provider
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
@@ -27,7 +30,49 @@ from workflow_worker.config import settings
 from workflow_worker.executor import run_bounded
 from workflow_worker.scheduler import calculate_sleep_seconds
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("workflow_worker.main")
+
+_SERVICE_NAME = "workflow-worker"
+
+
+def _initialize_telemetry() -> None:
+    """Best-effort telemetry setup that should not block the worker from starting."""
+    try:
+        settings.configure_logging("workflow_worker")
+    except Exception:
+        # Emergency fallback: if even baseline logging config fails, install a root handler so
+        # startup/shutdown diagnostics are not silently dropped when nothing else configures one.
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
+        )
+        logger.warning("Failed to configure baseline logging", exc_info=True)
+    try:
+        configure_structured_logging(
+            "workflow_worker",
+            "registry_pkgs",
+            service_name=_SERVICE_NAME,
+            service_version=settings.telemetry_config.build_version,
+        )
+    except Exception:
+        logger.warning("Failed to configure structured logging", exc_info=True)
+    try:
+        setup_metrics(_SERVICE_NAME, settings.telemetry_config)
+        initialize_workflow_metrics(settings.telemetry_config)
+    except Exception:
+        logger.warning("Failed to initialize metrics", exc_info=True)
+    try:
+        setup_tracing(_SERVICE_NAME, settings.telemetry_config)
+    except Exception:
+        logger.warning("Failed to initialize tracing", exc_info=True)
+
+
+def _shutdown_telemetry_safe() -> None:
+    """Best-effort telemetry shutdown that never raises."""
+    try:
+        shutdown_telemetry()
+    except Exception:
+        logger.warning("Failed to shutdown telemetry", exc_info=True)
 
 
 def _handle_task_done(task: asyncio.Task[None], in_flight: set[asyncio.Task[None]]) -> None:
@@ -188,10 +233,8 @@ async def _run_scheduler_loop(
 
 async def main() -> None:
     """Worker entrypoint: init shared resources → run scheduler loop → graceful shutdown."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
-    )
+    _initialize_telemetry()
+    logger.info("Starting workflow worker")
 
     await init_mongodb(settings.mongo_config)
     schedule_repository = WorkflowScheduleRepository(MongoDB.get_database())
@@ -222,6 +265,7 @@ async def main() -> None:
         await azure_client_cache.close()
         close_redis_client(redis_client)
         await close_mongodb()
+        _shutdown_telemetry_safe()
 
 
 if __name__ == "__main__":
