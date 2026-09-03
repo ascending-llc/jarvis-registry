@@ -1,4 +1,4 @@
-import { parseDocument, stringify } from 'yaml';
+import { Document, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 
 import type {
   CreateSkillRequest,
@@ -37,6 +37,11 @@ const CLAUDE_CODE_FRONTMATTER_KEBAB_KEYS: Record<string, string> = {
 const CLAUDE_CODE_FRONTMATTER_CAMEL_KEYS = Object.fromEntries(
   Object.entries(CLAUDE_CODE_FRONTMATTER_KEBAB_KEYS).map(([camelKey, kebabKey]) => [kebabKey, camelKey]),
 );
+
+// Claude Code's own docs accept allowed-tools as a space-/comma-separated string, and the backend's
+// `_tokenize_allowed_tools` already round-trips a single-space join back into the original paren-aware
+// entries — so the editor renders it as a string rather than a YAML list, matching Claude Code's own style.
+const ALLOWED_TOOLS_KEBAB_KEY = CLAUDE_CODE_FRONTMATTER_KEBAB_KEYS.allowedTools;
 
 const REGISTRY_BOOKKEEPING_FRONTMATTER_KEYS = new Set([
   'name',
@@ -128,6 +133,25 @@ const toKebabCaseFrontmatter = (frontmatter: { [key: string]: JsonValue }): { [k
     Object.entries(frontmatter).map(([key, value]) => [CLAUDE_CODE_FRONTMATTER_KEBAB_KEYS[key] ?? key, value]),
   );
 
+// Renders `allowed-tools` as a plain space-joined string instead of a YAML list (Claude Code's own
+// preferred style for this field) and every other array-valued field in flow style (`[a, b]`) instead of
+// YAML's default block list style, without changing the parsed value of either.
+const stringifyFrontmatterYaml = (kebabFrontmatter: { [key: string]: JsonValue }): string => {
+  const document = new Document(kebabFrontmatter);
+  if (isMap(document.contents)) {
+    for (const item of document.contents.items) {
+      const key = isScalar(item.key) ? String(item.key.value) : String(item.key);
+      const value = kebabFrontmatter[key];
+      if (key === ALLOWED_TOOLS_KEBAB_KEY && Array.isArray(value)) {
+        item.value = document.createNode(value.map(entry => String(entry)).join(' '));
+        continue;
+      }
+      if (isSeq(item.value)) item.value.flow = true;
+    }
+  }
+  return document.toString({ lineWidth: 0, flowCollectionPadding: false }).trimEnd();
+};
+
 export const isSkillCategory = (value: string): value is SkillCategory =>
   SKILL_CATEGORIES.some(category => category.label === value);
 
@@ -198,7 +222,7 @@ export const composeSkillMarkdown = (detail: SkillDetail): string => {
   frontmatter.userInvocable =
     firstDefined(storedFrontmatter.userInvocable, detail.userInvocable, inlineFrontmatter.userInvocable) ?? true;
 
-  const yaml = stringify(toKebabCaseFrontmatter(frontmatter), { lineWidth: 0 }).trimEnd();
+  const yaml = stringifyFrontmatterYaml(toKebabCaseFrontmatter(frontmatter));
   const body = inlineBody.body ? `\n${inlineBody.body.replace(/^\n+/, '')}` : '';
   return `---\n${yaml}\n---${body}`;
 };
@@ -218,7 +242,10 @@ export const updateSkillMarkdownMetadata = (
   if (updates.description !== undefined) document.set('description', updates.description);
 
   const frontmatter = toFrontmatter(document.toJS());
-  const yaml = document.toString({ lineWidth: 0 }).trimEnd().replace(/\n/g, segments.lineEnding);
+  const yaml = document
+    .toString({ lineWidth: 0, flowCollectionPadding: false })
+    .trimEnd()
+    .replace(/\n/g, segments.lineEnding);
   const value = `---${segments.lineEnding}${yaml}${segments.lineEnding}---${segments.bodySuffix}`;
   return {
     value,

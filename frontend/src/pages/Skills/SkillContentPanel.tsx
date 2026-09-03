@@ -2,6 +2,7 @@ import { PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import SERVICES from '@/services';
 import type { SkillFileContent, SkillFileMetadata } from '@/services/skill/type';
@@ -208,6 +209,7 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
                   {`---\n${frontmatterSource}\n---`}
                 </pre>
                 <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
                   components={{
                     h1: ({ children }) => (
                       <h1 className='mb-4 text-2xl font-bold text-[var(--jarvis-text-strong)]'>{children}</h1>
@@ -255,6 +257,24 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
                     ),
                     img: ({ src, alt, title }) => (
                       <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
+                    ),
+                    table: ({ children }) => (
+                      <div className='mb-4 max-w-full overflow-auto rounded-lg border border-[color:var(--jarvis-border)]'>
+                        <table className='w-full min-w-max border-collapse text-left text-[13px]'>{children}</table>
+                      </div>
+                    ),
+                    thead: ({ children }) => (
+                      <thead className='bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text-strong)]'>
+                        {children}
+                      </thead>
+                    ),
+                    tbody: ({ children }) => (
+                      <tbody className='divide-y divide-[color:var(--jarvis-border)]'>{children}</tbody>
+                    ),
+                    tr: ({ children }) => <tr>{children}</tr>,
+                    th: ({ children }) => <th className='min-w-0 break-words px-3 py-2 font-bold'>{children}</th>,
+                    td: ({ children }) => (
+                      <td className='min-w-0 break-words px-3 py-2 text-[var(--jarvis-text)]'>{children}</td>
                     ),
                   }}
                 >
