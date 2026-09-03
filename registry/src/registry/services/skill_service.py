@@ -339,7 +339,7 @@ class SkillService:
         invalid_nulls = [k for k, v in updates.items() if v is None and k not in _nullable_fields]
         if invalid_nulls:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Fields cannot be null: {', '.join(sorted(invalid_nulls))}",
             )
         if not updates and frontmatter_update is None:
