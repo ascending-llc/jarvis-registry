@@ -43,14 +43,14 @@ class AzureFoundryDiscoveryClient:
         provider_config: AzureAiFoundryProviderConfig,
         auth: AzureFoundryAuthService,
         author_id: PydanticObjectId,
-    ) -> list[A2AAgent]:
+    ) -> tuple[list[A2AAgent], list[dict[str, Any]]]:
         project_endpoint = provider_config.projectEndpoint
         if not project_endpoint:
             raise ValueError("Azure AI Foundry providerConfig.projectEndpoint is required")
 
         async with AIProjectClient(endpoint=project_endpoint, credential=auth) as project:
             names = await self._collect_agent_names(project, provider_config)
-            details = await self._fetch_agent_details(project, names)
+            details, skipped = await self._fetch_agent_details(project, names)
 
         a2a_details = [detail for detail in details if self._is_a2a_enabled(detail)]
         if not a2a_details:
@@ -59,7 +59,7 @@ class AzureFoundryDiscoveryClient:
                 project_endpoint,
                 len(details),
             )
-            return []
+            return [], skipped
 
         filter_kv = dict(provider_config.metadataFilter or {})
         if filter_kv:
@@ -99,7 +99,7 @@ class AzureFoundryDiscoveryClient:
                         exc_info=outcome.exc_info,
                     )
 
-        return agents
+        return agents, skipped
 
     async def _collect_agent_names(
         self,
@@ -125,9 +125,9 @@ class AzureFoundryDiscoveryClient:
         self,
         project: AIProjectClient,
         names: list[str],
-    ) -> list[Any]:
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
         if not names:
-            return []
+            return [], []
 
         outcomes = await run_bounded(
             names,
@@ -142,7 +142,11 @@ class AzureFoundryDiscoveryClient:
                     outcome.error,
                     exc_info=outcome.exc_info,
                 )
-        return [outcome.result for outcome in outcomes if outcome.ok and outcome.result is not None]
+        details = [outcome.result for outcome in outcomes if outcome.ok and outcome.result is not None]
+        skipped = [
+            {"runtimeArn": outcome.item, "reason": "agent_fetch_failed"} for outcome in outcomes if not outcome.ok
+        ]
+        return details, skipped
 
     @staticmethod
     def _is_a2a_enabled(detail: Any) -> bool:

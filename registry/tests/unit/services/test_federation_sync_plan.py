@@ -38,12 +38,13 @@ def test_protected_runtime_arns_only_includes_transient_discovery_failures() -> 
         "skipped_runtimes": [
             {"runtimeArn": "arn:detail", "reason": "detail_fetch_failed"},
             {"runtimeArn": "arn:tags", "reason": "tag_fetch_failed"},
+            {"runtimeArn": "azure-agent", "reason": "agent_fetch_failed"},
             {"runtimeArn": "arn:mismatch", "reason": "tag_filter_mismatch"},
             {"runtimeArn": "arn:unknown"},
         ]
     }
 
-    assert _protected_runtime_arns(discovered) == {"arn:detail", "arn:tags"}
+    assert _protected_runtime_arns(discovered) == {"arn:detail", "arn:tags", "azure-agent"}
 
 
 @pytest.mark.asyncio
@@ -1612,17 +1613,48 @@ async def test_build_sync_plan_does_not_delete_runtime_with_transient_discovery_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_type", "provider_config", "runtime_arn", "federation_metadata", "path"),
+    [
+        pytest.param(
+            FederationProviderType.AWS_AGENTCORE,
+            {"region": "us-east-1"},
+            "arn:aws:bedrock-agentcore:us-east-1:123:runtime/tag-failed",
+            make_agentcore_a2a_metadata(
+                runtime_arn="arn:aws:bedrock-agentcore:us-east-1:123:runtime/tag-failed",
+                runtime_version="1",
+            ),
+            "/tag-failed",
+            id="aws-agentcore",
+        ),
+        pytest.param(
+            FederationProviderType.AZURE_AI_FOUNDRY,
+            {"projectEndpoint": "https://example.projects.ai.azure.com"},
+            "temporarily-unavailable",
+            make_azure_foundry_metadata(
+                runtime_arn="temporarily-unavailable",
+                agent_name="temporarily-unavailable",
+            ),
+            "/temporarily-unavailable",
+            id="azure-foundry",
+        ),
+    ],
+)
 async def test_build_sync_plan_does_not_delete_a2a_runtime_with_transient_discovery_failure(
     federation_sync_service: FederationSyncService,
     monkeypatch,
+    provider_type,
+    provider_config,
+    runtime_arn,
+    federation_metadata,
+    path,
 ):
-    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
-    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/tag-failed"
+    federation = _make_federation(provider_type, provider_config)
     existing = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
-        path="/tag-failed",
+        federationMetadata=federation_metadata,
+        path=path,
     )
 
     monkeypatch.setattr(
@@ -1646,6 +1678,46 @@ async def test_build_sync_plan_does_not_delete_a2a_runtime_with_transient_discov
 
     assert result.summary.deletedAgents == 0
     assert result.a2a_deletes == []
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_deletes_genuinely_absent_azure_a2a_agent(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(
+        FederationProviderType.AZURE_AI_FOUNDRY,
+        {"projectEndpoint": "https://example.projects.ai.azure.com"},
+    )
+    runtime_arn = "deleted-in-azure"
+    existing = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata=make_azure_foundry_metadata(runtime_arn=runtime_arn, agent_name=runtime_arn),
+        path="/deleted-in-azure",
+    )
+
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedMCPServer.find",
+        lambda *_args, **_kwargs: _FakeQuery([]),
+    )
+
+    def _fake_a2a_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[],
+        protected_runtime_arns=set(),
+    )
+
+    assert result.summary.deletedAgents == 1
+    assert result.a2a_deletes == [(existing, runtime_arn)]
 
 
 @pytest.mark.asyncio

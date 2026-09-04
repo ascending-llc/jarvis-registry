@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 
+from registry.services.federation.azure_foundry_discovery import AzureFoundryDiscoveryClient
 from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler, AzureAiFoundrySyncHandler
 from registry.services.federation_sync_service import (
     FederationSyncMutationResult,
@@ -20,8 +21,10 @@ from registry_pkgs.models.enums import (
     FederationSyncStatus,
 )
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
+from registry_pkgs.testing.federation_metadata import make_azure_foundry_metadata
 from tests.unit.services.federation_sync_test_helpers import (
     _DEFAULT_USER_OBJECT_ID,
+    _FakeQuery,
     _make_federation,
     _patch_mongo_session,
 )
@@ -109,7 +112,7 @@ async def test_azure_sync_dispatches_through_handler(federation_sync_service: Fe
         FederationProviderType.AZURE_AI_FOUNDRY,
         {"projectEndpoint": "https://example.projects.ai.azure.com"},
     )
-    expected = {"mcp_servers": [], "a2a_agents": []}
+    expected = {"mcp_servers": [], "a2a_agents": [], "skipped_runtimes": []}
 
     azure_handler = MagicMock(spec=AzureAiFoundrySyncHandler)
     azure_handler.discover_entities = AsyncMock(return_value=expected)
@@ -133,7 +136,8 @@ async def test_azure_handler_discover_entities_uses_shared_cache_auth_service():
     cache = MagicMock()
     cache.get_auth_service = AsyncMock(return_value=auth)
     discovery_client = MagicMock()
-    discovery_client.discover_a2a_agents = AsyncMock(return_value=["agent"])
+    skipped_runtimes = [{"runtimeArn": "temporarily-unavailable", "reason": "agent_fetch_failed"}]
+    discovery_client.discover_a2a_agents = AsyncMock(return_value=(["agent"], skipped_runtimes))
     handler = AzureAiFoundrySyncHandler(azure_client_cache=cache, discovery_client=discovery_client)
 
     result = await handler.discover_entities(federation, author_id=_DEFAULT_USER_OBJECT_ID)
@@ -141,7 +145,69 @@ async def test_azure_handler_discover_entities_uses_shared_cache_auth_service():
     cache.get_auth_service.assert_awaited_once_with(federation.id)
     assert discovery_client.discover_a2a_agents.await_args.kwargs["auth"] is auth
     assert discovery_client.discover_a2a_agents.await_args.kwargs["author_id"] == _DEFAULT_USER_OBJECT_ID
-    assert result == {"a2a_agents": ["agent"], "mcp_servers": []}
+    assert result == {
+        "a2a_agents": ["agent"],
+        "mcp_servers": [],
+        "skipped_runtimes": skipped_runtimes,
+    }
+
+
+@pytest.mark.asyncio
+async def test_azure_preview_preserves_agent_when_detail_fetch_transiently_fails(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    runtime_arn = "temporarily-unavailable"
+    federation = _make_federation(
+        FederationProviderType.AZURE_AI_FOUNDRY,
+        {"projectEndpoint": "https://example.projects.ai.azure.com"},
+    )
+    existing = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata=make_azure_foundry_metadata(runtime_arn=runtime_arn, agent_name=runtime_arn),
+        path=f"/{runtime_arn}",
+    )
+
+    async def _list_agents():
+        yield SimpleNamespace(name=runtime_arn)
+
+    agents_api = SimpleNamespace(
+        list=lambda: _list_agents(),
+        get=AsyncMock(side_effect=RuntimeError("transient Azure failure")),
+    )
+    project = MagicMock()
+    project.__aenter__ = AsyncMock(return_value=SimpleNamespace(agents=agents_api))
+    project.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "registry.services.federation.azure_foundry_discovery.AIProjectClient",
+        MagicMock(return_value=project),
+    )
+
+    cache = MagicMock()
+    cache.get_auth_service = AsyncMock(return_value=object())
+    federation_sync_service.sync_handlers[FederationProviderType.AZURE_AI_FOUNDRY] = AzureAiFoundrySyncHandler(
+        azure_client_cache=cache,
+        discovery_client=AzureFoundryDiscoveryClient(),
+    )
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedMCPServer.find",
+        lambda *_args, **_kwargs: _FakeQuery([]),
+    )
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.A2AAgent.find",
+        lambda *_args, **_kwargs: _FakeQuery([existing]),
+    )
+
+    result = await federation_sync_service.preview_manual_sync(
+        federation=federation,
+        reason="test transient detail failure",
+        triggered_by="user-1",
+    )
+
+    agents_api.get.assert_awaited_once_with(runtime_arn)
+    assert result.discovered_a2a_count == 0
+    assert result.summary.deletedAgents == 0
 
 
 @pytest.mark.asyncio
@@ -491,7 +557,7 @@ async def test_preview_manual_sync_does_not_mutate_or_create_jobs(federation_syn
         "mcp_servers": [SimpleNamespace()],
         "a2a_agents": [],
         "skipped_runtimes": [
-            {"runtimeArn": "arn:transient", "reason": "tag_fetch_failed"},
+            {"runtimeArn": "arn:transient", "reason": "agent_fetch_failed"},
             {"runtimeArn": "arn:filtered", "reason": "tag_filter_mismatch"},
         ],
     }
