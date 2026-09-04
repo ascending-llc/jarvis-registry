@@ -154,10 +154,10 @@ class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
     ) -> dict[str, list[Any]]:
         provider_config = AzureAiFoundryProviderConfig(**dict(federation.providerConfig or {}))
         auth = await self._azure_client_cache.get_auth_service(federation.id)
-        agents = await self.discovery_client.discover_a2a_agents(
+        agents, skipped_runtimes = await self.discovery_client.discover_a2a_agents(
             provider_config=provider_config,
             auth=auth,
             author_id=author_id,
         )
         # Foundry hosted agents only expose A2A;
-        return {"a2a_agents": agents, "mcp_servers": []}
+        return {"a2a_agents": agents, "mcp_servers": [], "skipped_runtimes": skipped_runtimes}

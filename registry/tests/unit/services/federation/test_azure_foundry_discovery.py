@@ -94,7 +94,10 @@ class _FakeAgents:
         return _iter()
 
     async def get(self, name: str):
-        return self._details_map[name]
+        result = self._details_map[name]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class _FakeProjectClient:
@@ -149,7 +152,7 @@ async def test_fetch_agent_details_respects_configured_concurrency(monkeypatch):
 
     assert peak_in_flight == 2
     release.set()
-    assert await task == ["a", "b", "c"]
+    assert await task == (["a", "b", "c"], [])
 
 
 def _make_auth_stub() -> AzureFoundryAuthService:
@@ -169,11 +172,13 @@ async def test_discover_passes_facade_directly_as_aiproject_credential():
         return_value=_FakeProjectClient(agents_fake),
     )
     with ai_project as project_cls, _patch_httpx():
-        await AzureFoundryDiscoveryClient().discover_a2a_agents(
+        agents, skipped = await AzureFoundryDiscoveryClient().discover_a2a_agents(
             provider_config=_provider_config(),
             auth=auth,
             author_id=AUTHOR_ID,
         )
+    assert agents == []
+    assert skipped == []
     assert project_cls.call_args.kwargs["credential"] is auth  # facade passed directly, no .credential()
 
 
@@ -335,13 +340,67 @@ async def test_discover_includes_agents_from_dict_backed_sdk_models(fake_a2a_age
         ),
     ):
         client = AzureFoundryDiscoveryClient()
-        result = await client.discover_a2a_agents(
+        result, skipped = await client.discover_a2a_agents(
             provider_config=_provider_config(),
             auth=_make_auth_stub(),
             author_id=AUTHOR_ID,
         )
 
     assert [a.federationMetadata.agentName for a in result] == ["echo-a2a"]
+    assert skipped == []
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_agent_detail_fetch_failures_for_stale_delete_protection(
+    fake_a2a_agent_factory,
+    caplog,
+):
+    agents_fake = _FakeAgents(
+        summaries=[_agent_summary("available"), _agent_summary("temporarily-unavailable")],
+        details_map={
+            "available": _agent_detail("available", a2a=True),
+            "temporarily-unavailable": RuntimeError("transient Azure failure"),
+        },
+    )
+
+    resolver = MagicMock()
+    resolver.get_agent_card = AsyncMock(return_value=_fake_card_payload("available"))
+
+    with (
+        _patch_project(agents_fake),
+        _patch_httpx(),
+        patch(
+            "registry.services.federation.azure_foundry_discovery.A2ACardResolver",
+            return_value=resolver,
+        ),
+    ):
+        result, skipped = await AzureFoundryDiscoveryClient().discover_a2a_agents(
+            provider_config=_provider_config(),
+            auth=_make_auth_stub(),
+            author_id=AUTHOR_ID,
+        )
+
+    assert [agent.federationMetadata.agentName for agent in result] == ["available"]
+    assert skipped == [{"runtimeArn": "temporarily-unavailable", "reason": "agent_fetch_failed"}]
+    assert "agents.get(temporarily-unavailable) failed: transient Azure failure" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_discover_preserves_skipped_failures_when_no_agent_details_are_available():
+    agents_fake = _FakeAgents(
+        summaries=[_agent_summary("temporarily-unavailable")],
+        details_map={"temporarily-unavailable": RuntimeError("transient Azure failure")},
+    )
+
+    with _patch_project(agents_fake):
+        result, skipped = await AzureFoundryDiscoveryClient().discover_a2a_agents(
+            provider_config=_provider_config(),
+            auth=_make_auth_stub(),
+            author_id=AUTHOR_ID,
+        )
+
+    assert result == []
+    assert skipped == [{"runtimeArn": "temporarily-unavailable", "reason": "agent_fetch_failed"}]
 
 
 @pytest.mark.asyncio
@@ -366,12 +425,13 @@ async def test_discover_filters_to_a2a_enabled_agents_only(fake_a2a_agent_factor
         ),
     ):
         client = AzureFoundryDiscoveryClient()
-        result = await client.discover_a2a_agents(
+        result, skipped = await client.discover_a2a_agents(
             provider_config=_provider_config(),
             auth=_make_auth_stub(),
             author_id=AUTHOR_ID,
         )
 
+    assert skipped == []
     assert len(result) == 1
     agent = result[0]
     assert agent.federationMetadata.agentName == "with-a2a"
@@ -401,12 +461,13 @@ async def test_discover_marks_enrichment_failure_when_card_fetch_fails(fake_a2a_
         ),
     ):
         client = AzureFoundryDiscoveryClient()
-        result = await client.discover_a2a_agents(
+        result, skipped = await client.discover_a2a_agents(
             provider_config=_provider_config(),
             auth=_make_auth_stub(),
             author_id=AUTHOR_ID,
         )
 
+    assert skipped == []
     assert len(result) == 1
     agent = result[0]
     assert agent.federationMetadata.enrichmentError.startswith("a2a enrichment failed")
@@ -464,13 +525,14 @@ async def test_agent_names_bypass_list_call(fake_a2a_agent_factory):
         ),
     ):
         client = AzureFoundryDiscoveryClient()
-        result = await client.discover_a2a_agents(
+        result, skipped = await client.discover_a2a_agents(
             provider_config=_provider_config(agentNames=["explicit"]),
             auth=_make_auth_stub(),
             author_id=AUTHOR_ID,
         )
 
     assert [a.federationMetadata.agentName for a in result] == ["explicit"]
+    assert skipped == []
 
 
 @pytest.mark.asyncio
@@ -495,13 +557,14 @@ async def test_discover_applies_metadata_filter(fake_a2a_agent_factory):
         ),
     ):
         client = AzureFoundryDiscoveryClient()
-        result = await client.discover_a2a_agents(
+        result, skipped = await client.discover_a2a_agents(
             provider_config=_provider_config(metadataFilter={"env": "prod"}),
             auth=_make_auth_stub(),
             author_id=AUTHOR_ID,
         )
 
     assert [a.federationMetadata.agentName for a in result] == ["keep"]
+    assert skipped == []
 
 
 @pytest.mark.asyncio
@@ -531,11 +594,12 @@ async def test_config_enabled_reflects_foundry_version_status(fake_a2a_agent_fac
         ),
     ):
         client = AzureFoundryDiscoveryClient()
-        result = await client.discover_a2a_agents(
+        result, skipped = await client.discover_a2a_agents(
             provider_config=_provider_config(),
             auth=_make_auth_stub(),
             author_id=AUTHOR_ID,
         )
 
+    assert skipped == []
     assert len(result) == 1
     assert result[0].config.enabled is expected_enabled

@@ -53,7 +53,7 @@ from .federation_job_service import FederationJobService
 logger = logging.getLogger(__name__)
 
 ACL_INHERITANCE_BATCH_SIZE = 500
-_STALE_PROTECTED_SKIP_REASONS = frozenset({"detail_fetch_failed", "tag_fetch_failed"})
+_STALE_PROTECTED_SKIP_REASONS = frozenset({"agent_fetch_failed", "detail_fetch_failed", "tag_fetch_failed"})
 
 
 def _enum_value(value):

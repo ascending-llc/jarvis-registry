@@ -409,7 +409,7 @@ async def test_bookkeeping_transaction_returns_plan_with_enrichment_errors(
             "mcp_servers": [SimpleNamespace()],
             "a2a_agents": [SimpleNamespace()],
             "skipped_runtimes": [
-                {"runtimeArn": "arn:transient", "reason": "detail_fetch_failed"},
+                {"runtimeArn": "arn:transient", "reason": "agent_fetch_failed"},
                 {"runtimeArn": "arn:filtered", "reason": "tag_filter_mismatch"},
             ],
         },
