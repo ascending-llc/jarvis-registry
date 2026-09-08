@@ -98,18 +98,17 @@ class UserService:
         try:
             provider = user_claims.get("auth_provider", "")
             idp_id = user_claims.get("idp_id")
-            email = user_claims.get("email")
+            # The managed-agent access token never carries a bare "email" claim (see
+            # TokenGrantService._mint_response) — sub is the email-shaped username for every
+            # provider, including Google (GoogleProvider.get_user_info sets username=email;
+            # Google's own opaque numeric sub is carried separately as idp_id).
+            email = user_claims.get("email") or user_claims.get("sub")
 
             if provider == _GOOGLE_PROVIDER:
                 # Google is a LibreChat-native provider (Chat's googleStrategy.js sets googleId).
-                # Must use the real email claim — Google's sub is an opaque numeric id.
                 provider_fields: dict = {"provider": _GOOGLE_PROVIDER, "googleId": idp_id}
                 id_on_source = email  # Cloud Identity Groups API is email-keyed — see AS-1826.
             else:
-                # Entra/Cognito/Keycloak map to Chat's generic openid connect provider.
-                # Fall back to sub when the token omits an email claim, preserving the
-                # pre-existing behavior (sub is email-shaped for these IdPs).
-                email = email or user_claims.get("sub")
                 provider_fields = {"provider": "openid", "openidId": idp_id or ""}
                 id_on_source = idp_id
 

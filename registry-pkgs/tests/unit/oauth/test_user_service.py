@@ -74,3 +74,19 @@ async def test_google_user_with_opaque_sub_uses_email_not_sub():
     user = await UserService().create_user(claims)
     assert user is not None
     assert user.email == "carol@example.com"
+
+
+async def test_google_user_without_email_claim_falls_back_to_sub():
+    """Regression test: the managed-agent access token never carries an "email" claim
+    (see TokenGrantService._mint_response), and GoogleProvider.get_user_info sets the
+    JWT's sub to the verified email — not Google's own opaque numeric sub (that's idp_id)."""
+    claims = {
+        "auth_provider": "google",
+        "sub": "kent.xue@famulei.us",
+        "idp_id": "100718105552674358884",
+    }
+    user = await UserService().create_user(claims)
+    assert user is not None
+    assert user.email == "kent.xue@famulei.us"
+    assert user.idOnTheSource == "kent.xue@famulei.us"
+    assert user.googleId == "100718105552674358884"
