@@ -173,19 +173,40 @@ def _process_skill_folder(
     )
 
 
+def _index_closing_fence(text: str) -> int:
+    """Return the newline index before the first standalone closing fence.
+
+    A closing fence must be terminated by LF, CRLF, or the end of the string.
+    A bare CR is not a valid line terminator.
+    """
+    for newline_index, character in enumerate(text):
+        if character != "\n":
+            continue
+
+        fence_start = newline_index + 1
+        fence_end = fence_start + 3
+        if text[fence_start:fence_end] != "---":
+            continue
+
+        if fence_end == len(text) or text[fence_end] == "\n" or text.startswith("\r\n", fence_end):
+            return newline_index
+
+    return -1
+
+
 def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str] | None:
     stripped = content.lstrip()
     if not stripped.startswith("---"):
         return None
     after_first_fence = stripped[3:]
-    if after_first_fence and after_first_fence[0] not in ("\n", "\r"):
+    if after_first_fence and after_first_fence[0] != "\n" and not after_first_fence.startswith("\r\n"):
         return None
-    end_idx = after_first_fence.find("\n---")
+    end_idx = _index_closing_fence(after_first_fence)
     if end_idx == -1:
         return None
     yaml_str = after_first_fence[:end_idx]
     body_start = end_idx + 4
-    body = after_first_fence[body_start:].lstrip("\n")
+    body = after_first_fence[body_start:].lstrip("\n\r")
     try:
         fm = yaml.safe_load(yaml_str)
     except yaml.YAMLError:

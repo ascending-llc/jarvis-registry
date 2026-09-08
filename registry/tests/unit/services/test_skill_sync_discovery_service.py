@@ -4,6 +4,7 @@ import pytest
 
 from registry.services.skill_sync_discovery_service import (
     SkillSyncDiscoveryService,
+    _index_closing_fence,
     _parse_frontmatter,
 )
 from registry.services.skill_sync_github_service import ExtractedAuxFile, ExtractedSkillFolder, ExtractionResult
@@ -353,6 +354,64 @@ def test_parse_frontmatter_leading_whitespace():
     result = _parse_frontmatter(content)
     assert result is not None
     assert result[0]["name"] == "test"
+
+
+def test_parse_frontmatter_closing_fence_must_be_alone_on_line() -> None:
+    content = "---\nname: test\ndescription: hello\n---bar: baz\n---\nBody text"
+
+    result = _parse_frontmatter(content)
+
+    assert result is not None
+    frontmatter, body = result
+    assert frontmatter["---bar"] == "baz"
+    assert body == "Body text"
+
+
+def test_parse_frontmatter_rejects_bare_cr_after_opening_fence() -> None:
+    content = "---\rname: test\ndescription: hello\n---\nBody text"
+
+    assert _parse_frontmatter(content) is None
+
+
+def test_parse_frontmatter_handles_crlf_without_leaking_line_endings() -> None:
+    content = "---\r\nname: test\r\ndescription: hello\r\n---\r\nBody text"
+
+    result = _parse_frontmatter(content)
+
+    assert result is not None
+    frontmatter, body = result
+    assert frontmatter == {"name": "test", "description": "hello"}
+    assert body == "Body text"
+
+
+def test_parse_frontmatter_accepts_eof_terminated_closing_fence() -> None:
+    content = "---\nname: test\ndescription: hello\n---"
+
+    result = _parse_frontmatter(content)
+
+    assert result is not None
+    frontmatter, body = result
+    assert frontmatter == {"name": "test", "description": "hello"}
+    assert body == ""
+
+
+@pytest.mark.parametrize("candidate", ["---bar: baz", "----", "--- "])
+def test_index_closing_fence_skips_nonconformant_candidates(candidate: str) -> None:
+    text = f"\n{candidate}\n---\nBody text"
+
+    assert _index_closing_fence(text) == len(candidate) + 1
+
+
+def test_index_closing_fence_skips_bare_cr_terminated_candidate() -> None:
+    invalid_candidate = "\n---\rnot-a-terminator"
+    text = f"{invalid_candidate}\n---\nBody text"
+
+    assert _index_closing_fence(text) == len(invalid_candidate)
+
+
+@pytest.mark.parametrize("suffix", ["", "\nBody text", "\r\nBody text"])
+def test_index_closing_fence_accepts_supported_terminators(suffix: str) -> None:
+    assert _index_closing_fence(f"\n---{suffix}") == 0
 
 
 def test_discovery_summary_file_count(tmp_path):
