@@ -9,6 +9,7 @@ from auth_server.routes.oauth_flow import (
     _trusted_error_redirect_uris,
     _validate_known_client_for_redirect,
 )
+from registry_pkgs.core.client_categories import AUTHORIZATION_CODE_GRANT_TYPE
 from registry_pkgs.core.redirect_uri import is_safe_unverified_redirect_target
 from tests.support.oauth_state_store import InMemoryOAuthStateStore
 
@@ -68,7 +69,10 @@ class TestValidateKnownClientForRedirect:
         store = InMemoryOAuthStateStore()
         store.save_client(
             "known-client",
-            {"redirect_uris": ["http://localhost/callback"]},
+            {
+                "redirect_uris": ["http://localhost/callback"],
+                "grant_types": [AUTHORIZATION_CODE_GRANT_TYPE],
+            },
         )
 
         assert (
@@ -79,6 +83,26 @@ class TestValidateKnownClientForRedirect:
             )
             is None
         )
+
+    def test_registered_redirect_without_authorization_code_returns_unauthorized_client(self) -> None:
+        store = InMemoryOAuthStateStore()
+        store.save_client(
+            "known-client",
+            {
+                "redirect_uris": ["http://localhost/callback"],
+                "grant_types": ["refresh_token"],
+            },
+        )
+
+        error = _validate_known_client_for_redirect(
+            "known-client",
+            "http://localhost/callback",
+            store,
+        )
+
+        assert error is not None
+        assert error.error == "unauthorized_client"
+        assert error.error_description == "client is not authorized for authorization_code"
 
 
 def test_trusted_error_redirect_uris_adds_exact_deployment_callback() -> None:

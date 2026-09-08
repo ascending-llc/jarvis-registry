@@ -40,6 +40,22 @@ def _validate_redirect_uris(redirect_uris: list[str] | None) -> list[str]:
     return uris
 
 
+def _resolve_grant_types(
+    requested_grant_types: list[str] | None,
+    allowed_grant_types: tuple[str, ...],
+) -> list[str]:
+    if requested_grant_types is None:
+        return list(allowed_grant_types)
+
+    grant_types = [grant_type for grant_type in allowed_grant_types if grant_type in requested_grant_types]
+    if not grant_types:
+        raise ClientRegistrationError(
+            "invalid_client_metadata",
+            "none of the requested grant_types are supported",
+        )
+    return grant_types
+
+
 class ClientRegistrationService:
     """Register MCP and A2A OAuth clients under their category policy."""
 
@@ -59,6 +75,7 @@ class ClientRegistrationService:
             raise RuntimeError(f"DCR policy is not configured for category {category}")
 
         redirect_uris = _validate_redirect_uris(registration.redirect_uris)
+        grant_types = _resolve_grant_types(registration.grant_types, policy.allowed_grant_types)
         requested_scope = registration.scope or policy.default_scope
         token_endpoint_auth_method = self._resolve_auth_method(registration)
         client_secret = secrets.token_urlsafe(32) if token_endpoint_auth_method == CLIENT_SECRET_POST_METHOD else None
@@ -72,7 +89,7 @@ class ClientRegistrationService:
             "client_name": registration.client_name or default_client_name,
             "client_uri": registration.client_uri,
             "redirect_uris": redirect_uris,
-            "grant_types": list(policy.allowed_grant_types),
+            "grant_types": grant_types,
             "response_types": ["code"],
             "scope": requested_scope,
             "token_endpoint_auth_method": token_endpoint_auth_method,

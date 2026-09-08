@@ -177,7 +177,11 @@ class TestDynamicClientRegistration:
         assert data["token_endpoint_auth_method"] == "none"
         assert data["client_id"] in registered_clients
 
-    def test_register_client_full_metadata_keeps_device_grant(self, test_client: TestClient, clear_device_storage):
+    def test_register_client_full_metadata_persists_declared_grant_types(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
         response = test_client.post(
             f"{API_PREFIX}/oauth2/register",
             json={
@@ -195,9 +199,58 @@ class TestDynamicClientRegistration:
         assert response.status_code == 200
         data = response.json()
         assert data["client_name"] == "Test MCP Client"
-        assert data["grant_types"] == ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
+        assert data["grant_types"] == ["authorization_code"]
+        assert registered_clients[data["client_id"]]["grant_types"] == ["authorization_code"]
         assert data["token_endpoint_auth_method"] == "client_secret_post"
         assert data["scope"] == "mcp-proxy-ops"
+
+    def test_register_client_rejects_unsupported_grant_types_without_persisting(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        existing_client_ids = set(registered_clients)
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "redirect_uris": ["https://example.com/callback"],
+                "grant_types": ["client_credentials"],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "error": "invalid_client_metadata",
+            "error_description": "none of the requested grant_types are supported",
+        }
+        assert set(registered_clients) == existing_client_ids
+
+    def test_registered_authorization_code_client_cannot_start_device_flow(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        registration = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "redirect_uris": ["https://example.com/callback"],
+                "grant_types": ["authorization_code"],
+            },
+        )
+        assert registration.status_code == 200
+        client_id = registration.json()["client_id"]
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/code",
+            data={"client_id": client_id},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "error": "unauthorized_client",
+            "error_description": "client is not registered for the device_code grant type",
+        }
 
     def test_register_client_preserves_scope_outside_category_ceiling(
         self,
@@ -327,7 +380,8 @@ class TestA2ADynamicClientRegistration:
         data = response.json()
         assert data["client_id"].startswith("a2a-client-")
         assert data["client_name"] == "My A2A Agent"
-        assert data["grant_types"] == ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
+        assert data["grant_types"] == ["authorization_code"]
+        assert registered_clients[data["client_id"]]["grant_types"] == ["authorization_code"]
         assert data["token_endpoint_auth_method"] == "client_secret_post"
         assert data["scope"] == "a2a-proxy-ops"
 
@@ -440,6 +494,81 @@ class TestA2ADynamicClientRegistration:
 @pytest.mark.integration
 @pytest.mark.oauth_flow
 class TestLoginRedirectErrorConsent:
+    def test_client_without_authorization_code_uses_consent_detour(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        _configure_oauth2(test_client)
+        redirect_uri = "http://localhost:43123/callback"
+        registration = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "redirect_uris": [redirect_uri],
+                "grant_types": [DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+            },
+        )
+        assert registration.status_code == 200
+        client_id = registration.json()["client_id"]
+
+        response = test_client.get(
+            f"{API_PREFIX}/oauth2/login/entra",
+            params={
+                "client_id": client_id,
+                "response_type": "code",
+                "redirect_uri": redirect_uri,
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+                "state": "client-state",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        nonce = response.headers["location"].split("nonce=", maxsplit=1)[1]
+        assert test_pending_consent_store.peek(nonce) == {
+            "flow_type": "redirect_error",
+            "redirect_uri": redirect_uri,
+            "error": "unauthorized_client",
+            "error_description": "client is not authorized for authorization_code",
+            "client_state": "client-state",
+        }
+
+    def test_client_without_authorization_code_and_untrusted_redirect_returns_json_error(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        _configure_oauth2(test_client)
+        redirect_uri = "https://example.com/callback"
+        registration = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "redirect_uris": [redirect_uri],
+                "grant_types": [DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+            },
+        )
+        assert registration.status_code == 200
+
+        response = test_client.get(
+            f"{API_PREFIX}/oauth2/login/entra",
+            params={
+                "client_id": registration.json()["client_id"],
+                "response_type": "code",
+                "redirect_uri": redirect_uri,
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "error": "unauthorized_client",
+            "error_description": "client is not authorized for authorization_code",
+        }
+        assert test_pending_consent_store.pending == {}
+
     @pytest.mark.parametrize(
         "redirect_uri",
         [

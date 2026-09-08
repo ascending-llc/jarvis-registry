@@ -17,7 +17,11 @@ from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from registry_pkgs.core.client_categories import ClientCategory, resolve_granted_scopes
+from registry_pkgs.core.client_categories import (
+    AUTHORIZATION_CODE_GRANT_TYPE,
+    ClientCategory,
+    resolve_granted_scopes,
+)
 from registry_pkgs.core.consent_store import PENDING_CONSENT_TTL_SECONDS, ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import (
     DEVICE_CODE_GRANT_TYPE,
@@ -238,6 +242,12 @@ def _validate_known_client_for_redirect(
 
     if not _is_registered_redirect_uri(client_metadata, redirect_uri):
         return _RedirectValidationError("invalid_request", "redirect_uri is not registered for this client")
+
+    if AUTHORIZATION_CODE_GRANT_TYPE not in (client_metadata.get("grant_types") or []):
+        return _RedirectValidationError(
+            "unauthorized_client",
+            f"client is not authorized for {AUTHORIZATION_CODE_GRANT_TYPE}",
+        )
 
     return None
 
