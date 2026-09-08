@@ -252,7 +252,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         });
         handleWorkflowUpdate(id, { nodeCount: updated.numNodes ?? validatedNodes.length, name: workflow?.name });
         markSaved(submittedMetadata, nodes, edges, workflow);
-        setWorkflow(current => (current === workflow && current ? { ...current, ...submittedMetadata } : current));
+        setWorkflow(current => (current === workflow && current ? { ...current, ...updated } : current));
         showToast('Workflow updated successfully!', 'success');
         return true;
       } else {

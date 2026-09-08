@@ -24,8 +24,10 @@ const getWorkflowDetail = async (id: string): Promise<TYPE.GetWorkflowDetailResp
 const createWorkflow = async (data: TYPE.CreateWorkflowRequest): Promise<TYPE.CreateWorkflowResponse> =>
   await Request.post(API.createWorkflow, data);
 
-const updateWorkflow = async (id: string, data: TYPE.UpdateWorkflowRequest): Promise<TYPE.UpdateWorkflowResponse> =>
-  await Request.put(API.updateWorkflow(id), data);
+const updateWorkflow = async (id: string, data: TYPE.UpdateWorkflowRequest): Promise<TYPE.UpdateWorkflowResponse> => {
+  const response = await Request.put(API.updateWorkflow(id), data);
+  return { ...response, permissions: response?.aclPermission ?? EMPTY_WORKFLOW_PERMISSIONS };
+};
 
 const deleteWorkflow = async (id: string): Promise<void> => await Request.delete(API.deleteWorkflow(id));
 
