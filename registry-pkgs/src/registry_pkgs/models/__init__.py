@@ -8,7 +8,6 @@ Also exports two enum types `PrincipalType` and `ResourceType`, so that other mo
 """
 
 from ._generated import (
-    Group,
     Key,
     PrincipalType,
     ResourceType,
@@ -62,7 +61,6 @@ __all__ = [
     "WorkflowVersion",
     "ExtendedGroup",
     "ExtendedGroupSource",
-    "Group",
     "User",
     "Key",
     "Token",

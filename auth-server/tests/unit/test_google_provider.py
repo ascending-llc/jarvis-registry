@@ -16,6 +16,9 @@ def _provider(allowed_hd: str = "") -> GoogleProvider:
         client_id="client-id",
         client_secret="client-secret",
         cloud_identity_client=AsyncMock(),
+        auth_url="https://accounts.google.com/o/oauth2/v2/auth",
+        token_url="https://oauth2.googleapis.com/token",
+        jwks_url="https://www.googleapis.com/oauth2/v3/certs",
         allowed_hd=allowed_hd,
     )
 

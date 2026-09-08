@@ -34,7 +34,7 @@ class CloudIdentityGroupsClient:
         self._token_expiry: float = 0.0
         self._http: httpx.AsyncClient | None = None
 
-    def _client(self) -> AsyncClient | None:
+    def _client(self) -> AsyncClient:
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=30.0)
         return self._http
@@ -101,7 +101,8 @@ class CloudIdentityGroupsClient:
     async def list_transitive_groups_for_member(self, member_email: str) -> list[GoogleWorkspaceGroupInfo]:
         """Paginates groups.memberships.searchTransitiveGroups via nextPageToken."""
         url = f"{_CLOUD_IDENTITY_BASE_URL}/groups/-/memberships:searchTransitiveGroups"
-        params = {"query": f"member_key_id == '{member_email}' && '{_GROUPS_DISCUSSION_FORUM_LABEL}' in labels"}
+        escaped_email = member_email.replace("\\", "\\\\").replace("'", "\\'")
+        params = {"query": f"member_key_id == '{escaped_email}' && '{_GROUPS_DISCUSSION_FORUM_LABEL}' in labels"}
         memberships = await self._search_memberships(url, params)
         return [
             GoogleWorkspaceGroupInfo(

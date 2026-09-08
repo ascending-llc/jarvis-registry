@@ -19,9 +19,6 @@ from .base import AuthProvider
 
 logger = logging.getLogger(__name__)
 
-_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-_TOKEN_URL = "https://oauth2.googleapis.com/token"
-_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
 _VALID_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 _JWKS_CACHE_TTL_SECONDS = 3600
 
@@ -42,6 +39,9 @@ class GoogleProvider(AuthProvider):
         client_id: str,
         client_secret: str,
         cloud_identity_client: CloudIdentityGroupsClient,
+        auth_url: str,
+        token_url: str,
+        jwks_url: str,
         allowed_hd: str = "",
         scopes: list[str] | None = None,
         grant_type: str = "authorization_code",
@@ -53,9 +53,9 @@ class GoogleProvider(AuthProvider):
         self.scopes = scopes or ["openid", "email", "profile"]
         self.grant_type = grant_type
 
-        self.auth_url = _AUTH_URL
-        self.token_url = _TOKEN_URL
-        self.jwks_url = _JWKS_URL
+        self.auth_url = auth_url
+        self.token_url = token_url
+        self.jwks_url = jwks_url
         self.valid_issuers = _VALID_ISSUERS
 
         self._jwks_cache: dict[str, Any] | None = None

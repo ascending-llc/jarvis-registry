@@ -213,12 +213,21 @@ def _create_google_provider(
     """Create and configure the Google Workspace provider."""
     client_id = google_config.get("client_id")
     client_secret = google_config.get("client_secret")
+    auth_url = google_config.get("auth_url")
+    token_url = google_config.get("token_url")
+    jwks_url = google_config.get("jwks_url")
 
     missing_vars = []
     if not client_id:
         missing_vars.append("GOOGLE_CLIENT_ID")
     if not client_secret:
         missing_vars.append("GOOGLE_CLIENT_SECRET")
+    if not auth_url:
+        missing_vars.append("auth_url in oauth2_providers.yml")
+    if not token_url:
+        missing_vars.append("token_url in oauth2_providers.yml")
+    if not jwks_url:
+        missing_vars.append("jwks_url in oauth2_providers.yml")
 
     if missing_vars:
         raise ValueError(
@@ -231,6 +240,9 @@ def _create_google_provider(
         client_id=client_id,
         client_secret=client_secret,
         cloud_identity_client=cloud_identity_client,
+        auth_url=auth_url,
+        token_url=token_url,
+        jwks_url=jwks_url,
         allowed_hd=google_config.get("allowed_hd", ""),
         scopes=google_config.get("scopes"),
         grant_type=google_config.get("grant_type", "authorization_code"),

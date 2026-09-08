@@ -10,6 +10,9 @@ def _google_config(**overrides) -> dict:
     config = {
         "client_id": "google-client",
         "client_secret": "google-secret",
+        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "jwks_url": "https://www.googleapis.com/oauth2/v3/certs",
         "scopes": ["openid", "email", "profile"],
         "grant_type": "authorization_code",
         "allowed_hd": "corp.example",
@@ -30,12 +33,15 @@ class TestCreateGoogleProvider:
         assert provider.client_secret == "google-secret"
         assert provider.allowed_hd == "corp.example"
         assert provider._cloud_identity_client is cic
+        assert provider.auth_url == "https://accounts.google.com/o/oauth2/v2/auth"
+        assert provider.token_url == "https://oauth2.googleapis.com/token"
+        assert provider.jwks_url == "https://www.googleapis.com/oauth2/v3/certs"
 
     def test_defaults_allowed_hd_to_empty(self):
         provider = _create_google_provider(_google_config(allowed_hd=None) | {"allowed_hd": ""}, Mock())
         assert provider.allowed_hd == ""
 
-    @pytest.mark.parametrize("missing", ["client_id", "client_secret"])
+    @pytest.mark.parametrize("missing", ["client_id", "client_secret", "auth_url", "token_url", "jwks_url"])
     def test_missing_required_config_raises(self, missing):
         config = _google_config()
         config[missing] = ""
