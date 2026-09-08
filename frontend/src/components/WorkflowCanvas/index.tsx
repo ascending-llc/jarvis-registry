@@ -63,7 +63,8 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
 
     useImperativeHandle(ref, () => ({
       save: () => {
-        if (!isReadOnly) onSave?.(canvas.nodes, canvas.edges, reactFlow.getViewport());
+        if (isReadOnly || !onSave) return Promise.resolve(false);
+        return onSave(canvas.nodes, canvas.edges, reactFlow.getViewport());
       },
       getElements: () => ({ nodes: canvas.nodes, edges: canvas.edges }),
       clearSelection: canvas.clearSelection,

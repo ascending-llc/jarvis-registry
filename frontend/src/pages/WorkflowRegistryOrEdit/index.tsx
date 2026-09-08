@@ -18,15 +18,16 @@ import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type {
+  WorkflowNode as ApiWorkflowNode,
   PendingAuthorization,
   TriggerWorkflowRunRequest,
-  WorkflowNode as ApiWorkflowNode,
   Workflow,
 } from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import { useActiveWorkflowRun } from './hooks/useActiveWorkflowRun';
 import { useWorkflowDraftGuard } from './hooks/useWorkflowDraftGuard';
 import TriggerRunModal from './TriggerRunModal';
+import TriggerUnsavedChangesDialog from './TriggerUnsavedChangesDialog';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
 import WorkflowReauthModal from './WorkflowReauthModal';
 
@@ -79,29 +80,34 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   // ── 4. Dirty Checking & UI State ───────────────────────────────────────────────
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
+  const [unsavedTriggerDialogOpen, setUnsavedTriggerDialogOpen] = useState(false);
   const [reauthModalOpen, setReauthModalOpen] = useState(false);
   const [pendingWorkflowReauth, setPendingWorkflowReauth] = useState<PendingWorkflowReauth | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
   const canShareWorkflow = isEditMode && isExistingDetailReady && workflow?.permissions?.SHARE === true;
   const activeWorkflowRun = useActiveWorkflowRun(id ?? undefined, message => showToast(message, 'error'));
+  const activeWorkflowRunLockedRef = useRef(activeWorkflowRun.isLocked);
+  activeWorkflowRunLockedRef.current = activeWorkflowRun.isLocked;
 
   useEffect(() => {
-    if (activeWorkflowRun.isLocked) setTriggerModalOpen(false);
+    if (!activeWorkflowRun.isLocked) return;
+    setTriggerModalOpen(false);
+    setUnsavedTriggerDialogOpen(false);
   }, [activeWorkflowRun.isLocked]);
 
   // ── Side Effects: Save shortcut (Cmd+S / Ctrl+S) ───────────────────────────────
   useEffect(() => {
-    if (isReadOnly || mutatingAction !== 'idle' || existingDetailUnavailable) return;
+    if (isReadOnly || mutatingAction !== 'idle' || existingDetailUnavailable || unsavedTriggerDialogOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
-        canvasRef.current?.save();
+        void canvasRef.current?.save();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [existingDetailUnavailable, isReadOnly, mutatingAction]);
+  }, [existingDetailUnavailable, isReadOnly, mutatingAction, unsavedTriggerDialogOpen]);
 
   // ── Fetch Initial Data ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -197,16 +203,16 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     nodes: CanvasWorkflowNode[],
     edges: Edge[],
     viewport: { x: number; y: number; zoom: number },
-  ) => {
-    if (isReadOnly) return;
+  ): Promise<boolean> => {
+    if (isReadOnly) return false;
     if (existingDetailUnavailable) {
       showToast(detailLoadError ?? 'Workflow details are not ready', 'error');
-      return;
+      return false;
     }
     const canvasValidationError = validateCanvasNodes(nodes, edges);
     if (canvasValidationError) {
       showToast(canvasValidationError, 'error');
-      return;
+      return false;
     }
 
     let apiNodes: ReturnType<typeof canvasToApiNodes>;
@@ -214,18 +220,18 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       apiNodes = canvasToApiNodes(nodes, edges);
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Failed to convert workflow', 'error');
-      return;
+      return false;
     }
 
     if (apiNodes.length === 0) {
       showToast('Add at least one node before saving', 'error');
-      return;
+      return false;
     }
 
     const validationError = validateApiNodes(apiNodes);
     if (validationError) {
       showToast(validationError, 'error');
-      return;
+      return false;
     }
 
     // validateApiNodes guarantees no unresolved gate placeholders remain past this point.
@@ -246,8 +252,9 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         });
         handleWorkflowUpdate(id, { nodeCount: updated.numNodes ?? validatedNodes.length, name: workflow?.name });
         markSaved(submittedMetadata, nodes, edges, workflow);
-        setWorkflow(current => (current === workflow && current ? { ...current, ...submittedMetadata } : current));
+        setWorkflow(current => (current === workflow && current ? { ...current, ...updated } : current));
         showToast('Workflow updated successfully!', 'success');
+        return true;
       } else {
         const submittedMetadata = {
           name: workflow?.name?.trim() || 'New Workflow',
@@ -263,16 +270,52 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         await refreshWorkflowData();
         showToast('Workflow created successfully!', 'success');
         navigate('/?tab=workflow', { replace: true });
+        return true;
       }
     } catch (error: any) {
       const msg = error?.detail?.message || (typeof error?.detail === 'string' ? error.detail : '');
       showToast(msg || 'Failed to save workflow', 'error');
+      return false;
     } finally {
       setMutatingAction('idle');
     }
   };
 
   // ── Actions: Trigger run ─────────────────────────────────────────────────────
+  const handleTriggerRunClick = () => {
+    if (activeWorkflowRunLockedRef.current) return;
+    if (isDirty()) {
+      setUnsavedTriggerDialogOpen(true);
+      return;
+    }
+    setTriggerModalOpen(true);
+  };
+
+  const handleContinueWithoutSaving = () => {
+    setUnsavedTriggerDialogOpen(false);
+    if (activeWorkflowRunLockedRef.current) {
+      showToast('A workflow run is already active or starting', 'error');
+      return;
+    }
+    setTriggerModalOpen(true);
+  };
+
+  const handleSaveAndContinue = async () => {
+    const saved = await canvasRef.current?.save();
+    if (!saved) return;
+    if (isDirty()) {
+      showToast('The workflow changed while saving. Save the latest changes before continuing.', 'error');
+      return;
+    }
+    if (activeWorkflowRunLockedRef.current) {
+      setUnsavedTriggerDialogOpen(false);
+      showToast('A workflow run is already active or starting', 'error');
+      return;
+    }
+    setUnsavedTriggerDialogOpen(false);
+    setTriggerModalOpen(true);
+  };
+
   const handleTrigger = async (initialInput: WorkflowTriggerInput = {}) => {
     if (!canControlWorkflow) {
       setTriggerModalOpen(false);
@@ -407,7 +450,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
 
             {canTriggerWorkflow && (
               <button
-                onClick={() => setTriggerModalOpen(true)}
+                onClick={handleTriggerRunClick}
                 disabled={mutatingAction !== 'idle' || activeWorkflowRun.isLocked || existingDetailUnavailable}
                 className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
               >
@@ -422,7 +465,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
 
             {!isReadOnly && (
               <button
-                onClick={() => canvasRef.current?.save()}
+                onClick={() => void canvasRef.current?.save()}
                 disabled={mutatingAction !== 'idle' || existingDetailUnavailable}
                 className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
               >
@@ -495,6 +538,15 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         deleting={mutatingAction === 'deleting'}
         onCancel={() => setDeleteDialogOpen(false)}
         onConfirm={handleDeleteWorkflow}
+      />
+
+      {/* ── Unsaved changes before trigger confirmation dialog ─────────────────── */}
+      <TriggerUnsavedChangesDialog
+        isOpen={unsavedTriggerDialogOpen}
+        saving={mutatingAction === 'saving'}
+        onCancel={() => setUnsavedTriggerDialogOpen(false)}
+        onContinueWithoutSaving={handleContinueWithoutSaving}
+        onSaveAndContinue={handleSaveAndContinue}
       />
 
       {/* ── Trigger run modal ─────────────────────────────────────────────────── */}

@@ -4,7 +4,7 @@ import type { Workflow, WorkflowRunStatusResponse } from '@/services/workflow/ty
 export type PanelMode = 'node' | 'workflow';
 
 export interface WorkflowCanvasRef {
-  save: () => void;
+  save: () => Promise<boolean>;
   getElements: () => { nodes: WorkflowNode[]; edges: Edge[] };
   clearSelection: () => void;
   /** Toggle panel: expand if collapsed, collapse if expanded and workflow mode */
@@ -25,7 +25,7 @@ export interface WorkflowCanvasProps {
   isNewWorkflow: boolean;
   onDeleteWorkflow: () => void;
   onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => void;
-  onSave?: (nodes: WorkflowNode[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => void;
+  onSave?: (nodes: WorkflowNode[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => Promise<boolean>;
 }
 
 /** Base node data */
