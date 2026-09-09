@@ -560,6 +560,17 @@ def test_validate_relative_path_rejects_bad_paths(bad_path):
     assert exc.value.status_code == 422
 
 
+def test_validate_relative_path_rejects_over_length_paths():
+    from registry.constants import MAX_SKILL_FILE_RELATIVE_PATH_LENGTH
+
+    over_length = "a" * (MAX_SKILL_FILE_RELATIVE_PATH_LENGTH + 1)
+    with pytest.raises(HTTPException) as exc:
+        _validate_relative_path(over_length)
+    assert exc.value.status_code == 422
+    # error detail must NOT echo the whole oversized path back
+    assert over_length not in exc.value.detail
+
+
 @pytest.mark.parametrize("good_path", ["scripts/run.sh", "references/guide.md", "a", "a/b/c.txt"])
 def test_validate_relative_path_accepts_good_paths(good_path):
     _validate_relative_path(good_path)

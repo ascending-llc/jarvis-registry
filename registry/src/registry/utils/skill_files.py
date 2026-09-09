@@ -7,15 +7,13 @@ detection stays a single source of truth.
 
 import mimetypes
 
-_TEXT_SNIFF_BYTES = 8192
-
 
 def is_text_content(content: bytes) -> bool:
-    """Heuristic: text when the first 8 KiB has no NUL byte and decodes as UTF-8."""
-    if b"\x00" in content[:_TEXT_SNIFF_BYTES]:
+    """Treat as text only when the FULL payload contains no NUL bytes and fully decodes as UTF-8."""
+    if b"\x00" in content:
         return False
     try:
-        content[:_TEXT_SNIFF_BYTES].decode("utf-8")
+        content.decode("utf-8")
         return True
     except UnicodeDecodeError:
         return False

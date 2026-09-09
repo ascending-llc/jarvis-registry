@@ -417,3 +417,12 @@ def test_text_detection_rejects_nul_and_invalid_utf8():
     assert _is_text_content(b"plain text") is True
     assert _is_text_content(b"text\x00binary") is False
     assert _is_text_content(b"\xff\xfe") is False
+
+
+def test_text_detection_checks_full_payload_not_just_prefix():
+    # 8 KiB of ASCII followed by a NUL and invalid UTF-8 must be classified as binary,
+    # otherwise the sync path would lossily decode the tail with errors="replace".
+    payload = b"A" * 8192 + b"\x00\xff\xfe"
+    assert _is_text_content(payload) is False
+    payload_no_nul = b"A" * 8192 + b"\xff\xfe"
+    assert _is_text_content(payload_no_nul) is False

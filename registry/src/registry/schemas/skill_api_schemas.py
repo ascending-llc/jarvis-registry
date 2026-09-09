@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from ..constants import MAX_SKILL_FILE_RELATIVE_PATH_LENGTH
 from ..models.skill_frontmatter import SKILL_NAME_PATTERN
 from .acl_schema import ResourcePermissions
 
@@ -32,7 +33,7 @@ class SkillFileUpsertRequest(BaseModel):
 class SkillFileInput(BaseModel):
     """A supporting file supplied inline when creating a skill."""
 
-    relativePath: str = Field(..., max_length=512)
+    relativePath: str = Field(..., max_length=MAX_SKILL_FILE_RELATIVE_PATH_LENGTH)
     content: str | None = Field(default=None, description="Text file content (utf-8 string)")
     body: str | None = Field(default=None, description="Binary file content (base64)")
     mimeType: str | None = Field(default=None, max_length=255)

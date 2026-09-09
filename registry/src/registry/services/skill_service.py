@@ -23,6 +23,7 @@ from registry_pkgs.oauth.user_service import UserService
 
 from ..constants import (
     MAX_SKILL_FILE_COUNT,
+    MAX_SKILL_FILE_RELATIVE_PATH_LENGTH,
     MAX_SKILL_FILE_SIZE,
     MAX_SKILL_FILES_TOTAL_SIZE,
     RESERVED_SKILL_FILE_NAMES,
@@ -69,9 +70,19 @@ class _PreparedFile:
 
 
 def _validate_relative_path(path: str) -> None:
-    """Reject absolute paths, traversal, backslashes, non-normalized POSIX paths, and reserved names."""
+    """Reject absolute paths, traversal, backslashes, non-normalized POSIX paths, and reserved names.
+
+    The length check runs first so a caller can't bypass the schema-level cap by hitting the URL-based
+    single-file endpoints (PUT/DELETE /skills/{id}/files/{path}), and so we cap the size of the path
+    echoed back in any 422 error detail below.
+    """
     if not path or not path.strip():
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="File path must not be empty")
+    if len(path) > MAX_SKILL_FILE_RELATIVE_PATH_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"File path exceeds {MAX_SKILL_FILE_RELATIVE_PATH_LENGTH} characters",
+        )
     if "\\" in path:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
