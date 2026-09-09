@@ -42,7 +42,7 @@ def test_authorization_url_uses_pkce_and_persists_flow() -> None:
 def test_resolve_source_id_returns_flow_server_id() -> None:
     flow_manager = MagicMock()
     flow_manager.decode_state.return_value = {"flow_id": "flow", "security_token": "token"}
-    flow_manager.get_flow.return_value = SimpleNamespace(server_id="source-123")
+    flow_manager.get_flow.return_value = SimpleNamespace(server_id="source-123", state="state")
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
         token_service=MagicMock(),
@@ -65,6 +65,20 @@ def test_resolve_source_id_raises_when_flow_missing() -> None:
 
     with pytest.raises(ValueError):
         service.resolve_source_id("state")
+
+
+def test_resolve_source_id_raises_when_state_does_not_match_flow() -> None:
+    flow_manager = MagicMock()
+    flow_manager.decode_state.return_value = {"flow_id": "flow", "security_token": "token"}
+    flow_manager.get_flow.return_value = SimpleNamespace(server_id="source-123", state="the-real-state")
+    service = SkillSyncOAuthService(
+        flow_state_manager=flow_manager,
+        token_service=MagicMock(),
+        http_client=MagicMock(),
+    )
+
+    with pytest.raises(ValueError):
+        service.resolve_source_id("a-forged-state")
 
 
 def test_resolve_source_id_propagates_malformed_state() -> None:

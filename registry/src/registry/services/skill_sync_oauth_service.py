@@ -71,7 +71,7 @@ class SkillSyncOAuthService:
     def resolve_source_id(self, state: str) -> str:
         decoded = self._flow_state_manager.decode_state(state)
         flow = self._flow_state_manager.get_flow(decoded["flow_id"])
-        if flow is None:
+        if flow is None or not secrets.compare_digest(flow.state, state):
             raise ValueError("OAuth state does not reference a known flow")
         return flow.server_id
 
