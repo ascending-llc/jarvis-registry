@@ -133,6 +133,11 @@ const toKebabCaseFrontmatter = (frontmatter: { [key: string]: JsonValue }): { [k
     Object.entries(frontmatter).map(([key, value]) => [CLAUDE_CODE_FRONTMATTER_KEBAB_KEYS[key] ?? key, value]),
   );
 
+// A null field (e.g. allowedTools with no restriction) means "not set", matching the backend's
+// `exclude_none=True` dump and the CLI's `omitempty` — so it's dropped rather than rendered as `null`.
+const dropNullFrontmatterFields = (frontmatter: { [key: string]: JsonValue }): { [key: string]: JsonValue } =>
+  Object.fromEntries(Object.entries(frontmatter).filter(([, value]) => value !== null));
+
 // Renders `allowed-tools` as a plain space-joined string instead of a YAML list (Claude Code's own
 // preferred style for this field) and every other array-valued field in flow style (`[a, b]`) instead of
 // YAML's default block list style, without changing the parsed value of either.
@@ -203,24 +208,30 @@ export const composeSkillMarkdown = (detail: SkillDetail): string => {
   const inlineBody = parseInlineBodyFrontmatter(detail.body);
   const inlineFrontmatter = normalizeFrontmatterKeys(inlineBody.frontmatter);
   const storedFrontmatter = normalizeFrontmatterKeys(detail.frontmatter);
-  const frontmatter: { [key: string]: JsonValue } = {
+  const rest: { [key: string]: JsonValue } = {
     ...inlineFrontmatter,
     ...storedFrontmatter,
   };
 
-  for (const key of REGISTRY_BOOKKEEPING_FRONTMATTER_KEYS) delete frontmatter[key];
-  frontmatter.name = getSkillDisplayName(detail);
-  frontmatter.description = detail.description;
-  frontmatter.allowedTools =
+  for (const key of REGISTRY_BOOKKEEPING_FRONTMATTER_KEYS) delete rest[key];
+  rest.allowedTools =
     firstDefined(storedFrontmatter.allowedTools, detail.allowedTools, inlineFrontmatter.allowedTools) ?? null;
-  frontmatter.disableModelInvocation =
+  rest.disableModelInvocation =
     firstDefined(
       storedFrontmatter.disableModelInvocation,
       detail.disableModelInvocation,
       inlineFrontmatter.disableModelInvocation,
     ) ?? false;
-  frontmatter.userInvocable =
+  rest.userInvocable =
     firstDefined(storedFrontmatter.userInvocable, detail.userInvocable, inlineFrontmatter.userInvocable) ?? true;
+
+  // name and description always lead the rendered frontmatter; every other field follows in
+  // whatever order it was collected in.
+  const frontmatter: { [key: string]: JsonValue } = {
+    name: getSkillDisplayName(detail),
+    description: detail.description,
+    ...dropNullFrontmatterFields(rest),
+  };
 
   const yaml = stringifyFrontmatterYaml(toKebabCaseFrontmatter(frontmatter));
   const body = inlineBody.body ? `\n${inlineBody.body.replace(/^\n+/, '')}` : '';
