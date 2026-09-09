@@ -14,7 +14,11 @@ from registry.api.v1.skill.skill_routes import router as skill_router
 from registry.auth.dependencies import get_current_user
 from registry.deps import get_skill_service
 from registry.schemas.acl_schema import ResourcePermissions
-from registry.schemas.skill_api_schemas import SkillFileContentResponse, SkillFileResponse
+from registry.schemas.skill_api_schemas import (
+    SkillFileContentResponse,
+    SkillFileMetadataResponse,
+    SkillFileResponse,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -72,6 +76,8 @@ def skill_app() -> Generator[SimpleNamespace, None, None]:
     service.update_skill = AsyncMock()
     service.delete_skill = AsyncMock()
     service.toggle_skill = AsyncMock()
+    service.upsert_skill_file = AsyncMock()
+    service.delete_skill_file = AsyncMock()
 
     app = FastAPI()
     app.include_router(skill_router, prefix="/api/v1")
@@ -107,7 +113,7 @@ def test_list_skills_returns_acl_metadata_and_forwards_filters(skill_app):
 
 def test_create_skill_returns_201(skill_app):
     skill = _make_skill()
-    skill_app.service.create_skill.return_value = (skill, _PERMISSIONS)
+    skill_app.service.create_skill.return_value = (skill, [], _PERMISSIONS)
 
     response = skill_app.client.post(
         "/api/v1/skills",
@@ -125,6 +131,31 @@ def test_create_skill_returns_201(skill_app):
     skill_app.service.create_skill.assert_awaited_once()
     request = skill_app.service.create_skill.await_args.kwargs["data"]
     assert request.frontmatter == {"allowed-tools": ["Read"], "license": "MIT"}
+    assert request.files == []
+
+
+def test_create_skill_with_files_forwards_them_to_service(skill_app):
+    skill = _make_skill()
+    skill.fileCount = 1
+    skill_app.service.create_skill.return_value = (skill, [_make_file()], _PERMISSIONS)
+
+    response = skill_app.client.post(
+        "/api/v1/skills",
+        json={
+            "name": "test-skill",
+            "description": "A test skill",
+            "files": [
+                {"relativePath": "scripts/run.sh", "content": "#!/bin/sh\n", "isExecutable": True},
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["files"][0]["relativePath"] == "references/guide.md"
+    request = skill_app.service.create_skill.await_args.kwargs["data"]
+    assert len(request.files) == 1
+    assert request.files[0].relativePath == "scripts/run.sh"
+    assert request.files[0].isExecutable is True
 
 
 def test_get_skill_returns_file_metadata_without_content(skill_app):
@@ -288,3 +319,85 @@ def test_create_name_validation_rejects_invalid_pattern(skill_app, name):
     )
 
     assert response.status_code == 422
+
+
+def _make_file_metadata(relative_path: str = "scripts/run.sh") -> SkillFileMetadataResponse:
+    return SkillFileMetadataResponse(
+        id=str(PydanticObjectId()),
+        relativePath=relative_path,
+        mimeType="text/x-shellscript",
+        bytes=10,
+        isBinary=False,
+        isExecutable=True,
+        source="registry-inline",
+    )
+
+
+def test_upsert_skill_file_new_returns_201(skill_app):
+    skill_id = PydanticObjectId()
+    skill_app.service.upsert_skill_file.return_value = (_make_file_metadata(), True)
+
+    response = skill_app.client.put(
+        f"/api/v1/skills/{skill_id}/files/scripts/run.sh",
+        json={"content": "#!/bin/sh\n", "isExecutable": True},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["relativePath"] == "scripts/run.sh"
+    assert response.json()["isExecutable"] is True
+    skill_app.service.upsert_skill_file.assert_awaited_once()
+    args = skill_app.service.upsert_skill_file.await_args
+    assert args.args[0] == skill_id
+    assert args.args[1] == "scripts/run.sh"
+    assert args.args[2].content == "#!/bin/sh\n"
+
+
+def test_upsert_skill_file_existing_returns_200(skill_app):
+    skill_id = PydanticObjectId()
+    skill_app.service.upsert_skill_file.return_value = (_make_file_metadata(), False)
+
+    response = skill_app.client.put(
+        f"/api/v1/skills/{skill_id}/files/scripts/run.sh",
+        json={"content": "#!/bin/sh\nupdated\n"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_upsert_skill_file_requires_exactly_one_content_field(skill_app):
+    response = skill_app.client.put(
+        f"/api/v1/skills/{PydanticObjectId()}/files/scripts/run.sh",
+        json={"content": "a", "body": "Yg=="},
+    )
+
+    assert response.status_code == 422
+
+
+def test_upsert_skill_file_conflict_on_chat_skill(skill_app):
+    skill_app.service.upsert_skill_file.side_effect = HTTPException(
+        status_code=409, detail="Only skills created in Registry can have their files modified"
+    )
+
+    response = skill_app.client.put(
+        f"/api/v1/skills/{PydanticObjectId()}/files/scripts/run.sh",
+        json={"content": "a"},
+    )
+
+    assert response.status_code == 409
+
+
+def test_delete_skill_file_returns_204(skill_app):
+    skill_id = PydanticObjectId()
+
+    response = skill_app.client.delete(f"/api/v1/skills/{skill_id}/files/scripts/run.sh")
+
+    assert response.status_code == 204
+    skill_app.service.delete_skill_file.assert_awaited_once_with(skill_id, "scripts/run.sh", _USER_ID)
+
+
+def test_delete_skill_file_missing_returns_404(skill_app):
+    skill_app.service.delete_skill_file.side_effect = HTTPException(status_code=404, detail="Skill file not found")
+
+    response = skill_app.client.delete(f"/api/v1/skills/{PydanticObjectId()}/files/scripts/run.sh")
+
+    assert response.status_code == 404

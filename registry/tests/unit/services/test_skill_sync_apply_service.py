@@ -5,9 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 
-from registry.services.skill_sync_apply_service import SkillSyncApplyService, _is_text_content
+from registry.services.skill_sync_apply_service import SkillSyncApplyService
 from registry.services.skill_sync_discovery_service import DiscoveredSkill, DiscoveryResult
 from registry.services.skill_sync_github_service import ExtractedAuxFile
+from registry.utils.skill_files import is_text_content as _is_text_content
 from registry_pkgs.models.enums import SkillSyncSkillErrorCode
 from registry_pkgs.models.skill_sync_job import (
     SkillSyncDiscoverySummary,
