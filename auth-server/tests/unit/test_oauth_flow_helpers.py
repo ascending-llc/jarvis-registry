@@ -3,9 +3,12 @@
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
+from itsdangerous import URLSafeTimedSerializer
+
 from auth_server.routes.oauth_flow import (
     _is_registered_redirect_uri,
     _redirect_error_to_client,
+    _redirect_to_provider,
     _trusted_error_redirect_uris,
     _validate_known_client_for_redirect,
 )
@@ -115,6 +118,47 @@ def test_trusted_error_redirect_uris_adds_exact_deployment_callback() -> None:
     assert is_safe_unverified_redirect_target(callback, trusted_uris) is True
     assert is_safe_unverified_redirect_target(f"{callback}/", trusted_uris) is False
     assert is_safe_unverified_redirect_target(f"{callback}/extra", trusted_uris) is False
+
+
+def _redirect_to_provider_query(provider: str, provider_config: dict) -> dict:
+    signer = URLSafeTimedSerializer("test-secret")
+    session_data = {"state": "state-1"}
+    with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+        mock_settings.auth_server_external_url = "http://localhost:8888"
+        mock_settings.auth_server_api_prefix = ""
+        mock_settings.oauth2_temp_session_cookie_name = "oauth2_temp_session"
+        mock_settings.oauth_session_ttl_seconds = 600
+        mock_settings.session_cookie_secure = False
+        response = _redirect_to_provider(provider, provider_config, session_data, is_https=False, signer=signer)
+    return parse_qs(urlparse(response.headers["location"]).query)
+
+
+def _google_config(**overrides) -> dict:
+    config = {
+        "client_id": "google-client",
+        "response_type": "code",
+        "scopes": ["openid", "email", "profile"],
+        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "allowed_hd": "corp.example",
+    }
+    config.update(overrides)
+    return config
+
+
+def test_redirect_to_provider_adds_hd_for_google_when_configured() -> None:
+    query = _redirect_to_provider_query("google", _google_config())
+    assert query["hd"] == ["corp.example"]
+
+
+def test_redirect_to_provider_omits_hd_for_google_when_unset() -> None:
+    query = _redirect_to_provider_query("google", _google_config(allowed_hd=""))
+    assert "hd" not in query
+
+
+def test_redirect_to_provider_never_adds_hd_for_non_google() -> None:
+    # allowed_hd on a non-google config must not leak an hd param.
+    query = _redirect_to_provider_query("entra", _google_config())
+    assert "hd" not in query
 
 
 def test_redirect_error_to_client_builds_302_with_oauth_error() -> None:

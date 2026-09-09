@@ -36,6 +36,11 @@ class OAuth2ConfigLoader:
             # Substitute environment variables in configuration
             processed_config = self._substitute_env_vars(config)
 
+            # Coerce every provider's `enabled` to a real bool: substitution turns bool
+            # settings into the string "true"/"false", and the string "false" is truthy.
+            for provider_cfg in processed_config.get("providers", {}).values():
+                provider_cfg["enabled"] = str(provider_cfg.get("enabled", False)).strip().lower() == "true"
+
             # Log loaded providers
             providers = list(processed_config.get("providers", {}).keys())
             logger.info(f"Successfully loaded OAuth2 configuration with providers: {providers}")

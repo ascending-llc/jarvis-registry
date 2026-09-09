@@ -8,8 +8,7 @@ import pytest
 import yaml
 
 from registry_pkgs.core import scopes
-from registry_pkgs.core.config import ScopesConfig
-from registry_pkgs.core.scopes import filter_known_groups, get_scope_description
+from registry_pkgs.core.scopes import filter_known_groups, get_scope_description, map_groups_to_scopes
 
 
 @pytest.fixture
@@ -38,16 +37,6 @@ def valid_scopes_config():
 
 
 @pytest.fixture
-def invalid_scopes_config_no_group_mappings():
-    """Invalid scopes configuration missing group_mappings."""
-    return {
-        "servers-read": [
-            {"action": "list_servers", "method": "GET", "endpoint": "/servers"},
-        ],
-    }
-
-
-@pytest.fixture
 def temp_scopes_file(valid_scopes_config):
     """Create a temporary scopes.yml file for testing."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -65,38 +54,26 @@ def temp_scopes_file(valid_scopes_config):
 def reset_scopes_cache():
     """Reset the module-level scopes cache before and after each test."""
     original_cache = scopes._SCOPES_CONFIG_CACHE
-    scopes._SCOPES_CONFIG_CACHE = {}
+    scopes._SCOPES_CONFIG_CACHE = None
 
     yield
 
     scopes._SCOPES_CONFIG_CACHE = original_cache
 
 
-def _scopes_config(path: str = "") -> ScopesConfig:
-    return ScopesConfig(scopes_config_path=path)
+@pytest.fixture
+def use_temp_scopes_file(temp_scopes_file, reset_scopes_cache):
+    """Point the module at a temp scopes.yml instead of the package-bundled one."""
+    with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_scopes_file):
+        yield temp_scopes_file
 
 
 class TestGetScopesFilePath:
     """Tests for get_scopes_file_path() function."""
 
-    def test_uses_scopes_config_path_from_settings_when_set(self, temp_scopes_file, reset_scopes_cache):
-        """Test that SCOPES_CONFIG_PATH from settings is used when set and file exists."""
-        result = scopes.get_scopes_file_path(_scopes_config(str(temp_scopes_file)))
-        assert result == temp_scopes_file
-        assert result.exists()
-
-    def test_warns_when_scopes_config_path_set_but_file_not_found(self, reset_scopes_cache):
-        """Test that a warning is logged when SCOPES_CONFIG_PATH is set but file doesn't exist."""
-        with patch("registry_pkgs.core.scopes.logger") as mock_logger:
-            with patch.object(Path, "exists", return_value=False):
-                with pytest.raises(FileNotFoundError):
-                    scopes.get_scopes_file_path(_scopes_config("/nonexistent/path/scopes.yml"))
-                mock_logger.warning.assert_called_once()
-                assert "/nonexistent/path/scopes.yml" in str(mock_logger.warning.call_args)
-
-    def test_uses_package_bundled_file_when_env_var_not_set(self, reset_scopes_cache):
-        """Test that package-bundled scopes.yml is used when SCOPES_CONFIG_PATH is not set."""
-        result = scopes.get_scopes_file_path(_scopes_config())
+    def test_returns_package_bundled_path(self, reset_scopes_cache):
+        """The package-bundled scopes.yml is always used — there is no override."""
+        result = scopes.get_scopes_file_path()
         expected_path = Path(scopes.__file__).parent.parent / "scopes.yml"
         assert result == expected_path
         assert result.exists()
@@ -105,26 +82,25 @@ class TestGetScopesFilePath:
         """Test that FileNotFoundError is raised when scopes.yml cannot be found."""
         with patch.object(Path, "exists", return_value=False):
             with pytest.raises(FileNotFoundError) as exc_info:
-                scopes.get_scopes_file_path(_scopes_config())
+                scopes.get_scopes_file_path()
             assert "scopes.yml not found" in str(exc_info.value)
 
 
 class TestLoadScopesConfig:
     """Tests for load_scopes_config() function."""
 
-    def test_loads_valid_scopes_config_successfully(self, temp_scopes_file, valid_scopes_config, reset_scopes_cache):
+    def test_loads_valid_scopes_config_successfully(self, use_temp_scopes_file, valid_scopes_config):
         """Test that a valid scopes configuration is loaded successfully."""
-        result = scopes.load_scopes_config(_scopes_config(str(temp_scopes_file)))
+        result = scopes.load_scopes_config()
         assert result == valid_scopes_config
         assert "group_mappings" in result
         assert "servers-read" in result
         assert "servers-write" in result
 
-    def test_caches_loaded_config(self, temp_scopes_file, reset_scopes_cache):
+    def test_caches_loaded_config(self, use_temp_scopes_file):
         """Test that configuration is cached after first load."""
-        config = _scopes_config(str(temp_scopes_file))
-        result1 = scopes.load_scopes_config(config)
-        result2 = scopes.load_scopes_config(config)
+        result1 = scopes.load_scopes_config()
+        result2 = scopes.load_scopes_config()
 
         assert result1 is result2
         assert scopes._SCOPES_CONFIG_CACHE
@@ -137,8 +113,9 @@ class TestLoadScopesConfig:
             temp_path = Path(f.name)
 
         try:
-            with pytest.raises(RuntimeError) as exc_info:
-                scopes.load_scopes_config(_scopes_config(str(temp_path)))
+            with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_path):
+                with pytest.raises(RuntimeError) as exc_info:
+                    scopes.load_scopes_config()
             assert "Invalid scopes configuration" in str(exc_info.value)
             assert "expected dict" in str(exc_info.value)
         finally:
@@ -152,8 +129,9 @@ class TestLoadScopesConfig:
             temp_path = Path(f.name)
 
         try:
-            with pytest.raises(RuntimeError) as exc_info:
-                scopes.load_scopes_config(_scopes_config(str(temp_path)))
+            with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_path):
+                with pytest.raises(RuntimeError) as exc_info:
+                    scopes.load_scopes_config()
             assert "missing required 'group_mappings' section" in str(exc_info.value)
         finally:
             temp_path.unlink()
@@ -166,8 +144,9 @@ class TestLoadScopesConfig:
             temp_path = Path(f.name)
 
         try:
-            with pytest.raises(RuntimeError) as exc_info:
-                scopes.load_scopes_config(_scopes_config(str(temp_path)))
+            with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_path):
+                with pytest.raises(RuntimeError) as exc_info:
+                    scopes.load_scopes_config()
             assert "Invalid YAML" in str(exc_info.value)
         finally:
             temp_path.unlink()
@@ -177,12 +156,12 @@ class TestLoadScopesConfig:
         with patch("registry_pkgs.core.scopes.get_scopes_file_path") as mock_get_path:
             mock_get_path.side_effect = FileNotFoundError("scopes.yml not found")
             with pytest.raises(FileNotFoundError):
-                scopes.load_scopes_config(_scopes_config())
+                scopes.load_scopes_config()
 
-    def test_logs_successful_load_with_group_count(self, temp_scopes_file, reset_scopes_cache):
+    def test_logs_successful_load_with_group_count(self, use_temp_scopes_file):
         """Test that successful load is logged with group mapping count."""
         with patch("registry_pkgs.core.scopes.logger") as mock_logger:
-            scopes.load_scopes_config(_scopes_config(str(temp_scopes_file)))
+            scopes.load_scopes_config()
             info_calls = [str(call) for call in mock_logger.info.call_args_list]
             assert any("2 group mappings" in call for call in info_calls)
 
@@ -190,18 +169,18 @@ class TestLoadScopesConfig:
 class TestScopesConfigStructure:
     """Tests for scopes configuration structure validation."""
 
-    def test_validates_group_mappings_structure(self, temp_scopes_file, reset_scopes_cache):
+    def test_validates_group_mappings_structure(self, use_temp_scopes_file):
         """Test that group_mappings has expected structure."""
-        config = scopes.load_scopes_config(_scopes_config(str(temp_scopes_file)))
+        config = scopes.load_scopes_config()
         assert "group_mappings" in config
         assert isinstance(config["group_mappings"], dict)
         for group_name, group_scopes in config["group_mappings"].items():
             assert isinstance(group_name, str)
             assert isinstance(group_scopes, list)
 
-    def test_validates_scope_definitions_structure(self, temp_scopes_file, reset_scopes_cache):
+    def test_validates_scope_definitions_structure(self, use_temp_scopes_file):
         """Test that scope definitions have expected structure."""
-        config = scopes.load_scopes_config(_scopes_config(str(temp_scopes_file)))
+        config = scopes.load_scopes_config()
         for key, value in config.items():
             if key != "group_mappings":
                 assert isinstance(value, dict)
@@ -214,29 +193,6 @@ class TestScopesConfigStructure:
                     assert "endpoint" in action
 
 
-class TestModuleImportPreloading:
-    """Tests for module-level preloading behavior."""
-
-    def test_preloads_config_on_module_import(self):
-        """Test that configuration is preloaded when module is imported.
-
-        Note: This test is more of a documentation of expected behavior.
-        The actual preloading happens at module import time, which is before tests run.
-        """
-        # If we got here, the module imported successfully, meaning preload didn't fail
-        assert True  # Cache may or may not be populated depending on test order
-
-    def test_module_import_fails_if_scopes_not_found(self):
-        """Test that module import should fail if scopes.yml cannot be found.
-
-        Note: This is tested implicitly - if scopes.yml is missing during actual import,
-        the module will fail to import and tests won't run.
-        """
-        # This test documents expected behavior
-        # In production, if scopes.yml is missing, the service won't start (fail-fast)
-        pass
-
-
 class TestEdgeCases:
     """Tests for edge cases and error conditions."""
 
@@ -247,7 +203,8 @@ class TestEdgeCases:
             temp_path = Path(f.name)
 
         try:
-            result = scopes.load_scopes_config(_scopes_config(str(temp_path)))
+            with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_path):
+                result = scopes.load_scopes_config()
             assert result["group_mappings"] == {}
         finally:
             temp_path.unlink()
@@ -259,37 +216,17 @@ class TestEdgeCases:
             temp_path = Path(f.name)
 
         try:
-            result = scopes.load_scopes_config(_scopes_config(str(temp_path)))
+            with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_path):
+                result = scopes.load_scopes_config()
             assert result["servers-read"] == []
         finally:
             temp_path.unlink()
 
-    def test_handles_relative_scopes_config_path(self, valid_scopes_config, reset_scopes_cache, tmp_path):
-        """Test that relative paths in SCOPES_CONFIG_PATH are resolved correctly."""
-        # Create a temp file in a subdirectory of tmp_path (which is under project)
-        temp_dir = tmp_path / "config"
-        temp_dir.mkdir()
-        temp_file = temp_dir / "test_scopes.yml"
-        with open(temp_file, "w") as f:
-            yaml.dump(valid_scopes_config, f)
-
-        # Create a relative path from current directory
-        try:
-            relative_path = temp_file.relative_to(Path.cwd())
-        except ValueError:
-            # If tmp_path is not under cwd, just use the absolute path for this test
-            relative_path = temp_file
-
-        result = scopes.get_scopes_file_path(_scopes_config(str(relative_path)))
-        assert result == Path(relative_path)
-        assert result.exists()
-
-    def test_cache_persists_across_calls(self, temp_scopes_file, reset_scopes_cache):
-        """Test that cache persists and prevents re-reading file."""
-        config = _scopes_config(str(temp_scopes_file))
-        result1 = scopes.load_scopes_config(config)
-        temp_scopes_file.unlink()
-        result2 = scopes.load_scopes_config(config)
+    def test_cache_persists_after_file_deleted(self, use_temp_scopes_file):
+        """Test that cache persists and prevents re-reading the file."""
+        result1 = scopes.load_scopes_config()
+        use_temp_scopes_file.unlink()
+        result2 = scopes.load_scopes_config()
         assert result1 is result2
         assert result2 is not None
 
@@ -297,19 +234,15 @@ class TestEdgeCases:
 class TestMapGroupsToScopes:
     """Tests for map_groups_to_scopes function."""
 
-    def test_maps_known_group(self, temp_scopes_file, reset_scopes_cache):
+    def test_maps_known_group(self, use_temp_scopes_file):
         """Known groups are resolved to their configured scopes."""
-        config = _scopes_config(str(temp_scopes_file))
-        scopes.load_scopes_config(config)
-        result = scopes.map_groups_to_scopes(["admin"], config)
+        result = map_groups_to_scopes(["admin"])
 
         assert result == ["servers-read", "servers-write"]
 
-    def test_unknown_group_returns_empty(self, temp_scopes_file, reset_scopes_cache):
+    def test_unknown_group_returns_empty(self, use_temp_scopes_file):
         """Unknown groups produce no scopes."""
-        config = _scopes_config(str(temp_scopes_file))
-        scopes.load_scopes_config(config)
-        result = scopes.map_groups_to_scopes(["unknown-group"], config)
+        result = map_groups_to_scopes(["unknown-group"])
 
         assert result == []
 
@@ -327,27 +260,22 @@ class TestMapGroupsToScopes:
             temp_path = Path(f.name)
 
         try:
-            config_obj = _scopes_config(str(temp_path))
-            scopes.load_scopes_config(config_obj)
-            result = scopes.map_groups_to_scopes(["group-a", "group-b"], config_obj)
+            with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_path):
+                result = map_groups_to_scopes(["group-a", "group-b"])
 
             assert result == ["scope1", "scope2", "scope3"]
         finally:
             temp_path.unlink()
 
-    def test_empty_groups_list(self, temp_scopes_file, reset_scopes_cache):
+    def test_empty_groups_list(self, use_temp_scopes_file):
         """Empty groups list returns empty scopes list."""
-        config = _scopes_config(str(temp_scopes_file))
-        scopes.load_scopes_config(config)
-        result = scopes.map_groups_to_scopes([], config)
+        result = map_groups_to_scopes([])
 
         assert result == []
 
-    def test_partial_group_match(self, temp_scopes_file, reset_scopes_cache):
+    def test_partial_group_match(self, use_temp_scopes_file):
         """Mix of known and unknown groups returns only known scopes."""
-        config = _scopes_config(str(temp_scopes_file))
-        scopes.load_scopes_config(config)
-        result = scopes.map_groups_to_scopes(["admin", "unknown-group", "user"], config)
+        result = map_groups_to_scopes(["admin", "unknown-group", "user"])
 
         # Should get scopes from admin and user, ignoring unknown-group
         assert set(result) == {"servers-read", "servers-write"}
@@ -366,9 +294,8 @@ class TestMapGroupsToScopes:
             temp_path = Path(f.name)
 
         try:
-            config_obj = _scopes_config(str(temp_path))
-            scopes.load_scopes_config(config_obj)
-            result = scopes.map_groups_to_scopes(["group-a", "group-b"], config_obj)
+            with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_path):
+                result = map_groups_to_scopes(["group-a", "group-b"])
 
             # First occurrence order is preserved: scope1, scope2, scope3 from group-a,
             # then scope4 from group-b (scope3 and scope2 already seen)
@@ -380,57 +307,47 @@ class TestMapGroupsToScopes:
 class TestFilterKnownGroups:
     """Tests for filter_known_groups function."""
 
-    def test_known_group_is_kept(self, temp_scopes_file, reset_scopes_cache):
+    def test_known_group_is_kept(self, use_temp_scopes_file):
         """A group present in group_mappings is kept in the output."""
-        config = _scopes_config(str(temp_scopes_file))
-        result = filter_known_groups(["admin"], config)
+        result = filter_known_groups(["admin"])
         assert result == ["admin"]
 
-    def test_unknown_group_is_removed(self, temp_scopes_file, reset_scopes_cache):
+    def test_unknown_group_is_removed(self, use_temp_scopes_file):
         """A group absent from group_mappings is removed."""
-        config = _scopes_config(str(temp_scopes_file))
-        result = filter_known_groups(["All-Company-Employees"], config)
+        result = filter_known_groups(["All-Company-Employees"])
         assert result == []
 
-    def test_mixed_groups_keeps_only_known(self, temp_scopes_file, reset_scopes_cache):
+    def test_mixed_groups_keeps_only_known(self, use_temp_scopes_file):
         """Mix of known and unknown groups returns only the known subset."""
-        config = _scopes_config(str(temp_scopes_file))
-        result = filter_known_groups(["admin", "All-Company-Employees", "user"], config)
+        result = filter_known_groups(["admin", "All-Company-Employees", "user"])
         assert result == ["admin", "user"]
 
-    def test_empty_input_returns_empty(self, temp_scopes_file, reset_scopes_cache):
+    def test_empty_input_returns_empty(self, use_temp_scopes_file):
         """Empty input list returns empty output."""
-        config = _scopes_config(str(temp_scopes_file))
-        result = filter_known_groups([], config)
+        result = filter_known_groups([])
         assert result == []
 
-    def test_preserves_input_order(self, temp_scopes_file, reset_scopes_cache):
+    def test_preserves_input_order(self, use_temp_scopes_file):
         """Output preserves the original order of known groups."""
-        config = _scopes_config(str(temp_scopes_file))
-        result = filter_known_groups(["user", "admin"], config)
+        result = filter_known_groups(["user", "admin"])
         assert result == ["user", "admin"]
 
-    def test_does_not_deduplicate(self, temp_scopes_file, reset_scopes_cache):
+    def test_does_not_deduplicate(self, use_temp_scopes_file):
         """Duplicate known groups are not removed — mirrors map_groups_to_scopes input convention."""
-        config = _scopes_config(str(temp_scopes_file))
-        result = filter_known_groups(["admin", "admin"], config)
+        result = filter_known_groups(["admin", "admin"])
         assert result == ["admin", "admin"]
 
 
 class TestGetScopeDescription:
     """Tests for get_scope_description function."""
 
-    def test_returns_description_for_nested_scope(self, temp_scopes_file, reset_scopes_cache):
-        config = _scopes_config(str(temp_scopes_file))
-
-        result = get_scope_description("servers-read", config)
+    def test_returns_description_for_nested_scope(self, use_temp_scopes_file):
+        result = get_scope_description("servers-read")
 
         assert result == "View registered MCP servers."
 
-    def test_returns_none_for_unknown_scope(self, temp_scopes_file, reset_scopes_cache):
-        config = _scopes_config(str(temp_scopes_file))
-
-        result = get_scope_description("unknown-scope", config)
+    def test_returns_none_for_unknown_scope(self, use_temp_scopes_file):
+        result = get_scope_description("unknown-scope")
 
         assert result is None
 
@@ -445,11 +362,12 @@ class TestGetScopeDescription:
             )
         )
 
-        result = get_scope_description("servers-read", _scopes_config(str(temp_path)))
+        with patch("registry_pkgs.core.scopes.get_scopes_file_path", return_value=temp_path):
+            result = get_scope_description("servers-read")
 
         assert result is None
 
     def test_returns_description_from_packaged_scopes_config(self, reset_scopes_cache):
-        result = get_scope_description("servers-read", _scopes_config())
+        result = get_scope_description("servers-read")
 
         assert result == "View registered MCP servers, their tools, and connection status."

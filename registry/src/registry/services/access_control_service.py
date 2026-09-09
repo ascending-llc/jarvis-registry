@@ -9,7 +9,7 @@ from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.access_control import build_acl_principal_or_clause, resolve_group_ids_for_user
 from registry_pkgs.models import (
-    Group,
+    ExtendedGroup,
     PrincipalType,
     RegistryAccessRole,
     User,
@@ -360,7 +360,7 @@ class ACLService:
             groups_by_id = {}
             if group_principal_ids:
                 group_ids = [principal_id for principal_id, _ in group_principal_ids]
-                fetched_groups = await Group.find({"_id": {"$in": group_ids}}, session=session).to_list()
+                fetched_groups = await ExtendedGroup.find({"_id": {"$in": group_ids}}, session=session).to_list()
                 groups_by_id = {group.id: group for group in fetched_groups}
 
             for principal_id, role_id in user_principal_ids:

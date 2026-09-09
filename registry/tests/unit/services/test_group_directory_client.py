@@ -8,8 +8,10 @@ import pytest
 from registry.services.group_directory_client import (
     CognitoGroupDirectoryClient,
     EntraIdGroupDirectoryClient,
+    GoogleGroupDirectoryClient,
     KeycloakGroupDirectoryClient,
 )
+from registry_pkgs.google.cloud_identity_client import GoogleWorkspaceGroupInfo
 
 
 async def test_cognito_get_user_group_ids_returns_empty():
@@ -46,6 +48,66 @@ async def test_keycloak_get_group_details_batch_returns_empty():
     client = KeycloakGroupDirectoryClient()
     result = await client.get_group_details_batch(["g1"])
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# GoogleGroupDirectoryClient
+# ---------------------------------------------------------------------------
+
+
+def _make_google_client() -> tuple[GoogleGroupDirectoryClient, AsyncMock]:
+    cig = AsyncMock()
+    return GoogleGroupDirectoryClient(cig), cig
+
+
+async def test_google_get_user_group_ids_returns_resource_names():
+    client, cig = _make_google_client()
+    cig.list_transitive_groups_for_member.return_value = [
+        GoogleWorkspaceGroupInfo(email="a@corp.com", display_name="A", resource_name="groups/1"),
+        GoogleWorkspaceGroupInfo(email="b@corp.com", display_name="B", resource_name="groups/2"),
+    ]
+
+    result = await client.get_user_group_ids("member@corp.com")
+
+    assert result == ["groups/1", "groups/2"]
+    cig.list_transitive_groups_for_member.assert_awaited_once_with("member@corp.com")
+
+
+async def test_google_get_group_members_delegates_to_transitive_members():
+    client, cig = _make_google_client()
+    cig.list_transitive_members_of_group.return_value = ["u1@corp.com", "u2@corp.com"]
+
+    result = await client.get_group_members("groups/42")
+
+    assert result == ["u1@corp.com", "u2@corp.com"]
+    cig.list_transitive_members_of_group.assert_awaited_once_with("groups/42")
+
+
+async def test_google_get_group_details_batch_maps_fields():
+    client, cig = _make_google_client()
+    cig.get_group.side_effect = [
+        {"name": "groups/1", "displayName": "Eng", "groupKey": {"id": "eng@corp.com"}, "description": "desc"},
+        {"name": "groups/2", "displayName": "Ops", "groupKey": {"id": "ops@corp.com"}, "description": None},
+    ]
+
+    result = await client.get_group_details_batch(["groups/1", "groups/2"])
+
+    assert {"id": "groups/1", "name": "Eng", "email": "eng@corp.com", "description": "desc"} in result
+    assert {"id": "groups/2", "name": "Ops", "email": "ops@corp.com", "description": None} in result
+    assert len(result) == 2
+
+
+async def test_google_get_group_details_batch_skips_failed_lookups():
+    """A single groups.get failure is skipped, not fatal for the whole batch."""
+    client, cig = _make_google_client()
+    cig.get_group.side_effect = [
+        {"name": "groups/1", "displayName": "Eng", "groupKey": {"id": "eng@corp.com"}, "description": None},
+        RuntimeError("boom"),
+    ]
+
+    result = await client.get_group_details_batch(["groups/1", "groups/2"])
+
+    assert result == [{"id": "groups/1", "name": "Eng", "email": "eng@corp.com", "description": None}]
 
 
 def _make_entra_client() -> EntraIdGroupDirectoryClient:

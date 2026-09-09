@@ -7,7 +7,11 @@ from abc import ABC, abstractmethod
 
 import httpx
 
+from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
+
 logger = logging.getLogger(__name__)
+
+_GOOGLE_GROUP_DETAIL_CONCURRENCY = 10
 
 
 class IdPGroupDirectoryClient(ABC):
@@ -56,6 +60,44 @@ class KeycloakGroupDirectoryClient(IdPGroupDirectoryClient):
             "IdP group sync is not supported for keycloak; group-based ACLs will not reflect IdP membership."
         )
         return []
+
+
+class GoogleGroupDirectoryClient(IdPGroupDirectoryClient):
+    """Wraps the shared CloudIdentityGroupsClient. Group identity is the Cloud Identity
+    resource name (``groups/{id}``) throughout — stable, and directly usable by every endpoint.
+    """
+
+    def __init__(self, client: CloudIdentityGroupsClient) -> None:
+        self._client = client
+
+    async def get_user_group_ids(self, user_oid: str) -> list[str]:
+        # user_oid is the Workspace member email for a Google-authenticated user.
+        groups = await self._client.list_transitive_groups_for_member(user_oid)
+        return [g.resource_name for g in groups]
+
+    async def get_group_members(self, group_oid: str) -> list[str]:
+        # group_oid is a "groups/{id}" resource name.
+        return await self._client.list_transitive_members_of_group(group_oid)
+
+    async def get_group_details_batch(self, group_ids: list[str]) -> list[dict]:
+        semaphore = asyncio.Semaphore(_GOOGLE_GROUP_DETAIL_CONCURRENCY)
+
+        async def _one(resource_name: str) -> dict | None:
+            async with semaphore:
+                try:
+                    data = await self._client.get_group(resource_name)
+                except Exception:
+                    logger.warning("Cloud Identity groups.get failed for %s; skipping.", resource_name, exc_info=True)
+                    return None
+            return {
+                "id": data.get("name"),
+                "name": data.get("displayName"),
+                "email": (data.get("groupKey") or {}).get("id"),
+                "description": data.get("description"),
+            }
+
+        results = await asyncio.gather(*(_one(gid) for gid in group_ids))
+        return [r for r in results if r is not None]
 
 
 class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):

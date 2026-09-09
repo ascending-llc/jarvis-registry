@@ -14,7 +14,6 @@ from registry_pkgs.oauth.schemas import ConsentScopeDisplay, DownstreamConsentCo
 
 from ....auth.dependencies import CurrentUser
 from ....constants import DownstreamOAuthConstants
-from ....core.config import settings
 from ....core.session_store import SessionStore
 from ....deps import (
     get_a2a_agent_service,
@@ -121,10 +120,7 @@ async def get_downstream_consent_context(
             scopes=[
                 ConsentScopeDisplay(
                     name=DownstreamOAuthConstants.PROXY_OPS_SCOPE,
-                    description=get_scope_description(
-                        DownstreamOAuthConstants.PROXY_OPS_SCOPE,
-                        settings.scopes_file_config,
-                    ),
+                    description=get_scope_description(DownstreamOAuthConstants.PROXY_OPS_SCOPE),
                 )
             ],
         )

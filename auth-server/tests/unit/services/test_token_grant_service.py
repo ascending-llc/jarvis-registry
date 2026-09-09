@@ -265,3 +265,33 @@ async def test_authorization_code_exchange_logs_user_before_redirect_uri_mismatc
     assert response.status_code == 400
     assert b"redirect_uri mismatch" in response.body
     assert "user_id: user-123" in caplog.text
+
+
+def _mint_kwargs(service: TokenGrantService, user_info: dict) -> dict:
+    with patch(
+        "auth_server.services.token_grant_service.mint_managed_agent_token_with_scope",
+        return_value=MintedManagedAgentToken("token", "scope"),
+    ) as mint:
+        service._mint_response(
+            client_id="mcp-client",
+            user_info=user_info,
+            user_id="user-1",
+            requested_scopes="scope",
+            issued_at=int(time.time()),
+            refresh_token="refresh",
+            include_identity_claims=False,
+        )
+    _, kwargs = mint.call_args
+    return kwargs["extra_claims"]
+
+
+def test_mint_response_uses_per_login_provider(service: TokenGrantService) -> None:
+    claims = _mint_kwargs(service, {"username": "u", "groups": [], "provider": "google"})
+    assert claims["auth_provider"] == "google"
+
+
+def test_mint_response_falls_back_to_settings_provider(service: TokenGrantService) -> None:
+    from auth_server.services.token_grant_service import settings
+
+    claims = _mint_kwargs(service, {"username": "u", "groups": []})
+    assert claims["auth_provider"] == settings.auth_provider

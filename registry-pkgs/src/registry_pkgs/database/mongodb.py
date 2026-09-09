@@ -13,12 +13,12 @@ from pymongo import AsyncMongoClient
 from ..core.config import MongoConfig
 from ..models import (
     A2AAgent,
+    ExtendedGroup,
     ExtendedMCPServer,
     ExtendedSkill,
     ExtendedSkillFile,
     Federation,
     FederationSyncJob,
-    Group,
     Key,
     NodeRun,
     RegistryAccessRole,
@@ -102,7 +102,7 @@ class MongoDB:
             rebuild_namespace = {
                 "User": User,
                 "RegistryAccessRole": RegistryAccessRole,
-                "Group": Group,
+                "ExtendedGroup": ExtendedGroup,
                 "RegistryAclEntry": RegistryAclEntry,
                 "ExtendedMCPServer": ExtendedMCPServer,
                 "Token": Token,
@@ -117,7 +117,7 @@ class MongoDB:
             }
             User.model_rebuild(_types_namespace=rebuild_namespace)
             RegistryAccessRole.model_rebuild(_types_namespace=rebuild_namespace)
-            Group.model_rebuild(_types_namespace=rebuild_namespace)
+            ExtendedGroup.model_rebuild(_types_namespace=rebuild_namespace)
             RegistryAclEntry.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedMCPServer.model_rebuild(_types_namespace=rebuild_namespace)
             Token.model_rebuild(_types_namespace=rebuild_namespace)
@@ -136,7 +136,7 @@ class MongoDB:
                 document_models=[
                     User,
                     RegistryAccessRole,
-                    Group,
+                    ExtendedGroup,
                     RegistryAclEntry,
                     ExtendedMCPServer,
                     Token,

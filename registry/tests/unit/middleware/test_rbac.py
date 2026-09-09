@@ -754,7 +754,7 @@ class TestIntegrationScenarios:
                 scopes.extend(mappings.get(group, []))
             return scopes
 
-        monkeypatch.setattr(deps_module, "map_cognito_groups_to_scopes", mock_map_groups)
+        monkeypatch.setattr(deps_module, "map_groups_to_scopes", mock_map_groups)
 
         app = self._build_app()
         app.add_middleware(ScopePermissionMiddleware)

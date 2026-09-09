@@ -13,6 +13,8 @@ from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
+from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
+from registry_pkgs.models import ExtendedGroupSource
 from registry_pkgs.oauth.flow_state_manager import FlowStateManager
 from registry_pkgs.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.oauth.token_service import TokenService
@@ -43,6 +45,7 @@ from .services.federation_sync_service import FederationSyncService
 from .services.group_directory_client import (
     CognitoGroupDirectoryClient,
     EntraIdGroupDirectoryClient,
+    GoogleGroupDirectoryClient,
     IdPGroupDirectoryClient,
     KeycloakGroupDirectoryClient,
 )
@@ -154,6 +157,7 @@ class RegistryContainer:
 
     @cached_property
     def group_directory_client(self) -> IdPGroupDirectoryClient:
+        """Supplies the "entra" slot of GroupService (Cognito/Keycloak stay no-op)."""
         provider = self.settings.auth_provider
         if provider == "entra":
             return EntraIdGroupDirectoryClient(
@@ -167,8 +171,21 @@ class RegistryContainer:
         return KeycloakGroupDirectoryClient()
 
     @cached_property
+    def cloud_identity_client(self) -> CloudIdentityGroupsClient:
+        return CloudIdentityGroupsClient(self.settings.google_service_account_key_json)
+
+    @cached_property
+    def google_group_directory_client(self) -> GoogleGroupDirectoryClient:
+        return GoogleGroupDirectoryClient(self.cloud_identity_client)
+
+    @cached_property
     def group_service(self) -> GroupService:
-        return GroupService(group_directory_client=self.group_directory_client)
+        clients: dict[ExtendedGroupSource, IdPGroupDirectoryClient] = {}
+        if self.settings.entra_group_sync_enabled:
+            clients[ExtendedGroupSource.ENTRA] = self.group_directory_client
+        if self.settings.google_group_sync_enabled:
+            clients[ExtendedGroupSource.GOOGLE] = self.google_group_directory_client
+        return GroupService(directory_clients=clients)
 
     @cached_property
     def acl_service(self) -> ACLService:
@@ -543,6 +560,7 @@ class RegistryContainer:
         await self.mcp_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()
         await self.a2a_client_registry.close()
+        await self.cloud_identity_client.aclose()
 
     def _initialize_federation(self) -> None:
         """Run optional federation sync on startup without failing the whole application."""

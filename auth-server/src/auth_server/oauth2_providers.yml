@@ -15,7 +15,7 @@ providers:
     groups_claim: "groups"
     email_claim: "email"
     name_claim: "name"
-    enabled: true
+    enabled: "${KEYCLOAK_ENABLED:-false}"
 
   cognito:
     display_name: "AWS Cognito"
@@ -34,7 +34,7 @@ providers:
     groups_claim: "cognito:groups"
     email_claim: "email"
     name_claim: "name"
-    enabled: false
+    enabled: "${COGNITO_ENABLED:-false}"
 
   # github:
   #   display_name: "GitHub"
@@ -53,22 +53,26 @@ providers:
   #   name_claim: "name"
   #   enabled: false  # Enable web-based OAuth2 flow for GitHub
 
-  # google:
-  #   display_name: "Google"
-  #   client_id: "${GOOGLE_CLIENT_ID}"
-  #   client_secret: "${GOOGLE_CLIENT_SECRET}"
-  #   auth_url: "https://accounts.google.com/o/oauth2/auth"
-  #   token_url: "https://oauth2.googleapis.com/token"
-  #   user_info_url: "https://www.googleapis.com/oauth2/v2/userinfo"
-  #   scopes: ["openid", "email", "profile"]
-  #   response_type: "code"
-  #   grant_type: "authorization_code"
-  #   # Google specific claim mapping
-  #   username_claim: "email"
-  #   groups_claim: null  # Google doesn't provide groups in basic scope
-  #   email_claim: "email"
-  #   name_claim: "name"
-  #   enabled: false  # Disabled by default
+  google:
+    display_name: "Google"
+    client_id: "${GOOGLE_CLIENT_ID}"
+    client_secret: "${GOOGLE_CLIENT_SECRET}"
+    # Endpoints are identical for every Google Workspace org (not tenant-specific).
+    auth_url: "https://accounts.google.com/o/oauth2/v2/auth"
+    token_url: "https://oauth2.googleapis.com/token"
+    jwks_url: "https://www.googleapis.com/oauth2/v3/certs"
+    user_info_url: "https://openidconnect.googleapis.com/v1/userinfo"
+    scopes: ["openid", "email", "profile"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    # Google specific claim mapping
+    username_claim: "${GOOGLE_USERNAME_CLAIM:-email}"
+    groups_claim: null  # Groups come from Cloud Identity API, not the token
+    email_claim: "${GOOGLE_EMAIL_CLAIM:-email}"
+    name_claim: "${GOOGLE_NAME_CLAIM:-name}"
+    # Optional Workspace domain restriction (empty = any verified Google account)
+    allowed_hd: "${GOOGLE_ALLOWED_HD:-}"
+    enabled: "${GOOGLE_ENABLED:-false}"
 
   entra:
     display_name: "Microsoft Entra ID"
@@ -93,4 +97,4 @@ providers:
     graph_url: "${ENTRA_GRAPH_URL:-https://graph.microsoft.com}"
     # M2M (Machine-to-Machine) default scope
     m2m_scope: "${ENTRA_M2M_SCOPE:-https://graph.microsoft.com/.default}"
-    enabled: true
+    enabled: "${ENTRA_ENABLED:-true}"

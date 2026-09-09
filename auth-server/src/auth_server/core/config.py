@@ -37,6 +37,7 @@ class AuthSettings(JarvisBaseSettings):
     keycloak_client_secret: str | None = None
     keycloak_m2m_client_id: str | None = None
     keycloak_m2m_client_secret: str | None = None
+    keycloak_enabled: str = "false"
 
     # ==================== Cognito Settings ====================
     cognito_user_pool_id: str | None = None
@@ -44,10 +45,23 @@ class AuthSettings(JarvisBaseSettings):
     cognito_client_secret: str | None = None
     cognito_domain: str | None = None
     aws_region: str = "us-east-1"
+    cognito_enabled: str = "false"
 
     # ==================== Entra ID Settings ====================
     # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
     entra_token_kind: str = "id"  # "id" or "access"
+    entra_enabled: str = "true"
+
+    # ==================== Google Settings ====================
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    google_allowed_hd: str = ""
+    google_enabled: str = "false"
+
+    # Provider toggles (*_enabled) feed the ${..._ENABLED} substitution in oauth2_providers.yml.
+    # Kept as strings so a blank env value (e.g. `ENTRA_ENABLED=`) is valid and falls back to the
+    # YAML default; config_loader coerces the substituted value to a real bool. Only entra is on
+    # by default — every other provider is opt-in.
 
     # ==================== Metrics Settings ====================
     metrics_service_url: str = "http://localhost:8890"

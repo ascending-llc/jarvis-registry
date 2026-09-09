@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key, l
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .scopes import ScopesConfig, load_scopes_config
+from .scopes import load_scopes_config
 
 INTERACTIVE_TOKEN_CLIENT_ID = "user-generated"
 
@@ -245,7 +245,7 @@ class JarvisBaseSettings(BaseSettings):
     @field_validator("auth_provider")
     @classmethod
     def validate_auth_provider(cls, v: str) -> str:
-        allowed = ["cognito", "keycloak", "entra"]
+        allowed = ["cognito", "keycloak", "entra", "google"]
         if v.lower() not in allowed:
             raise ValueError(f"auth_provider must be one of {allowed}, got '{v}'")
         return v.lower()
@@ -255,8 +255,9 @@ class JarvisBaseSettings(BaseSettings):
     entra_client_id: str | None = None
     entra_client_secret: str | None = None
 
-    # ==================== Scopes ====================
-    scopes_config_path: str = ""
+    # ==================== Google Cloud Identity Groups (service account) ====================
+    # Raw JSON key content for the Workspace Groups Reader service account
+    google_service_account_key_json: str = ""
 
     # ==================== Model Validation ====================
     # Skip model validation if set to "disabled". Disabling should only happen for import checks in CI.
@@ -423,12 +424,8 @@ class JarvisBaseSettings(BaseSettings):
         )
 
     @cached_property
-    def scopes_file_config(self) -> ScopesConfig:
-        return ScopesConfig(scopes_config_path=self.scopes_config_path)
-
-    @cached_property
     def scopes_config(self) -> dict[str, Any]:
-        return load_scopes_config(self.scopes_file_config)
+        return load_scopes_config()
 
     @cached_property
     def scopes_list(self) -> list[str]:

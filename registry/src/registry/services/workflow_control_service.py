@@ -26,9 +26,10 @@ from agno.run.cancel import acancel_run as agno_acancel_run
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 
-from registry.auth.dependencies import UserContextDict, effective_scopes_from_context, map_cognito_groups_to_scopes
+from registry.auth.dependencies import UserContextDict, effective_scopes_from_context
+from registry_pkgs.core.scopes import map_groups_to_scopes
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models import Group, User
+from registry_pkgs.models import ExtendedGroup, User
 from registry_pkgs.models.enums import (
     NodeRunStatus,
     RequirementResolution,
@@ -880,7 +881,7 @@ async def _refresh_triggering_auth_context(
 
     groups: list[str] = []
     if user.idOnTheSource:
-        current_groups = await Group.find({"memberIds": user.idOnTheSource}).to_list()
+        current_groups = await ExtendedGroup.find({"memberIds": user.idOnTheSource}).to_list()
         groups = [group.name for group in current_groups]
 
     return {
@@ -888,7 +889,7 @@ async def _refresh_triggering_auth_context(
         "client_id": run.triggering_client_id or "",
         "username": user.username or run.triggering_username,
         "groups": groups,
-        "scopes": map_cognito_groups_to_scopes(groups),
+        "scopes": map_groups_to_scopes(groups),
         "auth_method": "service",
         "provider": "workflow",
         "auth_source": "workflow_resume",

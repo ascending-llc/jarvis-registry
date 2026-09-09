@@ -3,12 +3,15 @@
 # Builtin
 import logging
 
+from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
+
 from ..core.config import AuthSettings
-from ..core.types import AllowedProvider
+from ..core.types import AllowedProvider, GoogleConfig
 from ..utils.config_loader import EntraConfig, OAuth2Config
 from .base import AuthProvider
 from .cognito import CognitoProvider
 from .entra import EntraIdProvider
+from .google import GoogleProvider
 from .keycloak import KeycloakProvider
 
 # Get logger - logging is configured centrally in server.py via settings.configure_logging()
@@ -19,14 +22,16 @@ def get_auth_provider(
     provider_type: AllowedProvider,
     settings: AuthSettings,
     oauth2_config: OAuth2Config,
+    cloud_identity_client: CloudIdentityGroupsClient,
 ) -> AuthProvider:
     """Factory function to get the appropriate auth provider.
 
     Args:
-        settings_override:
-        oauth2_config:
         provider_type: Type of provider to create ('cognito', 'keycloak', or 'entra').
                       If None, uses auth-server settings.
+        settings:
+        oauth2_config:
+        cloud_identity_client:
 
     Returns:
         AuthProvider instance configured for the specified provider
@@ -42,6 +47,8 @@ def get_auth_provider(
         return _create_cognito_provider(settings)
     elif provider_type == "entra":
         return _create_entra_provider(oauth2_config["providers"]["entra"])
+    elif provider_type == "google":
+        return _create_google_provider(oauth2_config["providers"]["google"], cloud_identity_client)
     else:
         raise ValueError(f"Unknown auth provider: {provider_type}")
 
@@ -196,4 +203,47 @@ def _create_entra_provider(entra_config: EntraConfig) -> EntraIdProvider:
         groups_claim=groups_claim,
         email_claim=email_claim,
         name_claim=name_claim,
+    )
+
+
+def _create_google_provider(
+    google_config: GoogleConfig,
+    cloud_identity_client: CloudIdentityGroupsClient,
+) -> GoogleProvider:
+    """Create and configure the Google Workspace provider."""
+    client_id = google_config.get("client_id")
+    client_secret = google_config.get("client_secret")
+    auth_url = google_config.get("auth_url")
+    token_url = google_config.get("token_url")
+    jwks_url = google_config.get("jwks_url")
+
+    missing_vars = []
+    if not client_id:
+        missing_vars.append("GOOGLE_CLIENT_ID")
+    if not client_secret:
+        missing_vars.append("GOOGLE_CLIENT_SECRET")
+    if not auth_url:
+        missing_vars.append("auth_url in oauth2_providers.yml")
+    if not token_url:
+        missing_vars.append("token_url in oauth2_providers.yml")
+    if not jwks_url:
+        missing_vars.append("jwks_url in oauth2_providers.yml")
+
+    if missing_vars:
+        raise ValueError(
+            f"Missing required Google configuration: {', '.join(missing_vars)}. Please set these environment variables."
+        )
+
+    logger.info("Initializing Google provider")
+
+    return GoogleProvider(
+        client_id=client_id,
+        client_secret=client_secret,
+        cloud_identity_client=cloud_identity_client,
+        auth_url=auth_url,
+        token_url=token_url,
+        jwks_url=jwks_url,
+        allowed_hd=google_config.get("allowed_hd", ""),
+        scopes=google_config.get("scopes"),
+        grant_type=google_config.get("grant_type", "authorization_code"),
     )

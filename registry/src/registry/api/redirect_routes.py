@@ -347,10 +347,7 @@ async def oauth2_callback(
             )
 
         try:
-            await group_service.sync_user_group_memberships(
-                user_obj,
-                enabled=settings.entra_group_sync_enabled,
-            )
+            await group_service.sync_user_group_memberships(user_obj)
         except Exception:
             logger.warning(
                 "Group sync failed for user %s; login will proceed.",
@@ -365,7 +362,7 @@ async def oauth2_callback(
             "user_id": str(user_obj.id),
             "username": user_obj.username,
             "email": user_obj.email or user_claims.get("email", ""),
-            "groups": filter_known_groups(groups, settings.scopes_file_config),
+            "groups": filter_known_groups(groups),
             "scopes": user_claims.get("scope", []),
             "role": user_obj.role,
             "auth_method": "oauth2",
@@ -494,7 +491,7 @@ async def refresh_token(
 
         # If no scopes but has groups, map groups to scopes
         if not scopes and groups:
-            scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
+            scopes = map_groups_to_scopes(groups)
             logger.info(f"Mapped refresh token groups {groups} to scopes: {scopes}")
 
         role = refresh_claims.get("role", "user")

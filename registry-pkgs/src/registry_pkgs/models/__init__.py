@@ -8,7 +8,6 @@ Also exports two enum types `PrincipalType` and `ResourceType`, so that other mo
 """
 
 from ._generated import (
-    Group,
     Key,
     PrincipalType,
     ResourceType,
@@ -19,6 +18,7 @@ from ._generated import (
 from .a2a_agent import A2AAgent
 from .extended_access_role import RegistryAccessRole
 from .extended_acl_entry import RegistryAclEntry
+from .extended_group import ExtendedGroup, ExtendedGroupSource
 from .extended_mcp_server import ExtendedMCPServer
 from .extended_skill import ExtendedSkill
 from .extended_skill_file import ExtendedSkillFile
@@ -59,7 +59,8 @@ __all__ = [
     "WorkflowRun",
     "WorkflowSchedule",
     "WorkflowVersion",
-    "Group",
+    "ExtendedGroup",
+    "ExtendedGroupSource",
     "User",
     "Key",
     "Token",

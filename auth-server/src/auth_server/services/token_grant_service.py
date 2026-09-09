@@ -155,7 +155,7 @@ class TokenGrantService:
             "user_id": user_id,
             "groups": user_info.get("groups", []),
             "token_use": ACCESS_USE,
-            "auth_provider": settings.auth_provider,
+            "auth_provider": user_info.get("provider", settings.auth_provider),
         }
         if include_identity_claims:
             extra_claims.update({"name": user_info.get("name"), "idp_id": user_info.get("idp_id")})
@@ -223,11 +223,7 @@ class TokenGrantService:
         if resolved_scopes is None:
             logger.info("No resolved_scope in auth code, computing from groups (backward compatibility)")
             user_groups = user_info.get("groups", [])
-            resolved_scopes = (
-                map_groups_to_scopes(user_groups, settings.scopes_file_config)
-                if user_groups
-                else user_info.get("scopes", [])
-            )
+            resolved_scopes = map_groups_to_scopes(user_groups) if user_groups else user_info.get("scopes", [])
 
         refresh_token = secrets.token_urlsafe(32)
         response = self._mint_response(

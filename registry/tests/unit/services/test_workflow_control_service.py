@@ -144,11 +144,11 @@ async def test_refresh_triggering_auth_context_uses_current_groups_not_persisted
         AsyncMock(return_value=SimpleNamespace(username="alice-current", idOnTheSource="source-user-1")),
     )
     monkeypatch.setattr(
-        wcs.Group,
+        wcs.ExtendedGroup,
         "find",
         lambda query: SimpleNamespace(to_list=AsyncMock(return_value=[SimpleNamespace(name="workflow-users")])),
     )
-    monkeypatch.setattr(wcs, "map_cognito_groups_to_scopes", MagicMock(return_value=["workflows-read"]))
+    monkeypatch.setattr(wcs, "map_groups_to_scopes", MagicMock(return_value=["workflows-read"]))
 
     ctx = await wcs._refresh_triggering_auth_context(run)
 

@@ -5,6 +5,7 @@ from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import OAuthStateStore
+from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
 
 from .core.config import AuthSettings
 from .core.types import AllowedProvider
@@ -74,6 +75,10 @@ class AuthContainer:
     def token_grant_service(self) -> TokenGrantService:
         return TokenGrantService(self.user_service, self.oauth_state_store, self.consent_store)
 
+    @cached_property
+    def cloud_identity_client(self) -> CloudIdentityGroupsClient:
+        return CloudIdentityGroupsClient(self._settings.google_service_account_key_json)
+
     @cache
     def get_provider_config(self, provider: AllowedProvider) -> AuthProviderConfig | EntraConfig:
         return self._config_loader.get_provider_config(provider)
@@ -84,4 +89,5 @@ class AuthContainer:
             provider,
             self._settings,
             self._oauth2_config,
+            self.cloud_identity_client,
         )

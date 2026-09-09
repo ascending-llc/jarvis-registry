@@ -4,7 +4,7 @@ from typing import Any
 
 from beanie import PydanticObjectId
 
-from registry_pkgs.models import Group, PrincipalType, User
+from registry_pkgs.models import ExtendedGroup, PrincipalType, User
 
 
 def build_acl_principal_or_clause(
@@ -30,5 +30,5 @@ async def resolve_group_ids_for_user(
     user = await User.get(user_id, session=session)
     if user is None or not user.idOnTheSource:
         return []
-    groups = await Group.find({"memberIds": user.idOnTheSource}, session=session).to_list()
+    groups = await ExtendedGroup.find({"memberIds": user.idOnTheSource}, session=session).to_list()
     return [group.id for group in groups]

@@ -8,6 +8,8 @@ from registry_pkgs.models import User
 
 logger = logging.getLogger(__name__)
 
+_GOOGLE_PROVIDER = "google"
+
 
 class UserService:
     async def find_by_source_id(self, source_id: str) -> User | None:
@@ -94,20 +96,35 @@ class UserService:
             user_id as string if created, None on error
         """
         try:
+            provider = user_claims.get("auth_provider", "")
+            idp_id = user_claims.get("idp_id")
+            # The managed-agent access token never carries a bare "email" claim (see
+            # TokenGrantService._mint_response) — sub is the email-shaped username for every
+            # provider, including Google (GoogleProvider.get_user_info sets username=email;
+            # Google's own opaque numeric sub is carried separately as idp_id).
+            email = user_claims.get("email") or user_claims.get("sub")
+
+            if provider == _GOOGLE_PROVIDER:
+                # Google is a LibreChat-native provider (Chat's googleStrategy.js sets googleId).
+                provider_fields: dict = {"provider": _GOOGLE_PROVIDER, "googleId": idp_id}
+                id_on_source = email  # Cloud Identity Groups API is email-keyed — see AS-1826.
+            else:
+                provider_fields = {"provider": "openid", "openidId": idp_id or ""}
+                id_on_source = idp_id
+
             new_user = User(
                 name=user_claims.get("name"),
                 username=user_claims.get("sub"),
-                email=user_claims.get("sub"),
+                email=email,
                 emailVerified=True,
                 role="USER",
-                provider="openid",
-                openidId="",
-                idOnTheSource=user_claims.get("idp_id"),
+                idOnTheSource=id_on_source,
                 plugins=[],
                 termsAccepted=False,
                 favorites=[],
                 createdAt=datetime.now(UTC),
                 updatedAt=datetime.now(UTC),
+                **provider_fields,
             )
 
             created_user = await new_user.create()

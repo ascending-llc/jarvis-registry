@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request, status
 from itsdangerous import URLSafeTimedSerializer
 
+from registry_pkgs.core.scopes import map_groups_to_scopes
 from registry_pkgs.types import UserContextDict
 
 from ..core.config import settings
@@ -43,39 +44,6 @@ def build_signer():
     return URLSafeTimedSerializer(settings.secret_key)
 
 
-def map_cognito_groups_to_scopes(groups: list[str]) -> list[str]:
-    """
-    Map Cognito groups to MCP scopes using the scopes.yml configuration.
-
-    Args:
-        groups: List of Cognito group names
-
-    Returns:
-        List of MCP scopes
-    """
-    scopes = []
-    group_mappings = settings.scopes_config.get("group_mappings", {})
-
-    for group in groups:
-        if group in group_mappings:
-            group_scopes = group_mappings[group]
-            scopes.extend(group_scopes)
-            logger.debug(f"Mapped group '{group}' to scopes: {group_scopes}")
-        else:
-            logger.debug(f"No scope mapping found for group: {group}")
-
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_scopes = []
-    for scope in scopes:
-        if scope not in seen:
-            seen.add(scope)
-            unique_scopes.append(scope)
-
-    logger.info(f"Final mapped scopes: {unique_scopes}")
-    return unique_scopes
-
-
 def effective_scopes_from_context(user_context: UserContextDict) -> list[str]:
     """
     Determine the effective scopes for a user based on the authentication context.
@@ -100,4 +68,4 @@ def effective_scopes_from_context(user_context: UserContextDict) -> list[str]:
     if not groups:
         return []
 
-    return map_cognito_groups_to_scopes(groups)
+    return map_groups_to_scopes(groups)

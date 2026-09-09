@@ -1,6 +1,6 @@
 from typing import Literal, TypedDict
 
-AllowedProvider = Literal["keycloak", "cognito", "entra"]
+AllowedProvider = Literal["keycloak", "cognito", "entra", "google"]
 
 
 class AuthProviderConfig(TypedDict):
@@ -29,6 +29,11 @@ class EntraConfig(AuthProviderConfig):
     m2m_scope: str
 
 
+class GoogleConfig(AuthProviderConfig):
+    jwks_url: str
+    allowed_hd: str
+
+
 class SessionCookieConfig(TypedDict):
     max_age_seconds: int
     secure: bool  # Set to false for development
@@ -41,6 +46,7 @@ class OAuth2Providers(TypedDict):
     keycloak: AuthProviderConfig
     cognito: AuthProviderConfig
     entra: EntraConfig
+    google: GoogleConfig
 
 
 class OAuth2Config(TypedDict):

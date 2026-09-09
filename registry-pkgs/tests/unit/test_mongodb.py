@@ -115,7 +115,7 @@ class TestMongoDBConnection:
 
             assert "User" in model_names
             assert "RegistryAccessRole" in model_names
-            assert "Group" in model_names
+            assert "ExtendedGroup" in model_names
             assert "RegistryAclEntry" in model_names
             assert "ExtendedMCPServer" in model_names
             assert "Token" in model_names

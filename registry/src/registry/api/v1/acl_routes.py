@@ -16,7 +16,6 @@ from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import PermissionBits
 
 from ...auth.dependencies import CurrentUser
-from ...core.config import settings
 from ...deps import get_acl_service, get_group_service
 from ...schemas.acl_schema import (
     GetResourcePermissionsResponse,
@@ -89,10 +88,7 @@ async def _snapshot_entra_groups(
     """
     for principal in data.updated:
         if principal.principalType == PrincipalType.GROUP:
-            await group_service.ensure_group_principal_exists(
-                str(principal.principalId),
-                enabled=settings.entra_group_sync_enabled,
-            )
+            await group_service.ensure_group_principal_exists(str(principal.principalId))
 
 
 async def _apply_permissions_in_transaction(

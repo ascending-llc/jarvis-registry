@@ -22,6 +22,7 @@ from auth_server.deps import (
     get_token_grant_service,
     get_user_service,
 )
+from auth_server.providers.google import GoogleDomainNotAllowedError, GoogleEmailNotVerifiedError
 from auth_server.server import app
 from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
@@ -519,6 +520,88 @@ class TestOAuth2CallbackStandardFlow:
         assert response.status_code == 302
         assert "oauth2_callback_failed" in response.headers["location"]
         mock_get_user_info.assert_not_called()
+
+    def _run_google_gate_callback(
+        self,
+        error: Exception,
+        mock_user_service,
+    ):
+        """Drive a Google callback whose get_user_info raises a login-gate error and
+        return the 302 response. The login-gate rejection must surface a specific error
+        code and never fall back to the generic userInfo path."""
+        oauth2_config = {
+            "providers": {
+                "google": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://google/token",
+                    "user_info_url": "http://google/userinfo",
+                    "username_claim": "email",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": None,
+                }
+            }
+        }
+
+        mock_google_provider = MagicMock()
+        mock_google_provider.get_user_info = AsyncMock(side_effect=error)
+
+        with (
+            patch("auth_server.routes.oauth_flow.exchange_code_for_token") as mock_exchange_token,
+            patch("auth_server.routes.oauth_flow.get_user_info") as mock_get_user_info,
+            patch("auth_server.routes.oauth_flow.settings") as mock_settings,
+        ):
+            mock_exchange_token.return_value = {"access_token": "google_access", "id_token": "google_id_token"}
+            mock_settings.registry_url = "http://localhost:3000"
+            mock_settings.registry_error_redirect = "http://localhost:3000/error"
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
+
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = lambda: mock_google_provider
+
+            test_client = TestClient(app)
+            session_data = {
+                "state": "test-state-google-gate",
+                "client_state": None,
+                "provider": "google",
+                "redirect_uri": "http://localhost:3000/redirect",
+                "client_id": "mock-client-id",
+                "code_challenge": "123",
+                "code_challenge_method": "S256",
+                "client_redirect_uri": "http://localhost:3000/redirect",
+            }
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, test_signer.dumps(session_data))
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/google",
+                params={"code": "google_code", "state": "test-state-google-gate"},
+                follow_redirects=False,
+            )
+
+        mock_get_user_info.assert_not_called()
+        return response
+
+    def test_oauth_callback_google_unverified_email_redirects(self, clear_device_storage, mock_user_service):
+        response = self._run_google_gate_callback(GoogleEmailNotVerifiedError("email not verified"), mock_user_service)
+        assert response.status_code == 302
+        assert "error=google_email_unverified" in response.headers["location"]
+
+    def test_oauth_callback_google_domain_not_allowed_redirects(self, clear_device_storage, mock_user_service):
+        response = self._run_google_gate_callback(GoogleDomainNotAllowedError("domain not allowed"), mock_user_service)
+        assert response.status_code == 302
+        assert "error=google_domain_not_allowed" in response.headers["location"]
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_token_kid")

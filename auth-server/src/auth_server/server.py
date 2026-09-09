@@ -108,6 +108,7 @@ async def lifespan(app: FastAPI):
         logger.info("🔄 Shutting down Auth Server...")
         try:
             if hasattr(app.state, "container"):
+                await app.state.container.cloud_identity_client.aclose()
                 del app.state.container
             logger.info("Closing Redis connection...")
             close_redis_client(redis_client)

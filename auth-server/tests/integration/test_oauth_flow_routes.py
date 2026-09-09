@@ -1455,6 +1455,38 @@ class TestDeviceFlowCallbackAndConsent:
         assert "servers-read" not in response.text
 
 
+class TestOAuth2ProvidersListing:
+    def test_returns_every_enabled_provider(self, test_client: TestClient):
+        config = {
+            "providers": {
+                "entra": {"enabled": True, "display_name": "Microsoft Entra ID"},
+                "google": {"enabled": True, "display_name": "Google"},
+                "cognito": {"enabled": False, "display_name": "AWS Cognito"},
+            }
+        }
+        test_client.app.dependency_overrides[get_oauth2_config] = lambda: config
+
+        response = test_client.get(f"{API_PREFIX}/oauth2/providers")
+
+        assert response.status_code == 200
+        names = {p["name"] for p in response.json()["providers"]}
+        assert names == {"entra", "google"}
+
+    def test_omits_disabled_google(self, test_client: TestClient):
+        config = {
+            "providers": {
+                "entra": {"enabled": True, "display_name": "Microsoft Entra ID"},
+                "google": {"enabled": False, "display_name": "Google"},
+            }
+        }
+        test_client.app.dependency_overrides[get_oauth2_config] = lambda: config
+
+        response = test_client.get(f"{API_PREFIX}/oauth2/providers")
+
+        names = {p["name"] for p in response.json()["providers"]}
+        assert names == {"entra"}
+
+
 def _extract_state_from_temp_session(session_cookie: str) -> str:
     signer = URLSafeTimedSerializer("test-secret-key-for-testing")
     session_data = signer.loads(session_cookie)

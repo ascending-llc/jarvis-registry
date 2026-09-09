@@ -162,6 +162,9 @@ class Settings(JarvisBaseSettings):
     entra_group_sync_enabled: bool = False
     entra_graph_url: str = "https://graph.microsoft.com"
 
+    # ==================== Google Group Sync ====================
+    google_group_sync_enabled: bool = True
+
     # ==================== Keycloak Integration ====================
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "mcp-gateway"

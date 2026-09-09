@@ -61,7 +61,6 @@ def mock_settings():
         settings.registry_client_url = "http://localhost:80/gateway"
         settings.registry_redirect_uri = "http://localhost:7860/redirect"
         settings.registry_url = "http://localhost:7860"
-        settings.scopes_file_config = {}
         settings.session_cookie_name = "session"
         settings.session_cookie_secure = False
         yield settings
@@ -159,6 +158,7 @@ async def _successful_callback(
     mock_user: Mock,
     state: str | None,
     state_nonce: str | None = "state-nonce",
+    sync_side_effect: Exception | None = None,
 ) -> RedirectResponse:
     token_response = Mock()
     token_response.status_code = 200
@@ -168,7 +168,7 @@ async def _successful_callback(
     user_service.get_user_by_user_id = AsyncMock(return_value=mock_user)
 
     group_service = Mock()
-    group_service.sync_user_group_memberships = AsyncMock()
+    group_service.sync_user_group_memberships = AsyncMock(side_effect=sync_side_effect)
 
     with (
         patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
@@ -200,6 +200,22 @@ async def test_oauth2_callback_redirects_to_safe_next_path(mock_request, mock_se
     state = _encode_state({"nonce": "state-nonce", "next": "/consent/server?nonce=abc"})
 
     response = await _successful_callback(mock_request=mock_request, mock_user=mock_user, state=state)
+
+    assert response.headers["location"] == f"{mock_settings.registry_client_url}/consent/server?nonce=abc"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_oauth2_callback_login_completes_when_group_sync_fails(mock_request, mock_settings, mock_user) -> None:
+    """Fail-open: a Cloud Identity / Graph failure during group sync must not block login."""
+    state = _encode_state({"nonce": "state-nonce", "next": "/consent/server?nonce=abc"})
+
+    response = await _successful_callback(
+        mock_request=mock_request,
+        mock_user=mock_user,
+        state=state,
+        sync_side_effect=RuntimeError("cloud identity 500"),
+    )
 
     assert response.headers["location"] == f"{mock_settings.registry_client_url}/consent/server?nonce=abc"
 
