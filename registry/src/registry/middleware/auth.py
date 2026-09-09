@@ -325,7 +325,7 @@ class UnifiedAuthMiddleware:
         scopes = scope_string.split() if scope_string else []
 
         if not scopes and groups:
-            scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
+            scopes = map_groups_to_scopes(groups)
             logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
 
         if not scopes:
@@ -390,7 +390,7 @@ class UnifiedAuthMiddleware:
 
             # If no scopes but has groups, map groups to scopes
             if not scopes and groups:
-                scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
+                scopes = map_groups_to_scopes(groups)
                 logger.info(f"Mapped session groups {groups} to scopes: {scopes}")
 
             logger.debug(f"JWT access token valid for user {username} (user_id: {user_id})")

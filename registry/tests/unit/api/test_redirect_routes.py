@@ -61,7 +61,6 @@ def mock_settings():
         settings.registry_client_url = "http://localhost:80/gateway"
         settings.registry_redirect_uri = "http://localhost:7860/redirect"
         settings.registry_url = "http://localhost:7860"
-        settings.scopes_file_config = {}
         settings.session_cookie_name = "session"
         settings.session_cookie_secure = False
         yield settings

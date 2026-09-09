@@ -999,4 +999,4 @@ class TestAuthRoutes:
             )
 
         assert response.status_code == 302
-        mock_filter.assert_called_once_with(expected_groups, mock_settings.scopes_file_config)
+        mock_filter.assert_called_once_with(expected_groups)

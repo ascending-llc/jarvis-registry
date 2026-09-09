@@ -863,7 +863,7 @@ async def consent_page(
             pending.get("resolved_scopes") or [],
             settings.jwt_token_config,
         )
-        scopes = [(name, get_scope_description(name, settings.scopes_file_config)) for name in granted_scopes]
+        scopes = [(name, get_scope_description(name)) for name in granted_scopes]
 
         return HTMLResponse(
             render_consent_page(
@@ -1191,11 +1191,7 @@ async def oauth2_callback(
 
         # Resolve scope: intersection of requested scope and user's default scope
         user_groups = mapped_user.get("groups", [])
-        default_user_scopes = (
-            map_groups_to_scopes(user_groups, settings.scopes_file_config)
-            if user_groups
-            else mapped_user.get("scopes", [])
-        )
+        default_user_scopes = map_groups_to_scopes(user_groups) if user_groups else mapped_user.get("scopes", [])
 
         requested_scope_str = device_data.get("scope") if device_data else session_data.get("requested_scope")
         if requested_scope_str:

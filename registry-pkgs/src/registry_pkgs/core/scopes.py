@@ -1,14 +1,14 @@
 """Centralized scopes configuration loader for MCP Gateway services.
 
-This module loads ``scopes.yml`` from an explicit ``ScopesConfig`` object rather than
-reading environment variables directly. Callers provide the config, and the loader
-resolves the file using this priority:
+Loads the package-bundled ``scopes.yml`` — the single source of truth for group-to-scope
+mappings across every deployment. Per-client values never belong in this OSS repo, so this
+module always resolves the file bundled with ``registry-pkgs``; there is no per-deployment
+override path. ``group_mappings`` keys are provider-agnostic role names — each auth
+provider is responsible for converting its own IdP-native group identifiers into these
+names before a group list reaches this module (e.g. Google Workspace groups are
+email-addressed, so ``GoogleProvider`` strips the domain before returning its group list).
 
-1. ``ScopesConfig.scopes_config_path`` when it points to an existing file
-2. The package-bundled ``scopes.yml`` included with ``registry-pkgs``
-
-Configuration is loaded lazily on first use and cached by resolved file path for the
-lifetime of the process. Changes to a loaded ``scopes.yml`` still require a restart.
+Configuration is loaded lazily on first use and cached for the lifetime of the process.
 """
 
 import logging
@@ -16,49 +16,28 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-_SCOPES_CONFIG_CACHE: dict[str, dict[str, Any]] = {}
+_SCOPES_CONFIG_CACHE: dict[str, Any] | None = None
 
 
-class ScopesConfig(BaseModel):
-    scopes_config_path: str = Field(
-        default="",
-        description="Path to scopes.yml; package-bundled file is used when empty",
-    )
-
-
-def get_scopes_file_path(config: ScopesConfig) -> Path:
-    """Resolve the scopes.yml path from explicit config or the packaged fallback."""
-    if config.scopes_config_path:
-        scopes_path = Path(config.scopes_config_path)
-        if scopes_path.exists():
-            logger.info(f"Using scopes config from SCOPES_CONFIG_PATH: {scopes_path}")
-            return scopes_path
-        logger.warning(f"SCOPES_CONFIG_PATH set to {config.scopes_config_path} but file not found")
-
+def get_scopes_file_path() -> Path:
+    """Resolve the package-bundled scopes.yml path."""
     package_path = Path(__file__).parent.parent / "scopes.yml"
     if package_path.exists():
-        logger.info(f"Using package-bundled scopes config: {package_path}")
         return package_path
 
-    raise FileNotFoundError(
-        "scopes.yml not found. Provide scopes_config_path or ensure scopes.yml is packaged with registry-pkgs."
-    )
+    raise FileNotFoundError("scopes.yml not found; ensure scopes.yml is packaged with registry-pkgs.")
 
 
-def load_scopes_config(config: ScopesConfig) -> dict[str, Any]:
-    """Load scopes configuration from YAML with path-based lazy caching."""
-    if config.scopes_config_path and config.scopes_config_path in _SCOPES_CONFIG_CACHE:
-        return _SCOPES_CONFIG_CACHE[config.scopes_config_path]
+def load_scopes_config() -> dict[str, Any]:
+    """Load scopes configuration from the package-bundled YAML, cached after first load."""
+    global _SCOPES_CONFIG_CACHE
+    if _SCOPES_CONFIG_CACHE is not None:
+        return _SCOPES_CONFIG_CACHE
 
-    scopes_file = get_scopes_file_path(config)
-    cache_key = str(scopes_file.resolve())
-
-    if cache_key in _SCOPES_CONFIG_CACHE:
-        return _SCOPES_CONFIG_CACHE[cache_key]
+    scopes_file = get_scopes_file_path()
 
     try:
         with open(scopes_file) as f:
@@ -70,9 +49,7 @@ def load_scopes_config(config: ScopesConfig) -> dict[str, Any]:
             raise RuntimeError("scopes.yml missing required 'group_mappings' section")
 
         logger.info(f"Loaded scopes config with {len(loaded.get('group_mappings', {}))} group mappings")
-        _SCOPES_CONFIG_CACHE[cache_key] = loaded
-        if config.scopes_config_path:
-            _SCOPES_CONFIG_CACHE[config.scopes_config_path] = loaded
+        _SCOPES_CONFIG_CACHE = loaded
         return loaded
 
     except yaml.YAMLError as e:
@@ -83,9 +60,9 @@ def load_scopes_config(config: ScopesConfig) -> dict[str, Any]:
         raise
 
 
-def map_groups_to_scopes(groups: list[str], config: ScopesConfig) -> list[str]:
-    """Map user groups to OAuth2 scopes using the configured scopes file."""
-    group_mappings = load_scopes_config(config).get("group_mappings", {})
+def map_groups_to_scopes(groups: list[str]) -> list[str]:
+    """Map user groups to OAuth2 scopes using the bundled scopes.yml."""
+    group_mappings = load_scopes_config().get("group_mappings", {})
     scopes: list[str] = []
 
     for group in groups:
@@ -107,7 +84,7 @@ def map_groups_to_scopes(groups: list[str], config: ScopesConfig) -> list[str]:
     return unique_scopes
 
 
-def filter_known_groups(groups: list[str], config: ScopesConfig) -> list[str]:
+def filter_known_groups(groups: list[str]) -> list[str]:
     """Filter a user's raw IdP groups down to those with a scope mapping in scopes.yml.
 
     Groups outside `group_mappings` carry no authorization meaning to this application —
@@ -115,11 +92,11 @@ def filter_known_groups(groups: list[str], config: ScopesConfig) -> list[str]:
     before a group list is minted into a JWT keeps that dead weight out of every session
     cookie instead of transmitting and then ignoring it.
     """
-    group_mappings = load_scopes_config(config).get("group_mappings", {})
+    group_mappings = load_scopes_config().get("group_mappings", {})
     return [group for group in groups if group in group_mappings]
 
 
-def get_scope_description(scope_name: str, config: ScopesConfig) -> str | None:
+def get_scope_description(scope_name: str) -> str | None:
     """Return the lay-person description for a scope, or None if the scope or field is absent."""
-    scope_entry = load_scopes_config(config).get(scope_name)
+    scope_entry = load_scopes_config().get(scope_name)
     return scope_entry.get("description") if isinstance(scope_entry, dict) else None

@@ -6,6 +6,7 @@ from auth_server.providers.google import (
     GoogleDomainNotAllowedError,
     GoogleEmailNotVerifiedError,
     GoogleProvider,
+    _group_local_part,
 )
 from registry_pkgs.core.jwt_utils import InvalidSignatureError
 from registry_pkgs.google.cloud_identity_client import GoogleWorkspaceGroupInfo
@@ -40,7 +41,9 @@ def _claims(**overrides) -> dict:
 @pytest.mark.auth
 class TestGoogleGetUserInfo:
     @pytest.mark.asyncio
-    async def test_returns_group_emails_from_cloud_identity(self):
+    async def test_returns_group_local_parts_from_cloud_identity(self):
+        """Cloud Identity groups are email-addressed, but scopes.yml's group_mappings keys
+        are bare role names — get_user_info must strip the domain before returning groups."""
         provider = _provider()
         provider._verify_id_token = AsyncMock(return_value=_claims())
         provider._cloud_identity_client.list_transitive_groups_for_member = AsyncMock(
@@ -57,7 +60,7 @@ class TestGoogleGetUserInfo:
             "email": "user@example.com",
             "name": "Test User",
             "id": "google-sub-123",
-            "groups": ["eng@example.com", "all@example.com"],
+            "groups": ["eng", "all"],
         }
 
     @pytest.mark.asyncio
@@ -178,3 +181,16 @@ class TestGoogleMisc:
             await provider.get_m2m_token()
         with pytest.raises(NotImplementedError):
             await provider.validate_m2m_token("token")
+
+
+@pytest.mark.unit
+@pytest.mark.auth
+class TestGroupLocalPart:
+    def test_strips_domain(self):
+        assert _group_local_part("jarvis-registry-admin@example.com") == "jarvis-registry-admin"
+
+    def test_strips_only_first_at(self):
+        assert _group_local_part("a@b@example.com") == "a"
+
+    def test_leaves_bare_string_unchanged(self):
+        assert _group_local_part("jarvis-registry-admin") == "jarvis-registry-admin"

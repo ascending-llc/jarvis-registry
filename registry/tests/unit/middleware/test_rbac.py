@@ -747,7 +747,7 @@ class TestIntegrationScenarios:
         # Mock the group mapping function
         from registry.auth import dependencies as deps_module
 
-        def mock_map_groups(groups, _config):
+        def mock_map_groups(groups):
             mappings = mock_settings.scopes_config.get("group_mappings", {})
             scopes = []
             for group in groups:

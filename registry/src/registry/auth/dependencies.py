@@ -68,4 +68,4 @@ def effective_scopes_from_context(user_context: UserContextDict) -> list[str]:
     if not groups:
         return []
 
-    return map_groups_to_scopes(groups, settings.scopes_file_config)
+    return map_groups_to_scopes(groups)

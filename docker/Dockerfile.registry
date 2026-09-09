@@ -33,7 +33,6 @@ COPY ./config/metrics/registry.yml /app/config/metrics/registry.yml
 
 # Point to shared config files
 ENV OTEL_METRICS_CONFIG_PATH=/app/config/metrics/registry.yml
-ENV SCOPES_CONFIG_PATH=/app/config/scopes.yml
 
 # Create logs directory
 RUN mkdir -p /app/logs

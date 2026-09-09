@@ -191,14 +191,13 @@ def create_test_jwt_token(
     Returns:
         JWT access token string
     """
-    from registry.core.config import Settings
     from registry.utils.crypto_utils import generate_access_token
     from registry_pkgs.core.scopes import map_groups_to_scopes
 
     if user_id is None:
         user_id = f"test-{username}-id"
 
-    scopes = map_groups_to_scopes(groups, Settings(_env_file=None).scopes_file_config) or groups
+    scopes = map_groups_to_scopes(groups) or groups
 
     return generate_access_token(
         user_id=user_id,

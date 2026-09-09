@@ -23,6 +23,15 @@ _VALID_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 _JWKS_CACHE_TTL_SECONDS = 3600
 
 
+def _group_local_part(group_email: str) -> str:
+    """Cloud Identity groups are always email-addressed (``groupKey.id``), but scopes.yml's
+    group_mappings keys are bare, provider-agnostic role names. Take the local part before
+    "@" so a Workspace group like "jarvis-registry-admin@example.com" matches the role name
+    "jarvis-registry-admin" regardless of which Workspace domain it was created in.
+    """
+    return group_email.split("@", 1)[0]
+
+
 class GoogleEmailNotVerifiedError(ValueError):
     """Raised when a Google id_token's email is not verified."""
 
@@ -146,7 +155,7 @@ class GoogleProvider(AuthProvider):
             "email": email,
             "name": claims.get("name"),
             "id": claims.get("sub"),
-            "groups": [g.email for g in groups],
+            "groups": [_group_local_part(g.email) for g in groups],
         }
 
     def get_auth_url(self, redirect_uri: str, state: str, scope: str | None = None) -> str:

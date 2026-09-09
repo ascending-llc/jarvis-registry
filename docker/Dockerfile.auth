@@ -27,7 +27,6 @@ COPY ./config/metrics/auth_server.yml /app/config/metrics/auth_server.yml
 
 # Point to shared config files
 ENV OTEL_METRICS_CONFIG_PATH=/app/config/metrics/auth_server.yml
-ENV SCOPES_CONFIG_PATH=/app/config/scopes.yml
 
 # Create logs directory
 RUN mkdir -p /app/logs
