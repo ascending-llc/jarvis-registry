@@ -66,14 +66,23 @@ in `admin.google.com`:
 
 1. Account → Admin roles → **Groups Reader** → Assign admin → Assign service accounts → paste the
    `client_email` → Assign role.
-2. **Also assign a Users:Read-equivalent privilege.** In our own dogfood testing, Groups Reader alone was
-   not sufficient for `groups.memberships:searchTransitiveGroups` to resolve a user's groups — a
-   Users:Read-style privilege had to be added before lookups worked (verified directly by the engineer who
-   implemented this code). The exact role/privilege bundle used internally wasn't precisely recorded
-   (shorthanded as "Users:Read" in chat) — confirm the precise Admin Console role or custom-role privilege
-   set with Daoqi Zhang / Kelvin Yu before repeating this instruction verbatim to a client, since granting
-   more than Groups Reader is a bigger ask of a client's Super Admin than the original least-privilege
-   design intended, and worth being precise about.
+2. **Also assign a Users:Read-equivalent privilege.** Why: our code calls
+   `groups.memberships:searchTransitiveGroups` (`registry_pkgs/google/cloud_identity_client.py:101`) to
+   resolve a member's transitive groups. Google's own reference for that method
+   (https://docs.cloud.google.com/identity/docs/reference/rest/v1/groups.memberships/searchTransitiveGroups)
+   states the caller only needs "groups read permissions" — but that's not sufficient in practice: an
+   independent writeup of the same API
+   (https://blog.salrashid.dev/articles/2022/search_group_membership) documents needing a custom admin role
+   with **both** "user read" and "group read" before the call stops returning `PERMISSION_DENIED` for a
+   service account, and this matches exactly what we hit in our own dogfood testing — Groups Reader alone
+   was not sufficient, and lookups only started working once a Users:Read-style privilege was added
+   (verified directly by the engineer who implemented this code). This is an undocumented quirk of the API
+   (resolving a member's transitive groups apparently requires read access to the member's own Directory
+   user record, not just to the groups themselves), not something we chose. The exact Admin Console role or
+   custom-role privilege set used internally wasn't precisely recorded (shorthanded as "Users:Read" in
+   Slack chat) — confirm the precise bundle with Daoqi Zhang / Kelvin Yu before repeating this instruction
+   verbatim to a client, since granting more than Groups Reader is a bigger ask of a client's Super Admin
+   than the original least-privilege design intended, and worth being precise about.
 3. Role changes can take up to ~24h to propagate — don't debug a 403 as a config error in the first few
    hours after granting.
 
@@ -268,7 +277,10 @@ DEMO.
 ## Open follow-ups
 
 - [ ] Confirm the precise Admin Console role/privilege bundle behind "Groups Reader + Users:Read" (§1.5)
-      with Daoqi Zhang / Kelvin Yu before repeating it verbatim in a client engagement.
+      with Daoqi Zhang / Kelvin Yu before repeating it verbatim in a client engagement. The *why* is now
+      documented (searchTransitiveGroups needs read access to the member's own Directory user record, not
+      just to groups — see §1.5's citations) — what's still unconfirmed is the exact Admin Console role
+      name or custom-role privilege set that satisfies it.
 - [ ] Confirm PROD's actual external URL for OAuth redirect URI registration (§2.2).
       more than once).
 - [ ] Tear down the famulei.us dogfooding environment once Google SSO testing is fully validated.
