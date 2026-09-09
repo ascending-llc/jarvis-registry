@@ -1,6 +1,13 @@
 MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 
+# Inline skill supporting-file limits. Each SkillFile is its own MongoDB document, so the single-file
+# cap keeps one file inside the 16 MB document limit; the total/count caps bound a single skill's payload.
+MAX_SKILL_FILE_SIZE = 5 * 1024 * 1024
+MAX_SKILL_FILES_TOTAL_SIZE = 10 * 1024 * 1024
+MAX_SKILL_FILE_COUNT = 50
+RESERVED_SKILL_FILE_NAMES = frozenset({"skill.md"})
+
 
 class DownstreamOAuthConstants:
     """Layer B (registry-as-AS) downstream OAuth protocol invariants"""

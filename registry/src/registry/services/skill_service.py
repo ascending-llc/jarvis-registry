@@ -1,14 +1,17 @@
 """Business logic for Skill CRUD, sync-down, and ACL enforcement."""
 
 import base64
+import binascii
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from beanie import PydanticObjectId
 from fastapi import HTTPException, status
 from pydantic import ValidationError
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedSkill as Skill
@@ -18,6 +21,12 @@ from registry_pkgs.models.enums import RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.oauth.user_service import UserService
 
+from ..constants import (
+    MAX_SKILL_FILE_COUNT,
+    MAX_SKILL_FILE_SIZE,
+    MAX_SKILL_FILES_TOTAL_SIZE,
+    RESERVED_SKILL_FILE_NAMES,
+)
 from ..models.skill_frontmatter import (
     ClaudeCodeSkillFrontmatter,
     dump_claude_code_frontmatter,
@@ -27,16 +36,154 @@ from ..schemas.acl_schema import ResourcePermissions
 from ..schemas.skill_api_schemas import (
     SkillCreateRequest,
     SkillFileContentResponse,
+    SkillFileInput,
     SkillFileMetadataResponse,
     SkillFileResponse,
+    SkillFileUpsertRequest,
     SkillUpdateRequest,
 )
+from ..utils.skill_files import guess_mime_type, is_text_content
 from .access_control_service import ACLService
 
 logger = logging.getLogger(__name__)
 
 _REGISTRY_FILE_SOURCE = "registry-inline"
 _UNAVAILABLE_FILE_REASON = "File content is not available in Registry because it was created in Jarvis Chat."
+_MONGO_WRITE_CONFLICT_CODE = 112
+
+
+def _is_write_conflict(exc: OperationFailure) -> bool:
+    """Detect MongoDB WriteConflict so racing writers can be surfaced as 409 instead of 500."""
+    return exc.code == _MONGO_WRITE_CONFLICT_CODE or "WriteConflict" in (exc.details or {}).get("errorLabels", [])
+
+
+@dataclass(frozen=True)
+class _PreparedFile:
+    """A validated supporting file ready to persist as a registry-inline SkillFile."""
+
+    relative_path: str
+    raw: bytes
+    mime_type: str
+    is_binary: bool
+    is_executable: bool
+
+
+def _validate_relative_path(path: str) -> None:
+    """Reject absolute paths, traversal, backslashes, non-normalized POSIX paths, and reserved names."""
+    if not path or not path.strip():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="File path must not be empty")
+    if "\\" in path:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"File path must not contain backslashes: {path!r}",
+        )
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in path):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"File path must not contain control characters: {path!r}",
+        )
+    pure = PurePosixPath(path)
+    if pure.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"File path must be relative: {path!r}"
+        )
+    if not pure.parts or str(pure) != path:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"File path must be a normalized POSIX path: {path!r}",
+        )
+    if any(part in ("..", ".") for part in pure.parts):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"File path must not contain '.' or '..' segments: {path!r}",
+        )
+    if path.lower() in RESERVED_SKILL_FILE_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"'{path}' is reserved and cannot be a supporting file",
+        )
+
+
+def _prepare_inline_file(relative_path: str, data: SkillFileInput | SkillFileUpsertRequest) -> _PreparedFile:
+    """Validate one file's path and content, returning normalized bytes/metadata."""
+    _validate_relative_path(relative_path)
+    if data.body is not None:
+        try:
+            raw = base64.b64decode(data.body, validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Invalid base64 content for {relative_path!r}",
+            ) from e
+    else:
+        raw = (data.content or "").encode("utf-8")
+    if len(raw) > MAX_SKILL_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"File {relative_path!r} exceeds the {MAX_SKILL_FILE_SIZE}-byte limit",
+        )
+    actual_is_binary = not is_text_content(raw)
+    if data.content is not None and actual_is_binary:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"File {relative_path!r} was sent as text but its content is binary; use 'body' (base64)",
+        )
+    if data.isBinary is not None and data.isBinary != actual_is_binary:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Declared isBinary={data.isBinary} does not match actual content for {relative_path!r}",
+        )
+    return _PreparedFile(
+        relative_path=relative_path,
+        raw=raw,
+        mime_type=data.mimeType or guess_mime_type(relative_path),
+        is_binary=actual_is_binary,
+        is_executable=data.isExecutable,
+    )
+
+
+def _validate_files_batch(files: list[SkillFileInput]) -> list[_PreparedFile]:
+    """Validate a batch of inline files: per-file rules plus dedupe, count, and total-size caps."""
+    if len(files) > MAX_SKILL_FILE_COUNT:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"A skill may have at most {MAX_SKILL_FILE_COUNT} files",
+        )
+    prepared: list[_PreparedFile] = []
+    seen: set[str] = set()
+    total = 0
+    for file_input in files:
+        if file_input.relativePath in seen:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Duplicate file path: {file_input.relativePath!r}",
+            )
+        seen.add(file_input.relativePath)
+        prepared_file = _prepare_inline_file(file_input.relativePath, file_input)
+        total += len(prepared_file.raw)
+        prepared.append(prepared_file)
+    if total > MAX_SKILL_FILES_TOTAL_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Total file size exceeds the {MAX_SKILL_FILES_TOTAL_SIZE}-byte limit",
+        )
+    return prepared
+
+
+def _build_inline_skill_file(skill_id: PydanticObjectId, prepared: _PreparedFile, now: datetime) -> SkillFile:
+    return SkillFile(
+        skillId=skill_id,
+        relativePath=prepared.relative_path,
+        source=_REGISTRY_FILE_SOURCE,
+        mimeType=prepared.mime_type,
+        bytes=len(prepared.raw),
+        content=None,
+        body=prepared.raw,
+        isBinary=prepared.is_binary,
+        isExecutable=prepared.is_executable,
+        createdAt=now,
+        updatedAt=now,
+    )
 
 
 def _build_frontmatter(
@@ -260,7 +407,7 @@ class SkillService:
         data: SkillCreateRequest,
         user_id: str | None,
         author_name: str | None,
-    ) -> tuple[Skill, ResourcePermissions]:
+    ) -> tuple[Skill, list[SkillFile], ResourcePermissions]:
         object_user_id = _require_user_id(user_id)
         user = await self.user_service.get_user_by_user_id(str(object_user_id))
         if user is None:
@@ -268,6 +415,8 @@ class SkillService:
         resolved_author_name = str(user.name or user.username or author_name or "").strip()
         if not resolved_author_name:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Skill author name is required")
+
+        prepared_files = _validate_files_batch(data.files)
 
         duplicate_query = {
             "name": data.name,
@@ -286,7 +435,7 @@ class SkillService:
 
         now = datetime.now(UTC)
         skill = Skill(
-            **data.model_dump(exclude={"frontmatter"}),
+            **data.model_dump(exclude={"frontmatter", "files"}),
             author=object_user_id,
             authorName=resolved_author_name,
             frontmatter=dump_claude_code_frontmatter(validated_frontmatter),
@@ -297,15 +446,20 @@ class SkillService:
             source=SkillSource.INLINE,
             enabled=True,
             createdByRegistry=True,
-            fileCount=0,
+            fileCount=len(prepared_files),
             version=1,
             createdAt=now,
             updatedAt=now,
         )
+        created_files: list[SkillFile] = []
         try:
             async with MongoDB.get_client().start_session() as mongo_session:
                 async with await mongo_session.start_transaction():
                     await skill.insert(session=mongo_session)
+                    for prepared in prepared_files:
+                        skill_file = _build_inline_skill_file(skill.id, prepared, now)
+                        await skill_file.insert(session=mongo_session)
+                        created_files.append(skill_file)
                     await self.acl_service.grant_permission(
                         principal_type=PrincipalType.USER,
                         principal_id=object_user_id,
@@ -319,7 +473,133 @@ class SkillService:
                 status_code=status.HTTP_409_CONFLICT, detail="A skill with this name already exists"
             ) from e
 
-        return skill, ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True)
+        return skill, created_files, ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True)
+
+    async def upsert_skill_file(
+        self,
+        skill_id: PydanticObjectId,
+        relative_path: str,
+        data: SkillFileUpsertRequest,
+        user_id: str | None,
+    ) -> tuple[SkillFileMetadataResponse, bool]:
+        object_user_id = _require_user_id(user_id)
+        prepared = _prepare_inline_file(relative_path, data)  # fail fast before opening a session
+        now = datetime.now(UTC)
+        try:
+            async with MongoDB.get_client().start_session() as mongo_session:
+                async with await mongo_session.start_transaction():
+                    # Load skill INSIDE the transaction so a concurrent delete cannot orphan the SkillFile
+                    # we're about to write via a stale in-memory reference.
+                    skill = await Skill.find_one({"_id": skill_id}, session=mongo_session)
+                    if skill is None:
+                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill not found")
+                    await self.acl_service.check_user_permission(
+                        user_id=object_user_id,
+                        resource_type=RegistryResourceType.SKILL.value,
+                        resource_id=skill_id,
+                        required_permission="EDIT",
+                        session=mongo_session,
+                    )
+                    if not skill.createdByRegistry:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Only skills created in Registry can have their files modified",
+                        )
+                    existing_files = await SkillFile.find({"skillId": skill_id}, session=mongo_session).to_list()
+                    existing = next((f for f in existing_files if f.relativePath == relative_path), None)
+                    if existing is not None and existing.source != _REGISTRY_FILE_SOURCE:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Cannot overwrite a file that was not created in Registry",
+                        )
+                    created = existing is None
+                    if created and len(existing_files) >= MAX_SKILL_FILE_COUNT:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=f"A skill may have at most {MAX_SKILL_FILE_COUNT} files",
+                        )
+                    other_total = sum(f.bytes for f in existing_files if f.relativePath != relative_path)
+                    if other_total + len(prepared.raw) > MAX_SKILL_FILES_TOTAL_SIZE:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=f"Total file size exceeds the {MAX_SKILL_FILES_TOTAL_SIZE}-byte limit",
+                        )
+                    if existing is not None:
+                        existing.source = _REGISTRY_FILE_SOURCE
+                        existing.mimeType = prepared.mime_type
+                        existing.bytes = len(prepared.raw)
+                        existing.content = None
+                        existing.body = prepared.raw
+                        existing.isBinary = prepared.is_binary
+                        existing.isExecutable = prepared.is_executable
+                        existing.updatedAt = now
+                        await existing.save(session=mongo_session)
+                        saved = existing
+                    else:
+                        saved = _build_inline_skill_file(skill_id, prepared, now)
+                        await saved.insert(session=mongo_session)
+                    skill.fileCount = len(existing_files) + (1 if created else 0)
+                    skill.version += 1
+                    skill.updatedAt = now
+                    await skill.save(session=mongo_session)
+        except OperationFailure as e:
+            if _is_write_conflict(e):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Skill was modified concurrently; please retry",
+                ) from e
+            raise
+        return _file_metadata(saved), created
+
+    async def delete_skill_file(
+        self,
+        skill_id: PydanticObjectId,
+        relative_path: str,
+        user_id: str | None,
+    ) -> None:
+        object_user_id = _require_user_id(user_id)
+        _validate_relative_path(relative_path)
+        now = datetime.now(UTC)
+        try:
+            async with MongoDB.get_client().start_session() as mongo_session:
+                async with await mongo_session.start_transaction():
+                    skill = await Skill.find_one({"_id": skill_id}, session=mongo_session)
+                    if skill is None:
+                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill not found")
+                    await self.acl_service.check_user_permission(
+                        user_id=object_user_id,
+                        resource_type=RegistryResourceType.SKILL.value,
+                        resource_id=skill_id,
+                        required_permission="EDIT",
+                        session=mongo_session,
+                    )
+                    if not skill.createdByRegistry:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Only skills created in Registry can have their files modified",
+                        )
+                    existing = await SkillFile.find_one(
+                        {"skillId": skill_id, "relativePath": relative_path}, session=mongo_session
+                    )
+                    if existing is None:
+                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill file not found")
+                    if existing.source != _REGISTRY_FILE_SOURCE:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Cannot delete a file that was not created in Registry",
+                        )
+                    await existing.delete(session=mongo_session)
+                    skill.fileCount = await SkillFile.find({"skillId": skill_id}, session=mongo_session).count()
+                    skill.version += 1
+                    skill.updatedAt = now
+                    await skill.save(session=mongo_session)
+        except OperationFailure as e:
+            if _is_write_conflict(e):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Skill was modified concurrently; please retry",
+                ) from e
+            raise
 
     async def update_skill(
         self,

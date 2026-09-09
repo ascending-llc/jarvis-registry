@@ -18,6 +18,8 @@ from ....schemas.skill_api_schemas import (
     SkillCreateRequest,
     SkillDetailResponse,
     SkillFileContentResponse,
+    SkillFileMetadataResponse,
+    SkillFileUpsertRequest,
     SkillListResponse,
     SkillMetadataResponse,
     SkillToggleRequest,
@@ -121,12 +123,12 @@ async def create_skill(
     skill_service: SkillService = Depends(get_skill_service),
 ) -> SkillDetailResponse:
     try:
-        skill, permissions = await skill_service.create_skill(
+        skill, files, permissions = await skill_service.create_skill(
             data=data,
             user_id=user_context.get("user_id"),
             author_name=user_context.get("username"),
         )
-        return _detail_response(skill, [], permissions)
+        return _detail_response(skill, files, permissions)
     except HTTPException:
         raise
     except Exception as e:
@@ -212,6 +214,61 @@ async def get_skill_file_content(
         raise
     except Exception as e:
         logger.exception("Failed to get file %s for skill %s", file_path, skill_id)
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
+
+
+@router.put(
+    "/skills/{skill_id}/files/{file_path:path}",
+    response_model=SkillFileMetadataResponse,
+    summary="Create or replace a skill file",
+)
+@track_registry_operation("upsert", resource_type="skill_file")
+async def upsert_skill_file(
+    skill_id: PydanticObjectId,
+    file_path: str,
+    data: SkillFileUpsertRequest,
+    user_context: CurrentUser,
+    response: Response,
+    skill_service: SkillService = Depends(get_skill_service),
+) -> SkillFileMetadataResponse:
+    try:
+        metadata, created = await skill_service.upsert_skill_file(
+            skill_id, file_path, data, user_context.get("user_id")
+        )
+        response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return metadata
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to upsert file %s for skill %s", file_path, skill_id)
+        raise HTTPException(
+            status_code=500,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from e
+
+
+@router.delete(
+    "/skills/{skill_id}/files/{file_path:path}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a skill file",
+)
+@track_registry_operation("delete", resource_type="skill_file")
+async def delete_skill_file(
+    skill_id: PydanticObjectId,
+    file_path: str,
+    user_context: CurrentUser,
+    skill_service: SkillService = Depends(get_skill_service),
+) -> Response:
+    try:
+        await skill_service.delete_skill_file(skill_id, file_path, user_context.get("user_id"))
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to delete file %s for skill %s", file_path, skill_id)
         raise HTTPException(
             status_code=500,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),

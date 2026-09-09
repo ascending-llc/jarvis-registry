@@ -520,6 +520,12 @@ skills-write:
   - action: delete_skill
     method: DELETE
     endpoint: /skills/{skill_id}
+  - action: upsert_skill_file
+    method: PUT
+    endpoint: /skills/{skill_id}/files/{path}
+  - action: delete_skill_file
+    method: DELETE
+    endpoint: /skills/{skill_id}/files/{path}
   - action: toggle_skill
     method: POST
     endpoint: /skills/{skill_id}/toggle

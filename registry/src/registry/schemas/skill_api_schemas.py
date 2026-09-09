@@ -3,10 +3,46 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..models.skill_frontmatter import SKILL_NAME_PATTERN
 from .acl_schema import ResourcePermissions
+
+
+def _require_exactly_one_content_field(model: BaseModel) -> None:
+    if (model.content is None) == (model.body is None):  # type: ignore[attr-defined]
+        raise ValueError("Exactly one of 'content' or 'body' must be provided")
+
+
+class SkillFileUpsertRequest(BaseModel):
+    """Body for creating/replacing a single supporting file (relativePath comes from the URL)."""
+
+    content: str | None = Field(default=None, description="Text file content (utf-8 string)")
+    body: str | None = Field(default=None, description="Binary file content (base64)")
+    mimeType: str | None = Field(default=None, max_length=255)
+    isExecutable: bool = False
+    isBinary: bool | None = Field(default=None, description="Optional; server verifies against content")
+
+    @model_validator(mode="after")
+    def _validate_content(self) -> "SkillFileUpsertRequest":
+        _require_exactly_one_content_field(self)
+        return self
+
+
+class SkillFileInput(BaseModel):
+    """A supporting file supplied inline when creating a skill."""
+
+    relativePath: str = Field(..., max_length=512)
+    content: str | None = Field(default=None, description="Text file content (utf-8 string)")
+    body: str | None = Field(default=None, description="Binary file content (base64)")
+    mimeType: str | None = Field(default=None, max_length=255)
+    isExecutable: bool = False
+    isBinary: bool | None = Field(default=None, description="Optional; server verifies against content")
+
+    @model_validator(mode="after")
+    def _validate_content(self) -> "SkillFileInput":
+        _require_exactly_one_content_field(self)
+        return self
 
 
 class SkillCreateRequest(BaseModel):
@@ -18,6 +54,7 @@ class SkillCreateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     alwaysApply: bool = False
     frontmatter: dict[str, Any] = Field(default_factory=dict)
+    files: list[SkillFileInput] = Field(default_factory=list)
 
 
 class SkillUpdateRequest(BaseModel):
