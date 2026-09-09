@@ -421,9 +421,11 @@ This endpoint:
 
 ### 8. OAuth Callback
 
-**Endpoint**: `GET /api/v1/skill-sync-sources/{source_id}/oauth/callback`
+**Endpoint**: `GET /api/v1/skill-sync-sources/oauth/callback`
 
-This is the GitHub OAuth redirect target. It is **unauthenticated** (GitHub redirects do not carry session cookies).
+This is the GitHub OAuth redirect target. It is a **single constant URL for the whole deployment** — the
+`source_id` is no longer in the path; it is recovered from the `state` parameter. It is **unauthenticated**
+(GitHub redirects do not carry session cookies).
 
 **Query Parameters** (set by GitHub):
 ```typescript
@@ -435,8 +437,12 @@ This is the GitHub OAuth redirect target. It is **unauthenticated** (GitHub redi
 ```
 
 **Behavior**:
-- If `error` is present or `code`/`state` is missing → redirects to frontend with `error=auth_failed`
-- If source not found → redirects to frontend with `error=auth_failed`
+- Resolves `source_id` from `state` first. If `state` is missing or does not resolve to a known flow
+  (expired, already consumed, malformed) → redirects to the generic list page with `error=invalid_callback`
+  (there is no source to attribute the error to).
+- Once the source is resolved: if `error` is present or `code` is missing → redirects to that source's page
+  with `error=auth_failed`.
+- If source not found (404) → redirects to that source's page with `error=auth_failed`
 - Otherwise, validates state token and consumes the stored flow from FlowStateManager
 - Exchanges `code` for tokens at `https://github.com/login/oauth/access_token` with `code_verifier`
 - Stores encrypted tokens (access + refresh) in MongoDB `tokens`
@@ -444,7 +450,8 @@ This is the GitHub OAuth redirect target. It is **unauthenticated** (GitHub redi
 
 **Response**: `307 Temporary Redirect`
 - Success: `Location: {registry_client_url}/skill-sync-sources/{source_id}?status=syncing`
-- Error: `Location: {registry_client_url}/skill-sync-sources/{source_id}?error=auth_failed`
+- Resolved-source error: `Location: {registry_client_url}/skill-sync-sources/{source_id}?error=auth_failed`
+- Unresolvable state: `Location: {registry_client_url}/skill-sync-sources?error=invalid_callback`
 
 ---
 
@@ -521,7 +528,7 @@ Skill sync sources use the same ACL system as MCP Servers, A2A Agents, and Workf
 | `DELETE /{id}` | DELETE |
 | `POST /{id}/sync` | EDIT |
 | `GET /{id}/oauth/initiate` | EDIT |
-| `GET /{id}/oauth/callback` | None (unauthenticated, GitHub redirect) |
+| `GET /oauth/callback` | None (unauthenticated, GitHub redirect) |
 | `GET /{id}/jobs/{job_id}` | VIEW |
 
 ---
@@ -661,7 +668,8 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
 
 1. **Create a GitHub App** (not an OAuth App):
    - GitHub → Settings → Developer settings → GitHub Apps → New GitHub App
-   - Set Callback URL to `https://<your-domain>/api/v1/skill-sync-sources/{source_id}/oauth/callback`
+   - Set Callback URL to `https://<your-domain>/api/v1/skill-sync-sources/oauth/callback`
+     (one constant URL for all sources — the `source_id` is carried in the OAuth `state`, not the path)
    - Enable "Request user authorization (OAuth) during installation"
 
 2. **Set permissions**: Repository permissions → Contents → **Read-only**
@@ -692,9 +700,9 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
 4. User authorizes on GitHub
 
 5. GitHub redirects to callback:
-   → GET /api/v1/skill-sync-sources/{source_id}/oauth/callback
+   → GET /api/v1/skill-sync-sources/oauth/callback
      ?code={authorization_code}
-     &state={state}
+     &state={state}   # source_id is resolved from state
 
 6. Server exchanges code for tokens:
    → POST https://github.com/login/oauth/access_token

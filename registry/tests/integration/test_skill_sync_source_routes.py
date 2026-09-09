@@ -133,6 +133,7 @@ def skill_sync_route_context():
     token_service.delete_source_tokens = AsyncMock()
     oauth_service = MagicMock()
     oauth_service.create_authorization_url.return_value = "https://github.com/login/oauth/authorize?state=test"
+    oauth_service.resolve_source_id.return_value = str(source.id)
     acl_service = MagicMock()
     acl_service.check_user_permission = AsyncMock(return_value=_VIEW_PERMS)
     acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(source.id)])
@@ -313,13 +314,49 @@ def test_oauth_callback_exchanges_and_triggers_sync(skill_sync_route_context) ->
     ctx.oauth_service.exchange_callback = AsyncMock(return_value=USER_ID)
     ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=SyncTriggerResult(job=ctx.job))
     response = ctx.client.get(
-        f"/skill-sync-sources/{ctx.source.id}/oauth/callback?code=code&state=state",
+        "/skill-sync-sources/oauth/callback?code=code&state=state",
         follow_redirects=False,
     )
     assert response.status_code == 307
     assert "status=syncing" in response.headers["location"]
+    assert f"/skill-sync-sources/{ctx.source.id}?" in response.headers["location"]
     ctx.oauth_service.exchange_callback.assert_awaited_once()
     ctx.skill_sync_service.trigger_sync.assert_awaited_once()
+
+
+def test_oauth_callback_resolvable_state_with_error_redirects_to_source(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    response = ctx.client.get(
+        "/skill-sync-sources/oauth/callback?state=state&error=access_denied",
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    location = response.headers["location"]
+    assert f"/skill-sync-sources/{ctx.source.id}?" in location
+    assert "error=auth_failed" in location
+
+
+def test_oauth_callback_without_state_redirects_to_generic_error(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    response = ctx.client.get(
+        "/skill-sync-sources/oauth/callback?code=code",
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    location = response.headers["location"]
+    assert "error=invalid_callback" in location
+    assert "/skill-sync-sources?" in location
+
+
+def test_oauth_callback_unresolvable_state_redirects_to_generic_error(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.oauth_service.resolve_source_id.side_effect = ValueError("bad state")
+    response = ctx.client.get(
+        "/skill-sync-sources/oauth/callback?code=code&state=bogus",
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    assert "error=invalid_callback" in response.headers["location"]
 
 
 def test_acl_forbidden_returns_403(skill_sync_route_context) -> None:

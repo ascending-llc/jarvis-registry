@@ -105,7 +105,6 @@ class SkillSyncE2E:
         self.test_sync_needs_auth()
         self.test_oauth_initiate_redirects()
         self.test_oauth_callback_missing_params()
-        self.test_oauth_callback_error_param()
         self.test_get_job_not_found()
         self.test_delete_source()
 
@@ -379,26 +378,10 @@ class SkillSyncE2E:
             )
 
     def test_oauth_callback_missing_params(self) -> None:
-        sid = self._require_source()
-        if not sid:
-            _result("OAUTH callback", False, "no source created")
-            return
-        r = self.client.get(f"{self.api}/{sid}/oauth/callback")
+        r = self.client.get(f"{self.api}/oauth/callback")
         _result("OAUTH callback no params → 307", r.status_code == 307, f"status={r.status_code}")
         if r.status_code == 307:
-            _result("OAUTH callback → error redirect", "error=auth_failed" in r.headers.get("location", ""))
-
-    def test_oauth_callback_error_param(self) -> None:
-        sid = self._require_source()
-        if not sid:
-            _result("OAUTH callback error", False, "no source created")
-            return
-        r = self.client.get(f"{self.api}/{sid}/oauth/callback", params={"error": "access_denied"})
-        _result(
-            "OAUTH callback error param → redirect",
-            r.status_code == 307 and "error=auth_failed" in r.headers.get("location", ""),
-            f"status={r.status_code}",
-        )
+            _result("OAUTH callback → error redirect", "error=invalid_callback" in r.headers.get("location", ""))
 
     def test_get_job_not_found(self) -> None:
         sid = self._require_source()
