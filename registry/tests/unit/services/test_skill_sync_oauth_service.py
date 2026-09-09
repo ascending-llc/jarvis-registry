@@ -39,6 +39,47 @@ def test_authorization_url_uses_pkce_and_persists_flow() -> None:
     assert "include_client_secret" not in flow_manager.create_flow_metadata.call_args.kwargs
 
 
+def test_resolve_source_id_returns_flow_server_id() -> None:
+    flow_manager = MagicMock()
+    flow_manager.decode_state.return_value = {"flow_id": "flow", "security_token": "token"}
+    flow_manager.get_flow.return_value = SimpleNamespace(server_id="source-123")
+    service = SkillSyncOAuthService(
+        flow_state_manager=flow_manager,
+        token_service=MagicMock(),
+        http_client=MagicMock(),
+    )
+
+    assert service.resolve_source_id("state") == "source-123"
+    flow_manager.get_flow.assert_called_once_with("flow")
+
+
+def test_resolve_source_id_raises_when_flow_missing() -> None:
+    flow_manager = MagicMock()
+    flow_manager.decode_state.return_value = {"flow_id": "flow", "security_token": "token"}
+    flow_manager.get_flow.return_value = None
+    service = SkillSyncOAuthService(
+        flow_state_manager=flow_manager,
+        token_service=MagicMock(),
+        http_client=MagicMock(),
+    )
+
+    with pytest.raises(ValueError):
+        service.resolve_source_id("state")
+
+
+def test_resolve_source_id_propagates_malformed_state() -> None:
+    flow_manager = MagicMock()
+    flow_manager.decode_state.side_effect = ValueError("bad state")
+    service = SkillSyncOAuthService(
+        flow_state_manager=flow_manager,
+        token_service=MagicMock(),
+        http_client=MagicMock(),
+    )
+
+    with pytest.raises(ValueError):
+        service.resolve_source_id("state")
+
+
 @pytest.mark.asyncio
 async def test_callback_consumes_state_and_stores_tokens() -> None:
     source = _source()

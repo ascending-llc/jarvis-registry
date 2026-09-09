@@ -363,6 +363,18 @@ def test_downstream_authorize_get_with_session_reaches_route(client):
     assert resp.status_code == 200
 
 
+def test_skill_sync_oauth_callback_is_public():
+    mw = UnifiedAuthMiddleware(FastAPI())
+    public_path = f"/api/{settings.api_version}/skill-sync-sources/oauth/callback"
+    assert mw._match_path(public_path, mw.public_paths_compiled) is True
+
+
+def test_skill_sync_oauth_initiate_is_not_public():
+    mw = UnifiedAuthMiddleware(FastAPI())
+    initiate_path = f"/api/{settings.api_version}/skill-sync-sources/abc123/oauth/initiate"
+    assert mw._match_path(initiate_path, mw.public_paths_compiled) is False
+
+
 def test_all_proxy_router_paths_classify_as_proxy():
     from registry.api.proxy_routes import router as proxy_router
 
