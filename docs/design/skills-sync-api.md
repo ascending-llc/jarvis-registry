@@ -53,7 +53,9 @@ Key distinctions:
 | `GET` | `/skills/{skill_id}` | Session | Get skill detail with file metadata |
 | `GET` | `/skills/{skill_id}/content` | Dual | Get skill content for CLI sync-down |
 | `GET` | `/skills/{skill_id}/files/{file_path}` | Session | Get individual file content |
-| `PATCH` | `/skills/{skill_id}` | Session + CSRF | Update a skill |
+| `PUT` | `/skills/{skill_id}/files/{file_path}` | Session + CSRF | Create or replace a supporting file |
+| `DELETE` | `/skills/{skill_id}/files/{file_path}` | Session + CSRF | Delete a supporting file |
+| `PATCH` | `/skills/{skill_id}` | Session + CSRF | Update a skill (metadata only; not files) |
 | `DELETE` | `/skills/{skill_id}` | Session + CSRF | Delete a skill |
 | `POST` | `/skills/{skill_id}/toggle` | Session + CSRF | Toggle skill enabled state |
 
@@ -165,6 +167,30 @@ performed on `(name, author)` — returns 409 on conflict.
 | `userInvocable` | boolean | No | `true` | Whether users can invoke directly |
 | `disableModelInvocation` | boolean | No | `false` | Disable model invocation |
 | `allowedTools` | string[] or null | No | `null` | Tool whitelist; `null` = unrestricted |
+| `files` | `SkillFileInput[]` | No | `[]` | Supporting files created inline (see below); omit for a single-`SKILL.md` skill |
+
+### `SkillFileInput`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `relativePath` | string | Yes | POSIX path relative to the skill directory. Server-validated: non-empty, no absolute paths, no `..`/`.` segments, no backslashes, normalized (no `./`, `//`, trailing `/`), not `SKILL.md`. |
+| `content` | string | Exactly-one | UTF-8 text content. Provide **either** `content` **or** `body`, not both. |
+| `body` | string | Exactly-one | Base64-encoded binary content. |
+| `mimeType` | string | No | Defaults to `mimetypes.guess_type(relativePath)` or `application/octet-stream`. |
+| `isExecutable` | boolean | No | Default `false`. The CLI applies `chmod +x` on sync when true. |
+| `isBinary` | boolean or null | No | Optional. The server always recomputes it from the actual bytes; if the client sends a value, it must match the server's determination or the request is rejected (422). |
+
+**Server-enforced limits** (all return 422 on breach):
+- Single file: 5 MiB (`MAX_SKILL_FILE_SIZE`), applied to the **decoded** byte count.
+- Total per skill: 10 MiB (`MAX_SKILL_FILES_TOTAL_SIZE`).
+- Count per skill: 50 (`MAX_SKILL_FILE_COUNT`).
+- Duplicate `relativePath` within a single request is rejected.
+
+> **Wire size note.** Binary payloads travel as base64 in JSON, which expands the raw bytes by ~1.33×.
+> A single 5 MiB binary is therefore ~6.7 MiB on the wire, and a full 10 MiB skill can approach ~13.3 MiB
+> of JSON body. Front-facing proxies (nginx `client_max_body_size`, ALB request-size limits, API gateway
+> caps) must allow at least this much or clients will receive `413 Payload Too Large` instead of Registry's
+> `422`.
 
 ### Request Example
 
@@ -179,20 +205,33 @@ Content-Type: application/json
   "description": "Convert Mongoose schemas to Beanie models",
   "body": "# Mongoose to Beanie\n\nFollow these instructions...\n",
   "category": "development",
-  "tags": ["python", "mongodb"]
+  "tags": ["python", "mongodb"],
+  "files": [
+    {
+      "relativePath": "scripts/run_review.sh",
+      "content": "#!/usr/bin/env bash\nset -euo pipefail\n",
+      "mimeType": "text/x-shellscript",
+      "isExecutable": true
+    },
+    {
+      "relativePath": "assets/logo.png",
+      "body": "<base64-encoded>",
+      "mimeType": "image/png"
+    }
+  ]
 }
 ```
 
 ### Response
 
-`201 Created` — returns `SkillDetailResponse` (same shape as GET detail).
+`201 Created` — returns `SkillDetailResponse` (same shape as GET detail). The response `files[]` reflects the files just created.
 
 ### Errors
 
 | Status | Condition |
 |--------|-----------|
 | `409 Conflict` | A skill with this name already exists for this author |
-| `422 Unprocessable Entity` | Name pattern validation failed |
+| `422 Unprocessable Entity` | Name pattern validation failed; file path invalid; per-file / total / count limit exceeded; duplicate `relativePath`; `content`/`body` neither-or-both; invalid base64; `isBinary` declaration disagrees with the actual bytes |
 
 ---
 
@@ -388,11 +427,76 @@ Chat-created files return `available: false`.
 
 ---
 
+## 5b. Upsert File
+
+`PUT /skills/{skill_id}/files/{file_path}`
+
+Create or replace a single `registry-inline` supporting file. Supports incremental file management — the client
+sends only the file being changed, not the whole skill. Requires `EDIT` on the skill and
+`createdByRegistry = true`. Bumps the skill's `version` and refreshes `updatedAt`.
+
+### Request Body — `SkillFileUpsertRequest`
+
+Same field set as `SkillFileInput` (see §2) **without** `relativePath` (comes from the URL): `content` or
+`body` (exactly one), optional `mimeType`, `isExecutable`, `isBinary`.
+
+### Response
+
+- `201 Created` — the file did not exist and was created.
+- `200 OK` — the file existed and was replaced.
+
+Body: `SkillFileMetadataResponse`.
+
+```json
+{
+  "id": "<file-objectid>",
+  "relativePath": "scripts/run_review.sh",
+  "mimeType": "text/x-shellscript",
+  "bytes": 42,
+  "isBinary": false,
+  "isExecutable": true,
+  "source": "registry-inline"
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `403 Forbidden` | Caller lacks `EDIT` |
+| `404 Not Found` | Skill does not exist |
+| `409 Conflict` | Skill was created in Jarvis Chat (`createdByRegistry = false`); the target file exists but is not `registry-inline` (Chat/GitHub-owned); or the skill was modified concurrently and MongoDB rejected the write (retry the request) |
+| `422 Unprocessable Entity` | Any file-validation failure listed in §2 (path, size, count, total, base64, `isBinary` mismatch, `content`/`body` cardinality) |
+
+---
+
+## 5c. Delete File
+
+`DELETE /skills/{skill_id}/files/{file_path}`
+
+Remove a single `registry-inline` supporting file. Requires `EDIT` and `createdByRegistry = true`. Bumps the
+skill's `version` and refreshes `updatedAt`.
+
+### Response
+
+`204 No Content`.
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `404 Not Found` | Skill or file does not exist |
+| `409 Conflict` | `createdByRegistry = false`; the file's `source` is not `registry-inline`; or the skill was modified concurrently and MongoDB rejected the write (retry the request) |
+| `422 Unprocessable Entity` | `file_path` fails relative-path validation |
+
+---
+
 ## 6. Update Skill
 
 `PATCH /skills/{skill_id}`
 
-Partial update. Only provided fields are modified. Increments `version` and updates `updatedAt`.
+Partial update **of metadata only**. Supporting files are managed via `PUT`/`DELETE /skills/{skill_id}/files/{file_path}`
+(§5b, §5c) so callers only re-send the file being changed. Increments `version` and updates `updatedAt`.
 Frontmatter fields (`name`, `description`, `alwaysApply`, `userInvocable`, `disableModelInvocation`, `allowedTools`)
 are automatically synced to the `frontmatter` object.
 
@@ -553,8 +657,9 @@ Follow these instructions...
 When `allowedTools` is non-null, it maps to `allowed-tools` in the frontmatter. When `isExecutable` is `true` on a
 supporting file, the CLI must set the file's execute permission (`chmod +x`) after writing.
 
-Clients must reject absolute paths, parent traversal (`..`), duplicate paths, backslashes, and non-normalized POSIX
-paths before writing supporting files.
+Clients should still normalize `relativePath` values before writing to disk. On the write side, Registry
+already rejects absolute paths, parent traversal (`..`), duplicate paths, backslashes, non-normalized POSIX
+paths, and the reserved `SKILL.md` name with `422 Unprocessable Entity`.
 
 ## Scopes
 
@@ -563,4 +668,4 @@ Defined in `registry-pkgs/src/registry_pkgs/scopes.yml`:
 | Scope | Actions |
 |-------|---------|
 | `skills-read` | `skills:list`, `skills:get`, `skills:getContent`, `skills:getFileContent` |
-| `skills-write` | `skills:create`, `skills:update`, `skills:delete`, `skills:toggle` |
+| `skills-write` | `skills:create`, `skills:update`, `skills:delete`, `skills:toggle`, `skills:upsertFile`, `skills:deleteFile` |
