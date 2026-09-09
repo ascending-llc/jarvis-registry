@@ -8,6 +8,7 @@ import {
   createEmptyDraft,
   createSkillMarkdownState,
   parseSkillMarkdown,
+  splitSkillMarkdown,
   toCreateRequest,
   toUpdateRequest,
   updateSkillMarkdownMetadata,
@@ -93,10 +94,41 @@ describe('composeSkillMarkdown', () => {
     expect(parseSkillMarkdown(markdown).frontmatter['allowed-tools']).toBe('');
   });
 
-  test('leaves a null allowedTools (no tool restriction) as YAML null, not an empty string', () => {
+  test('omits a null allowedTools (no tool restriction) entirely, rather than rendering it as null', () => {
     const markdown = composeSkillMarkdown(makeDetail({ allowedTools: null }));
 
-    expect(parseSkillMarkdown(markdown).frontmatter['allowed-tools']).toBeNull();
+    expect(markdown).not.toContain('allowed-tools');
+    expect(parseSkillMarkdown(markdown).frontmatter).not.toHaveProperty('allowed-tools');
+  });
+
+  test('omits any other explicitly-null frontmatter field entirely', () => {
+    const markdown = composeSkillMarkdown(
+      makeDetail({ frontmatter: { license: null, argumentHint: null, custom: 'kept' } }),
+    );
+
+    const parsed = parseSkillMarkdown(markdown);
+    expect(parsed.frontmatter).not.toHaveProperty('license');
+    expect(parsed.frontmatter).not.toHaveProperty('argument-hint');
+    expect(parsed.frontmatter.custom).toBe('kept');
+  });
+
+  test('always renders name first and description second, regardless of collection order', () => {
+    const markdown = composeSkillMarkdown(
+      makeDetail({
+        frontmatter: {
+          license: 'MIT',
+          allowedTools: ['Read'],
+          argumentHint: '[pull-request]',
+        },
+      }),
+    );
+
+    const frontmatterKeys = splitSkillMarkdown(markdown)
+      .frontmatterSource.split('\n')
+      .filter(line => /^[A-Za-z-]+:/.test(line))
+      .map(line => line.split(':')[0]);
+
+    expect(frontmatterKeys.slice(0, 2)).toEqual(['name', 'description']);
   });
 
   test('renders every other array-valued frontmatter field in YAML flow style', () => {
