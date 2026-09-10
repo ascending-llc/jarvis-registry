@@ -11,6 +11,7 @@ from typing import Any
 from beanie import PydanticObjectId
 from fastapi import HTTPException, status
 from pydantic import ValidationError
+from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from registry_pkgs.database.mongodb import MongoDB
@@ -179,6 +180,31 @@ def _validate_files_batch(files: list[SkillFileInput]) -> list[_PreparedFile]:
             detail=f"Total file size exceeds the {MAX_SKILL_FILES_TOTAL_SIZE}-byte limit",
         )
     return prepared
+
+
+async def _count_and_other_total_bytes(
+    skill_id: PydanticObjectId,
+    excluded_relative_path: str,
+    session: AsyncClientSession,
+) -> tuple[int, int]:
+    """Return (total file count, byte total excluding one path) via a server-side $group/$sum.
+
+    Avoids pulling full SkillFile documents (including `body`) into Python just to sum sizes.
+    """
+    pipeline = [
+        {"$match": {"skillId": skill_id}},
+        {
+            "$group": {
+                "_id": None,
+                "count": {"$sum": 1},
+                "otherTotal": {"$sum": {"$cond": [{"$eq": ["$relativePath", excluded_relative_path]}, 0, "$bytes"]}},
+            }
+        },
+    ]
+    results = await SkillFile.aggregate(pipeline, session=session).to_list()
+    if not results:
+        return 0, 0
+    return results[0]["count"], results[0]["otherTotal"]
 
 
 def _build_inline_skill_file(skill_id: PydanticObjectId, prepared: _PreparedFile, now: datetime) -> SkillFile:
@@ -467,10 +493,11 @@ class SkillService:
             async with MongoDB.get_client().start_session() as mongo_session:
                 async with await mongo_session.start_transaction():
                     await skill.insert(session=mongo_session)
-                    for prepared in prepared_files:
-                        skill_file = _build_inline_skill_file(skill.id, prepared, now)
-                        await skill_file.insert(session=mongo_session)
-                        created_files.append(skill_file)
+                    created_files = [_build_inline_skill_file(skill.id, prepared, now) for prepared in prepared_files]
+                    if created_files:
+                        insert_result = await SkillFile.insert_many(created_files, session=mongo_session)
+                        for skill_file, inserted_id in zip(created_files, insert_result.inserted_ids, strict=True):
+                            skill_file.id = PydanticObjectId(inserted_id)
                     await self.acl_service.grant_permission(
                         principal_type=PrincipalType.USER,
                         principal_id=object_user_id,
@@ -516,20 +543,23 @@ class SkillService:
                             status_code=status.HTTP_409_CONFLICT,
                             detail="Only skills created in Registry can have their files modified",
                         )
-                    existing_files = await SkillFile.find({"skillId": skill_id}, session=mongo_session).to_list()
-                    existing = next((f for f in existing_files if f.relativePath == relative_path), None)
+                    existing = await SkillFile.find_one(
+                        {"skillId": skill_id, "relativePath": relative_path}, session=mongo_session
+                    )
                     if existing is not None and existing.source != _REGISTRY_FILE_SOURCE:
                         raise HTTPException(
                             status_code=status.HTTP_409_CONFLICT,
                             detail="Cannot overwrite a file that was not created in Registry",
                         )
                     created = existing is None
-                    if created and len(existing_files) >= MAX_SKILL_FILE_COUNT:
+                    existing_count, other_total = await _count_and_other_total_bytes(
+                        skill_id, relative_path, session=mongo_session
+                    )
+                    if created and existing_count >= MAX_SKILL_FILE_COUNT:
                         raise HTTPException(
                             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail=f"A skill may have at most {MAX_SKILL_FILE_COUNT} files",
                         )
-                    other_total = sum(f.bytes for f in existing_files if f.relativePath != relative_path)
                     if other_total + len(prepared.raw) > MAX_SKILL_FILES_TOTAL_SIZE:
                         raise HTTPException(
                             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -549,7 +579,7 @@ class SkillService:
                     else:
                         saved = _build_inline_skill_file(skill_id, prepared, now)
                         await saved.insert(session=mongo_session)
-                    skill.fileCount = len(existing_files) + (1 if created else 0)
+                    skill.fileCount = existing_count + (1 if created else 0)
                     skill.version += 1
                     skill.updatedAt = now
                     await skill.save(session=mongo_session)

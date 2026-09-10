@@ -695,11 +695,13 @@ async def test_create_skill_inserts_files_and_sets_file_count(
         instance.isBinary = kwargs["isBinary"]
         instance.isExecutable = kwargs["isExecutable"]
         instance.source = kwargs["source"]
-        instance.insert = AsyncMock()
         inserted_files.append(instance)
         return instance
 
     mock_skillfile_cls.side_effect = _new_file
+    mock_skillfile_cls.insert_many = AsyncMock(
+        return_value=SimpleNamespace(inserted_ids=[PydanticObjectId(), PydanticObjectId()])
+    )
 
     data = SkillCreateRequest(
         name="test-skill",
@@ -720,8 +722,7 @@ async def test_create_skill_inserts_files_and_sets_file_count(
     assert result_files[0].isExecutable is True
     assert result_files[0].source == "registry-inline"
     assert mock_skill_cls.call_args.kwargs["fileCount"] == 2
-    for skill_file in inserted_files:
-        skill_file.insert.assert_awaited_with(session=session)
+    mock_skillfile_cls.insert_many.assert_awaited_once_with(inserted_files, session=session)
 
 
 @pytest.mark.asyncio
@@ -760,6 +761,13 @@ def _find_query(files, session=None):
     return _Q(files)
 
 
+def _agg_query(result):
+    """Mock for `SkillFile.aggregate(pipeline, session=...)`, whose result is awaited via `.to_list()`."""
+    query = MagicMock()
+    query.to_list = AsyncMock(return_value=result)
+    return query
+
+
 @pytest.mark.asyncio
 @patch("registry.services.skill_service.MongoDB")
 @patch("registry.services.skill_service.SkillFile")
@@ -772,8 +780,8 @@ async def test_upsert_skill_file_creates_new_file(
     mock_skill_cls.find_one = AsyncMock(return_value=skill)
     session = _configure_transaction(mock_mongodb)
 
-    existing_files: list[MagicMock] = []
-    mock_skillfile_cls.find = MagicMock(side_effect=lambda *a, **kw: _find_query(existing_files, session=session))
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+    mock_skillfile_cls.aggregate = MagicMock(return_value=_agg_query([]))
 
     new_files: list[MagicMock] = []
 
@@ -825,8 +833,8 @@ async def test_upsert_skill_file_replaces_existing(
     existing.source = "registry-inline"
     existing.bytes = 5
     existing.save = AsyncMock()
-    existing_files = [existing]
-    mock_skillfile_cls.find = MagicMock(side_effect=lambda *a, **kw: _find_query(existing_files))
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+    mock_skillfile_cls.aggregate = MagicMock(return_value=_agg_query([{"count": 1, "otherTotal": 0}]))
 
     metadata, created = await SkillService(acl_service, user_service).upsert_skill_file(
         skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="#!/bin/sh\nupdated\n"), _USER_ID
@@ -849,7 +857,6 @@ async def test_upsert_skill_file_rejects_chat_skill(
     skill = _make_skill(created_by_registry=False)
     mock_skill_cls.find_one = AsyncMock(return_value=skill)
     _configure_transaction(mock_mongodb)
-    mock_skillfile_cls.find = MagicMock(side_effect=lambda *a, **kw: _find_query([]))
 
     with pytest.raises(HTTPException) as exc:
         await SkillService(acl_service, user_service).upsert_skill_file(
@@ -873,7 +880,7 @@ async def test_upsert_skill_file_rejects_non_inline_target(
     chat_file.relativePath = "scripts/run.sh"
     chat_file.source = "chat"
     chat_file.bytes = 5
-    mock_skillfile_cls.find = MagicMock(side_effect=lambda *a, **kw: _find_query([chat_file]))
+    mock_skillfile_cls.find_one = AsyncMock(return_value=chat_file)
 
     with pytest.raises(HTTPException) as exc:
         await SkillService(acl_service, user_service).upsert_skill_file(
@@ -958,8 +965,8 @@ async def test_upsert_skill_file_write_conflict_returns_409(
     skill.save = AsyncMock(side_effect=OperationFailure("WriteConflict", code=112))
     mock_skill_cls.find_one = AsyncMock(return_value=skill)
     _configure_transaction(mock_mongodb)
-    existing_files: list[MagicMock] = []
-    mock_skillfile_cls.find = MagicMock(side_effect=lambda *a, **kw: _find_query(existing_files))
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+    mock_skillfile_cls.aggregate = MagicMock(return_value=_agg_query([]))
 
     def _new_file(**kwargs):
         instance = MagicMock()
@@ -994,3 +1001,92 @@ async def test_upsert_skill_file_missing_skill_returns_404(mock_skill_cls, mock_
         )
 
     assert exc.value.status_code == 404
+
+
+# -----------------------------
+# Transaction rollback: a mid-transaction failure must not leave partial state
+# (asserted at the code level as "later steps in the same transaction body never ran";
+# actually aborting the write is MongoDB's job once the exception leaves the `async with`
+# transaction block, which these mocked-session unit tests cannot exercise directly).
+# -----------------------------
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_create_skill_file_insert_failure_skips_acl_grant(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from pymongo.errors import OperationFailure
+
+    skill = _make_skill()
+    skill.insert = AsyncMock()
+    mock_skill_cls.return_value = skill
+    mock_skill_cls.find_one = AsyncMock(return_value=None)
+    _configure_transaction(mock_mongodb)
+    mock_skillfile_cls.insert_many = AsyncMock(side_effect=OperationFailure("simulated failure"))
+
+    data = SkillCreateRequest(
+        name="test-skill",
+        description="description",
+        files=[SkillFileInput(relativePath="refs/guide.md", content="# Guide\n")],
+    )
+
+    with pytest.raises(OperationFailure):
+        await SkillService(acl_service, user_service).create_skill(data, _USER_ID, "Token User")
+
+    acl_service.grant_permission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_insert_failure_skips_skill_update(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 0
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+    mock_skillfile_cls.aggregate = MagicMock(return_value=_agg_query([]))
+
+    def _new_file(**kwargs):
+        instance = MagicMock()
+        instance.insert = AsyncMock(side_effect=RuntimeError("disk full"))
+        return instance
+
+    mock_skillfile_cls.side_effect = _new_file
+
+    with pytest.raises(RuntimeError):
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="x"), _USER_ID
+        )
+
+    skill.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_delete_failure_skips_skill_update(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 1
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    existing = MagicMock()
+    existing.relativePath = "scripts/run.sh"
+    existing.source = "registry-inline"
+    existing.delete = AsyncMock(side_effect=RuntimeError("disk full"))
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+
+    with pytest.raises(RuntimeError):
+        await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    skill.save.assert_not_awaited()
