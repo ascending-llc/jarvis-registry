@@ -1209,7 +1209,7 @@ async def oauth2_callback(
                 # The generic userinfo path never enforces the login gate that
                 # GoogleProvider.get_user_info applies, so re-check it here on the raw
                 # userinfo JSON (email_verified / hd) before minting a session.
-                if not user_info.get("email_verified"):
+                if user_info.get("email_verified") is not True:
                     raise GoogleEmailNotVerifiedError(f"Email not verified for {mapped_user.get('email')}")
                 allowed_hd = provider_config.get("allowed_hd")
                 if allowed_hd and user_info.get("hd") != allowed_hd:
