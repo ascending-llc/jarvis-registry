@@ -1114,7 +1114,9 @@ async def oauth2_callback(
         if error is not None:
             logger.error(f"OAuth2 error from {provider}: {error}")
 
-            return _redirect_to_login_error(f"Sign-in was cancelled or failed at the identity provider ({error}).")
+            return _redirect_to_login_error(
+                "Sign-in was cancelled or failed at the identity provider. Please try again."
+            )
 
         if code is None or state is None or oauth2_temp_session is None:
             return JSONResponse({"detail": "Missing required OAuth2 parameters"}, 400)
