@@ -100,6 +100,16 @@ _OIDC_TOKEN_ALGORITHMS = ["RS256"]
 _REDIRECT_ERROR_CONSENT_FLOW_TYPE = "redirect_error"
 
 
+class NoScopesResolvedError(Exception):
+    """A browser login resolved zero scopes for the user's own account.
+
+    Covers both a genuinely group-less user and an IdP group-lookup failure — both already
+    produce ``default_user_scopes == []`` upstream, and the correct browser-facing action is
+    identical either way: reject the login with an explanation instead of minting a
+    zero-privilege session.
+    """
+
+
 class _RedirectValidationError(NamedTuple):
     error: str
     error_description: str
@@ -381,6 +391,15 @@ def _finish_oauth2_callback(
     logger.info("OAuth2 login successful, redirecting to %s...", redirect_url)
 
     response = RedirectResponse(url=redirect_url, status_code=302)
+    response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+    return response
+
+
+def _redirect_to_login_error(message: str) -> RedirectResponse:
+    """Redirect to the frontend's /login page with a finished, human-readable error message."""
+    response = RedirectResponse(
+        url=f"{settings.registry_error_redirect}?{urlencode({'error': message})}", status_code=302
+    )
     response.delete_cookie(settings.oauth2_temp_session_cookie_name)
     return response
 
@@ -1088,7 +1107,6 @@ async def oauth2_callback(
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
     is_https: bool = Depends(check_if_https),
 ):
-    error_url = settings.registry_error_redirect
     is_device_flow = False
     device_code: str | None = None
 
@@ -1096,7 +1114,7 @@ async def oauth2_callback(
         if error is not None:
             logger.error(f"OAuth2 error from {provider}: {error}")
 
-            return RedirectResponse(url=f"{error_url}?error=oauth2_error&details={error}", status_code=302)
+            return _redirect_to_login_error(f"Sign-in was cancelled or failed at the identity provider ({error}).")
 
         if code is None or state is None or oauth2_temp_session is None:
             return JSONResponse({"detail": "Missing required OAuth2 parameters"}, 400)
@@ -1185,6 +1203,18 @@ async def oauth2_callback(
 
             mapped_user = map_user_info(user_info, provider_config)
 
+            if provider == "google":
+                # The generic userinfo path never enforces the login gate that
+                # GoogleProvider.get_user_info applies, so re-check it here on the raw
+                # userinfo JSON (email_verified / hd) before minting a session.
+                if not user_info.get("email_verified"):
+                    raise GoogleEmailNotVerifiedError(f"Email not verified for {mapped_user.get('email')}")
+                allowed_hd = provider_config.get("allowed_hd")
+                if allowed_hd and user_info.get("hd") != allowed_hd:
+                    raise GoogleDomainNotAllowedError(
+                        f"Domain '{user_info.get('hd')}' is not the allowed domain '{allowed_hd}'"
+                    )
+
         # Resolve user_id from MongoDB and add to mapped_user
         user_id = await user_service.resolve_user_id(mapped_user)
         if user_id:
@@ -1244,6 +1274,12 @@ async def oauth2_callback(
             # Client did not request specific scopes, use default user scopes
             resolved_scopes = default_user_scopes
             logger.info(f"No scope requested, using default user scopes: {resolved_scopes}")
+            if not resolved_scopes and not is_device_flow:
+                logger.warning(
+                    f"Login blocked: user {mapped_user['username']} resolved zero scopes "
+                    f"(provider={provider}, groups={user_groups})"
+                )
+                raise NoScopesResolvedError
 
         if is_device_flow:
             if not isinstance(device_code, str) or device_data is None:
@@ -1293,10 +1329,17 @@ async def oauth2_callback(
 
     except GoogleEmailNotVerifiedError:
         logger.warning(f"Google login rejected: email not verified (provider={provider})")
-        return RedirectResponse(url=f"{error_url}?error=google_email_unverified", status_code=302)
+        return _redirect_to_login_error(
+            "Your Google email address is not verified. Please verify it with Google and try again."
+        )
     except GoogleDomainNotAllowedError:
         logger.warning(f"Google login rejected: domain not allowed (provider={provider})")
-        return RedirectResponse(url=f"{error_url}?error=google_domain_not_allowed", status_code=302)
+        return _redirect_to_login_error("This Google account's organization is not authorized to sign in here.")
+    except NoScopesResolvedError:
+        return _redirect_to_login_error(
+            "You've signed in successfully, but no permissions are currently assigned to your "
+            "account yet. Contact your administrator to be added to a group."
+        )
     except Exception:
         logger.exception(f"Error in OAuth2 callback for {provider}")
 
@@ -1314,7 +1357,7 @@ async def oauth2_callback(
             response.delete_cookie(settings.oauth2_temp_session_cookie_name)
             return response
 
-        return RedirectResponse(url=f"{error_url}?error=oauth2_callback_failed", status_code=302)
+        return _redirect_to_login_error("Something went wrong during sign-in. Please try again.")
 
 
 async def exchange_code_for_token(

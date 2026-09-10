@@ -74,14 +74,14 @@ class TestOAuth2CallbackStandardFlow:
             "preferred_username": "testuser",
             "email": "test@example.com",
             "name": "Test User",
-            "groups": ["user-group"],
+            "groups": ["jarvis-registry-admin"],
         }
         mock_get_user_info.return_value = {
             "sub": "provider-user-123",
             "preferred_username": "testuser",
             "email": "test@example.com",
             "name": "Test User",
-            "groups": ["user-group"],
+            "groups": ["jarvis-registry-admin"],
         }
 
         oauth2_config = {
@@ -195,14 +195,14 @@ class TestOAuth2CallbackStandardFlow:
             "preferred_username": "externaluser",
             "email": "external@example.com",
             "name": "External User",
-            "groups": ["external-group"],
+            "groups": ["jarvis-registry-admin"],
         }
         mock_get_user_info.return_value = {
             "sub": "provider-user-456",
             "preferred_username": "externaluser",
             "email": "external@example.com",
             "name": "External User",
-            "groups": ["external-group"],
+            "groups": ["jarvis-registry-admin"],
         }
 
         oauth2_config = {
@@ -299,7 +299,7 @@ class TestOAuth2CallbackStandardFlow:
             "preferred_username": "keycloakuser",
             "email": "keycloak@example.com",
             "name": "Keycloak User",
-            "groups": ["/admin", "/users"],
+            "groups": ["jarvis-registry-admin", "/users"],
         }
 
         oauth2_config = {
@@ -369,7 +369,7 @@ class TestOAuth2CallbackStandardFlow:
             user_info = code_data["user_info"]
             assert user_info["username"] == "keycloakuser"
             assert user_info["email"] == "keycloak@example.com"
-            assert user_info["groups"] == ["/admin", "/users"]
+            assert user_info["groups"] == ["jarvis-registry-admin", "/users"]
             assert user_info["idp_id"] == "keycloak-sub-789"
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
@@ -445,7 +445,7 @@ class TestOAuth2CallbackStandardFlow:
             )
 
         assert response.status_code == 302
-        assert "oauth2_callback_failed" in response.headers["location"]
+        assert "Something+went+wrong+during+sign-in" in response.headers["location"]
         mock_get_user_info.assert_not_called()
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
@@ -518,7 +518,7 @@ class TestOAuth2CallbackStandardFlow:
             )
 
         assert response.status_code == 302
-        assert "oauth2_callback_failed" in response.headers["location"]
+        assert "Something+went+wrong+during+sign-in" in response.headers["location"]
         mock_get_user_info.assert_not_called()
 
     def _run_google_gate_callback(
@@ -596,12 +596,134 @@ class TestOAuth2CallbackStandardFlow:
     def test_oauth_callback_google_unverified_email_redirects(self, clear_device_storage, mock_user_service):
         response = self._run_google_gate_callback(GoogleEmailNotVerifiedError("email not verified"), mock_user_service)
         assert response.status_code == 302
-        assert "error=google_email_unverified" in response.headers["location"]
+        assert "Your+Google+email+address+is+not+verified" in response.headers["location"]
 
     def test_oauth_callback_google_domain_not_allowed_redirects(self, clear_device_storage, mock_user_service):
         response = self._run_google_gate_callback(GoogleDomainNotAllowedError("domain not allowed"), mock_user_service)
         assert response.status_code == 302
-        assert "error=google_domain_not_allowed" in response.headers["location"]
+        assert "organization+is+not+authorized" in response.headers["location"]
+
+    @staticmethod
+    def _google_oauth2_config() -> dict:
+        return {
+            "providers": {
+                "google": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://google/token",
+                    "user_info_url": "http://google/userinfo",
+                    "username_claim": "email",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": None,
+                    "allowed_hd": "corp.example",
+                }
+            }
+        }
+
+    def _drive_google_callback(self, mock_google_provider, mock_user_service, module_get_user_info=None):
+        """Drive a browser (non-device) Google callback with the given provider mock and return
+        the 302 response. When ``module_get_user_info`` is set, the module-level ``get_user_info``
+        fallback is patched to return it."""
+        with (
+            patch("auth_server.routes.oauth_flow.exchange_code_for_token") as mock_exchange_token,
+            patch("auth_server.routes.oauth_flow.get_user_info") as mock_get_user_info,
+            patch("auth_server.routes.oauth_flow.settings") as mock_settings,
+        ):
+            mock_exchange_token.return_value = {"access_token": "google_access", "id_token": "google_id_token"}
+            if module_get_user_info is not None:
+                mock_get_user_info.return_value = module_get_user_info
+            mock_settings.registry_error_redirect = "http://localhost:3000/login"
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
+
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+            app.dependency_overrides[get_oauth2_config] = lambda: self._google_oauth2_config()
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = lambda: mock_google_provider
+
+            test_client = TestClient(app)
+            session_data = {
+                "state": "test-state-google-flow",
+                "client_state": None,
+                "provider": "google",
+                "redirect_uri": "http://localhost:3000/redirect",
+                "client_id": "mock-client-id",
+                "code_challenge": "123",
+                "code_challenge_method": "S256",
+                "client_redirect_uri": "http://localhost:3000/redirect",
+            }
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, test_signer.dumps(session_data))
+            return test_client.get(
+                f"{API_PREFIX}/oauth2/callback/google",
+                params={"code": "google_code", "state": "test-state-google-flow"},
+                follow_redirects=False,
+            )
+
+    def test_oauth_callback_zero_scope_browser_login_rejected(self, clear_device_storage, mock_user_service):
+        """A browser login that resolves zero scopes must be rejected with a human-readable
+        message and must never mint a session cookie."""
+        mock_google_provider = MagicMock()
+        mock_google_provider.get_user_info = AsyncMock(
+            return_value={
+                "username": "user@corp.example",
+                "email": "user@corp.example",
+                "name": "User",
+                "id": "sub-1",
+                "groups": [],
+            }
+        )
+
+        response = self._drive_google_callback(mock_google_provider, mock_user_service)
+
+        assert response.status_code == 302
+        assert "no+permissions+are+currently+assigned" in response.headers["location"]
+        assert "localhost:3000/login" in response.headers["location"]
+        # Did not proceed to _finish_oauth2_callback (would redirect to the client /redirect).
+        assert "/redirect" not in response.headers["location"]
+        assert "jarvis_registry_session" not in response.cookies
+        # The single-use temp OAuth session cookie must be cleared on this terminal failure.
+        assert settings.oauth2_temp_session_cookie_name in response.headers.get("set-cookie", "")
+
+    def test_oauth_callback_google_fallback_enforces_email_verified(self, clear_device_storage, mock_user_service):
+        """When the generic userinfo fallback is taken for Google, an unverified-email userinfo
+        response must raise GoogleEmailNotVerifiedError instead of bypassing the login gate."""
+        mock_google_provider = MagicMock()
+        # A bare ValueError is not one of the six re-raised types → hits the userinfo fallback.
+        mock_google_provider.get_user_info = AsyncMock(side_effect=ValueError("JWKS unavailable"))
+
+        response = self._drive_google_callback(
+            mock_google_provider,
+            mock_user_service,
+            module_get_user_info={"email": "user@corp.example", "email_verified": False},
+        )
+
+        assert response.status_code == 302
+        assert "Your+Google+email+address+is+not+verified" in response.headers["location"]
+
+    def test_oauth_callback_google_fallback_enforces_hd(self, clear_device_storage, mock_user_service):
+        """When the generic userinfo fallback is taken for Google, a mismatched hd must raise
+        GoogleDomainNotAllowedError when allowed_hd is configured."""
+        mock_google_provider = MagicMock()
+        mock_google_provider.get_user_info = AsyncMock(side_effect=ValueError("JWKS unavailable"))
+
+        response = self._drive_google_callback(
+            mock_google_provider,
+            mock_user_service,
+            module_get_user_info={"email": "user@attacker.com", "email_verified": True, "hd": "attacker.com"},
+        )
+
+        assert response.status_code == 302
+        assert "organization+is+not+authorized" in response.headers["location"]
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_token_kid")
@@ -622,7 +744,7 @@ class TestOAuth2CallbackStandardFlow:
             "username": "accessuser",
             "email": "access@example.com",
             "name": "Access User",
-            "groups": ["/access-users"],
+            "groups": ["jarvis-registry-admin"],
         }
 
         oauth2_config = {
@@ -712,7 +834,7 @@ class TestOAuth2CallbackStandardFlow:
             "preferred_username": "newuser",
             "email": "new@example.com",
             "name": "New User",
-            "groups": [],
+            "groups": ["jarvis-registry-admin"],
         }
 
         oauth2_config = {
