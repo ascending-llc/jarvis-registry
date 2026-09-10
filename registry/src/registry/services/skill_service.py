@@ -566,7 +566,7 @@ class SkillService:
                             detail=f"Total file size exceeds the {MAX_SKILL_FILES_TOTAL_SIZE}-byte limit",
                         )
                     if existing is not None:
-                        existing.source = _REGISTRY_FILE_SOURCE
+                        # existing.source is already _REGISTRY_FILE_SOURCE here (checked above).
                         existing.mimeType = prepared.mime_type
                         existing.bytes = len(prepared.raw)
                         existing.content = None

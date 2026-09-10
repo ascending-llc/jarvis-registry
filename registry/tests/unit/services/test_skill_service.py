@@ -844,6 +844,7 @@ async def test_upsert_skill_file_replaces_existing(
     assert metadata.relativePath == "scripts/run.sh"
     assert existing.body == b"#!/bin/sh\nupdated\n"
     assert existing.isBinary is False
+    assert skill.fileCount == 1
     existing.save.assert_awaited_once()
 
 
@@ -887,6 +888,62 @@ async def test_upsert_skill_file_rejects_non_inline_target(
             skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="x"), _USER_ID
         )
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_rejects_count_limit_for_new_file(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from registry.constants import MAX_SKILL_FILE_COUNT
+
+    skill = _make_skill(created_by_registry=True)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+    mock_skillfile_cls.aggregate = MagicMock(
+        return_value=_agg_query([{"count": MAX_SKILL_FILE_COUNT, "otherTotal": 0}])
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/new.sh", SkillFileUpsertRequest(content="x"), _USER_ID
+        )
+    assert exc.value.status_code == 422
+    assert str(MAX_SKILL_FILE_COUNT) in exc.value.detail
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_rejects_total_size_limit(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from registry.constants import MAX_SKILL_FILES_TOTAL_SIZE
+
+    skill = _make_skill(created_by_registry=True)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    existing = MagicMock()
+    existing.relativePath = "scripts/run.sh"
+    existing.source = "registry-inline"
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+    # otherTotal already sits 1 byte under the cap; any non-empty replacement content pushes it over.
+    mock_skillfile_cls.aggregate = MagicMock(
+        return_value=_agg_query([{"count": 1, "otherTotal": MAX_SKILL_FILES_TOTAL_SIZE - 1}])
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="too big"), _USER_ID
+        )
+    assert exc.value.status_code == 422
+    assert str(MAX_SKILL_FILES_TOTAL_SIZE) in exc.value.detail
 
 
 @pytest.mark.asyncio
@@ -955,6 +1012,28 @@ async def test_delete_skill_file_rejects_chat_skill(
 @patch("registry.services.skill_service.MongoDB")
 @patch("registry.services.skill_service.SkillFile")
 @patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_rejects_non_inline_target(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    chat_file = MagicMock()
+    chat_file.relativePath = "scripts/run.sh"
+    chat_file.source = "chat"
+    mock_skillfile_cls.find_one = AsyncMock(return_value=chat_file)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
 async def test_upsert_skill_file_write_conflict_returns_409(
     mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
 ):
@@ -1001,6 +1080,49 @@ async def test_upsert_skill_file_missing_skill_returns_404(mock_skill_cls, mock_
         )
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_missing_skill_returns_404(mock_skill_cls, mock_mongodb, acl_service, user_service):
+    # Skill fetched INSIDE the transaction; concurrent delete before we enter surfaces as 404, not orphan.
+    mock_skill_cls.find_one = AsyncMock(return_value=None)
+    _configure_transaction(mock_mongodb)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).delete_skill_file(PydanticObjectId(), "scripts/run.sh", _USER_ID)
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_write_conflict_returns_409(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from pymongo.errors import OperationFailure
+
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 1
+    skill.save = AsyncMock(side_effect=OperationFailure("WriteConflict", code=112))
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    existing = MagicMock()
+    existing.relativePath = "scripts/run.sh"
+    existing.source = "registry-inline"
+    existing.delete = AsyncMock()
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+    mock_skillfile_cls.find = MagicMock(side_effect=lambda *a, **kw: _find_query([]))
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    assert exc.value.status_code == 409
+    assert "concurrent" in exc.value.detail.lower()
 
 
 # -----------------------------

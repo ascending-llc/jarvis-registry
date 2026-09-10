@@ -9,7 +9,12 @@ import mimetypes
 
 
 def is_text_content(content: bytes) -> bool:
-    """Treat as text only when the FULL payload contains no NUL bytes and fully decodes as UTF-8."""
+    """Treat as text only when the FULL payload contains no NUL bytes and fully decodes as UTF-8.
+
+    Deliberately scans the whole payload, not just a prefix: the original GitHub-sync check only
+    looked at the first 8192 bytes, which could misclassify a file as text and then have the sync
+    path corrupt it via `content.decode("utf-8", errors="replace")`.
+    """
     if b"\x00" in content:
         return False
     try:
