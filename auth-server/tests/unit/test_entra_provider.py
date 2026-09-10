@@ -72,3 +72,48 @@ class TestEntraGetUserInfo:
                 await provider.get_user_info("access-token", id_token="id-token")
 
         provider.get_user_groups.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.auth
+class TestEntraGetUserGroups:
+    @pytest.mark.asyncio
+    async def test_get_user_groups_failure_returns_empty_and_logs(self):
+        provider = _provider()
+
+        with (
+            patch("auth_server.providers.entra.httpx.AsyncClient", side_effect=RuntimeError("graph down")),
+            patch("auth_server.providers.entra.log_group_resolution_failure") as mock_log,
+        ):
+            groups = await provider.get_user_groups("access-token", "user@example.com")
+
+        assert groups == []
+        mock_log.assert_called_once()
+        args = mock_log.call_args.args
+        assert args[0] == "entra"
+        assert args[1] == "user@example.com"
+        assert isinstance(args[2], RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_passes_identifier_to_get_user_groups(self):
+        provider = _provider()
+        provider.get_jwks = AsyncMock(return_value={"keys": [{"kid": "kid-1"}]})
+        provider.get_user_groups = AsyncMock(return_value=[])
+
+        verified_claims = {
+            "preferred_username": "verified@example.com",
+            "email": "verified@example.com",
+            "name": "Verified User",
+            "oid": "verified-oid",
+        }
+
+        with (
+            patch("auth_server.providers.entra.settings") as mock_settings,
+            patch("auth_server.providers.entra.get_token_kid", return_value="kid-1"),
+            patch("auth_server.providers.entra.decode_jwt_unverified", return_value={"iss": provider.issuer_v2}),
+            patch("auth_server.providers.entra.decode_jwt_with_jwk", return_value=verified_claims),
+        ):
+            mock_settings.entra_token_kind = "id"
+            await provider.get_user_info("access-token", id_token="id-token")
+
+        provider.get_user_groups.assert_awaited_once_with("access-token", "verified@example.com")
