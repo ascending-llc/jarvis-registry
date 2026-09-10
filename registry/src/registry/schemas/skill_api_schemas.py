@@ -30,20 +30,10 @@ class SkillFileUpsertRequest(BaseModel):
         return self
 
 
-class SkillFileInput(BaseModel):
+class SkillFileInput(SkillFileUpsertRequest):
     """A supporting file supplied inline when creating a skill."""
 
     relativePath: str = Field(..., max_length=MAX_SKILL_FILE_RELATIVE_PATH_LENGTH)
-    content: str | None = Field(default=None, description="Text file content (utf-8 string)")
-    body: str | None = Field(default=None, description="Binary file content (base64)")
-    mimeType: str | None = Field(default=None, max_length=255)
-    isExecutable: bool = False
-    isBinary: bool | None = Field(default=None, description="Optional; server verifies against content")
-
-    @model_validator(mode="after")
-    def _validate_content(self) -> "SkillFileInput":
-        _require_exactly_one_content_field(self)
-        return self
 
 
 class SkillCreateRequest(BaseModel):
