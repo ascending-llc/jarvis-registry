@@ -1048,6 +1048,8 @@ class TestRealScopesConfigSkills:
             ("PATCH", "/skills/507f1f77bcf86cd799439011"),
             ("DELETE", "/skills/507f1f77bcf86cd799439011"),
             ("POST", "/skills/507f1f77bcf86cd799439011/toggle"),
+            ("PUT", "/skills/507f1f77bcf86cd799439011/files/references/guide.md"),
+            ("DELETE", "/skills/507f1f77bcf86cd799439011/files/references/guide.md"),
         ],
     )
     def test_skill_writes_require_write_scope(self, method: str, path: str) -> None:
