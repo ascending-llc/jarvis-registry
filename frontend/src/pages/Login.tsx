@@ -30,9 +30,10 @@ const Login: React.FC = () => {
     fetchOAuthProviders();
 
     // Check for error parameter from URL (e.g., from OAuth callback)
+    // searchParams.get already percent-decodes; decoding again throws on a literal '%'.
     const urlError = searchParams.get('error');
     if (urlError) {
-      setError(decodeURIComponent(urlError));
+      setError(urlError);
     }
   }, [searchParams]);
 

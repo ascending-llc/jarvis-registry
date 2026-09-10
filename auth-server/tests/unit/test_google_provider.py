@@ -64,6 +64,22 @@ class TestGoogleGetUserInfo:
         }
 
     @pytest.mark.asyncio
+    async def test_cloud_identity_failure_returns_empty_groups_and_logs(self):
+        """A Cloud Identity outage must degrade to empty groups (not raise), so it never reaches
+        oauth_flow's generic userinfo fallback."""
+        provider = _provider()
+        provider._verify_id_token = AsyncMock(return_value=_claims())
+        exc = RuntimeError("cloud identity down")
+        provider._cloud_identity_client.list_transitive_groups_for_member = AsyncMock(side_effect=exc)
+
+        with patch("auth_server.providers.google.log_group_resolution_failure") as mock_log:
+            info = await provider.get_user_info("access-token", id_token="id-token")
+
+        assert info["email"] == "user@example.com"
+        assert info["groups"] == []
+        mock_log.assert_called_once_with("google", "user@example.com", exc)
+
+    @pytest.mark.asyncio
     async def test_rejects_unverified_email_before_group_lookup(self):
         provider = _provider()
         provider._verify_id_token = AsyncMock(return_value=_claims(email_verified=False))

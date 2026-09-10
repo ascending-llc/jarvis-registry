@@ -504,7 +504,7 @@ def test_oauth_callback_without_client_consent_redirects_to_consent(
         "preferred_username": "alice",
         "email": "alice@example.com",
         "name": "Alice",
-        "groups": [],
+        "groups": ["jarvis-registry-admin"],
     }
 
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
@@ -556,7 +556,7 @@ def test_oauth_callback_with_cached_client_consent_skips_consent(
         "preferred_username": "alice",
         "email": "alice@example.com",
         "name": "Alice",
-        "groups": [],
+        "groups": ["jarvis-registry-admin"],
     }
 
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
@@ -607,7 +607,7 @@ def test_oauth_callback_registry_client_skips_consent(
         "preferred_username": "alice",
         "email": "alice@example.com",
         "name": "Alice",
-        "groups": [],
+        "groups": ["jarvis-registry-admin"],
     }
 
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config

@@ -17,7 +17,7 @@ from registry_pkgs.core.jwt_utils import (
 )
 
 from ..core.config import settings
-from .base import AuthProvider
+from .base import AuthProvider, log_group_resolution_failure
 
 # Get logger - logging is configured centrally in server.py via settings.configure_logging()
 logger = logging.getLogger(__name__)
@@ -355,11 +355,13 @@ class EntraIdProvider(AuthProvider):
             logger.error(f"Failed to fetch user info from Graph API: {e}")
             raise ValueError(f"Graph API request failed: {e}")
 
-    async def get_user_groups(self, access_token: str) -> list:
+    async def get_user_groups(self, access_token: str, identifier: str) -> list:
         """Get user's group memberships from Microsoft Graph API.
 
         Args:
             access_token: OAuth2 access token
+            identifier: Email/username of the user, used only to identify the user in logs
+                when the group lookup fails.
 
         Returns:
             List of group display names
@@ -380,8 +382,8 @@ class EntraIdProvider(AuthProvider):
             logger.info(f"Retrieved {groups} groups for user")
             return groups
 
-        except Exception as e:
-            logger.warning(f"Failed to fetch user groups: {e}")
+        except Exception as exc:
+            log_group_resolution_failure("entra", identifier, exc)
             return []
 
     async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
@@ -428,7 +430,9 @@ class EntraIdProvider(AuthProvider):
                 user_info = await self._fetch_user_info_from_graph(access_token)
 
             # Get user groups separately using access_token (required for Graph API)
-            groups = await self.get_user_groups(access_token)
+            groups = await self.get_user_groups(
+                access_token, user_info.get("email") or user_info.get("username") or "unknown"
+            )
             user_info["groups"] = groups
 
             logger.info(f"User info retrieved: {user_info.get('username')} with {len(groups)} groups")

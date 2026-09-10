@@ -15,7 +15,7 @@ from registry_pkgs.core.jwt_utils import (
 )
 from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
 
-from .base import AuthProvider
+from .base import AuthProvider, log_group_resolution_failure
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,11 @@ class GoogleProvider(AuthProvider):
                 f"Domain '{claims.get('hd')}' is not the allowed domain '{self.allowed_hd}'"
             )
 
-        groups = await self._cloud_identity_client.list_transitive_groups_for_member(email)
+        try:
+            groups = await self._cloud_identity_client.list_transitive_groups_for_member(email)
+        except Exception as exc:
+            log_group_resolution_failure("google", email, exc)
+            groups = []
 
         return {
             "username": email,

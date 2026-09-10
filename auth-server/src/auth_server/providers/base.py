@@ -8,6 +8,17 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def log_group_resolution_failure(provider: str, identifier: str, exc: Exception) -> None:
+    """Log an IdP group-source-of-truth outage with one consistent, greppable signature."""
+    logger.error(
+        "Group resolution failed for provider=%s identifier=%s; proceeding with empty groups: %s",
+        provider,
+        identifier,
+        exc,
+        exc_info=True,
+    )
+
+
 class AuthProvider(ABC):
     """Abstract base class for authentication providers."""
 
