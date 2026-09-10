@@ -16,13 +16,19 @@ from registry.services.skill_sync_github_service import (
 from registry_pkgs.models.enums import SkillSyncJobErrorCode
 
 
-def _make_tarball(files: dict[str, bytes], top_dir: str = "owner-repo-abc1234") -> bytes:
+def _make_tarball(
+    files: dict[str, bytes],
+    top_dir: str = "owner-repo-abc1234",
+    modes: dict[str, int] | None = None,
+) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for name, content in files.items():
             full_path = f"{top_dir}/{name}"
             info = tarfile.TarInfo(name=full_path)
             info.size = len(content)
+            if modes and name in modes:
+                info.mode = modes[name]
             tar.addfile(info, io.BytesIO(content))
     return buf.getvalue()
 
@@ -269,6 +275,27 @@ def test_extract_basic_skill_folder(tmp_path):
     assert folder.aux_files[0].relative_path == "skills/hello/helper.py"
     assert folder.aux_files[0].absolute_path.exists()
     assert folder.aux_files[0].absolute_path.read_bytes() == b"print('hi')"
+
+
+def test_extract_preserves_executable_bit(tmp_path):
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                "skills/hello/SKILL.md": b"---\nname: hello\n---\nHello",
+                "skills/hello/run.sh": b"#!/bin/sh\necho hi",
+                "skills/hello/notes.txt": b"just notes",
+            },
+            modes={"skills/hello/run.sh": 0o755, "skills/hello/notes.txt": 0o644},
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
+    aux_by_path = {aux.relative_path: aux for aux in result.skill_folders[0].aux_files}
+    assert aux_by_path["skills/hello/run.sh"].is_executable is True
+    assert aux_by_path["skills/hello/notes.txt"].is_executable is False
 
 
 def test_extract_multiple_skill_folders(tmp_path):

@@ -250,8 +250,8 @@ async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tm
 
     discovered = _discovered(
         files=[
-            ExtractedAuxFile("README.md", text_path, text_path.stat().st_size),
-            ExtractedAuxFile("image.bin", binary_path, binary_path.stat().st_size),
+            ExtractedAuxFile("README.md", text_path, text_path.stat().st_size, is_executable=True),
+            ExtractedAuxFile("image.bin", binary_path, binary_path.stat().st_size, is_executable=False),
         ]
     )
     with patch("registry.services.skill_sync_apply_service.SkillFile") as skill_file:
@@ -267,6 +267,8 @@ async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tm
     assert counts == (1, 1, 1)
     assert existing_text.content == "new text"
     assert existing_text.body is None
+    assert existing_text.isExecutable is True
+    assert inserted_files[0].isExecutable is False
     assert inserted_files[0].isBinary is True
     assert inserted_files[0].body == b"\x00\x01"
     stale.delete.assert_awaited_once()

@@ -435,6 +435,7 @@ class SkillSyncApplyService:
                 existing_file.mimeType = mime_type
                 existing_file.bytes = auxiliary_file.size
                 existing_file.isBinary = is_binary
+                existing_file.isExecutable = auxiliary_file.is_executable
                 existing_file.updatedAt = now
                 await existing_file.save(session=session)
                 updated += 1
@@ -448,6 +449,7 @@ class SkillSyncApplyService:
                 content=text_content,
                 body=content if is_binary else None,
                 isBinary=is_binary,
+                isExecutable=auxiliary_file.is_executable,
                 createdAt=now,
                 updatedAt=now,
             ).insert(session=session)
