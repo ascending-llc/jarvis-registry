@@ -646,7 +646,7 @@ class TestOAuth2CallbackStandardFlow:
             test_signer = URLSafeTimedSerializer("test-secret-key")
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-            app.dependency_overrides[get_oauth2_config] = lambda: self._google_oauth2_config()
+            app.dependency_overrides[get_oauth2_config] = self._google_oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: mock_google_provider
