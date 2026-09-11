@@ -136,4 +136,5 @@ exclude-signatures = [
     {signature = 'ebcee0c2ab0cc8f1b5fc75759f8531043f98a39d219813eaf847e3e3023fa87f', reason = 'crypto_utils unit test (AS-1811) auth-field fixtures use synthetic secrets, not credentials'},
     {signature = 'f33e3ff36489aefc9922d5b5a4c03ab20301ba84758bc9dee38e8cae43e83cce', reason = 'removed config file path is not credential'},
     {signature = '98a17f2f79343e964496ea55e7e52755d6f6c15ae9c855c2c6e11ed8f7cdd6ea', reason = 'removed config file path is not credential'},
+    {signature = 'ce57dbd8e4d08c91563bf7f5928138cf89f23539653b39a6f1ceafa54d82a8dd', reason = 'mcp registry schema server.json char-class regex/constant, not a credential'},
 ]
