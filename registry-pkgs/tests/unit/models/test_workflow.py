@@ -1,11 +1,39 @@
 """Tests for workflow model helpers."""
 
+import pytest
+
 from registry_pkgs.models.enums import WorkflowNodeType
 from registry_pkgs.models.workflow import LoopConfig, RouterChoice, WorkflowNode, collect_executor_keys
 
 
 def _step(name: str, executor_key: str) -> WorkflowNode:
     return WorkflowNode(name=name, executor_key=executor_key, step_objective=f"Run {name}")
+
+
+def test_step_objective_preserves_multi_paragraph_content() -> None:
+    objective = "Do X.\n\nThen do Y."
+
+    node = WorkflowNode(name="multi-paragraph", executor_key="tool", step_objective=objective)
+
+    assert node.step_objective == objective
+
+
+def test_step_objective_normalizes_line_endings() -> None:
+    node = WorkflowNode(name="line-endings", executor_key="tool", step_objective="First\r\nSecond\rThird")
+
+    assert node.step_objective == "First\nSecond\nThird"
+
+
+def test_step_objective_strips_only_outer_whitespace() -> None:
+    node = WorkflowNode(name="outer-whitespace", executor_key="tool", step_objective=" \tFirst\n  Second\t ")
+
+    assert node.step_objective == "First\n  Second"
+
+
+def test_step_objective_normalizes_all_whitespace_to_none() -> None:
+    assert WorkflowNode._normalize_step_objective(" \t\r\n ") is None
+    with pytest.raises(ValueError, match="step node requires step_objective"):
+        WorkflowNode(name="empty-objective", executor_key="tool", step_objective=" \t\r\n ")
 
 
 def test_collect_executor_keys_empty_tree() -> None:
