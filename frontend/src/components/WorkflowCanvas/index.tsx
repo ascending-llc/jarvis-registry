@@ -61,6 +61,23 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
 
     const reactFlow = useReactFlow();
 
+    const handleSaveStepObjective = async (nodeId: string, stepObjective: string): Promise<boolean> => {
+      if (isReadOnly || !onSave) return false;
+      const currentNode = canvas.nodes.find(node => node.id === nodeId);
+      if (!currentNode) return false;
+
+      const nextNodes = canvas.nodes.map(node =>
+        node.id === nodeId ? { ...node, data: { ...node.data, stepObjective } } : node,
+      );
+      canvas.onNodeDataChange(nodeId, { stepObjective });
+
+      const saved = await onSave(nextNodes, canvas.edges, reactFlow.getViewport());
+      if (!saved) {
+        canvas.onNodeDataChange(nodeId, { stepObjective: currentNode.data.stepObjective });
+      }
+      return saved;
+    };
+
     useImperativeHandle(ref, () => ({
       save: () => {
         if (isReadOnly || !onSave) return Promise.resolve(false);
@@ -115,6 +132,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
               agentSchemas={AGENT_SCHEMAS}
               onOpenAgentPicker={onOpenAgentPicker}
               onNodeDataChange={canvas.onNodeDataChange}
+              onSaveStepObjective={handleSaveStepObjective}
               onParallelBranchesChange={canvas.onParallelBranchesChange}
               onRouterCasesChange={canvas.onRouterCasesChange}
               onDeleteNode={canvas.onDeleteNode}

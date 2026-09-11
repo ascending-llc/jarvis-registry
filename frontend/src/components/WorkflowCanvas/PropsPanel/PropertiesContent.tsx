@@ -18,6 +18,7 @@ import { LoopNodeProperties } from './Nodes/LoopNodeProperties';
 import { ParallelNodeProperties } from './Nodes/ParallelNodeProperties';
 import { PoolNodeProperties } from './Nodes/PoolNodeProperties';
 import { RouterNodeProperties } from './Nodes/RouterNodeProperties';
+import { StepObjectiveEditor } from './StepObjectiveEditor';
 import { UpstreamReferencesSection } from './UpstreamReferencesSection';
 import { useWorkflowPanel } from './WorkflowPanelContext';
 import WorkflowProps from './WorkflowProps';
@@ -39,7 +40,8 @@ const PropertiesEmptyState: React.FC<{ message: string }> = ({ message }) => (
 );
 
 export const PropertiesContent: React.FC<PropertiesContentProps> = ({ panelMode, isNewWorkflow }) => {
-  const { workflow, selectedNode, isReadOnly, onNodeDataChange, onDeleteNode } = useWorkflowPanel();
+  const { workflow, selectedNode, isReadOnly, onNodeDataChange, onSaveStepObjective, onDeleteNode } =
+    useWorkflowPanel();
 
   if (panelMode === 'workflow') {
     if (workflow) {
@@ -88,17 +90,13 @@ export const PropertiesContent: React.FC<PropertiesContentProps> = ({ panelMode,
 
       {isExecutionStep && (
         <>
-          <div className='px-4 py-3 border-b border-[var(--jarvis-border)]'>
-            <label className='block text-xs text-[var(--jarvis-muted)] mb-1'>Step objective *</label>
-            <textarea
-              className='w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-sans text-xs px-2 py-1.5 outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] resize-none disabled:opacity-60 disabled:cursor-not-allowed'
-              disabled={isReadOnly}
-              rows={3}
-              value={nodeData?.stepObjective ?? ''}
-              onChange={event => onNodeDataChange(selectedNode.id, { stepObjective: event.target.value })}
-              placeholder="What should this step accomplish? e.g. 'Search for the customer's open support tickets from the last 30 days.'"
-            />
-          </div>
+          <StepObjectiveEditor
+            key={selectedNode.id}
+            value={nodeData?.stepObjective ?? ''}
+            disabled={isReadOnly}
+            onChange={stepObjective => onNodeDataChange(selectedNode.id, { stepObjective })}
+            onSave={stepObjective => onSaveStepObjective(selectedNode.id, stepObjective)}
+          />
           <UpstreamReferencesSection node={selectedNode} />
         </>
       )}

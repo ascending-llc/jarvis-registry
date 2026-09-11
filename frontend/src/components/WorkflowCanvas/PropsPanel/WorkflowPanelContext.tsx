@@ -15,6 +15,7 @@ export interface WorkflowPanelContextValue {
   agentSchemas: Record<string, { output: SchemaField[] }>;
   onOpenAgentPicker: (callback: (agent: AgentInfo) => void) => void;
   onNodeDataChange: (nodeId: string, patch: Partial<NodeData>) => void;
+  onSaveStepObjective: (nodeId: string, stepObjective: string) => Promise<boolean>;
   onParallelBranchesChange: (nodeId: string, prev: string[], next: string[]) => void;
   onRouterCasesChange: (nodeId: string, prev: string[], next: string[]) => void;
   onDeleteNode: (nodeId: string) => void;
