@@ -90,3 +90,23 @@ def test_jwt_token_config_carries_headless_agent_client_id_and_all_scopes() -> N
     jtc = settings.jwt_token_config
     assert jtc.headless_agent_client_id == settings.headless_agent_client_id
     assert jtc.all_scopes == frozenset(settings.scopes_list)
+
+
+@pytest.mark.unit
+def test_registry_client_origin_strips_path() -> None:
+    settings = JarvisBaseSettings(
+        registry_url="https://jarvis-demo.ascendingdc.com/gateway",
+        registry_client_url="https://jarvis-demo.ascendingdc.com/gateway",
+        x_jarvis_registry_import_checks="disabled",
+    )
+    assert settings.registry_client_origin == "https://jarvis-demo.ascendingdc.com"
+
+
+@pytest.mark.unit
+def test_registry_client_origin_keeps_port() -> None:
+    settings = JarvisBaseSettings(
+        registry_url="http://localhost:7860",
+        registry_client_url="http://localhost:5173",
+        x_jarvis_registry_import_checks="disabled",
+    )
+    assert settings.registry_client_origin == "http://localhost:5173"
