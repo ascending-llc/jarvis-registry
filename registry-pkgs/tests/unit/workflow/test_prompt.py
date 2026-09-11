@@ -297,6 +297,13 @@ class TestRenderStepPrompt:
                 ["Step Objective", "Dependencies"],
             ),
             (
+                {
+                    "dependencies": [DependencySpec(name="Pending", objective="fetch")],
+                    "initial_input": "trigger",
+                },
+                ["Step Objective", "Dependencies"],
+            ),
+            (
                 {"dependencies": [DependencySpec(name="Ready", objective="fetch", content="output")]},
                 ["Step Objective", "Dependencies", "Current Step Inputs"],
             ),

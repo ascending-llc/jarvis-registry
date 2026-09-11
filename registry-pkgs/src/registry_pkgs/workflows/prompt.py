@@ -77,6 +77,7 @@ _STEP_PROMPT_TEMPLATE = Template(
 ## Workflow Trigger Input
 
 {{ initial_input }}
+
 {% endif %}""",
     trim_blocks=True,
     lstrip_blocks=True,
