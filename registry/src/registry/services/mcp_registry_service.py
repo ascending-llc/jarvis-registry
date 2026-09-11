@@ -4,7 +4,7 @@ from pydantic import ValidationError
 
 from registry_pkgs.models import ExtendedMCPServer
 
-from ..core.config import Settings
+from ..core.config import settings
 from ..schemas.mcp_registry_schema import (
     DESCRIPTION_MAX_LENGTH,
     Input,
@@ -26,17 +26,17 @@ _ELIGIBILITY_FILTER = {
 }
 
 
-def _namespaced_name(settings: Settings, slug: str) -> str:
+def _namespaced_name(slug: str) -> str:
     return f"{settings.mcp_registry_namespace}/{slug}"
 
 
-def _effective_version(settings: Settings) -> str:
+def _effective_version() -> str:
     """build_version, falling back to 0.0.0 when unset."""
     return settings.build_version or "0.0.0"
 
 
 def _server_description(server: ExtendedMCPServer) -> str:
-    """Description for a catalog entry, truncated to the spec's 200-char limit."""
+    """Description for a catalog entry, truncated to the spec's 100-char limit."""
     raw = (server.config.get("description") or "").strip()
     if len(raw) > DESCRIPTION_MAX_LENGTH:
         logger.warning(
@@ -49,28 +49,28 @@ def _server_description(server: ExtendedMCPServer) -> str:
     return raw or server.serverName
 
 
-def build_discover_execute_entry(settings: Settings) -> ServerResponse:
+def build_discover_execute_entry() -> ServerResponse:
     """The single fixed entry pointing at the MCP gateway; not per-user, so no variables."""
     url = f"{settings.registry_url}/proxy/mcpgw/mcp"
     server = ServerJSON(
-        name=_namespaced_name(settings, _DISCOVER_EXECUTE_SLUG),
+        name=_namespaced_name(_DISCOVER_EXECUTE_SLUG),
         description="Discover and execute tools, resources, and prompts across the Jarvis Registry.",
-        version=_effective_version(settings),
+        version=_effective_version(),
         title="Jarvis Registry Gateway",
         remotes=[Transport(type="streamable-http", url=url)],
     )
     return ServerResponse(server=server)
 
 
-def build_server_entry(server: ExtendedMCPServer, settings: Settings) -> ServerResponse:
+def build_server_entry(server: ExtendedMCPServer) -> ServerResponse:
     """One catalog entry for a downstream server, pointing at the direct-connect proxy."""
     namespace = settings.mcp_registry_namespace
     url = f"{settings.registry_url}/proxy/server/{{userId}}{server.path}"
     server_json = ServerJSON(
-        name=_namespaced_name(settings, server.serverName),
+        name=_namespaced_name(server.serverName),
         title=server.serverName,
         description=_server_description(server),
-        version=_effective_version(settings),
+        version=_effective_version(),
         remotes=[
             Transport(
                 type="streamable-http",
@@ -83,40 +83,45 @@ def build_server_entry(server: ExtendedMCPServer, settings: Settings) -> ServerR
     return ServerResponse(server=server_json)
 
 
-def _clamp_limit(limit: int | None, settings: Settings) -> int:
+def _clamp_limit(limit: int | None) -> int:
     if limit is None:
         return settings.mcp_registry_default_limit
     return max(1, min(limit, settings.mcp_registry_max_limit))
 
 
-async def list_registry_entries(
-    settings: Settings,
-    cursor: str | None = None,
-    limit: int | None = None,
-) -> ServerListResponse:
-    """List the catalog: the fixed gateway entry plus every eligible downstream server.
+def _resume_index(entries: list[ServerResponse], cursor: str | None) -> int:
+    """Index of the first entry to return for this page.
 
-    Sorted by ``name`` so the cursor (the last-returned entry's ``name``, an opaque string per
-    spec) yields a stable resume point.
+    - No cursor -> start at the beginning (0).
+    - Cursor matches an entry -> resume right after it.
+    - Cursor no longer matches any entry (e.g. that server was removed) -> return len(entries),
+      which yields an empty page rather than silently restarting from the top.
     """
-    effective_limit = _clamp_limit(limit, settings)
+    if cursor is None:
+        return 0
+    for index, entry in enumerate(entries):
+        if entry.server.name == cursor:
+            return index + 1
+    return len(entries)
+
+
+async def list_registry_entries(cursor: str | None = None, limit: int | None = None) -> ServerListResponse:
+    """List the catalog: the fixed gateway entry plus every eligible downstream server."""
+    effective_limit = _clamp_limit(limit)
 
     servers = await ExtendedMCPServer.find(_ELIGIBILITY_FILTER).to_list()
-    entries = [build_discover_execute_entry(settings)]
+    entries = [build_discover_execute_entry()]
     for server in servers:
         try:
-            entries.append(build_server_entry(server, settings))
+            entries.append(build_server_entry(server))
         except ValidationError:
             logger.warning("Excluding server %r from registry catalog: fails server.json schema", server.serverName)
     entries.sort(key=lambda entry: entry.server.name)
 
-    start = 0
-    if cursor is not None:
-        # Resume after the entry whose name equals the cursor.
-        start = next((i + 1 for i, e in enumerate(entries) if e.server.name == cursor), len(entries))
-
+    start = _resume_index(entries, cursor)
     page = entries[start : start + effective_limit]
-    next_cursor = page[-1].server.name if len(entries) > start + effective_limit and page else None
+    has_more = start + effective_limit < len(entries)
+    next_cursor = page[-1].server.name if has_more else None
 
     return ServerListResponse(
         servers=page,
@@ -124,20 +129,20 @@ async def list_registry_entries(
     )
 
 
-def _version_matches(version: str, settings: Settings) -> bool:
-    return version == "latest" or version == _effective_version(settings)
+def _version_matches(version: str) -> bool:
+    return version == "latest" or version == _effective_version()
 
 
-async def get_registry_entry(server_name: str, version: str, settings: Settings) -> ServerResponse | None:
+async def get_registry_entry(server_name: str, version: str) -> ServerResponse | None:
     """Look up one catalog entry by its full namespaced name and version.
 
     Returns ``None`` (the route turns it into a 404) when the name/version does not resolve.
     """
-    if not _version_matches(version, settings):
+    if not _version_matches(version):
         return None
 
-    if server_name == _namespaced_name(settings, _DISCOVER_EXECUTE_SLUG):
-        return build_discover_execute_entry(settings)
+    if server_name == _namespaced_name(_DISCOVER_EXECUTE_SLUG):
+        return build_discover_execute_entry()
 
     prefix = f"{settings.mcp_registry_namespace}/"
     if not server_name.startswith(prefix):
@@ -148,7 +153,7 @@ async def get_registry_entry(server_name: str, version: str, settings: Settings)
     if server is None:
         return None
     try:
-        return build_server_entry(server, settings)
+        return build_server_entry(server)
     except ValidationError:
         # A malformed serverName should 404 (absent from the catalog), never 500.
         logger.warning("Server %r fails server.json schema; treating as not found", stored_name)

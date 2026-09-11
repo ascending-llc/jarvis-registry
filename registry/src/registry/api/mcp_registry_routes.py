@@ -3,7 +3,6 @@ import logging
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
-from ..core.config import settings
 from ..schemas.mcp_registry_schema import ErrorModel, ServerListResponse, ServerResponse
 from ..services import mcp_registry_service
 
@@ -22,7 +21,7 @@ def _problem(status: int, title: str, detail: str, instance: str | None = None) 
 @router.get("/servers", response_model=ServerListResponse)
 async def list_servers(cursor: str | None = None, limit: int | None = None) -> Response:
     try:
-        result = await mcp_registry_service.list_registry_entries(settings, cursor=cursor, limit=limit)
+        result = await mcp_registry_service.list_registry_entries(cursor=cursor, limit=limit)
         return JSONResponse(content=result.model_dump(by_alias=True, exclude_none=True))
     except Exception:
         logger.exception("Failed to list MCP registry servers")
@@ -35,7 +34,7 @@ async def get_server(full_path: str) -> Response:
         return _problem(404, "Not Found", f"Malformed server path '{full_path}'; expected <name>/versions/<version>.")
     server_name, version = full_path.rsplit("/versions/", 1)
     try:
-        result = await mcp_registry_service.get_registry_entry(server_name, version, settings)
+        result = await mcp_registry_service.get_registry_entry(server_name, version)
         if result is None:
             return _problem(
                 404,
