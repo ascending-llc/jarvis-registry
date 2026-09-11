@@ -319,7 +319,7 @@ export const validateDraft = (draft: SkillDraft): DraftValidation => {
   }
   if (parsed.body.length > 100_000) return { valid: false, message: 'Skill instructions are too long.' };
   if (!isSkillCategory(draft.category)) return { valid: false, message: 'Choose a valid category.' };
-  if (draft.id === null && !slugifySkillName(parsed.displayTitle)) {
+  if (!slugifySkillName(parsed.displayTitle)) {
     return { valid: false, message: 'Name must include letters or numbers that can form a skill identifier.' };
   }
 
@@ -343,6 +343,7 @@ export const toCreateRequest = (draft: SkillDraft): CreateSkillRequest => {
 export const toUpdateRequest = (draft: SkillDraft): UpdateSkillRequest => {
   const parsed = draft.markdown.parsed;
   return {
+    name: slugifySkillName(parsed.displayTitle),
     displayTitle: parsed.displayTitle,
     description: parsed.description,
     body: parsed.body,
