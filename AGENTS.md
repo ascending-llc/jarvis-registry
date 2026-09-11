@@ -279,7 +279,7 @@ All Python commands use `uv run poe <task>`. Run from the **repo root** unless n
 | `uv run bandit -r src/` | Security scan |
 
 **Running a service locally** (outside Docker): there is no `poe dev`/`poe start` shortcut — run the
-process directly from the repo root, e.g. `uv run uvicorn registry.main:app --reload --host 0.0.0.0
+process directly from the repo root, e.g. `uv run uvicorn registry.dispatcher:app --reload --host 0.0.0.0
 --port 8000` or `uv run uvicorn auth_server.server:app --reload --host 0.0.0.0 --port 8888` or
 `uv run python -m workflow_worker.main`. All three services read config from the single root
 `.env` (`cp .env.example .env`) — the same file docker-compose uses via `env_file: - .env` — so

@@ -81,7 +81,7 @@ def _configure_middleware(app: FastAPI) -> None:
     # CORSMiddleware should be added late so that it executes first on incoming requests.
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r"https?://(localhost(:[0-9]+)?|.*\.compute.*\.amazonaws\.com(:[0-9]+)?)",
+        allow_origins=[settings.registry_client_origin],
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],

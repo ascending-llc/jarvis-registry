@@ -465,6 +465,12 @@ class JarvisBaseSettings(BaseSettings):
         return result.path.rstrip("/")
 
     @cached_property
+    def registry_client_origin(self) -> str:
+        """CORS-safe origin (scheme://host[:port], no path) derived from registry_client_url."""
+        result = urlparse(self.registry_client_url)
+        return f"{result.scheme}://{result.netloc}"
+
+    @cached_property
     def registry_success_redirect(self) -> str:
         return self.registry_client_url
 
