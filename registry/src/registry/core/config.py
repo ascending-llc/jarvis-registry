@@ -44,12 +44,6 @@ class Settings(JarvisBaseSettings):
     # ==================== API ====================
     api_version: str = "v1"
 
-    # ==================== Anthropic ====================
-    anthropic_api_version: str = "v0.1"
-    anthropic_server_namespace: str = "io.mcpgateway"
-    anthropic_api_default_limit: int = 100
-    anthropic_api_max_limit: int = 1000
-
     # ==================== Local Embeddings ====================
     local_embeddings_model_name: str = "all-MiniLM-L6-v2"
     local_embeddings_model_dimensions: int = 384
