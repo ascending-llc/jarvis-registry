@@ -12,6 +12,7 @@ import {
   toCreateRequest,
   toUpdateRequest,
   updateSkillMarkdownMetadata,
+  validateDraft,
 } from './skillDraft';
 
 const makeDetail = (overrides: Partial<SkillDetail> = {}): SkillDetail => ({
@@ -356,5 +357,42 @@ future-field:
   test('initializes alwaysApply from detail and defaults new drafts to false', () => {
     expect(createDraft(makeDetail({ alwaysApply: true })).alwaysApply).toBe(true);
     expect(createEmptyDraft('Author').alwaysApply).toBe(false);
+  });
+
+  test('derives an update request name from the display title, same as create', () => {
+    const draft = createDraft(makeDetail({ name: 'old-name', displayTitle: 'Old Name' }));
+    draft.markdown = updateSkillMarkdownMetadata(draft.markdown, { displayTitle: 'New Display Title' });
+
+    expect(toUpdateRequest(draft).name).toBe('new-display-title');
+    expect(toUpdateRequest(draft).name).toBe(toCreateRequest(draft).name);
+  });
+});
+
+describe('validateDraft', () => {
+  test('rejects a create draft whose display title has no usable identifier characters', () => {
+    const draft = createEmptyDraft('Author');
+    draft.markdown = updateSkillMarkdownMetadata(draft.markdown, { displayTitle: '!!!', description: 'A description' });
+
+    const result = validateDraft(draft);
+
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.message).toMatch(/skill identifier/);
+  });
+
+  test('rejects an update draft whose renamed display title has no usable identifier characters', () => {
+    const draft = createDraft(makeDetail());
+    draft.markdown = updateSkillMarkdownMetadata(draft.markdown, { displayTitle: '@@@' });
+
+    const result = validateDraft(draft);
+
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.message).toMatch(/skill identifier/);
+  });
+
+  test('accepts an update draft with a valid renamed display title', () => {
+    const draft = createDraft(makeDetail());
+    draft.markdown = updateSkillMarkdownMetadata(draft.markdown, { displayTitle: 'Renamed Skill' });
+
+    expect(validateDraft(draft).valid).toBe(true);
   });
 });
