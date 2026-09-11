@@ -1,20 +1,19 @@
 # MCP Gateway Registry - Complete API Reference
 
-This document provides a comprehensive overview of all 49 API endpoints available in the MCP Gateway Registry, organized by category with authentication requirements, request/response specifications, and OpenAPI documentation links.
+This document provides a comprehensive overview of all 43 API endpoints available in the MCP Gateway Registry, organized by category with authentication requirements, request/response specifications, and OpenAPI documentation links.
 
 ## Table of Contents
 
 1. [API Categories](#api-categories)
 2. [Authentication Schemes](#authentication-schemes)
 3. [A2A Agent Management APIs](#a2a-agent-management-apis)
-4. [Anthropic MCP Registry API v0](#anthropic-mcp-registry-api-v0)
-5. [Internal Server Management APIs](#internal-server-management-apis)
-6. [Authentication & Login APIs](#authentication--login-apis)
-7. [Health Monitoring APIs](#health-monitoring-apis)
-8. [Discovery & Well-Known Endpoints](#discovery--well-known-endpoints)
-9. [Utility Endpoints](#utility-endpoints)
-10. [Response Codes & Error Handling](#response-codes--error-handling)
-11. [OpenAPI Specifications](#openapi-specifications)
+4. [Internal Server Management APIs](#internal-server-management-apis)
+5. [Authentication & Login APIs](#authentication--login-apis)
+6. [Health Monitoring APIs](#health-monitoring-apis)
+7. [Discovery & Well-Known Endpoints](#discovery--well-known-endpoints)
+8. [Utility Endpoints](#utility-endpoints)
+9. [Response Codes & Error Handling](#response-codes--error-handling)
+10. [OpenAPI Specifications](#openapi-specifications)
 
 ---
 
@@ -23,7 +22,6 @@ This document provides a comprehensive overview of all 49 API endpoints availabl
 | Category | Count | Auth Method | Purpose |
 |----------|-------|-------------|---------|
 | A2A Agent Management | 8 | JWT Bearer Token | Agent registration, discovery, and management |
-| Anthropic Registry API v0 (Servers) | 3 | JWT Bearer Token | Standard MCP server discovery via Anthropic API spec |
 | Internal Server Management (UI) | 10 | Session Cookie | Dashboard and service management |
 | Internal Server Management (Admin) | 12 | HTTP Basic Auth | Administrative operations and group management |
 | Authentication & Login | 7 | OAuth2 + Session | User authentication and provider management |
@@ -38,7 +36,7 @@ This document provides a comprehensive overview of all 49 API endpoints availabl
 
 ### 1. JWT Bearer Token (Nginx-Proxied Auth)
 
-**Used by:** A2A Agent APIs, Anthropic Registry API v0
+**Used by:** A2A Agent APIs
 
 **How it works:**
 - Client sends JWT token in `Authorization: Bearer <token>` header
@@ -53,7 +51,7 @@ This document provides a comprehensive overview of all 49 API endpoints availabl
 **Example:**
 ```bash
 curl -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ..." \
-  http://localhost/v0.1/agents
+  http://localhost/api/agents
 ```
 
 ---
@@ -371,87 +369,6 @@ curl -u admin:password http://localhost/api/internal/register \
 **Error Codes:**
 - `400 Bad Request` - Empty query
 - `500 Internal Server Error` - Search error
-
----
-
-## Anthropic MCP Registry API v0
-
-This section implements the official [Anthropic MCP Registry API specification](https://github.com/modelcontextprotocol/registry) for standard server discovery and agent discovery using the same API patterns.
-
-### MCP Servers (v0)
-
-**File:** `registry/api/registry_routes.py`
-**Route Prefix:** `/v0.1` (from `Settings.anthropic_api_version` in `registry/core/config.py`)
-**Authentication:** JWT Bearer Token
-
-#### 1. List MCP Servers
-
-**Endpoint:** `GET /v0/servers`
-
-**Purpose:** List all MCP servers with cursor-based pagination
-
-**Query Parameters:**
-- `cursor` (optional, string) - Pagination cursor from previous response
-- `limit` (optional, integer, default: 100, max: 1000) - Max items per page
-
-**Response:** `200 OK`
-```json
-{
-  "servers": [
-    {
-      "id": "io.mcpgateway/example-server",
-      "name": "Example Server",
-      "description": "string",
-      "homepage": "https://example.com",
-      "resources": [
-        {
-          "uri": "example://resource",
-          "mimeType": "text/plain"
-        }
-      ]
-    }
-  ],
-  "_meta": {
-    "pagination": {
-      "hasMore": false,
-      "nextCursor": null
-    }
-  }
-}
-```
-
----
-
-#### 2. List Server Versions
-
-**Endpoint:** `GET /v0/servers/{serverName:path}/versions`
-
-**Purpose:** List all versions for a specific server
-
-**Path Parameter:**
-- `serverName` - URL-encoded reverse-DNS name (e.g., `io.mcpgateway%2Fexample-server`)
-
-**Response:** `200 OK` with versions array (currently one version per server)
-
-**Error Codes:**
-- `404 Not Found` - Server not found or user lacks access
-
----
-
-#### 3. Get Server Version Details
-
-**Endpoint:** `GET /v0/servers/{serverName:path}/versions/{version}`
-
-**Purpose:** Get detailed information about a specific server version
-
-**Path Parameters:**
-- `serverName` - URL-encoded server name
-- `version` - Version string or `latest`
-
-**Response:** `200 OK` with complete server details including tools
-
-**Error Codes:**
-- `404 Not Found` - Server/version not found or user lacks access
 
 ---
 
@@ -1129,15 +1046,13 @@ curl -s http://localhost:7860/openapi.json | \
 | Category | Endpoints | Auth | Purpose |
 |----------|-----------|------|---------|
 | A2A Agents | 8 | JWT Bearer | Agent lifecycle management |
-| Anthropic v0 (Servers) | 3 | JWT Bearer | Standard server discovery |
-| Anthropic v0 (Agents) | 3 | JWT Bearer | Standard agent discovery |
 | UI Management | 10 | Session Cookie | Dashboard operations |
 | Admin Operations | 12 | HTTP Basic Auth | Administrative tasks |
 | Authentication | 7 | OAuth2/Session | User login/logout |
 | Health Monitoring | 3 | Session/None | Real-time status |
 | Discovery | 1 | None | Public server discovery |
 | Utility | 2 | Session/None | Helper endpoints |
-| **TOTAL** | **49** | **Multiple** | **Full system coverage** |
+| **TOTAL** | **43** | **Multiple** | **Full system coverage** |
 
 ---
 
@@ -1153,11 +1068,6 @@ curl -s http://localhost:7860/openapi.json | \
 - **Auth:** Optional
 - **Query:** Natural language query
 - **Documentation:** See [A2A Agent Management APIs > Discover Agents Semantically](#8-discover-agents-semantically)
-
-### I want to list all servers (Anthropic API format)
-- **Endpoint:** `GET /v0/servers`
-- **Auth:** JWT Bearer Token
-- **Documentation:** See [Anthropic MCP Registry API v0 > List MCP Servers](#1-list-mcp-servers)
 
 ### I want to generate a JWT token
 - **Endpoint:** `POST /api/tokens/generate`

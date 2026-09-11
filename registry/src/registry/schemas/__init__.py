@@ -9,18 +9,6 @@ from registry_pkgs.oauth.schemas import (
     OAuthTokens,
 )
 
-from .anthropic_schema import (
-    ErrorResponse,
-    Package,
-    PaginationMetadata,
-    Repository,
-    ServerDetail,
-    ServerList,
-    ServerResponse,
-    SseTransport,
-    StdioTransport,
-    StreamableHttpTransport,
-)
 from .errors import (
     APIErrorDetail,
     APIErrorResponse,
@@ -29,16 +17,6 @@ from .errors import (
 )
 
 __all__ = [
-    "Repository",
-    "StdioTransport",
-    "StreamableHttpTransport",
-    "SseTransport",
-    "Package",
-    "ServerDetail",
-    "ServerResponse",
-    "ServerList",
-    "PaginationMetadata",
-    "ErrorResponse",
     # Error handling
     "APIErrorDetail",
     "APIErrorResponse",
