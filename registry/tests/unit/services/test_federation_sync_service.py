@@ -333,7 +333,8 @@ async def test_vector_cleanup_isolates_per_runtime_delete_failure(
         [],
     )
 
-    assert attempted == ["arn:mcp:broken", "arn:mcp:healthy"]
+    # run_bounded fans deletes out concurrently, so completion order isn't guaranteed.
+    assert sorted(attempted) == ["arn:mcp:broken", "arn:mcp:healthy"]
     assert errors == ["mcp vector cleanup failed for arn:mcp:broken"]
 
 

@@ -69,54 +69,40 @@ class TestAgentCoreFederationClient:
         assert config.description == "a2a runtime"
         assert config.type == "jsonrpc"
 
-    async def test_discover_runtime_entities_classifies_mcp_and_a2a_with_stubber(self, monkeypatch):
+    async def test_discover_runtime_entities_classifies_mcp_and_a2a(self, monkeypatch):
         client = AgentCoreFederationClient()
 
-        boto_client = boto3.client(
-            "bedrock-agentcore-control",
-            region_name="us-east-1",
-            aws_access_key_id="test",
-            aws_secret_access_key="test",
-        )
-        stubber = Stubber(boto_client)
-        stubber.add_response(
-            "list_agent_runtimes",
+        runtime_summaries = [
             {
-                "agentRuntimes": [
-                    {
-                        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1",
-                        "agentRuntimeId": "r1",
-                        "agentRuntimeVersion": "1",
-                        "agentRuntimeName": "runtime-mcp",
-                        "description": "mcp runtime",
-                        "lastUpdatedAt": datetime.now(UTC),
-                        "status": "READY",
-                    },
-                    {
-                        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r2",
-                        "agentRuntimeId": "r2",
-                        "agentRuntimeVersion": "2",
-                        "agentRuntimeName": "runtime-a2a",
-                        "description": "a2a runtime",
-                        "lastUpdatedAt": datetime.now(UTC),
-                        "status": "READY",
-                    },
-                    {
-                        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r3",
-                        "agentRuntimeId": "r3",
-                        "agentRuntimeVersion": "1",
-                        "agentRuntimeName": "runtime-http",
-                        "description": "http runtime",
-                        "lastUpdatedAt": datetime.now(UTC),
-                        "status": "READY",
-                    },
-                ]
+                "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1",
+                "agentRuntimeId": "r1",
+                "agentRuntimeVersion": "1",
+                "agentRuntimeName": "runtime-mcp",
+                "description": "mcp runtime",
+                "lastUpdatedAt": datetime.now(UTC),
+                "status": "READY",
             },
-            {"maxResults": 100},
-        )
-        stubber.add_response(
-            "get_agent_runtime",
             {
+                "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r2",
+                "agentRuntimeId": "r2",
+                "agentRuntimeVersion": "2",
+                "agentRuntimeName": "runtime-a2a",
+                "description": "a2a runtime",
+                "lastUpdatedAt": datetime.now(UTC),
+                "status": "READY",
+            },
+            {
+                "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r3",
+                "agentRuntimeId": "r3",
+                "agentRuntimeVersion": "1",
+                "agentRuntimeName": "runtime-http",
+                "description": "http runtime",
+                "lastUpdatedAt": datetime.now(UTC),
+                "status": "READY",
+            },
+        ]
+        runtime_details_by_id = {
+            "r1": {
                 "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1",
                 "agentRuntimeId": "r1",
                 "agentRuntimeName": "runtime-mcp",
@@ -129,11 +115,7 @@ class TestAgentCoreFederationClient:
                 "lifecycleConfiguration": {"idleRuntimeSessionTimeout": 900, "maxLifetime": 3600},
                 "protocolConfiguration": {"serverProtocol": "MCP"},
             },
-            {"agentRuntimeId": "r1", "agentRuntimeVersion": "1"},
-        )
-        stubber.add_response(
-            "get_agent_runtime",
-            {
+            "r2": {
                 "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r2",
                 "agentRuntimeId": "r2",
                 "agentRuntimeName": "runtime-a2a",
@@ -146,11 +128,7 @@ class TestAgentCoreFederationClient:
                 "lifecycleConfiguration": {"idleRuntimeSessionTimeout": 900, "maxLifetime": 3600},
                 "protocolConfiguration": {"serverProtocol": "A2A"},
             },
-            {"agentRuntimeId": "r2", "agentRuntimeVersion": "2"},
-        )
-        stubber.add_response(
-            "get_agent_runtime",
-            {
+            "r3": {
                 "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r3",
                 "agentRuntimeId": "r3",
                 "agentRuntimeName": "runtime-http",
@@ -163,10 +141,13 @@ class TestAgentCoreFederationClient:
                 "lifecycleConfiguration": {"idleRuntimeSessionTimeout": 900, "maxLifetime": 3600},
                 "protocolConfiguration": {"serverProtocol": "HTTP"},
             },
-            {"agentRuntimeId": "r3", "agentRuntimeVersion": "1"},
+        }
+        control_client = _fake_control_client(
+            runtime_summaries=runtime_summaries,
+            runtime_details_by_id=runtime_details_by_id,
         )
 
-        monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(boto_client))
+        monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(control_client))
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_mcp_server",
@@ -182,8 +163,7 @@ class TestAgentCoreFederationClient:
             ),
         )
 
-        with stubber:
-            result = await client.discover_runtime_entities(region="us-east-1", author_id=_TEST_AUTHOR_ID)
+        result = await client.discover_runtime_entities(region="us-east-1", author_id=_TEST_AUTHOR_ID)
 
         assert len(result["mcp_servers"]) == 1
         assert len(result["a2a_agents"]) == 1
@@ -268,45 +248,31 @@ class TestAgentCoreFederationClient:
     async def test_discover_runtime_entities_applies_resource_tags_filter(self, monkeypatch):
         client = AgentCoreFederationClient()
 
-        boto_client = boto3.client(
-            "bedrock-agentcore-control",
-            region_name="us-east-1",
-            aws_access_key_id="test",
-            aws_secret_access_key="test",
-        )
-        stubber = Stubber(boto_client)
         runtime_one_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1"
         runtime_two_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r2"
 
-        stubber.add_response(
-            "list_agent_runtimes",
+        runtime_summaries = [
             {
-                "agentRuntimes": [
-                    {
-                        "agentRuntimeArn": runtime_one_arn,
-                        "agentRuntimeId": "r1",
-                        "agentRuntimeVersion": "1",
-                        "agentRuntimeName": "runtime-prod",
-                        "description": "mcp runtime",
-                        "lastUpdatedAt": datetime.now(UTC),
-                        "status": "READY",
-                    },
-                    {
-                        "agentRuntimeArn": runtime_two_arn,
-                        "agentRuntimeId": "r2",
-                        "agentRuntimeVersion": "2",
-                        "agentRuntimeName": "runtime-dev",
-                        "description": "a2a runtime",
-                        "lastUpdatedAt": datetime.now(UTC),
-                        "status": "READY",
-                    },
-                ]
+                "agentRuntimeArn": runtime_one_arn,
+                "agentRuntimeId": "r1",
+                "agentRuntimeVersion": "1",
+                "agentRuntimeName": "runtime-prod",
+                "description": "mcp runtime",
+                "lastUpdatedAt": datetime.now(UTC),
+                "status": "READY",
             },
-            {"maxResults": 100},
-        )
-        stubber.add_response(
-            "get_agent_runtime",
             {
+                "agentRuntimeArn": runtime_two_arn,
+                "agentRuntimeId": "r2",
+                "agentRuntimeVersion": "2",
+                "agentRuntimeName": "runtime-dev",
+                "description": "a2a runtime",
+                "lastUpdatedAt": datetime.now(UTC),
+                "status": "READY",
+            },
+        ]
+        runtime_details_by_id = {
+            "r1": {
                 "agentRuntimeArn": runtime_one_arn,
                 "agentRuntimeId": "r1",
                 "agentRuntimeName": "runtime-prod",
@@ -319,11 +285,7 @@ class TestAgentCoreFederationClient:
                 "lifecycleConfiguration": {"idleRuntimeSessionTimeout": 900, "maxLifetime": 3600},
                 "protocolConfiguration": {"serverProtocol": "MCP"},
             },
-            {"agentRuntimeId": "r1", "agentRuntimeVersion": "1"},
-        )
-        stubber.add_response(
-            "get_agent_runtime",
-            {
+            "r2": {
                 "agentRuntimeArn": runtime_two_arn,
                 "agentRuntimeId": "r2",
                 "agentRuntimeName": "runtime-dev",
@@ -336,20 +298,17 @@ class TestAgentCoreFederationClient:
                 "lifecycleConfiguration": {"idleRuntimeSessionTimeout": 900, "maxLifetime": 3600},
                 "protocolConfiguration": {"serverProtocol": "A2A"},
             },
-            {"agentRuntimeId": "r2", "agentRuntimeVersion": "2"},
-        )
-        stubber.add_response(
-            "list_tags_for_resource",
-            {"tags": {"env": "production", "team": "platform"}},
-            {"resourceArn": runtime_one_arn},
-        )
-        stubber.add_response(
-            "list_tags_for_resource",
-            {"tags": {"env": "development", "team": "platform"}},
-            {"resourceArn": runtime_two_arn},
+        }
+        control_client = _fake_control_client(
+            runtime_summaries=runtime_summaries,
+            runtime_details_by_id=runtime_details_by_id,
+            tags_by_arn={
+                runtime_one_arn: {"env": "production", "team": "platform"},
+                runtime_two_arn: {"env": "development", "team": "platform"},
+            },
         )
 
-        monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(boto_client))
+        monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(control_client))
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_mcp_server",
@@ -371,12 +330,11 @@ class TestAgentCoreFederationClient:
             ),
         )
 
-        with stubber:
-            result = await client.discover_runtime_entities(
-                author_id=_TEST_AUTHOR_ID,
-                region="us-east-1",
-                resource_tags_filter={"env": "production", "team": "platform"},
-            )
+        result = await client.discover_runtime_entities(
+            author_id=_TEST_AUTHOR_ID,
+            region="us-east-1",
+            resource_tags_filter={"env": "production", "team": "platform"},
+        )
 
         assert len(result["mcp_servers"]) == 1
         assert result["mcp_servers"][0].federationMetadata.runtimeArn == runtime_one_arn
@@ -611,3 +569,28 @@ def _async_return(value):
 
 async def _await_value(value):
     return value
+
+
+def _fake_control_client(
+    *,
+    runtime_summaries: list[dict[str, object]],
+    runtime_details_by_id: dict[str, dict[str, object]],
+    tags_by_arn: dict[str, dict[str, str]] | None = None,
+) -> MagicMock:
+    """Hand-rolled fake control-plane client, keyed by request params.
+
+    AgentCoreControlExecutor dispatches every call through asyncio.to_thread, so
+    AgentCoreFederationClient._get_runtime_details/_filter_runtime_details_by_tags fan
+    concurrent get_agent_runtime/list_tags_for_resource calls out across the thread
+    pool. botocore.stub.Stubber requires calls to arrive in the exact order responses
+    were queued, so it cannot represent this concurrent access safely. Resolving each
+    response by its actual argument (like a real server would) is order-independent.
+    """
+    tags_by_arn = tags_by_arn or {}
+    control_client = MagicMock()
+    control_client.list_agent_runtimes.side_effect = lambda **_kwargs: {"agentRuntimes": runtime_summaries}
+    control_client.get_agent_runtime.side_effect = lambda **kwargs: runtime_details_by_id[kwargs["agentRuntimeId"]]
+    control_client.list_tags_for_resource.side_effect = lambda **kwargs: {
+        "tags": tags_by_arn.get(kwargs["resourceArn"], {})
+    }
+    return control_client
