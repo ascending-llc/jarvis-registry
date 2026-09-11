@@ -5,9 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 
-from registry.services.skill_sync_apply_service import SkillSyncApplyService, _is_text_content
+from registry.services.skill_sync_apply_service import SkillSyncApplyService
 from registry.services.skill_sync_discovery_service import DiscoveredSkill, DiscoveryResult
 from registry.services.skill_sync_github_service import ExtractedAuxFile
+from registry.utils.skill_files import is_text_content as _is_text_content
 from registry_pkgs.models.enums import SkillSyncSkillErrorCode
 from registry_pkgs.models.skill_sync_job import (
     SkillSyncDiscoverySummary,
@@ -249,8 +250,8 @@ async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tm
 
     discovered = _discovered(
         files=[
-            ExtractedAuxFile("README.md", text_path, text_path.stat().st_size),
-            ExtractedAuxFile("image.bin", binary_path, binary_path.stat().st_size),
+            ExtractedAuxFile("README.md", text_path, text_path.stat().st_size, is_executable=True),
+            ExtractedAuxFile("image.bin", binary_path, binary_path.stat().st_size, is_executable=False),
         ]
     )
     with patch("registry.services.skill_sync_apply_service.SkillFile") as skill_file:
@@ -266,6 +267,8 @@ async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tm
     assert counts == (1, 1, 1)
     assert existing_text.content == "new text"
     assert existing_text.body is None
+    assert existing_text.isExecutable is True
+    assert inserted_files[0].isExecutable is False
     assert inserted_files[0].isBinary is True
     assert inserted_files[0].body == b"\x00\x01"
     stale.delete.assert_awaited_once()
@@ -416,3 +419,12 @@ def test_text_detection_rejects_nul_and_invalid_utf8():
     assert _is_text_content(b"plain text") is True
     assert _is_text_content(b"text\x00binary") is False
     assert _is_text_content(b"\xff\xfe") is False
+
+
+def test_text_detection_checks_full_payload_not_just_prefix():
+    # 8 KiB of ASCII followed by a NUL and invalid UTF-8 must be classified as binary,
+    # otherwise the sync path would lossily decode the tail with errors="replace".
+    payload = b"A" * 8192 + b"\x00\xff\xfe"
+    assert _is_text_content(payload) is False
+    payload_no_nul = b"A" * 8192 + b"\xff\xfe"
+    assert _is_text_content(payload_no_nul) is False

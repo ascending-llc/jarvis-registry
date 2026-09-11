@@ -8,8 +8,18 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException
 
 from registry.schemas.acl_schema import ResourcePermissions
-from registry.schemas.skill_api_schemas import SkillCreateRequest, SkillUpdateRequest
-from registry.services.skill_service import SkillService
+from registry.schemas.skill_api_schemas import (
+    SkillCreateRequest,
+    SkillFileInput,
+    SkillFileUpsertRequest,
+    SkillUpdateRequest,
+)
+from registry.services.skill_service import (
+    SkillService,
+    _prepare_inline_file,
+    _validate_files_batch,
+    _validate_relative_path,
+)
 from registry_pkgs.models import SkillSource
 
 _USER_ID = "000000000000000000000001"
@@ -223,9 +233,12 @@ async def test_create_inserts_skill_and_grants_owner(mock_skill_cls, mock_mongod
         },
     )
 
-    result, permissions = await SkillService(acl_service, user_service).create_skill(data, _USER_ID, "Token User")
+    result, files, permissions = await SkillService(acl_service, user_service).create_skill(
+        data, _USER_ID, "Token User"
+    )
 
     assert result is skill
+    assert files == []
     assert permissions.SHARE is True
     skill.insert.assert_awaited_once_with(session=session)
     acl_service.grant_permission.assert_awaited_once()
@@ -513,3 +526,689 @@ def test_dedup_three_same_name_one_owned(caplog):
     assert len(result) == 1
     assert result[0][0] is owned
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+# -----------------------------
+# File validation helpers
+# -----------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "",
+        "   ",
+        "/etc/passwd",
+        "..",
+        "../scripts/run.sh",
+        "scripts/../../run.sh",
+        "./run.sh",
+        "scripts//run.sh",
+        "scripts/",
+        "scripts\\run.sh",
+        "SKILL.md",
+        "skill.md",
+        "foo\x00bar",
+        "foo\nbar",
+        "foo\tbar",
+        "foo\x7fbar",
+    ],
+)
+def test_validate_relative_path_rejects_bad_paths(bad_path):
+    with pytest.raises(HTTPException) as exc:
+        _validate_relative_path(bad_path)
+    assert exc.value.status_code == 422
+
+
+def test_validate_relative_path_rejects_over_length_paths():
+    from registry.constants import MAX_SKILL_FILE_RELATIVE_PATH_LENGTH
+
+    over_length = "a" * (MAX_SKILL_FILE_RELATIVE_PATH_LENGTH + 1)
+    with pytest.raises(HTTPException) as exc:
+        _validate_relative_path(over_length)
+    assert exc.value.status_code == 422
+    # error detail must NOT echo the whole oversized path back
+    assert over_length not in exc.value.detail
+
+
+@pytest.mark.parametrize("good_path", ["scripts/run.sh", "references/guide.md", "a", "a/b/c.txt"])
+def test_validate_relative_path_accepts_good_paths(good_path):
+    _validate_relative_path(good_path)
+
+
+def test_prepare_inline_file_text_detects_actual_binary_flag():
+    prepared = _prepare_inline_file("scripts/run.sh", SkillFileUpsertRequest(content="#!/bin/sh\n"))
+    assert prepared.is_binary is False
+    assert prepared.raw == b"#!/bin/sh\n"
+    assert prepared.mime_type.startswith("text/") or prepared.mime_type == "application/x-sh"
+
+
+def test_prepare_inline_file_binary_via_base64():
+    import base64 as _b64
+
+    payload = _b64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii")
+    prepared = _prepare_inline_file(
+        "assets/logo.png",
+        SkillFileUpsertRequest(body=payload, mimeType="image/png"),
+    )
+    assert prepared.is_binary is True
+    assert prepared.mime_type == "image/png"
+
+
+def test_prepare_inline_file_rejects_invalid_base64():
+    with pytest.raises(HTTPException) as exc:
+        _prepare_inline_file("assets/logo.png", SkillFileUpsertRequest(body="!!!not-base64!!!"))
+    assert exc.value.status_code == 422
+
+
+def test_prepare_inline_file_rejects_isbinary_conflict():
+    with pytest.raises(HTTPException) as exc:
+        _prepare_inline_file(
+            "scripts/run.sh",
+            SkillFileUpsertRequest(content="plain text", isBinary=True),
+        )
+    assert exc.value.status_code == 422
+
+
+def test_prepare_inline_file_rejects_text_field_with_binary_content():
+    # UTF-8 string that when encoded contains a NUL byte -> should be flagged binary and rejected as text.
+    with pytest.raises(HTTPException) as exc:
+        _prepare_inline_file("bad.txt", SkillFileUpsertRequest(content="ok\x00nope"))
+    assert exc.value.status_code == 422
+
+
+def test_prepare_inline_file_rejects_oversize():
+    from registry.constants import MAX_SKILL_FILE_SIZE
+
+    big = "a" * (MAX_SKILL_FILE_SIZE + 1)
+    with pytest.raises(HTTPException) as exc:
+        _prepare_inline_file("big.txt", SkillFileUpsertRequest(content=big))
+    assert exc.value.status_code == 422
+
+
+def test_validate_files_batch_rejects_duplicates():
+    files = [
+        SkillFileInput(relativePath="a.txt", content="a"),
+        SkillFileInput(relativePath="a.txt", content="b"),
+    ]
+    with pytest.raises(HTTPException) as exc:
+        _validate_files_batch(files)
+    assert exc.value.status_code == 422
+
+
+def test_validate_files_batch_rejects_over_count():
+    from registry.constants import MAX_SKILL_FILE_COUNT
+
+    files = [SkillFileInput(relativePath=f"f{i}.txt", content="x") for i in range(MAX_SKILL_FILE_COUNT + 1)]
+    with pytest.raises(HTTPException) as exc:
+        _validate_files_batch(files)
+    assert exc.value.status_code == 422
+
+
+def test_validate_files_batch_rejects_over_total_size():
+    from registry.constants import MAX_SKILL_FILE_SIZE, MAX_SKILL_FILES_TOTAL_SIZE
+
+    per_file = "a" * MAX_SKILL_FILE_SIZE
+    count = MAX_SKILL_FILES_TOTAL_SIZE // MAX_SKILL_FILE_SIZE + 1
+    files = [SkillFileInput(relativePath=f"f{i}.txt", content=per_file) for i in range(count)]
+    with pytest.raises(HTTPException) as exc:
+        _validate_files_batch(files)
+    assert exc.value.status_code == 422
+
+
+def test_validate_files_batch_accepts_valid_files():
+    prepared = _validate_files_batch(
+        [
+            SkillFileInput(relativePath="scripts/run.sh", content="#!/bin/sh\n", isExecutable=True),
+            SkillFileInput(relativePath="refs/guide.md", content="# Guide\n"),
+        ]
+    )
+    assert [p.relative_path for p in prepared] == ["scripts/run.sh", "refs/guide.md"]
+    assert prepared[0].is_executable is True
+
+
+# -----------------------------
+# create_skill with files
+# -----------------------------
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_create_skill_inserts_files_and_sets_file_count(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill()
+    skill.insert = AsyncMock()
+    mock_skill_cls.return_value = skill
+    mock_skill_cls.find_one = AsyncMock(return_value=None)
+    session = _configure_transaction(mock_mongodb)
+
+    inserted_files: list[MagicMock] = []
+
+    def _new_file(**kwargs):
+        instance = MagicMock()
+        instance.relativePath = kwargs["relativePath"]
+        instance.mimeType = kwargs["mimeType"]
+        instance.bytes = kwargs["bytes"]
+        instance.isBinary = kwargs["isBinary"]
+        instance.isExecutable = kwargs["isExecutable"]
+        instance.source = kwargs["source"]
+        inserted_files.append(instance)
+        return instance
+
+    mock_skillfile_cls.side_effect = _new_file
+    mock_skillfile_cls.insert_many = AsyncMock(
+        return_value=SimpleNamespace(inserted_ids=[PydanticObjectId(), PydanticObjectId()])
+    )
+
+    data = SkillCreateRequest(
+        name="test-skill",
+        description="description",
+        files=[
+            SkillFileInput(relativePath="scripts/run.sh", content="#!/bin/sh\n", isExecutable=True),
+            SkillFileInput(relativePath="refs/guide.md", content="# Guide\n"),
+        ],
+    )
+
+    result_skill, result_files, _permissions = await SkillService(acl_service, user_service).create_skill(
+        data, _USER_ID, "Token User"
+    )
+
+    assert result_skill is skill
+    assert len(result_files) == 2
+    assert [f.relativePath for f in result_files] == ["scripts/run.sh", "refs/guide.md"]
+    assert result_files[0].isExecutable is True
+    assert result_files[0].source == "registry-inline"
+    assert mock_skill_cls.call_args.kwargs["fileCount"] == 2
+    mock_skillfile_cls.insert_many.assert_awaited_once_with(inserted_files, session=session)
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.Skill")
+async def test_create_skill_rejects_invalid_file_before_db(mock_skill_cls, acl_service, user_service):
+    mock_skill_cls.find_one = AsyncMock(return_value=None)
+    data = SkillCreateRequest(
+        name="test-skill",
+        description="description",
+        files=[SkillFileInput(relativePath="../escape.sh", content="x")],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).create_skill(data, _USER_ID, "Token User")
+
+    assert exc.value.status_code == 422
+    mock_skill_cls.assert_not_called()
+
+
+# -----------------------------
+# upsert_skill_file / delete_skill_file
+# -----------------------------
+
+
+def _find_query(files, session=None):
+    class _Q:
+        def __init__(self, files):
+            self._files = files
+
+        async def to_list(self):
+            return self._files
+
+        async def count(self):
+            return len(self._files)
+
+    return _Q(files)
+
+
+def _agg_query(result):
+    """Mock for `SkillFile.aggregate(pipeline, session=...)`, whose result is awaited via `.to_list()`."""
+    query = MagicMock()
+    query.to_list = AsyncMock(return_value=result)
+    return query
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_creates_new_file(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 0
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    session = _configure_transaction(mock_mongodb)
+
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+    mock_skillfile_cls.aggregate = MagicMock(return_value=_agg_query([]))
+
+    new_files: list[MagicMock] = []
+
+    def _new_file(**kwargs):
+        instance = MagicMock()
+        instance.id = PydanticObjectId()
+        instance.relativePath = kwargs["relativePath"]
+        instance.mimeType = kwargs["mimeType"]
+        instance.bytes = kwargs["bytes"]
+        instance.isBinary = kwargs["isBinary"]
+        instance.isExecutable = kwargs["isExecutable"]
+        instance.source = kwargs["source"]
+        instance.insert = AsyncMock()
+        new_files.append(instance)
+        return instance
+
+    mock_skillfile_cls.side_effect = _new_file
+
+    metadata, created = await SkillService(acl_service, user_service).upsert_skill_file(
+        skill.id,
+        "scripts/run.sh",
+        SkillFileUpsertRequest(content="#!/bin/sh\n", isExecutable=True),
+        _USER_ID,
+    )
+
+    assert created is True
+    assert metadata.relativePath == "scripts/run.sh"
+    assert metadata.isExecutable is True
+    assert skill.fileCount == 1
+    assert skill.version == 2
+    skill.save.assert_awaited_once_with(session=session)
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_replaces_existing(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 1
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    existing = MagicMock()
+    existing.id = PydanticObjectId()
+    existing.relativePath = "scripts/run.sh"
+    existing.source = "registry-inline"
+    existing.bytes = 5
+    existing.save = AsyncMock()
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+    mock_skillfile_cls.aggregate = MagicMock(return_value=_agg_query([{"count": 1, "otherTotal": 0}]))
+
+    metadata, created = await SkillService(acl_service, user_service).upsert_skill_file(
+        skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="#!/bin/sh\nupdated\n"), _USER_ID
+    )
+
+    assert created is False
+    assert metadata.relativePath == "scripts/run.sh"
+    assert existing.body == b"#!/bin/sh\nupdated\n"
+    assert existing.isBinary is False
+    assert skill.fileCount == 1
+    existing.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_rejects_chat_skill(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=False)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="x"), _USER_ID
+        )
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_rejects_non_inline_target(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    chat_file = MagicMock()
+    chat_file.relativePath = "scripts/run.sh"
+    chat_file.source = "chat"
+    chat_file.bytes = 5
+    mock_skillfile_cls.find_one = AsyncMock(return_value=chat_file)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="x"), _USER_ID
+        )
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_rejects_count_limit_for_new_file(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from registry.constants import MAX_SKILL_FILE_COUNT
+
+    skill = _make_skill(created_by_registry=True)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+    mock_skillfile_cls.aggregate = MagicMock(
+        return_value=_agg_query([{"count": MAX_SKILL_FILE_COUNT, "otherTotal": 0}])
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/new.sh", SkillFileUpsertRequest(content="x"), _USER_ID
+        )
+    assert exc.value.status_code == 422
+    assert str(MAX_SKILL_FILE_COUNT) in exc.value.detail
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_rejects_total_size_limit(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from registry.constants import MAX_SKILL_FILES_TOTAL_SIZE
+
+    skill = _make_skill(created_by_registry=True)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    existing = MagicMock()
+    existing.relativePath = "scripts/run.sh"
+    existing.source = "registry-inline"
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+    # otherTotal already sits 1 byte under the cap; any non-empty replacement content pushes it over.
+    mock_skillfile_cls.aggregate = MagicMock(
+        return_value=_agg_query([{"count": 1, "otherTotal": MAX_SKILL_FILES_TOTAL_SIZE - 1}])
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="too big"), _USER_ID
+        )
+    assert exc.value.status_code == 422
+    assert str(MAX_SKILL_FILES_TOTAL_SIZE) in exc.value.detail
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_removes_file_and_updates_skill(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 1
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    session = _configure_transaction(mock_mongodb)
+
+    existing = MagicMock()
+    existing.relativePath = "scripts/run.sh"
+    existing.source = "registry-inline"
+    existing.delete = AsyncMock()
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+    remaining: list[MagicMock] = []
+    mock_skillfile_cls.find = MagicMock(side_effect=lambda *a, **kw: _find_query(remaining))
+
+    await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    existing.delete.assert_awaited_once_with(session=session)
+    assert skill.fileCount == 0
+    assert skill.version == 2
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_missing_returns_404(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_rejects_chat_skill(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=False)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_rejects_non_inline_target(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    chat_file = MagicMock()
+    chat_file.relativePath = "scripts/run.sh"
+    chat_file.source = "chat"
+    mock_skillfile_cls.find_one = AsyncMock(return_value=chat_file)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_write_conflict_returns_409(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from pymongo.errors import OperationFailure
+
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 0
+    skill.save = AsyncMock(side_effect=OperationFailure("WriteConflict", code=112))
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+    mock_skillfile_cls.aggregate = MagicMock(return_value=_agg_query([]))
+
+    def _new_file(**kwargs):
+        instance = MagicMock()
+        instance.id = PydanticObjectId()
+        instance.relativePath = kwargs["relativePath"]
+        instance.bytes = kwargs["bytes"]
+        instance.insert = AsyncMock()
+        return instance
+
+    mock_skillfile_cls.side_effect = _new_file
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="x"), _USER_ID
+        )
+
+    assert exc.value.status_code == 409
+    assert "concurrent" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_missing_skill_returns_404(mock_skill_cls, mock_mongodb, acl_service, user_service):
+    # Skill fetched INSIDE the transaction; concurrent delete before we enter surfaces as 404, not orphan.
+    mock_skill_cls.find_one = AsyncMock(return_value=None)
+    _configure_transaction(mock_mongodb)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            PydanticObjectId(), "scripts/run.sh", SkillFileUpsertRequest(content="x"), _USER_ID
+        )
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_missing_skill_returns_404(mock_skill_cls, mock_mongodb, acl_service, user_service):
+    # Skill fetched INSIDE the transaction; concurrent delete before we enter surfaces as 404, not orphan.
+    mock_skill_cls.find_one = AsyncMock(return_value=None)
+    _configure_transaction(mock_mongodb)
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).delete_skill_file(PydanticObjectId(), "scripts/run.sh", _USER_ID)
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_write_conflict_returns_409(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from pymongo.errors import OperationFailure
+
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 1
+    skill.save = AsyncMock(side_effect=OperationFailure("WriteConflict", code=112))
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    existing = MagicMock()
+    existing.relativePath = "scripts/run.sh"
+    existing.source = "registry-inline"
+    existing.delete = AsyncMock()
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+    mock_skillfile_cls.find = MagicMock(side_effect=lambda *a, **kw: _find_query([]))
+
+    with pytest.raises(HTTPException) as exc:
+        await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    assert exc.value.status_code == 409
+    assert "concurrent" in exc.value.detail.lower()
+
+
+# -----------------------------
+# Transaction rollback: a mid-transaction failure must not leave partial state
+# (asserted at the code level as "later steps in the same transaction body never ran";
+# actually aborting the write is MongoDB's job once the exception leaves the `async with`
+# transaction block, which these mocked-session unit tests cannot exercise directly).
+# -----------------------------
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_create_skill_file_insert_failure_skips_acl_grant(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    from pymongo.errors import OperationFailure
+
+    skill = _make_skill()
+    skill.insert = AsyncMock()
+    mock_skill_cls.return_value = skill
+    mock_skill_cls.find_one = AsyncMock(return_value=None)
+    _configure_transaction(mock_mongodb)
+    mock_skillfile_cls.insert_many = AsyncMock(side_effect=OperationFailure("simulated failure"))
+
+    data = SkillCreateRequest(
+        name="test-skill",
+        description="description",
+        files=[SkillFileInput(relativePath="refs/guide.md", content="# Guide\n")],
+    )
+
+    with pytest.raises(OperationFailure):
+        await SkillService(acl_service, user_service).create_skill(data, _USER_ID, "Token User")
+
+    acl_service.grant_permission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_upsert_skill_file_insert_failure_skips_skill_update(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 0
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+    mock_skillfile_cls.find_one = AsyncMock(return_value=None)
+    mock_skillfile_cls.aggregate = MagicMock(return_value=_agg_query([]))
+
+    def _new_file(**kwargs):
+        instance = MagicMock()
+        instance.insert = AsyncMock(side_effect=RuntimeError("disk full"))
+        return instance
+
+    mock_skillfile_cls.side_effect = _new_file
+
+    with pytest.raises(RuntimeError):
+        await SkillService(acl_service, user_service).upsert_skill_file(
+            skill.id, "scripts/run.sh", SkillFileUpsertRequest(content="x"), _USER_ID
+        )
+
+    skill.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+@patch("registry.services.skill_service.Skill")
+async def test_delete_skill_file_delete_failure_skips_skill_update(
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+):
+    skill = _make_skill(created_by_registry=True)
+    skill.fileCount = 1
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    _configure_transaction(mock_mongodb)
+
+    existing = MagicMock()
+    existing.relativePath = "scripts/run.sh"
+    existing.source = "registry-inline"
+    existing.delete = AsyncMock(side_effect=RuntimeError("disk full"))
+    mock_skillfile_cls.find_one = AsyncMock(return_value=existing)
+
+    with pytest.raises(RuntimeError):
+        await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
+
+    skill.save.assert_not_awaited()

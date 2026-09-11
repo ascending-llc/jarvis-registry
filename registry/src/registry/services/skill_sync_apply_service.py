@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import mimetypes
 from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
@@ -26,6 +25,7 @@ from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSou
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
+from ..utils.skill_files import guess_mime_type, is_text_content
 from .access_control_service import ACLService
 from .skill_sync_discovery_service import DiscoveredSkill, DiscoveryResult
 
@@ -425,8 +425,8 @@ class SkillSyncApplyService:
             relative_path = auxiliary_file.relative_path
             discovered_paths.add(relative_path)
             content = auxiliary_file.absolute_path.read_bytes()
-            mime_type = mimetypes.guess_type(relative_path)[0] or "application/octet-stream"
-            is_binary = not _is_text_content(content)
+            mime_type = guess_mime_type(relative_path)
+            is_binary = not is_text_content(content)
             text_content = content.decode("utf-8", errors="replace") if not is_binary else None
             if relative_path in existing_by_path:
                 existing_file = existing_by_path[relative_path]
@@ -435,6 +435,7 @@ class SkillSyncApplyService:
                 existing_file.mimeType = mime_type
                 existing_file.bytes = auxiliary_file.size
                 existing_file.isBinary = is_binary
+                existing_file.isExecutable = auxiliary_file.is_executable
                 existing_file.updatedAt = now
                 await existing_file.save(session=session)
                 updated += 1
@@ -448,6 +449,7 @@ class SkillSyncApplyService:
                 content=text_content,
                 body=content if is_binary else None,
                 isBinary=is_binary,
+                isExecutable=auxiliary_file.is_executable,
                 createdAt=now,
                 updatedAt=now,
             ).insert(session=session)
@@ -457,13 +459,3 @@ class SkillSyncApplyService:
                 await existing_file.delete(session=session)
                 deleted += 1
         return updated, created, deleted
-
-
-def _is_text_content(content: bytes) -> bool:
-    if b"\x00" in content[:8192]:
-        return False
-    try:
-        content[:8192].decode("utf-8")
-        return True
-    except UnicodeDecodeError:
-        return False

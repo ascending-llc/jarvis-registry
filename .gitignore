@@ -361,3 +361,4 @@ image-manifest.json
 
 # Editor specific config files
 pyrightconfig.json
+docker-compose.local.yml

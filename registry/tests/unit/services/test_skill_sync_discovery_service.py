@@ -51,6 +51,7 @@ def _skill_folder(
                     relative_path=f"{path}/{name}",
                     absolute_path=file_path,
                     size=len(content),
+                    is_executable=False,
                 )
             )
 
