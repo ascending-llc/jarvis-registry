@@ -87,7 +87,7 @@ backend)
     # Do NOT set root_path= on the FastAPI constructor - that overwrites scope["root_path"]
     # on every request and breaks sub-app mount matching.
     echo "Starting MCP Registry on port 7860..."
-    exec uvicorn registry.main:app --host 0.0.0.0 --port 7860 --root-path "${NGINX_BASE_PATH:-}"
+    exec uvicorn registry.dispatcher:app --host 0.0.0.0 --port 7860 --root-path "${NGINX_BASE_PATH:-}"
     ;;
 *)
     echo "Unknown MODE: $MODE"
