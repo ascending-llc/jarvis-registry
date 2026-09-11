@@ -44,6 +44,12 @@ class Settings(JarvisBaseSettings):
     # ==================== API ====================
     api_version: str = "v1"
 
+    # ==================== MCP Registry ====================
+    enable_mcp_registry: bool = False
+    mcp_registry_namespace: str = "com.ascendingdc.jarvis"
+    mcp_registry_default_limit: int = 30
+    mcp_registry_max_limit: int = 100
+
     # ==================== Local Embeddings ====================
     local_embeddings_model_name: str = "all-MiniLM-L6-v2"
     local_embeddings_model_dimensions: int = 384
