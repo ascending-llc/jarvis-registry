@@ -336,13 +336,36 @@ def test_get_state_metadata_notify_flag_matches_url_elicitation_support(
 ):
     """notify_elicitation_complete must mirror _support_url_elicitation for every branding: a session
     is only ever registered in SessionStore (making a later notification possible) when the client
-    supports URL mode elicitation, regardless of which brand it's recognized as."""
+    supports URL mode elicitation, regardless of which brand it's recognized as. The "claude-ai*" family
+    is always treated as supporting it (see utils._is_claude_ai_client), regardless of what it declares."""
     client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
 
     result = utils._get_state_metadata(client_params)
 
+    expected_notify = supports_url_elicitation or client_name.strip().lower().startswith("claude-ai")
     assert result["client_branding"] == expected_branding
-    assert result["notify_elicitation_complete"] is supports_url_elicitation
+    assert result["notify_elicitation_complete"] is expected_notify
+
+
+@pytest.mark.parametrize("supports_url_elicitation", [True, False])
+def test_support_url_elicitation_claude_ai_family_always_supported(supports_url_elicitation):
+    """Claude Code CLI supports URL-mode elicitation but has an upstream bug where it fails to declare
+    the capability in `initialize`. Any "claude-ai*" client is trusted regardless of the declared
+    capability, since the only real members of that family (Claude Desktop, Claude Code CLI) both
+    support it in practice."""
+    client_params = _make_client_params("claude-ai/1.0", supports_url_elicitation=supports_url_elicitation)
+
+    assert utils._support_url_elicitation(client_params) is True
+
+
+def test_support_url_elicitation_non_claude_client_follows_declared_capability():
+    client_params = _make_client_params("some-other-client", supports_url_elicitation=False)
+
+    assert utils._support_url_elicitation(client_params) is False
+
+
+def test_support_url_elicitation_returns_false_for_missing_client_params():
+    assert utils._support_url_elicitation(None) is False
 
 
 @pytest.mark.asyncio
