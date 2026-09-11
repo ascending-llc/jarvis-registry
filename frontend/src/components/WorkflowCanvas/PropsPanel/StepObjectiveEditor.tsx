@@ -1,21 +1,25 @@
 import { Dialog, Transition } from '@headlessui/react';
 import { ArrowsPointingOutIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { Fragment, useId, useState } from 'react';
+import { Fragment, useId, useRef, useState } from 'react';
+import IconButton from '@/components/IconButton';
 
 interface StepObjectiveEditorProps {
   value: string;
   disabled: boolean;
   onChange: (value: string) => void;
+  onSave: (value: string) => Promise<boolean>;
 }
 
 const STEP_OBJECTIVE_PLACEHOLDER =
   "What should this step accomplish? e.g. 'Search for the customer's open support tickets from the last 30 days.'";
 
-export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value, disabled, onChange }) => {
+export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value, disabled, onChange, onSave }) => {
   const fieldId = useId();
+  const editorRef = useRef<HTMLTextAreaElement>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [draft, setDraft] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   const handleOpen = () => {
     setDraft(value);
@@ -23,12 +27,26 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
   };
 
   const handleClose = () => {
+    if (isSaving) return;
     setIsOpen(false);
   };
 
-  const handleSave = () => {
-    onChange(draft);
-    setIsOpen(false);
+  const handleSave = async () => {
+    if (isSaving) return;
+    setIsSaving(true);
+    try {
+      const saved = await onSave(draft);
+      if (saved) setIsOpen(false);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDialogKeyDown = (event: React.KeyboardEvent) => {
+    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!disabled && !isSaving) void handleSave();
   };
 
   return (
@@ -39,15 +57,15 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
         </label>
         <div className='flex items-center gap-1.5'>
           <span className='font-mono text-[10px] text-[var(--jarvis-subtle)]'>Markdown</span>
-          <button
-            type='button'
+          <IconButton
             onClick={handleOpen}
-            aria-label='Open Step objective editor'
-            title='Open editor'
-            className='inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--jarvis-muted)] transition-colors hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-primary-text)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)]'
+            ariaLabel='Open Step objective editor'
+            tooltip='Open editor'
+            size='card'
+            className='text-[var(--jarvis-muted)] hover:text-[var(--jarvis-primary-text)]'
           >
             <ArrowsPointingOutIcon className='h-4 w-4' />
-          </button>
+          </IconButton>
         </div>
       </div>
 
@@ -62,7 +80,13 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
       />
 
       <Transition appear show={isOpen} as={Fragment}>
-        <Dialog as='div' className='relative z-[120]' onClose={handleClose}>
+        <Dialog
+          as='div'
+          className='relative z-[120]'
+          initialFocus={disabled ? undefined : editorRef}
+          onClose={handleClose}
+          onKeyDown={handleDialogKeyDown}
+        >
           <Transition.Child
             as={Fragment}
             enter='ease-out duration-200'
@@ -102,23 +126,24 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
                         <p className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>Markdown source</p>
                       </div>
                     </div>
-                    <button
-                      type='button'
+                    <IconButton
                       onClick={handleClose}
-                      aria-label='Close Step objective editor'
-                      title='Close'
-                      className='inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--jarvis-muted)] transition-colors hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-text)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)]'
+                      disabled={isSaving}
+                      ariaLabel='Close Step objective editor'
+                      tooltip='Close'
+                      size='card'
+                      className='text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)]'
                     >
                       <XMarkIcon className='h-4 w-4' />
-                    </button>
+                    </IconButton>
                   </div>
 
                   <div className='p-5'>
                     <textarea
+                      ref={editorRef}
                       value={draft}
                       onChange={event => setDraft(event.target.value)}
-                      disabled={disabled}
-                      autoFocus={!disabled}
+                      disabled={disabled || isSaving}
                       spellCheck={false}
                       aria-label='Step objective Markdown source'
                       className='h-[360px] min-h-[240px] max-h-[60vh] w-full resize-y overflow-auto rounded-lg border border-[var(--jarvis-border)] bg-[var(--jarvis-card-muted)] px-4 py-3 font-mono text-sm leading-relaxed text-[var(--jarvis-text-strong)] outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] disabled:cursor-not-allowed disabled:opacity-60'
@@ -126,12 +151,12 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
                     />
                   </div>
 
-                  <div className='flex justify-end gap-2 border-t border-[var(--jarvis-border-soft)] px-5 py-4'>
+                  <div className='flex items-center justify-end gap-2 border-t border-[var(--jarvis-border-soft)] bg-[var(--jarvis-card)] px-5 py-3.5'>
                     {disabled ? (
                       <button
                         type='button'
                         onClick={handleClose}
-                        className='rounded-md border border-[var(--jarvis-border)] bg-[var(--jarvis-card-muted)] px-3 py-1.5 text-xs font-medium text-[var(--jarvis-text)] transition-colors hover:bg-[var(--jarvis-surface)]'
+                        className='rounded-md border border-[var(--jarvis-border)] bg-transparent px-4 py-1.5 text-[13px] text-[var(--jarvis-subtle)] transition-colors hover:border-[var(--jarvis-border-strong)] hover:text-[var(--jarvis-text)]'
                       >
                         Close
                       </button>
@@ -140,16 +165,21 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
                         <button
                           type='button'
                           onClick={handleClose}
-                          className='rounded-md border border-[var(--jarvis-border)] bg-[var(--jarvis-card-muted)] px-3 py-1.5 text-xs font-medium text-[var(--jarvis-text)] transition-colors hover:bg-[var(--jarvis-surface)]'
+                          disabled={isSaving}
+                          className='rounded-md border border-[var(--jarvis-border)] bg-transparent px-4 py-1.5 text-[13px] text-[var(--jarvis-subtle)] transition-colors hover:border-[var(--jarvis-border-strong)] hover:text-[var(--jarvis-text)] disabled:cursor-not-allowed disabled:opacity-50'
                         >
                           Cancel
                         </button>
                         <button
                           type='button'
-                          onClick={handleSave}
-                          className='rounded-md bg-[var(--jarvis-primary)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)]'
+                          onClick={() => void handleSave()}
+                          disabled={isSaving}
+                          className='flex items-center gap-1.5 rounded-md border border-transparent bg-[var(--jarvis-primary)] px-4 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
                         >
-                          Save
+                          {isSaving && (
+                            <span className='h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-b-white' />
+                          )}
+                          {isSaving ? 'Saving...' : 'Save'}
                         </button>
                       </>
                     )}

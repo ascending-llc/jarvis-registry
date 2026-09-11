@@ -40,7 +40,8 @@ const PropertiesEmptyState: React.FC<{ message: string }> = ({ message }) => (
 );
 
 export const PropertiesContent: React.FC<PropertiesContentProps> = ({ panelMode, isNewWorkflow }) => {
-  const { workflow, selectedNode, isReadOnly, onNodeDataChange, onDeleteNode } = useWorkflowPanel();
+  const { workflow, selectedNode, isReadOnly, onNodeDataChange, onSaveStepObjective, onDeleteNode } =
+    useWorkflowPanel();
 
   if (panelMode === 'workflow') {
     if (workflow) {
@@ -94,6 +95,7 @@ export const PropertiesContent: React.FC<PropertiesContentProps> = ({ panelMode,
             value={nodeData?.stepObjective ?? ''}
             disabled={isReadOnly}
             onChange={stepObjective => onNodeDataChange(selectedNode.id, { stepObjective })}
+            onSave={stepObjective => onSaveStepObjective(selectedNode.id, stepObjective)}
           />
           <UpstreamReferencesSection node={selectedNode} />
         </>

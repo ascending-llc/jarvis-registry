@@ -62,6 +62,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const isEditMode = !!id;
   const canControlWorkflow = user?.scopes?.includes('workflows-control') === true;
   const canvasRef = useRef<WorkflowCanvasRef>(null);
+  const savingRef = useRef(false);
   const triggeringRef = useRef(false);
   const detailRequestGenerationRef = useRef(0);
 
@@ -204,7 +205,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     edges: Edge[],
     viewport: { x: number; y: number; zoom: number },
   ): Promise<boolean> => {
-    if (isReadOnly) return false;
+    if (isReadOnly || savingRef.current || mutatingAction !== 'idle') return false;
     if (existingDetailUnavailable) {
       showToast(detailLoadError ?? 'Workflow details are not ready', 'error');
       return false;
@@ -237,6 +238,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     // validateApiNodes guarantees no unresolved gate placeholders remain past this point.
     const validatedNodes = apiNodes as ApiWorkflowNode[];
 
+    savingRef.current = true;
     setMutatingAction('saving');
 
     try {
@@ -277,6 +279,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       showToast(msg || 'Failed to save workflow', 'error');
       return false;
     } finally {
+      savingRef.current = false;
       setMutatingAction('idle');
     }
   };
