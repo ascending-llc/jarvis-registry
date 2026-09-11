@@ -57,24 +57,19 @@ def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContex
     return user_context
 
 
-def _is_claude_ai_client(client_params: InitializeRequestParams) -> bool:
-    """Return whether the client identifies itself as part of the Claude Desktop / Claude Code CLI family."""
-    return client_params.clientInfo.name.strip().lower().startswith("claude-ai")
-
-
 def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
     """Return whether an MCP client supports URL-mode elicitation.
 
-    Claude Code CLI supports URL-mode elicitation but has a long-standing upstream bug where it
-    fails to declare the `elicitation.url` capability in its `initialize` request (reported, auto-closed
-    for inactivity, not scheduled to be fixed). Every "claude-ai*" client is either Claude Desktop
-    (which declares this capability correctly) or Claude Code CLI (which supports it regardless of the
-    declaration bug), so we treat the whole family as supporting it unconditionally.
+    Claude Code CLI (clientInfo.name "claude-code") supports URL-mode elicitation but has a
+    long-standing upstream bug where it fails to declare the `elicitation.url` capability in its
+    `initialize` request (reported, auto-closed for inactivity, not scheduled to be fixed), so it's
+    trusted unconditionally. Claude Desktop ("claude-ai") declares this capability correctly and
+    needs no such override.
     """
     if client_params is None:
         return False
 
-    if _is_claude_ai_client(client_params):
+    if client_params.clientInfo.name.strip().lower().startswith("claude-code"):
         return True
 
     elicitation = client_params.capabilities.elicitation
@@ -97,7 +92,7 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     name = client_params.clientInfo.name.strip().lower()
     if name == "visual studio code":
         branding = ClientBranding.VSCODE
-    elif _is_claude_ai_client(client_params):
+    elif name.startswith("claude-ai"):
         branding = ClientBranding.CLAUDE
     elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
         branding = ClientBranding.CURSOR
