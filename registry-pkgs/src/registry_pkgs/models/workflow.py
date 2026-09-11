@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -243,8 +242,8 @@ class WorkflowNode(BaseModel):
     def _normalize_step_objective(cls, value: str | None) -> str | None:
         if value is None:
             return value
-        collapsed = re.sub(r"\s+", " ", value).strip()
-        return collapsed or None
+        normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+        return normalized or None
 
     @field_validator("a2a_pool")
     @classmethod

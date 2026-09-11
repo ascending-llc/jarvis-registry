@@ -16,7 +16,10 @@ helpers.py reads it back and delegates to ``render_step_prompt`` here.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
+from jinja2 import Template
 
 
 @dataclass(frozen=True)
@@ -38,18 +41,47 @@ class DependencySpec:
     content: str | None = None
 
 
-_GOAL_PREFIX = "**IMPORTANT: The goal of this step is to"
-_PARAMS_HEADER = "Workflow Trigger Parameters (fixed for this run; available to every step):"
-_WORKFLOW_CTX_PREFIX = "This step is part of a larger workflow:"
-_DEPS_HEADER = "Dependencies:"
-_INPUTS_HEADER = "Current Step Inputs:"
-_TRIGGER_LABEL = "Workflow trigger input"
-_INDENT = "  "
+_STEP_PROMPT_TEMPLATE = Template(
+    """# Step Objective
 
+{{ step_objective }}
 
-def _indented_block(value: str) -> str:
-    """Indent every line two spaces so multi-line content nests inside the prompt without code fences."""
-    return "\n".join(f"{_INDENT}{line}" if line else _INDENT for line in value.splitlines())
+{% if trigger_parameters %}# Workflow Trigger Parameters
+
+*Fixed for this run; available to every step.*
+
+```json
+{{ trigger_parameters }}
+```
+
+{% endif %}{% if workflow_description %}# Workflow Context
+
+*This step is part of a larger multi-step workflow.*
+
+{{ workflow_description }}
+
+{% endif %}{% if dependencies %}# Dependencies
+
+{% for dependency in dependencies %}## "{{ dependency.name }}"
+
+{{ dependency.objective }}
+
+{% endfor %}{% if dependencies_with_content %}# Current Step Inputs
+
+{% for dependency in dependencies_with_content %}## "{{ dependency.name }}" — Output
+
+{{ dependency.content }}
+
+{% endfor %}{% endif %}{% elif initial_input %}# Current Step Inputs
+
+## Workflow Trigger Input
+
+{{ initial_input }}
+
+{% endif %}""",
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
 
 
 def render_step_prompt(
@@ -62,25 +94,8 @@ def render_step_prompt(
 ) -> str:
     """Assemble the Markdown prompt handed to an MCP/A2A executor's underlying LLM.
 
-    Prompt structure (all sections separated by blank lines):
-
-        **IMPORTANT: The goal of this step is to {step_objective}.**
-
-        Workflow Trigger Parameters (fixed for this run; available to every step):
-
-          <indented JSON>
-
-        This step is part of a larger workflow: {workflow_description}
-
-        Dependencies:
-        - "{dep.name}": {dep.objective}.
-        [... one line per dependency ...]
-
-        Current Step Inputs:
-        - "{dep.name}" outputs:
-
-          <indented output summary>
-        [... one block per dependency that has produced output ...]
+    Potentially multi-line values are rendered verbatim beneath block-level
+    Markdown headings. Trigger parameters are fenced as JSON.
 
     Rules:
     - ``trigger_parameters`` section omitted when falsy; otherwise rendered on
@@ -91,7 +106,7 @@ def render_step_prompt(
       objective, even when content is not yet available (parallel branches).
     - ``Current Step Inputs`` lists only dependencies whose content is not None.
     - When there are no dependencies AND this is an entry node (``initial_input``
-      is not None), ``Current Step Inputs`` shows the original workflow trigger
+      is truthy), ``Current Step Inputs`` shows the original workflow trigger
       instead of dependency outputs.
     - A mid-graph STEP node with no ``referenced_node_names`` and no available
       ``initial_input`` receives only the goal line (plus ``trigger_parameters``
@@ -112,37 +127,16 @@ def render_step_prompt(
                              trigger fields (e.g. a Slack member ID) without that
                              data having to be relayed through upstream node output.
     """
-    sections: list[str] = []
-
-    # 1. Goal — always first and most prominent
-    sections.append(f"{_GOAL_PREFIX} {step_objective}.**")
-
-    # 2. Trigger parameters — global, run-scoped values available to every step
-    if trigger_parameters:
-        sections.append(f"{_PARAMS_HEADER}\n\n{_indented_block(trigger_parameters)}")
-
-    # 3. Workflow context — orientation without being prescriptive
-    if workflow_description:
-        sections.append(f"{_WORKFLOW_CTX_PREFIX} {workflow_description}")
-
-    if dependencies:
-        # 4a. List every declared dependency and its objective (even if no output yet)
-        dep_lines = "\n".join(f'- "{d.name}": {d.objective}.' for d in dependencies)
-        sections.append(f"{_DEPS_HEADER}\n{dep_lines}")
-
-        # 4b. Current Step Inputs — only dependencies that have produced output
-        with_content = [d for d in dependencies if d.content is not None]
-        if with_content:
-            input_blocks = "\n\n".join(
-                f'- "{d.name}" outputs:\n\n{_indented_block(d.content or "")}' for d in with_content
-            )
-            sections.append(f"{_INPUTS_HEADER}\n{input_blocks}")
-
-    elif initial_input:
-        # 4c. Entry node with no dependencies — show original trigger
-        sections.append(f"{_INPUTS_HEADER}\n- {_TRIGGER_LABEL}:\n\n{_indented_block(initial_input)}")
-
-    return "\n\n".join(sections)
+    dependencies_with_content = [dependency for dependency in dependencies if dependency.content is not None]
+    rendered = _STEP_PROMPT_TEMPLATE.render(
+        step_objective=step_objective,
+        workflow_description=workflow_description,
+        dependencies=dependencies,
+        dependencies_with_content=dependencies_with_content,
+        initial_input=initial_input,
+        trigger_parameters=trigger_parameters,
+    )
+    return re.sub(r"\n{3,}", "\n\n", rendered).strip()
 
 
 # ---------------------------------------------------------------------------

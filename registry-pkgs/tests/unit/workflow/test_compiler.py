@@ -1120,9 +1120,9 @@ class TestIntentionData:
 
         assert len(received_prompts) == 1
         prompt = received_prompts[0]
-        assert "**IMPORTANT: The goal of this step is to summarise the weather.**" in prompt
-        assert 'Dependencies:\n- "Weather Agent": fetch weather.' in prompt
-        assert 'Current Step Inputs:\n- "Weather Agent" outputs:' in prompt
+        assert "# Step Objective\n\nsummarise the weather" in prompt
+        assert '# Dependencies\n\n## "Weather Agent"\n\nfetch weather' in prompt
+        assert '# Current Step Inputs\n\n## "Weather Agent" — Output' in prompt
         assert "32°C, windy" in prompt
 
     @pytest.mark.asyncio
@@ -1144,8 +1144,10 @@ class TestIntentionData:
         await workflow.steps[2].executor(StepInput(input="task", previous_step_outputs=previous), {})
 
         prompt = received_prompts[0]
-        assert prompt.index('"Node B": produce B.') < prompt.index('"Node A": produce A.')
-        assert prompt.count('"Node B": produce B.') == 1
+        node_b_dependency = '## "Node B"\n\nproduce B'
+        node_a_dependency = '## "Node A"\n\nproduce A'
+        assert prompt.index(node_b_dependency) < prompt.index(node_a_dependency)
+        assert prompt.count(node_b_dependency) == 1
         assert "output-a" in prompt
         assert "output-b" in prompt
 
@@ -1182,14 +1184,14 @@ class TestIntentionData:
         )
 
         second_prompt = received_prompts[0]
-        assert '"Echo Agent 1": echo input as output.' in second_prompt
+        assert '## "Echo Agent 1"\n\necho input as output' in second_prompt
         assert "one" in second_prompt
 
         third_prompt = received_prompts[1]
-        assert third_prompt.index('"Echo Agent 2": echo input as output.') < third_prompt.index(
-            '"Echo Agent 1": echo input as output.'
-        )
-        assert third_prompt.count('"Echo Agent 1": echo input as output.') == 1
+        echo_two_dependency = '## "Echo Agent 2"\n\necho input as output'
+        echo_one_dependency = '## "Echo Agent 1"\n\necho input as output'
+        assert third_prompt.index(echo_two_dependency) < third_prompt.index(echo_one_dependency)
+        assert third_prompt.count(echo_one_dependency) == 1
         assert "two" in third_prompt
         assert "one" in third_prompt
 
@@ -1213,8 +1215,8 @@ class TestIntentionData:
         )
 
         prompt = received_prompts[0]
-        assert prompt.count('"First": produce first.') == 1
-        assert prompt.count('"First" outputs:') == 1
+        assert prompt.count('## "First"\n\nproduce first') == 1
+        assert prompt.count('## "First" — Output') == 1
 
     @pytest.mark.asyncio
     async def test_implicit_dependency_does_not_skip_over_container_nodes(self):
@@ -1253,7 +1255,7 @@ class TestIntentionData:
         )
 
         prompt = received_prompts[0]
-        assert "Dependencies:" not in prompt
+        assert "# Dependencies" not in prompt
         assert "first-output" not in prompt
         assert "child-output" not in prompt
         assert "sibling-output" not in prompt
@@ -1277,8 +1279,8 @@ class TestIntentionData:
         await workflow.steps[1].executor(StepInput(input="my task", previous_step_outputs={}), {})
 
         prompt = received_prompts[0]
-        assert 'Dependencies:\n- "Ghost Node": produce ghost output.' in prompt
-        assert "Current Step Inputs:" not in prompt
+        assert '# Dependencies\n\n## "Ghost Node"\n\nproduce ghost output' in prompt
+        assert "# Current Step Inputs" not in prompt
 
     @pytest.mark.asyncio
     async def test_long_output_is_truncated_in_dependency_prompt(self, monkeypatch):
@@ -1327,10 +1329,10 @@ class TestIntentionData:
         previous = self._make_previous_outputs(**{"Some Node": "irrelevant"})
         await workflow.steps[0].executor(StepInput(input="original task", previous_step_outputs=previous), {})
 
-        assert received_prompts[0] == "**IMPORTANT: The goal of this step is to handle initial input.**"
+        assert received_prompts[0] == "# Step Objective\n\nhandle initial input"
 
         await workflow.steps[0].executor(StepInput(input="original task"), {})
-        assert "Workflow trigger input" in received_prompts[1]
+        assert "## Workflow Trigger Input" in received_prompts[1]
         assert "original task" in received_prompts[1]
 
     @pytest.mark.asyncio
@@ -1402,8 +1404,8 @@ class TestIntentionData:
         await workflow.steps[0].executor(StepInput(input="task"), {})
         await workflow.steps[1].executor(StepInput(input="task"), {})
 
-        assert "**IMPORTANT: The goal of this step is to do the first task.**" in prompts[0]
-        assert "**IMPORTANT: The goal of this step is to do the second task.**" in prompts[1]
+        assert "# Step Objective\n\ndo the first task" in prompts[0]
+        assert "# Step Objective\n\ndo the second task" in prompts[1]
 
     @pytest.mark.asyncio
     async def test_workflow_description_is_rendered_into_prompt(self):
@@ -1425,7 +1427,8 @@ class TestIntentionData:
         )
         await workflow.steps[0].executor(StepInput(input="task"), {})
 
-        assert "This step is part of a larger workflow: coordinate a research workflow" in prompts[0]
+        assert "# Workflow Context" in prompts[0]
+        assert "coordinate a research workflow" in prompts[0]
 
     @pytest.mark.asyncio
     async def test_run_initial_input_rendered_as_trigger_parameters_for_entry_node(self):
@@ -1482,7 +1485,7 @@ class TestIntentionData:
         assert '"memberId": "U123"' in prompt
         assert '"displayName": "Kent"' in prompt
         # Still a genuine dependency, not the old entry-node-only trigger-input path.
-        assert 'Dependencies:\n- "github": find the last merged PR.' in prompt
+        assert '# Dependencies\n\n## "github"\n\nfind the last merged PR' in prompt
 
     @pytest.mark.asyncio
     async def test_run_without_initial_input_omits_trigger_parameters(self):
@@ -1549,15 +1552,6 @@ class TestIntentionData:
                 step_objective="not allowed",
                 children=[_step_node("a", "x"), _step_node("b", "y")],
             )
-
-    def test_step_objective_whitespace_is_normalized(self):
-        node = WorkflowNode(
-            name="normalise",
-            node_type=WorkflowNodeType.STEP,
-            executor_key="tool",
-            step_objective="  do\n  the\tthing  ",
-        )
-        assert node.step_objective == "do the thing"
 
     def test_duplicate_node_names_rejected_at_definition_time(self):
         first = _step_node("dup", "tool-a")
@@ -1661,7 +1655,7 @@ class TestIntentionData:
             previous = {"Validator": StepOutput(step_name="Validator", content=falsy_content, success=True)}
             await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
 
-            assert 'Current Step Inputs:\n- "Validator" outputs:' in received_prompts[-1], (
+            assert '# Current Step Inputs\n\n## "Validator" — Output' in received_prompts[-1], (
                 f"falsy content {falsy_content!r} was silently dropped but should have been rendered"
             )
 
@@ -1691,7 +1685,7 @@ class TestIntentionData:
         await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), {})
 
         prompt = received_prompts[0]
-        assert 'Current Step Inputs:\n- "Structured Node" outputs:' in prompt
+        assert '# Current Step Inputs\n\n## "Structured Node" — Output' in prompt
         # Must not be Python repr (single-quoted keys)
         assert "{'temperature'" not in prompt
         # Must be valid JSON embedded in the prompt
@@ -1740,7 +1734,7 @@ class TestIntentionData:
 
         prompt = received_prompts[0]
         assert "Text output:" in prompt
-        assert "  done" in prompt
+        assert "\ndone\n" in prompt
         assert "Images:" in prompt
         assert "- image-1, mime_type=image/png" in prompt
         assert "Videos:" in prompt
