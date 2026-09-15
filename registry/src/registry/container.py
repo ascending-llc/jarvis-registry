@@ -50,6 +50,8 @@ from .services.group_directory_client import (
     KeycloakGroupDirectoryClient,
 )
 from .services.group_service import GroupService
+from .services.model_gateway_selection_service import ModelGatewaySelectionService
+from .services.model_source_crud_service import ModelSourceCrudService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
@@ -307,6 +309,14 @@ class RegistryContainer:
             jwt_config=self.settings.jwt_signing_config,
             azure_client_cache=self.azure_foundry_client_cache,
         )
+
+    @cached_property
+    def model_gateway_selection_service(self) -> ModelGatewaySelectionService:
+        return ModelGatewaySelectionService()
+
+    @cached_property
+    def model_source_crud_service(self) -> ModelSourceCrudService:
+        return ModelSourceCrudService(model_gateway_selection_service=self.model_gateway_selection_service)
 
     @cached_property
     def security_scanner_service(self) -> SecurityScannerService:

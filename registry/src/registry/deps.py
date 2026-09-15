@@ -21,6 +21,8 @@ from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
 from .services.group_service import GroupService
+from .services.model_gateway_selection_service import ModelGatewaySelectionService
+from .services.model_source_crud_service import ModelSourceCrudService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
@@ -121,6 +123,18 @@ def get_skill_sync_source_crud_service(
     container: RegistryContainer = Depends(get_container),
 ) -> SkillSyncSourceCrudService:
     return container.skill_sync_source_crud_service
+
+
+def get_model_source_crud_service(
+    container: RegistryContainer = Depends(get_container),
+) -> ModelSourceCrudService:
+    return container.model_source_crud_service
+
+
+def get_model_gateway_selection_service(
+    container: RegistryContainer = Depends(get_container),
+) -> ModelGatewaySelectionService:
+    return container.model_gateway_selection_service
 
 
 def get_skill_sync_service(container: RegistryContainer = Depends(get_container)) -> SkillSyncService:
