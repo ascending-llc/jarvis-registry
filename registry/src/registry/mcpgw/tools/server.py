@@ -40,6 +40,7 @@ from registry_pkgs.models import ResourceType
 from registry_pkgs.telemetry.trace_propagation import (
     BAGGAGE_KEY_MCP_SERVER_ID,
     BAGGAGE_KEY_MCP_TOOL_NAME,
+    bounded_baggage_value,
     inject_trace_context,
 )
 
@@ -343,15 +344,15 @@ async def execute_tool_impl(
 
             # Prepare base headers for downstream MCP server
             additional_headers = {
-                "X-Tool-Name": tool_name,
+                "X-Tool-Name": bounded_baggage_value(tool_name),
                 "Accept": "application/json, text/event-stream",  # MCP servers require both
             }
 
             # Trace-context baggage reused for every downstream call in this tool execution
-            # (session-init and the tool call itself). tool_name/server_id are validated
-            # function params, not raw client input, so no bounding is needed.
-            ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_TOOL_NAME, tool_name)
-            ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_SERVER_ID, server_id, context=ctx_baggage)
+            ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_TOOL_NAME, bounded_baggage_value(tool_name))
+            ctx_baggage = baggage.set_baggage(
+                BAGGAGE_KEY_MCP_SERVER_ID, bounded_baggage_value(server_id), context=ctx_baggage
+            )
 
             # Check if server requires initialization (default True for safety/compatibility)
             requires_init = server.config.get("requiresInit", True)

@@ -332,6 +332,31 @@ async def test_post_proxy_acl_allowed_continues(monkeypatch):
     assert "Access denied" not in body["result"]["content"][0]["text"]
 
 
+async def test_post_proxy_rejects_non_string_method(monkeypatch):
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": 123, "id": 1}),
+    )
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server()),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert body["result"]["isError"] is True
+    assert "'method'" in body["result"]["content"][0]["text"]
+
+
 async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeypatch):
     monkeypatch.setattr(
         "registry.api.proxy_routes._parse_json_rpc_body",

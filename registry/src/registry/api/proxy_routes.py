@@ -943,6 +943,16 @@ async def dynamic_mcp_post_proxy(
     user_id = auth_context["user_id"]
     client_id = auth_context["client_id"]
     mcp_method = msg_body.get("method")
+    # A JSON-RPC request MUST carry a string "method". Reject a missing/non-string method with a
+    # clean protocol error here rather than letting a truthy non-string (e.g. an int) reach the
+    # downstream bounded_baggage_value() string-slice and blow up as an unhandled 500.
+    if not isinstance(mcp_method, str):
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error_result(
+                request_id, "The JSON-RPC request body is malformed. The 'method' field is missing or not a string."
+            ),
+        )
     tool_name = None
     if mcp_method == "tools/call":
         params = msg_body.get("params")

@@ -47,6 +47,7 @@ from registry_pkgs.telemetry.trace_propagation import (
     BAGGAGE_KEY_ATTEMPT,
     BAGGAGE_KEY_NODE_ID,
     BAGGAGE_KEY_WORKFLOW_RUN_ID,
+    bounded_baggage_value,
 )
 from registry_pkgs.workflows.control.queue import DirectiveQueue
 from registry_pkgs.workflows.hitl import PendingDirectiveProjection
@@ -123,8 +124,8 @@ def with_control(
             )
             # Attach workflow identity as OTEL baggage for the executor() call only (ambient context
             # is the only channel across agno's fixed StepExecutor signature); detach on every exit.
-            ctx = baggage.set_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID, run_id)
-            ctx = baggage.set_baggage(BAGGAGE_KEY_NODE_ID, node_id, context=ctx)
+            ctx = baggage.set_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID, bounded_baggage_value(run_id))
+            ctx = baggage.set_baggage(BAGGAGE_KEY_NODE_ID, bounded_baggage_value(node_id), context=ctx)
             ctx = baggage.set_baggage(
                 BAGGAGE_KEY_ATTEMPT, str(attempt + 1), context=ctx
             )  # 1-based, matches NodeRun.attempt
