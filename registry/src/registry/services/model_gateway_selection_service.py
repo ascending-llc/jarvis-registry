@@ -1,18 +1,22 @@
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
+from pymongo.errors import DuplicateKeyError
 
 from registry_pkgs.models.enums import ModelSourceMode
-from registry_pkgs.models.model_gateway_selection import ModelGatewaySelection
+from registry_pkgs.models.model_gateway_selection import MODEL_GATEWAY_SELECTION_ID, ModelGatewaySelection
 from registry_pkgs.models.model_source import ModelSource
 
 
 class ModelGatewaySelectionService:
     async def get_selection(self) -> ModelGatewaySelection:
-        """Return the singleton selection, creating a default if none exists yet."""
-        selection = await ModelGatewaySelection.find_one({})
+        """Return the singleton selection, creating it under the fixed _id if absent."""
+        selection = await ModelGatewaySelection.find_one({"_id": MODEL_GATEWAY_SELECTION_ID})
         if selection is None:
-            selection = ModelGatewaySelection()
-            await selection.insert()
+            selection = ModelGatewaySelection(id=MODEL_GATEWAY_SELECTION_ID)
+            try:
+                await selection.insert()
+            except DuplicateKeyError:
+                selection = await ModelGatewaySelection.find_one({"_id": MODEL_GATEWAY_SELECTION_ID})
         return selection
 
     async def set_default_workflow_model(

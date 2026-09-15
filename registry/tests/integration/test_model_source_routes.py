@@ -153,6 +153,24 @@ def test_patch_updates(ctx) -> None:
     ctx.crud.update_source.assert_awaited_once()
 
 
+def test_patch_rejects_explicit_null_on_non_nullable_field(ctx) -> None:
+    for field in ("displayName", "tags", "mode", "providerConfig"):
+        response = ctx.client.patch(f"/model-sources/{ctx.source.id}", json={field: None})
+        assert response.status_code == 422, field
+    ctx.crud.update_source.assert_not_called()
+
+
+def test_patch_allows_null_description(ctx) -> None:
+    response = ctx.client.patch(f"/model-sources/{ctx.source.id}", json={"description": None})
+    assert response.status_code == 200
+
+
+def test_patch_mode_change_in_use_returns_409(ctx) -> None:
+    ctx.crud.update_source = AsyncMock(side_effect=ValueError("mode change not allowed while in use"))
+    response = ctx.client.patch(f"/model-sources/{ctx.source.id}", json={"mode": "embedding"})
+    assert response.status_code == 409
+
+
 def test_delete_soft_deletes(ctx) -> None:
     response = ctx.client.delete(f"/model-sources/{ctx.source.id}")
     assert response.status_code == 200
@@ -177,7 +195,7 @@ def test_get_selection(ctx) -> None:
 
 
 def test_scopes_config_grants_are_correct() -> None:
-    """models-read for every group; models-write for admin + power-user (scope-only authz)."""
+    """models-read for every group; models-write only for admin (scope-only authz)."""
     mappings = settings.scopes_config["group_mappings"]
     for group in (
         "jarvis-registry-admin",
@@ -186,7 +204,6 @@ def test_scopes_config_grants_are_correct() -> None:
         "jarvis-registry-read-only",
     ):
         assert "models-read" in mappings[group], group
-    for group in ("jarvis-registry-admin", "jarvis-registry-power-user"):
-        assert "models-write" in mappings[group], group
-    for group in ("jarvis-registry-user", "jarvis-registry-read-only"):
+    assert "models-write" in mappings["jarvis-registry-admin"]
+    for group in ("jarvis-registry-power-user", "jarvis-registry-user", "jarvis-registry-read-only"):
         assert "models-write" not in mappings[group], group

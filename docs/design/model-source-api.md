@@ -17,8 +17,6 @@ singleton records which ModelSource currently backs each of the two global slots
    - 3.4. [Update Model Source](#4-update-model-source)
    - 3.5. [Delete Model Source](#5-delete-model-source)
    - 3.6. [Get Gateway Selection](#6-get-gateway-selection)
-   - 3.7. [Set Default Workflow Model (Planned — AS-1852)](#7-set-default-workflow-model-planned--as-1852)
-   - 3.8. [Set Embedding Model (Planned — AS-1853)](#8-set-embedding-model-planned--as-1853)
 4. [Access Control](#access-control)
 5. [Data Models](#data-models)
 6. [Credentials & Encryption](#credentials--encryption)
@@ -282,17 +280,6 @@ Model sources are **scope-only** — no ACL, no per-record ownership.
 | `PATCH /model-sources/{id}` | `models-write` |
 | `DELETE /model-sources/{id}` | `models-write` |
 | `GET /model-gateway/selection` | `models-read` |
-| `PUT /model-gateway/selection/default-workflow-model` (AS-1852) | `models-write` |
-| `PUT /model-gateway/selection/embedding-model` (AS-1853) | `models-write` |
-
-**Group grants** (`scopes.yml` → `group_mappings`):
-
-| Group | `models-read` | `models-write` |
-|-------|:---:|:---:|
-| `jarvis-registry-admin` | ✅ | ✅ |
-| `jarvis-registry-power-user` | ✅ | ✅ |
-| `jarvis-registry-user` | ✅ | ❌ |
-| `jarvis-registry-read-only` | ✅ | ❌ |
 
 ---
 

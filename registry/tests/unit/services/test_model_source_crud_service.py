@@ -11,6 +11,7 @@ from registry.schemas.model_source_api_schemas import (
 from registry.services import model_source_crud_service as crud_module
 from registry.services.model_source_crud_service import ModelSourceCrudService
 from registry_pkgs.core.crypto_utils import is_encrypted
+from registry_pkgs.models.enums import ModelSourceMode
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
 
 VALID_ID = "0" * 24
@@ -126,6 +127,24 @@ async def test_update_azure_config_with_new_key_reencrypts(service) -> None:
     enc = source.providerConfig.apiKeyEncrypted
     assert enc is not None and enc != "iv:existing-cipher" and enc != "brand-new-key"
     assert is_encrypted(enc)
+
+
+async def test_update_rejects_mode_change_when_in_use(service, monkeypatch) -> None:
+    sid = PydanticObjectId(VALID_ID)
+    source = SimpleNamespace(id=sid, mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())
+    selection = SimpleNamespace(defaultWorkflowModelSourceId=sid, embeddingModelSourceId=None)
+    monkeypatch.setattr(crud_module.ModelGatewaySelection, "find_one", AsyncMock(return_value=selection))
+    with pytest.raises(ValueError, match="in use"):
+        await service.update_source(source, {"mode": ModelSourceMode.EMBEDDING}, updated_by="admin")
+    source.save.assert_not_called()
+
+
+async def test_update_allows_mode_change_when_not_in_use(service, monkeypatch) -> None:
+    source = SimpleNamespace(id=PydanticObjectId(VALID_ID), mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())
+    monkeypatch.setattr(crud_module.ModelGatewaySelection, "find_one", AsyncMock(return_value=None))
+    await service.update_source(source, {"mode": ModelSourceMode.EMBEDDING}, updated_by="admin")
+    assert source.mode == ModelSourceMode.EMBEDDING
+    source.save.assert_awaited_once()
 
 
 async def test_is_in_use_true_when_workflow_default(service, monkeypatch) -> None:

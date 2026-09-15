@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 from beanie import Document, Insert, PydanticObjectId, Replace, Save, before_event
 from pydantic import ConfigDict, Field
 
+MODEL_GATEWAY_SELECTION_ID = PydanticObjectId("000000000000000000000001")
+
 
 class ModelGatewaySelection(Document):
     defaultWorkflowModelSourceId: PydanticObjectId | None = None

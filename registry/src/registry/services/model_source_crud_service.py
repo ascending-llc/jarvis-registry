@@ -7,7 +7,7 @@ from bson.errors import InvalidId
 from registry.utils.crypto_utils import encrypt_value
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
-from registry_pkgs.models.model_gateway_selection import ModelGatewaySelection
+from registry_pkgs.models.model_gateway_selection import MODEL_GATEWAY_SELECTION_ID, ModelGatewaySelection
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
 
 from ..schemas.model_source_api_schemas import (
@@ -116,6 +116,10 @@ class ModelSourceCrudService:
         if "tags" in changes:
             source.tags = changes["tags"]
         if "mode" in changes:
+            # Guard the gateway-selection invariant: a source referenced as a default slot
+            # must keep the mode that slot requires. Symmetric with the delete guard.
+            if changes["mode"] != source.mode and await self.is_in_use(str(source.id)):
+                raise ValueError("Cannot change the mode of a model source that is in use as a default selection")
             source.mode = changes["mode"]
         provider_config = changes.get("providerConfig")
         if provider_config is not None:
@@ -142,10 +146,10 @@ class ModelSourceCrudService:
 
     async def is_in_use(self, model_source_id: str) -> bool:
         """Return True when a ModelSource is referenced and must not be deleted."""
-        # ModelGatewaySelection is a singleton collection (always at most one document
-        # holding the two global default slots), so an empty filter {} fetches that one
-        # row — there is no id to filter by. None means no selection has been set yet.
-        selection = await ModelGatewaySelection.find_one({})
+        # ModelGatewaySelection is a singleton stored under a fixed _id (the two global
+        # default slots live on that one row); read it directly by id so stray/legacy rows
+        # cannot shadow it. None means no selection has been set yet.
+        selection = await ModelGatewaySelection.find_one({"_id": MODEL_GATEWAY_SELECTION_ID})
         if selection is None:
             return False
         try:

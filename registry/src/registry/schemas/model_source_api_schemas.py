@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
 
@@ -69,6 +69,16 @@ class ModelSourceUpdateRequest(BaseModel):
     tags: list[str] | None = None
     mode: ModelSourceMode | None = None
     providerConfig: ModelSourceProviderConfigInput | None = None
+
+    @field_validator("displayName", "tags", "mode", "providerConfig")
+    @classmethod
+    def _reject_explicit_null(cls, value: object) -> object:
+        # These map to non-nullable ModelSource fields. Omitting them means "no change"
+        # (they never enter model_fields_set), but an explicit JSON null would otherwise
+        # persist an invalid document — reject it. Only `description` is nullable (clear).
+        if value is None:
+            raise ValueError("field may not be null; omit it to leave unchanged")
+        return value
 
 
 class ModelSourceMetadataResponse(BaseModel):

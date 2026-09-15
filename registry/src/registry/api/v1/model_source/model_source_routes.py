@@ -186,6 +186,11 @@ async def update_model_source(
         return _to_detail(source, include_metadata=False)
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT,
+            detail=create_error_detail(ErrorCode.CONFLICT, str(exc)),
+        ) from exc
     except Exception as exc:
         logger.exception("Failed to update model source %s", model_source_id)
         raise HTTPException(
