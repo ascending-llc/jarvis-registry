@@ -389,3 +389,76 @@ async def test_list_servers_without_enabled_only_has_no_status_filter():
 
         query_filter = MockServer.find.call_args.args[0]
         assert query_filter == {}
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestCreateServerNormalizedServerName:
+    """create_server must compute and persist normalizedServerName (AS-1855)."""
+
+    def _make_service(self):
+        from beanie import PydanticObjectId
+
+        service = ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=Mock(),
+        )
+        service.user_service.get_user_by_user_id = AsyncMock(return_value=Mock(id=PydanticObjectId()))
+        return service
+
+    async def test_sets_normalized_server_name_on_construction(self):
+        from registry.schemas.server_api_schemas import ServerCreateRequest
+
+        service = self._make_service()
+        data = ServerCreateRequest(title="Example Server!!", path="/example")
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            MockServer.find.return_value.to_list = AsyncMock(return_value=[])
+            MockServer.find_one = AsyncMock(return_value=None)
+            MockServer.return_value.insert = AsyncMock()
+
+            await service.create_server(data=data, user_id="user-1")
+
+            _, kwargs = MockServer.call_args
+            assert kwargs["serverName"] == "example-server"
+            assert kwargs["normalizedServerName"] == "example-server"
+
+    async def test_duplicate_check_matches_on_either_server_name_or_normalized_name(self):
+        """The lookup query must OR serverName and normalizedServerName together."""
+        from registry.schemas.server_api_schemas import ServerCreateRequest
+
+        service = self._make_service()
+        data = ServerCreateRequest(title="Example Server", path="/example")
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            MockServer.find.return_value.to_list = AsyncMock(return_value=[])
+            MockServer.find_one = AsyncMock(return_value=None)
+            MockServer.return_value.insert = AsyncMock()
+
+            await service.create_server(data=data, user_id="user-1")
+
+            query_filter = MockServer.find_one.call_args.args[0]
+            assert query_filter == {
+                "$or": [{"serverName": "example-server"}, {"normalizedServerName": "example-server"}]
+            }
+
+    async def test_rejects_normalized_name_collision_even_when_raw_server_names_differ(self):
+        """A new slug-based server_name must be rejected if it collides on normalizedServerName
+        with an existing document whose raw serverName differs (e.g. it predates normalization
+        or used unsafe characters that normalize to the new slug)."""
+        from registry.schemas.server_api_schemas import ServerCreateRequest
+
+        service = self._make_service()
+        data = ServerCreateRequest(title="Weird Server", path="/weird")
+
+        existing_conflict = Mock(serverName="Weird/Server", normalizedServerName="weird-server")
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            MockServer.find.return_value.to_list = AsyncMock(return_value=[])
+            MockServer.find_one = AsyncMock(return_value=existing_conflict)
+
+            with pytest.raises(ValueError, match="already exists"):
+                await service.create_server(data=data, user_id="user-1")

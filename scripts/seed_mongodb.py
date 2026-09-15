@@ -27,6 +27,7 @@ from registry.utils.crypto_utils import encrypt_auth_fields
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedMCPServer, Group, Key, RegistryAclEntry, Token, User
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_mcp_server import normalize_server_name
 
 
 async def seed_groups():
@@ -618,6 +619,7 @@ async def seed_mcp_servers(users):
         else:
             # Encrypt sensitive authentication fields before storing
             server_data["config"] = encrypt_auth_fields(server_data["config"])
+            server_data["normalizedServerName"] = normalize_server_name(server_data["serverName"])
 
             server = ExtendedMCPServer(**server_data)
             await server.insert()
