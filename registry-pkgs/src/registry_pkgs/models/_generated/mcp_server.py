@@ -6,6 +6,7 @@ from beanie import Document, PydanticObjectId
 
 class MCPServer(Document):
     serverName: str
+    normalizedServerName: str
     config: dict[str, Any]
     author: PydanticObjectId
     tenantId: str | None = None

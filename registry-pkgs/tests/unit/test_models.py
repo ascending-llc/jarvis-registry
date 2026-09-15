@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import McpAuthMode
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer, normalize_server_name
 from registry_pkgs.models.federation_metadata import (
     AgentCoreA2AFederationMetadata,
     AgentCoreMcpFederationMetadata,
@@ -37,6 +37,7 @@ class TestExtendedMCPServerStructure:
 
         # These fields are required according to the model
         assert "serverName" in required_fields
+        assert "normalizedServerName" in required_fields
         assert "config" in required_fields
         assert "author" in required_fields
         # path is now optional to support external systems that don't provide it
@@ -46,6 +47,7 @@ class TestExtendedMCPServerStructure:
         server = ExtendedMCPServer.model_validate(
             {
                 "serverName": "agentcore-mcp",
+                "normalizedServerName": "agentcore-mcp",
                 "config": {"title": "AgentCore MCP", "enabled": True},
                 "author": str(PydanticObjectId()),
                 "path": "/agentcore/mcp/demo",
@@ -721,3 +723,51 @@ class TestFromServerInfoAuthorRequirement:
                 },
                 is_enabled=True,
             )
+
+
+class TestFromServerInfoNormalizedServerName:
+    """from_server_info must populate normalizedServerName from the resolved server_name (AS-1855)."""
+
+    def test_populates_normalized_server_name_for_safe_name(self, monkeypatch):
+        monkeypatch.setattr(ExtendedMCPServer, "get_pymongo_collection", classmethod(lambda cls: None))
+
+        server = ExtendedMCPServer.from_server_info(
+            server_info={
+                "path": "/example",
+                "server_name": "example-server",
+                "author": PydanticObjectId(),
+            },
+            is_enabled=True,
+        )
+
+        assert server.normalizedServerName == "example-server"
+
+    def test_populates_normalized_server_name_for_unsafe_name(self, monkeypatch):
+        monkeypatch.setattr(ExtendedMCPServer, "get_pymongo_collection", classmethod(lambda cls: None))
+
+        server = ExtendedMCPServer.from_server_info(
+            server_info={
+                "path": "/example",
+                "server_name": "Example Server!!",
+                "author": PydanticObjectId(),
+            },
+            is_enabled=True,
+        )
+
+        assert server.normalizedServerName == normalize_server_name("Example Server!!")
+        assert server.normalizedServerName == "Example_Server"
+
+    def test_falls_back_to_path_derived_server_name(self, monkeypatch):
+        """When server_name is absent, from_server_info derives it from path; normalization must follow."""
+        monkeypatch.setattr(ExtendedMCPServer, "get_pymongo_collection", classmethod(lambda cls: None))
+
+        server = ExtendedMCPServer.from_server_info(
+            server_info={
+                "path": "/weird path/",
+                "author": PydanticObjectId(),
+            },
+            is_enabled=True,
+        )
+
+        assert server.serverName == "weird path"
+        assert server.normalizedServerName == normalize_server_name("weird path")

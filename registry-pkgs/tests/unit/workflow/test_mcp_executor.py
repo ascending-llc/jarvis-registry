@@ -6,11 +6,29 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from agno.workflow import StepInput
 from beanie import PydanticObjectId
+from opentelemetry import baggage
+from opentelemetry import context as context_api
+from opentelemetry.sdk.trace import TracerProvider
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.telemetry.trace_propagation import (
+    BAGGAGE_KEY_ATTEMPT,
+    BAGGAGE_KEY_NODE_ID,
+    BAGGAGE_KEY_WORKFLOW_RUN_ID,
+)
 from registry_pkgs.workflows.mcp_executor import make_mcp_executor
 from registry_pkgs.workflows.types import WorkflowConfigError
+
+_TRACER = TracerProvider().get_tracer("test")
+
+
+def _attach_workflow_baggage(run_id: str = "run-1", node_id: str = "node-1", attempt: str = "2"):
+    """Attach workflow-identity baggage under an active span (mimics with_control)."""
+    ctx = baggage.set_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID, run_id)
+    ctx = baggage.set_baggage(BAGGAGE_KEY_NODE_ID, node_id, context=ctx)
+    ctx = baggage.set_baggage(BAGGAGE_KEY_ATTEMPT, attempt, context=ctx)
+    return context_api.attach(ctx)
 
 
 def _jwt_config(**overrides) -> JwtSigningConfig:
@@ -130,6 +148,48 @@ class TestAgentCoreMcpExecutor:
         assert ttl == 3540
         assert token == headers["Authorization"].split(" ", 1)[1]
 
+    @pytest.mark.asyncio
+    async def test_header_provider_injects_trace_context(self, monkeypatch: pytest.MonkeyPatch):
+        fake_agent_instance = SimpleNamespace(arun=AsyncMock(return_value=SimpleNamespace(content="done")))
+        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
+        captured_tools_kwargs: dict = {}
+
+        def fake_mcp_tools_cls(*args, **kwargs):
+            captured_tools_kwargs.update(kwargs)
+            return fake_mcp_tools
+
+        monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.MCPTools", fake_mcp_tools_cls)
+        monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.Agent", lambda **kwargs: fake_agent_instance)
+
+        redis_client = MagicMock()
+        redis_client.get.return_value = b"cached-agentcore-token"
+
+        executor = make_mcp_executor(
+            _mcp_server("agentcore-server", runtime_access={"mode": "jwt", "jwt": {"audiences": ["agentcore"]}}),
+            llm=SimpleNamespace(),
+            auth_context={"user_id": "user-1", "client_id": "client-1"},
+            jwt_config=_jwt_config(),
+            redis_client=redis_client,
+            redis_key_prefix="test-registry",
+            mcp_headers_provider=None,
+        )
+
+        await executor(StepInput(input="hello", previous_step_content="ctx"), {})
+        header_provider = captured_tools_kwargs["header_provider"]
+
+        with _TRACER.start_as_current_span("wf"):
+            token = _attach_workflow_baggage()
+            try:
+                headers = header_provider()
+            finally:
+                context_api.detach(token)
+
+        assert headers["Authorization"] == "Bearer cached-agentcore-token"
+        assert "traceparent" in headers
+        assert BAGGAGE_KEY_WORKFLOW_RUN_ID in headers["baggage"]
+        assert "run-1" in headers["baggage"]
+        assert BAGGAGE_KEY_ATTEMPT in headers["baggage"]
+
     def test_rejects_agentcore_iam_mode(self):
         with pytest.raises(NotImplementedError, match="IAM authentication is not supported"):
             make_mcp_executor(
@@ -183,6 +243,45 @@ class TestManualMcpExecutor:
             "Authorization": "Bearer oauth-token",
             "X-User-Id": "user-42",
         }
+
+    @pytest.mark.asyncio
+    async def test_injects_trace_context_into_static_headers(self, monkeypatch: pytest.MonkeyPatch):
+        fake_agent_instance = SimpleNamespace(arun=AsyncMock(return_value=SimpleNamespace(content="done")))
+        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
+        tools_calls: list[dict] = []
+
+        def fake_mcp_tools_cls(*args, **kwargs):
+            tools_calls.append(kwargs)
+            return fake_mcp_tools
+
+        monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.MCPTools", fake_mcp_tools_cls)
+        monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.Agent", lambda **kwargs: fake_agent_instance)
+
+        async def fake_headers_provider(server, auth_context):
+            return {"Authorization": "Bearer oauth-token"}
+
+        executor = make_mcp_executor(
+            _mcp_server("oauth-server"),
+            llm=SimpleNamespace(),
+            auth_context={"user_id": "user-42"},
+            jwt_config=_jwt_config(),
+            redis_client=None,
+            redis_key_prefix="test-registry",
+            mcp_headers_provider=fake_headers_provider,
+        )
+
+        with _TRACER.start_as_current_span("wf"):
+            token = _attach_workflow_baggage(run_id="run-9")
+            try:
+                await executor(StepInput(input="hello", previous_step_content="ctx"), {})
+            finally:
+                context_api.detach(token)
+
+        headers = tools_calls[0]["server_params"].headers
+        assert headers["Authorization"] == "Bearer oauth-token"
+        assert "traceparent" in headers
+        assert BAGGAGE_KEY_WORKFLOW_RUN_ID in headers["baggage"]
+        assert "run-9" in headers["baggage"]
 
     @pytest.mark.asyncio
     async def test_raises_workflow_config_error_when_auth_context_missing(self):

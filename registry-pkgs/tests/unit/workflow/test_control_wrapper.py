@@ -6,9 +6,15 @@ from unittest.mock import AsyncMock
 import pytest
 from agno.workflow import StepOutput
 from beanie import PydanticObjectId
+from opentelemetry import baggage
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.models.workflow import StepConfig
+from registry_pkgs.telemetry.trace_propagation import (
+    BAGGAGE_KEY_ATTEMPT,
+    BAGGAGE_KEY_NODE_ID,
+    BAGGAGE_KEY_WORKFLOW_RUN_ID,
+)
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.control import wrapper as wrapper_module
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError, _record_attempt_result, with_control
@@ -447,6 +453,140 @@ class TestControlWrapper:
             await wrapped(SimpleNamespace(input="hello"), {})
 
         executor.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_identity_baggage_visible_to_executor_and_attempt_varies(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        seen: list[dict[str, str | None]] = []
+
+        async def executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+            seen.append(
+                {
+                    "run_id": baggage.get_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID),
+                    "node_id": baggage.get_baggage(BAGGAGE_KEY_NODE_ID),
+                    "attempt": baggage.get_baggage(BAGGAGE_KEY_ATTEMPT),
+                }
+            )
+            if len(seen) == 1:
+                return StepOutput(content="", success=False, error="transient")
+            return StepOutput(content="done", success=True)
+
+        step_config = StepConfig(on_error="retry", max_retries=2, backoff_base_seconds=0.01, backoff_max_seconds=0.01)
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=step_config,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", AsyncMock())
+        monkeypatch.setattr(wrapper_module.asyncio, "sleep", AsyncMock())
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result.success is True
+        assert len(seen) == 2
+        assert seen[0]["attempt"] == "1"
+        assert seen[1]["attempt"] == "2"
+        assert seen[0]["run_id"] == run_id == seen[1]["run_id"]
+        assert seen[0]["node_id"] == "node-1" == seen[1]["node_id"]
+
+    @pytest.mark.asyncio
+    async def test_no_baggage_leak_after_success(self, monkeypatch: pytest.MonkeyPatch):
+        await self._assert_no_leak(monkeypatch, AsyncMock(return_value=StepOutput(content="ok", success=True)))
+
+    @pytest.mark.asyncio
+    async def test_no_baggage_leak_after_exception(self, monkeypatch: pytest.MonkeyPatch):
+        await self._assert_no_leak(monkeypatch, AsyncMock(side_effect=RuntimeError("boom")))
+
+    @pytest.mark.asyncio
+    async def test_no_baggage_leak_after_cancelled(self, monkeypatch: pytest.MonkeyPatch):
+        await self._assert_no_leak(
+            monkeypatch,
+            AsyncMock(side_effect=WorkflowCancelledError("cancelled")),
+            expect_cancel=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_awaited_inner_task_sees_baggage_and_no_leak_after(self, monkeypatch: pytest.MonkeyPatch):
+        """An inner task the executor awaits sees the baggage; nothing leaks once wrapped() returns.
+
+        Guards the realistic case (executor awaits its work). A fire-and-forget task that outlives
+        executor() is a documented, unfixable OTEL+asyncio ceiling — see wrapper.py.
+        """
+        import asyncio
+
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        inner_seen: dict[str, str | None] = {}
+
+        async def inner() -> None:
+            inner_seen["attempt"] = baggage.get_baggage(BAGGAGE_KEY_ATTEMPT)
+            inner_seen["run_id"] = baggage.get_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID)
+
+        async def executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+            await asyncio.create_task(inner())
+            return StepOutput(content="ok", success=True)
+
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=None,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", AsyncMock())
+
+        await wrapped(SimpleNamespace(input="hello"), {})
+
+        # Inner awaited task inherited the baggage...
+        assert inner_seen["attempt"] == "1"
+        assert inner_seen["run_id"] == run_id
+        # ...and nothing leaked into the enclosing context afterward.
+        assert baggage.get_baggage(BAGGAGE_KEY_ATTEMPT) is None
+        assert baggage.get_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID) is None
+
+    async def _assert_no_leak(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        executor: AsyncMock,
+        *,
+        expect_cancel: bool = False,
+    ) -> None:
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=None,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", AsyncMock())
+
+        assert baggage.get_baggage(BAGGAGE_KEY_ATTEMPT) is None
+        if expect_cancel:
+            with pytest.raises(WorkflowCancelledError):
+                await wrapped(SimpleNamespace(input="hello"), {})
+        else:
+            await wrapped(SimpleNamespace(input="hello"), {})
+        # Baggage attached around executor() must not leak into a sibling call in this task.
+        assert baggage.get_baggage(BAGGAGE_KEY_ATTEMPT) is None
+        assert baggage.get_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID) is None
+        assert baggage.get_baggage(BAGGAGE_KEY_NODE_ID) is None
 
 
 @pytest.mark.unit
