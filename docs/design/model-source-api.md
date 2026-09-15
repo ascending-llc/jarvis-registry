@@ -22,7 +22,6 @@ singleton records which ModelSource currently backs each of the two global slots
 6. [Credentials & Encryption](#credentials--encryption)
 7. [Model Metadata](#model-metadata)
 8. [Error Response Format](#error-response-format)
-9. [Implementation Status](#implementation-status)
 
 ---
 

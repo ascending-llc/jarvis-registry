@@ -1,12 +1,11 @@
 import logging
 import math
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, ModelSource
+from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
@@ -34,7 +33,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Model Source Management"])
 
 
-def _to_response_config(config: Any) -> ModelSourceProviderConfigResponse:
+def _to_response_config(config: AwsBedrockModelConfig | AzureOpenAIModelConfig) -> ModelSourceProviderConfigResponse:
     if isinstance(config, AwsBedrockModelConfig):
         return AwsBedrockModelConfigResponse(
             awsRegion=config.awsRegion,

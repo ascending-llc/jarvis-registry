@@ -7,7 +7,6 @@ from bson.errors import InvalidId
 from registry.utils.crypto_utils import encrypt_value
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
-from registry_pkgs.models.model_gateway_selection import MODEL_GATEWAY_SELECTION_ID, ModelGatewaySelection
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
 
 from ..schemas.model_source_api_schemas import (
@@ -15,12 +14,13 @@ from ..schemas.model_source_api_schemas import (
     AzureOpenAIModelConfigInput,
     ModelSourceProviderConfigInput,
 )
+from .model_gateway_selection_service import ModelGatewaySelectionService
 
 StoredProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig
 
 
 class ModelSourceCrudService:
-    def __init__(self, *, model_gateway_selection_service: Any) -> None:
+    def __init__(self, *, model_gateway_selection_service: ModelGatewaySelectionService) -> None:
         self._selection_service = model_gateway_selection_service
 
     @staticmethod
@@ -146,16 +146,11 @@ class ModelSourceCrudService:
 
     async def is_in_use(self, model_source_id: str) -> bool:
         """Return True when a ModelSource is referenced and must not be deleted."""
-        # ModelGatewaySelection is a singleton stored under a fixed _id (the two global
-        # default slots live on that one row); read it directly by id so stray/legacy rows
-        # cannot shadow it. None means no selection has been set yet.
-        selection = await ModelGatewaySelection.find_one({"_id": MODEL_GATEWAY_SELECTION_ID})
-        if selection is None:
-            return False
         try:
             object_id = PydanticObjectId(model_source_id)
         except (InvalidId, TypeError, ValueError):
             return False
+        selection = await self._selection_service.get_selection()
         return object_id in (selection.defaultWorkflowModelSourceId, selection.embeddingModelSourceId)
 
     @staticmethod
