@@ -10,12 +10,18 @@ from mcp.types import (
     InitializeRequestParams,
     UrlElicitationCapability,
 )
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 
 from registry.core.config import settings
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
 from registry_pkgs.core.exceptions import InternalServerException
+from registry_pkgs.telemetry.trace_propagation import (
+    BAGGAGE_KEY_MCP_SERVER_ID,
+    BAGGAGE_KEY_MCP_TOOL_NAME,
+)
 
 
 class _PermissiveAccessibleSet:
@@ -459,6 +465,64 @@ async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
     assert not result.isError
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_injects_trace_context_into_downstream_headers(monkeypatch):
+    if not isinstance(trace.get_tracer_provider(), TracerProvider):
+        trace.set_tracer_provider(TracerProvider())
+
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={"Authorization": "Bearer x"}))
+    downstream_call = AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}})
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert not result.isError
+    headers = downstream_call.await_args.args[3]
+    assert "traceparent" in headers
+    assert f"{BAGGAGE_KEY_MCP_TOOL_NAME}=tavily_search" in headers["baggage"]
+    assert f"{BAGGAGE_KEY_MCP_SERVER_ID}={server_id}" in headers["baggage"]
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_injects_trace_context_into_session_init(monkeypatch):
+    if not isinstance(trace.get_tracer_provider(), TracerProvider):
+        trace.set_tracer_provider(TracerProvider())
+
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    srv = _make_server(server_id)
+    srv.config["requiresInit"] = True  # force the downstream session-init HTTP call
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = srv
+
+    mcp_client = ctx.request_context.lifespan_context.mcp_client_service
+    mcp_client.get_session.return_value = None  # no stored session -> initialize
+    init_session = AsyncMock(return_value="sess-123")
+    mcp_client.initialize_mcp_session = init_session
+
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(
+        server, "build_authenticated_headers", AsyncMock(side_effect=lambda **kw: dict(kw["additional_headers"]))
+    )
+    monkeypatch.setattr(
+        server,
+        "_downstream_tool_call",
+        AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}}),
+    )
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert not result.isError
+    # initialize_mcp_session(target_url, init_headers, session_key, transport_type)
+    init_headers = init_session.await_args.args[1]
+    assert "traceparent" in init_headers
+    assert f"{BAGGAGE_KEY_MCP_TOOL_NAME}=tavily_search" in init_headers["baggage"]
+    assert f"{BAGGAGE_KEY_MCP_SERVER_ID}={server_id}" in init_headers["baggage"]
 
 
 @pytest.mark.asyncio

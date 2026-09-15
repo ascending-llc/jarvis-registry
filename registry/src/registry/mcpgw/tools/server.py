@@ -24,6 +24,7 @@ from mcp.types import (
     TextContent,
     TextResourceContents,
 )
+from opentelemetry import baggage
 from pydantic import Field
 from pydantic.networks import AnyUrl
 
@@ -36,6 +37,11 @@ from registry_pkgs.core.exceptions import (
     UrlElicitationRequiredException,
 )
 from registry_pkgs.models import ResourceType
+from registry_pkgs.telemetry.trace_propagation import (
+    BAGGAGE_KEY_MCP_SERVER_ID,
+    BAGGAGE_KEY_MCP_TOOL_NAME,
+    inject_trace_context,
+)
 
 from ...auth.dependencies import UserContextDict
 from ...core.config import settings
@@ -341,6 +347,12 @@ async def execute_tool_impl(
                 "Accept": "application/json, text/event-stream",  # MCP servers require both
             }
 
+            # Trace-context baggage reused for every downstream call in this tool execution
+            # (session-init and the tool call itself). tool_name/server_id are validated
+            # function params, not raw client input, so no bounding is needed.
+            ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_TOOL_NAME, tool_name)
+            ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_SERVER_ID, server_id, context=ctx_baggage)
+
             # Check if server requires initialization (default True for safety/compatibility)
             requires_init = server.config.get("requiresInit", True)
             transport_type = server.config.get("type", "streamable-http")
@@ -373,6 +385,7 @@ async def execute_tool_impl(
                         state_metadata=state_metadata,
                         redis_client=ctx.request_context.lifespan_context.redis_client,
                     )
+                    init_headers = inject_trace_context(init_headers, context=ctx_baggage)
                     session_id = await _get_mcp_client_service(ctx).initialize_mcp_session(
                         target_url,
                         init_headers,
@@ -398,6 +411,9 @@ async def execute_tool_impl(
                 state_metadata=state_metadata,
                 redis_client=ctx.request_context.lifespan_context.redis_client,
             )
+
+            # Propagate W3C trace context to the downstream MCP server (reuses ctx_baggage above).
+            headers = inject_trace_context(headers, context=ctx_baggage)
 
             # Build MCP JSON-RPC request
             mcp_request_body = {

@@ -14,6 +14,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from httpx._decoders import SUPPORTED_DECODERS
+from opentelemetry import baggage, trace
 from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
@@ -24,6 +25,13 @@ from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.oauth.types import ClientBranding
+from registry_pkgs.telemetry.trace_propagation import (
+    BAGGAGE_KEY_MCP_METHOD,
+    BAGGAGE_KEY_MCP_SERVER_ID,
+    BAGGAGE_KEY_MCP_TOOL_NAME,
+    bounded_baggage_value,
+    inject_trace_context,
+)
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..core.config import settings
@@ -47,6 +55,8 @@ from ..services.server_service import ServerServiceV1
 from ..utils.mcp_headers import build_authenticated_headers
 
 logger = logging.getLogger(__name__)
+
+_TRACER = trace.get_tracer("registry.proxy")
 
 router = APIRouter(tags=["MCP Proxy"])
 
@@ -216,39 +226,88 @@ def _get_elicitation_id(auth_url: str) -> str:
     return id_
 
 
-async def proxy_to_mcp_server(
+def _handle_url_elicitation_required(
+    exc: UrlElicitationRequiredException,
+    *,
     request_id: str | int,
     request: Request,
-    target_url: str,
+    mcp_method: str | None,
+) -> Response:
+    """Turn a downstream re-auth requirement into the right client-facing response.
+
+    Handshake methods (initialize / tools/list) fire before the client has a tool-call context,
+    so most MCP clients cannot process a URL mode elicitation and treat it as a failed handshake.
+    Those get an HTTP 401 with an RFC 9728 resource_metadata challenge so the client starts standard
+    downstream OAuth discovery; every other method keeps the URL mode elicitation error.
+    """
+    if mcp_method in _INIT_METHODS:
+        user_id = request.path_params.get("user_id", "")
+        server_path = request.path_params.get("server_path", "")
+        resource_metadata_url = (
+            f"{settings.jwt_issuer}/.well-known/oauth-protected-resource"
+            f"{settings.service_base_path}/proxy/server/{user_id}/{server_path}"
+        )
+        return JSONResponse(
+            status_code=401,
+            headers={
+                "WWW-Authenticate": (
+                    f'Bearer realm="{settings.jarvis_realm}", '
+                    f'resource_metadata="{resource_metadata_url}", '
+                    'scope="mcp-proxy-ops"'
+                ),
+            },
+            content={
+                "detail": (
+                    f"Downstream MCP server '{exc.server_name}' requires authorization. "
+                    "Complete authorization via the OAuth discovery flow."
+                )
+            },
+        )
+
+    llm_msg = (
+        f"In order to make tool calls to the '{exc.server_name}' MCP server, the client must first perform "
+        "out-of-band re-authorization in a browser window. Please direct the client to open the provided URL "
+        "in a browser window, finish re-authorization, and come back to retry the same tool call again."
+    )
+    user_msg = (
+        f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
+        "Please follow the URL to perform re-authorization in a browser window and come back again."
+    )
+    error_data = {
+        "elicitations": [
+            {
+                "mode": "url",
+                "message": user_msg,
+                "url": exc.auth_url,
+                "elicitationId": _get_elicitation_id(exc.auth_url),
+            }
+        ]
+    }
+    return JSONResponse(
+        status_code=200,
+        content=_build_jsonrpc_error(request_id, _URL_ELICITATION_REQUIRED_ERROR_CODE, llm_msg, error_data),
+    )
+
+
+async def _prepare_proxy_headers(
+    *,
+    request_id: str | int,
+    request: Request,
     auth_context: UserContextDict,
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
-    proxy_client: httpx.AsyncClient,
     redis_client: Redis,
-    mcp_method: str | None = None,
-) -> Response:
-    """
-    Proxy request to MCP server with auth headers.
-    Handles both regular HTTP and SSE streaming, including OAuth token injection.
+    mcp_method: str | None,
+    tool_name: str | None,
+) -> dict[str, str] | Response:
+    """Build authenticated outbound headers, or return an early client-facing error Response.
 
-    Args:
-        request_id: JSON-RPC request ID
-        request: Incoming FastAPI request
-        target_url: Backend MCP server URL
-        auth_context: UserContextDict
-        server: ExtendedMCPServer
-        oauth_service: OAuth service for building auth headers
-        proxy_client: Shared httpx client for connection pooling
-        redis_client: Redis client for JWT token caching
-        mcp_method: The JSON-RPC method of the proxied MCP request (e.g. "initialize",
-            "tools/list", "tools/call"). Used to decide how to surface a missing downstream
-            authorization: handshake methods get an HTTP 401 RFC 9728 discovery challenge,
-            everything else keeps the existing URL mode elicitation.
+    Also replaces any client-supplied trace headers with our own freshly-injected trace context —
+    on this external-facing path we never trust/parent on client-sent trace headers.
     """
-    # Build proxy headers - start with request headers
     headers = dict(request.headers)
 
-    # Add context headers for tracing/logging
+    # Add context headers for tracing/logging.
     context_headers: dict[str, str] = {
         "X-Auth-Method": auth_context["auth_method"],
         "X-Server-Name": server.serverName,
@@ -256,11 +315,10 @@ async def proxy_to_mcp_server(
     }
     headers.update({k: v for k, v in context_headers.items() if v})
 
-    # Remove host header to avoid conflicts
+    # Remove host header to avoid conflicts.
     headers.pop("host", None)
     headers.pop("authorization", None)
 
-    # Build complete authentication headers using shared utility
     try:
         headers = await build_authenticated_headers(
             oauth_service=oauth_service,
@@ -271,82 +329,45 @@ async def proxy_to_mcp_server(
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
-        # Handshake methods (initialize / tools/list) fire before the client has a tool-call
-        # context, so most MCP clients cannot process a URL mode elicitation here and treat it
-        # as a failed handshake. Instead, return an HTTP 401 with an RFC 9728 resource_metadata
-        # challenge so the client starts standard downstream OAuth discovery (see Change 4/5).
-        if mcp_method in _INIT_METHODS:
-            user_id = request.path_params.get("user_id", "")
-            server_path = request.path_params.get("server_path", "")
-            resource_metadata_url = (
-                f"{settings.jwt_issuer}/.well-known/oauth-protected-resource"
-                f"{settings.service_base_path}/proxy/server/{user_id}/{server_path}"
-            )
-            return JSONResponse(
-                status_code=401,
-                headers={
-                    "WWW-Authenticate": (
-                        f'Bearer realm="{settings.jarvis_realm}", '
-                        f'resource_metadata="{resource_metadata_url}", '
-                        'scope="mcp-proxy-ops"'
-                    ),
-                },
-                content={
-                    "detail": (
-                        f"Downstream MCP server '{exc.server_name}' requires authorization. "
-                        "Complete authorization via the OAuth discovery flow."
-                    )
-                },
-            )
-
-        llm_msg = (
-            f"In order to make tool calls to the '{exc.server_name}' MCP server, the client must first perform "
-            "out-of-band re-authorization in a browser window. Please direct the client to open the provided URL "
-            "in a browser window, finish re-authorization, and come back to retry the same tool call again."
-        )
-
-        user_msg = (
-            f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
-            "Please follow the URL to perform re-authorization in a browser window and come back again."
-        )
-
-        elicitation_id = _get_elicitation_id(exc.auth_url)
-
-        error_data = {
-            "elicitations": [
-                {
-                    "mode": "url",
-                    "message": user_msg,
-                    "url": exc.auth_url,
-                    "elicitationId": elicitation_id,
-                }
-            ]
-        }
-
-        return JSONResponse(
-            status_code=200,
-            content=_build_jsonrpc_error(
-                request_id,
-                _URL_ELICITATION_REQUIRED_ERROR_CODE,
-                llm_msg,
-                error_data,
-            ),
-        )
+        return _handle_url_elicitation_required(exc, request_id=request_id, request=request, mcp_method=mcp_method)
     except InternalServerException:
         logger.exception("Internal server exception")
-
         return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "Internal server error"))
 
+    # mcp_method and tool_name are both parsed from client-controlled JSON-RPC body content, so
+    # bound them before they become baggage values — an unbounded value risks tripping downstream
+    # header-size limits (commonly ~8KB) and breaking otherwise-valid calls.
+    ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_SERVER_ID, str(server.id))
+    ctx_baggage = baggage.set_baggage(
+        BAGGAGE_KEY_MCP_METHOD, bounded_baggage_value(mcp_method or ""), context=ctx_baggage
+    )
+    if tool_name:
+        ctx_baggage = baggage.set_baggage(
+            BAGGAGE_KEY_MCP_TOOL_NAME, bounded_baggage_value(tool_name), context=ctx_baggage
+        )
+    return inject_trace_context(headers, context=ctx_baggage)
+
+
+async def _forward_to_downstream(
+    *,
+    request_id: str | int,
+    request: Request,
+    target_url: str,
+    proxy_client: httpx.AsyncClient,
+    headers: dict[str, str],
+) -> Response:
+    """Send the proxied request downstream and relay the response (buffered JSON or SSE stream).
+
+    Owns the whole ``stream_context`` lifecycle: the buffered path closes it via the ``finally``
+    here, the SSE path hands it to ``stream_sse`` which closes it once the client drains the stream.
+    """
     body = await request.body()
 
     try:
         accept_header = request.headers.get("accept", "")
-        client_accepts_sse = "text/event-stream" in accept_header
-
         # We only support directly reaching streamable-http downstream servers anyway.
-        if not client_accepts_sse:
+        if "text/event-stream" not in accept_header:
             logger.error(f"Accept header: '{accept_header}' from a client of a streamable-http MCP server")
-
             return JSONResponse(
                 status_code=200,
                 content=_build_jsonrpc_error_result(
@@ -434,12 +455,72 @@ async def proxy_to_mcp_server(
 
     except httpx.TimeoutException:
         logger.error(f"Timeout proxying to {target_url}")
-
         return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "gateway timeout"))
     except Exception:
         logger.exception(f"Error proxying to {target_url}")
-
         return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "gateway internal error"))
+
+
+async def proxy_to_mcp_server(
+    request_id: str | int,
+    request: Request,
+    target_url: str,
+    auth_context: UserContextDict,
+    server: ExtendedMCPServer,
+    oauth_service: MCPOAuthService,
+    proxy_client: httpx.AsyncClient,
+    redis_client: Redis,
+    mcp_method: str | None = None,
+    tool_name: str | None = None,
+) -> Response:
+    """
+    Proxy request to MCP server with auth headers.
+    Handles both regular HTTP and SSE streaming, including OAuth token injection.
+
+    Args:
+        request_id: JSON-RPC request ID
+        request: Incoming FastAPI request
+        target_url: Backend MCP server URL
+        auth_context: UserContextDict
+        server: ExtendedMCPServer
+        oauth_service: OAuth service for building auth headers
+        proxy_client: Shared httpx client for connection pooling
+        redis_client: Redis client for JWT token caching
+        mcp_method: The JSON-RPC method of the proxied MCP request (e.g. "initialize",
+            "tools/list", "tools/call"). Used to decide how to surface a missing downstream
+            authorization: handshake methods get an HTTP 401 RFC 9728 discovery challenge,
+            everything else keeps the existing URL mode elicitation.
+        tool_name: The requested tool name, parsed from a "tools/call" request body by the
+            caller (client-controlled input). Bounded before it becomes a baggage value.
+    """
+    # ponytail: span ends when this function returns, so for the SSE path it does not cover the
+    # streaming duration (the StreamingResponse body drains after we return). It still covers auth,
+    # trace-context injection and the downstream connect/first-response, which is what correlation needs.
+    with _TRACER.start_as_current_span(
+        "proxy.dynamic_mcp_post_proxy",
+        # mcp_method is client-controlled; bound it so a hostile value can't bloat span attributes.
+        attributes={"mcp.server.id": str(server.id), "mcp.method": bounded_baggage_value(mcp_method or "")},
+    ):
+        headers = await _prepare_proxy_headers(
+            request_id=request_id,
+            request=request,
+            auth_context=auth_context,
+            server=server,
+            oauth_service=oauth_service,
+            redis_client=redis_client,
+            mcp_method=mcp_method,
+            tool_name=tool_name,
+        )
+        if isinstance(headers, Response):
+            return headers  # early auth / elicitation error
+
+        return await _forward_to_downstream(
+            request_id=request_id,
+            request=request,
+            target_url=target_url,
+            proxy_client=proxy_client,
+            headers=headers,
+        )
 
 
 @router.delete("/sessions/{server_id}")
@@ -509,109 +590,119 @@ async def _forward_a2a(
     is more clear in the future. As things stand now, non-AgentCore agents should be rare.
     """
 
-    headers = dict(request.headers)
-    headers.pop("host", None)
+    with _TRACER.start_as_current_span(
+        "proxy.forward_a2a",
+        attributes={"a2a.agent.path": agent_path, "http.request.method": request.method},
+    ):
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        # Replace any client-supplied trace headers with our own freshly-injected context
+        # (external-facing A2A passthrough: never forward client-sent trace headers downstream).
+        headers = inject_trace_context(headers)
 
-    body = await request.body()
-    params = request.query_params
-
-    try:
-        # Use 5 min timeout when forwarding GET stream.
-        # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
-        stream_context = proxy_client.stream(
-            request.method, target_url, headers=headers, content=body, params=params, timeout=httpx.Timeout(300)
-        )
-        backend_response = await stream_context.__aenter__()
-
-        backend_content_type = backend_response.headers.get("content-type", "")
-        is_stream = "text/event-stream" in backend_content_type
+        body = await request.body()
+        params = request.query_params
 
         try:
-            logger.debug(
-                f"A2A backend [{agent_path}]: status={backend_response.status_code}, content-type={backend_content_type}"
+            # Use 5 min timeout when forwarding GET stream.
+            # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
+            stream_context = proxy_client.stream(
+                request.method, target_url, headers=headers, content=body, params=params, timeout=httpx.Timeout(300)
             )
+            backend_response = await stream_context.__aenter__()
 
-            if not is_stream:
-                content_bytes = await backend_response.aread()
+            backend_content_type = backend_response.headers.get("content-type", "")
+            is_stream = "text/event-stream" in backend_content_type
 
-                if backend_response.status_code >= 400:
-                    try:
-                        error_body = content_bytes.decode("utf-8")
-                        logger.error(f"A2A backend [{agent_path}] error ({backend_response.status_code}): {error_body}")
-                    except Exception:
-                        logger.error(
-                            f"A2A backend [{agent_path}] error ({backend_response.status_code}): "
-                            f"[binary, {len(content_bytes)} bytes]"
-                        )
-
-                response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
-                # Starlette recalculates Content-Length from the buffered body; the upstream's
-                # value may be stale or wrong (e.g. AgentCore adds Transfer-Encoding: chunked
-                # to complete JSON responses, causing the reported Content-Length to be unreliable).
-                response_headers.pop("content-length", None)
-                # `content_bytes` above came from `aread()`, which already reversed the backend's
-                # Content-Encoding whenever httpx knows how to (see
-                # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
-                # unchanged in that case would tell our client to decode an already-decoded body.
-                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
-                return Response(
-                    content=content_bytes,
-                    status_code=backend_response.status_code,
-                    headers=response_headers,
-                    media_type=backend_content_type or "application/json",
+            try:
+                logger.debug(
+                    f"A2A backend [{agent_path}]: status={backend_response.status_code}, content-type={backend_content_type}"
                 )
 
-            logger.info(f"Streaming SSE from A2A agent [{agent_path}]")
+                if not is_stream:
+                    content_bytes = await backend_response.aread()
 
-            response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
-            # Content-Length cannot be set for a stream of indeterminate length.
-            response_headers.pop("content-length", None)
-            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
-            # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
-            _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
-            response_headers.update(
-                {
-                    "Cache-Control": "no-cache",
-                    "X-Accel-Buffering": "no",
-                    "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
-                    "Content-Type": backend_content_type or "text/event-stream",
-                }
-            )
+                    if backend_response.status_code >= 400:
+                        try:
+                            error_body = content_bytes.decode("utf-8")
+                            logger.error(
+                                f"A2A backend [{agent_path}] error ({backend_response.status_code}): {error_body}"
+                            )
+                        except Exception:
+                            logger.error(
+                                f"A2A backend [{agent_path}] error ({backend_response.status_code}): "
+                                f"[binary, {len(content_bytes)} bytes]"
+                            )
 
-            async def stream_sse():
-                try:
-                    async for chunk in backend_response.aiter_bytes():
-                        yield chunk
-                except Exception:
-                    logger.exception(f"A2A SSE streaming error [{agent_path}]")
-                    raise
-                finally:
+                    response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+                    # Starlette recalculates Content-Length from the buffered body; the upstream's
+                    # value may be stale or wrong (e.g. AgentCore adds Transfer-Encoding: chunked
+                    # to complete JSON responses, causing the reported Content-Length to be unreliable).
+                    response_headers.pop("content-length", None)
+                    # `content_bytes` above came from `aread()`, which already reversed the backend's
+                    # Content-Encoding whenever httpx knows how to (see
+                    # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
+                    # unchanged in that case would tell our client to decode an already-decoded body.
+                    _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                    return Response(
+                        content=content_bytes,
+                        status_code=backend_response.status_code,
+                        headers=response_headers,
+                        media_type=backend_content_type or "application/json",
+                    )
+
+                logger.info(f"Streaming SSE from A2A agent [{agent_path}]")
+
+                response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+                # Content-Length cannot be set for a stream of indeterminate length.
+                response_headers.pop("content-length", None)
+                # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
+                # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
+                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                response_headers.update(
+                    {
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                        "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
+                        "Content-Type": backend_content_type or "text/event-stream",
+                    }
+                )
+
+                async def stream_sse():
+                    try:
+                        async for chunk in backend_response.aiter_bytes():
+                            yield chunk
+                    except Exception:
+                        logger.exception(f"A2A SSE streaming error [{agent_path}]")
+                        raise
+                    finally:
+                        await stream_context.__aexit__(None, None, None)
+
+                return StreamingResponse(
+                    stream_sse(),
+                    status_code=backend_response.status_code,
+                    media_type=backend_content_type or "text/event-stream",
+                    headers=response_headers,
+                )
+
+            finally:
+                if not is_stream:
                     await stream_context.__aexit__(None, None, None)
 
-            return StreamingResponse(
-                stream_sse(),
-                status_code=backend_response.status_code,
-                media_type=backend_content_type or "text/event-stream",
-                headers=response_headers,
-            )
+        except httpx.TimeoutException:
+            logger.error(f"A2A proxy timeout for agent [{agent_path}] {target_url}")
+            if is_jsonrpc:
+                return _jsonrpc_a2a_error_response(-32603, "Gateway timeout communicating with agent")
+            return JSONResponse(status_code=504, content={"error": "Gateway timeout communicating with agent"})
+        except Exception as e:
+            logger.error(f"A2A proxy error for agent [{agent_path}] {target_url}: {e}", exc_info=True)
+            if is_jsonrpc:
+                return _jsonrpc_a2a_error_response(-32603, "Failed to communicate with agent")
+            return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
 
-        finally:
-            if not is_stream:
-                await stream_context.__aexit__(None, None, None)
-
-    except httpx.TimeoutException:
-        logger.error(f"A2A proxy timeout for agent [{agent_path}] {target_url}")
-        if is_jsonrpc:
-            return _jsonrpc_a2a_error_response(-32603, "Gateway timeout communicating with agent")
-        return JSONResponse(status_code=504, content={"error": "Gateway timeout communicating with agent"})
-    except Exception as e:
-        logger.error(f"A2A proxy error for agent [{agent_path}] {target_url}: {e}", exc_info=True)
-        if is_jsonrpc:
-            return _jsonrpc_a2a_error_response(-32603, "Failed to communicate with agent")
-        return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
+    # Route 1: JSON-RPC binding — bare base path, POST only
 
 
-# Route 1: JSON-RPC binding — bare base path, POST only
 @router.post("/a2a/{agent_path}")
 async def jsonrpc_proxy(
     request: Request,
@@ -852,6 +943,11 @@ async def dynamic_mcp_post_proxy(
     user_id = auth_context["user_id"]
     client_id = auth_context["client_id"]
     mcp_method = msg_body.get("method")
+    tool_name = None
+    if mcp_method == "tools/call":
+        params = msg_body.get("params")
+        if isinstance(params, dict) and isinstance(params.get("name"), str):
+            tool_name = params["name"]
     requires_server_consent = mcp_method not in _INIT_METHODS and not is_consent_exempt(
         client_id,
         settings.headless_agent_client_id,
@@ -929,6 +1025,7 @@ async def dynamic_mcp_post_proxy(
         proxy_client=proxy_client,
         redis_client=redis_client,
         mcp_method=mcp_method,
+        tool_name=tool_name,
     )
 
 
@@ -1037,123 +1134,134 @@ async def dynamic_mcp_get_proxy(
     # would have responded with protected resource metadata doc according to RFC 9728.
     logger.info(f"Proxying {request.method} {path} → {target_url}")
 
-    # Build proxy headers - start with request headers
-    headers = dict(request.headers)
+    # ponytail: span ends on return; the SSE body drains afterward (same trade-off as the POST
+    # proxy). It still covers auth, trace injection and the downstream connect/first-response.
+    with _TRACER.start_as_current_span(
+        "proxy.dynamic_mcp_get_proxy",
+        attributes={"mcp.server.id": str(server.id)},
+    ):
+        # Build proxy headers - start with request headers
+        headers = dict(request.headers)
 
-    # Add context headers for tracing/logging
-    context_headers: dict[str, str] = {
-        "X-Auth-Method": auth_context["auth_method"],
-        "X-Server-Name": server.serverName,
-        "X-Original-URL": str(request.url),
-    }
-    headers.update({k: v for k, v in context_headers.items() if v})
+        # Add context headers for tracing/logging
+        context_headers: dict[str, str] = {
+            "X-Auth-Method": auth_context["auth_method"],
+            "X-Server-Name": server.serverName,
+            "X-Original-URL": str(request.url),
+        }
+        headers.update({k: v for k, v in context_headers.items() if v})
 
-    # Remove host header to avoid conflicts
-    headers.pop("host", None)
-    headers.pop("authorization", None)
+        # Remove host header to avoid conflicts
+        headers.pop("host", None)
+        headers.pop("authorization", None)
 
-    # Build complete authentication headers using shared utility
-    try:
-        headers = await build_authenticated_headers(
-            oauth_service=oauth_service,
-            server=server,
-            auth_context=auth_context,
-            additional_headers=headers,
-            state_metadata={"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": False},
-            redis_client=redis_client,
-        )
-    except UrlElicitationRequiredException as exc:
-        # If token expired for a GET request, follow RFC 9457 and RFC 7807.
-        return JSONResponse(
-            status_code=401,
-            headers={
-                "Content-Type": "application/problem+json",
-                "WWW-Authenticate": f'Bearer realm="{settings.jarvis_realm}", error="invalid_token"',
-            },
-            content={
-                "type": f"{settings.registry_client_url.rstrip('/')}/errors/token-expired",
-                "title": "Both access and refresh tokens of downstream MCP server have expired",
-                "status": 401,
-                "detail": f"Tokens of downstream MCP server have expired. Please re-authenticate at {exc.auth_url}.",
-            },
-        )
-    except InternalServerException:
-        logger.exception("Internal server exception")
+        # Build complete authentication headers using shared utility
+        try:
+            headers = await build_authenticated_headers(
+                oauth_service=oauth_service,
+                server=server,
+                auth_context=auth_context,
+                additional_headers=headers,
+                state_metadata={"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": False},
+                redis_client=redis_client,
+            )
+        except UrlElicitationRequiredException as exc:
+            # If token expired for a GET request, follow RFC 9457 and RFC 7807.
+            return JSONResponse(
+                status_code=401,
+                headers={
+                    "Content-Type": "application/problem+json",
+                    "WWW-Authenticate": f'Bearer realm="{settings.jarvis_realm}", error="invalid_token"',
+                },
+                content={
+                    "type": f"{settings.registry_client_url.rstrip('/')}/errors/token-expired",
+                    "title": "Both access and refresh tokens of downstream MCP server have expired",
+                    "status": 401,
+                    "detail": f"Tokens of downstream MCP server have expired. Please re-authenticate at {exc.auth_url}.",
+                },
+            )
+        except InternalServerException:
+            logger.exception("Internal server exception")
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "detail": "An internal server error occurred. Please try again or contact support if the problem persists."
-            },
-        )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": "An internal server error occurred. Please try again or contact support if the problem persists."
+                },
+            )
 
-    body = await request.body()
+        # Replace any client-supplied trace headers with our own freshly-injected context
+        # (external-facing GET channel: never forward client-sent trace headers downstream).
+        ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_SERVER_ID, str(server.id))
+        headers = inject_trace_context(headers, context=ctx_baggage)
 
-    accept_header = request.headers.get("accept", "")
-    client_accepts_sse = "text/event-stream" in accept_header
+        body = await request.body()
 
-    if not client_accepts_sse:
-        logger.error(f"Accept header: '{accept_header}' from a client of a streamable-http MCP server")
+        accept_header = request.headers.get("accept", "")
+        client_accepts_sse = "text/event-stream" in accept_header
 
-        return JSONResponse(
-            status_code=406,
-            content={
-                "type": f"{settings.registry_client_url.rstrip('/')}/errors/not-acceptable",
-                "title": "Not Acceptable",
-                "status": 406,
-                "detail": "GET requests must include 'text/event-stream' in the Accept header.",
-            },
-        )
+        if not client_accepts_sse:
+            logger.error(f"Accept header: '{accept_header}' from a client of a streamable-http MCP server")
 
-    try:
-        # Use 5 min timeout when forwarding GET stream.
-        # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
-        stream_context = proxy_client.stream(
-            request.method, target_url, headers=headers, content=body, timeout=httpx.Timeout(300)
-        )
-        backend_response = await stream_context.__aenter__()
+            return JSONResponse(
+                status_code=406,
+                content={
+                    "type": f"{settings.registry_client_url.rstrip('/')}/errors/not-acceptable",
+                    "title": "Not Acceptable",
+                    "status": 406,
+                    "detail": "GET requests must include 'text/event-stream' in the Accept header.",
+                },
+            )
 
-        logger.info("Streaming SSE from backend")
+        try:
+            # Use 5 min timeout when forwarding GET stream.
+            # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
+            stream_context = proxy_client.stream(
+                request.method, target_url, headers=headers, content=body, timeout=httpx.Timeout(300)
+            )
+            backend_response = await stream_context.__aenter__()
 
-        response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
-        # Content-Length cannot be set for a stream of indeterminate length.
-        response_headers.pop("content-length", None)
-        response_headers.update(
-            {
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
-            }
-        )
+            logger.info("Streaming SSE from backend")
 
-        async def stream_sse():
-            try:
-                # NOTE: Every chunk-reading has a 5 min timeout.
-                async for chunk in backend_response.aiter_bytes():
-                    yield chunk
-            except httpx.TimeoutException:
-                logger.info("No event from downstream for 5 min. Disconnecting.")
+            response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+            # Content-Length cannot be set for a stream of indeterminate length.
+            response_headers.pop("content-length", None)
+            response_headers.update(
+                {
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
+                }
+            )
 
-                raise
-            except Exception:
-                logger.exception("SSE streaming error")
+            async def stream_sse():
+                try:
+                    # NOTE: Every chunk-reading has a 5 min timeout.
+                    async for chunk in backend_response.aiter_bytes():
+                        yield chunk
+                except httpx.TimeoutException:
+                    logger.info("No event from downstream for 5 min. Disconnecting.")
 
-                raise
-            finally:
-                await stream_context.__aexit__(None, None, None)
+                    raise
+                except Exception:
+                    logger.exception("SSE streaming error")
 
-        return StreamingResponse(
-            stream_sse(),
-            status_code=backend_response.status_code,
-            media_type=backend_response.headers.get("content-type", "text/event-stream"),
-            headers=response_headers,
-        )
-    except Exception:
-        logger.exception(f"Error proxying to {target_url}")
+                    raise
+                finally:
+                    await stream_context.__aexit__(None, None, None)
 
-        return JSONResponse(
-            status_code=500,
-            content={
-                "detail": "An internal server error occurred. Please try again or contact support if the problem persists."
-            },
-        )
+            return StreamingResponse(
+                stream_sse(),
+                status_code=backend_response.status_code,
+                media_type=backend_response.headers.get("content-type", "text/event-stream"),
+                headers=response_headers,
+            )
+        except Exception:
+            logger.exception(f"Error proxying to {target_url}")
+
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": "An internal server error occurred. Please try again or contact support if the problem persists."
+                },
+            )
