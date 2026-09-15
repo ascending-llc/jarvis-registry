@@ -32,6 +32,8 @@ from .federation_metadata import (
     FederationMetadata,
 )
 from .federation_sync_job import FederationSyncJob
+from .model_gateway_selection import ModelGatewaySelection
+from .model_source import ModelSource
 from .skill_sync_job import SkillSyncJob
 from .skill_sync_source import SkillSyncSource
 from .token_type import TokenType
@@ -51,6 +53,8 @@ __all__ = [
     "AzureFoundryFederationMetadata",
     "FederationMetadata",
     "FederationSyncJob",
+    "ModelGatewaySelection",
+    "ModelSource",
     "SkillSyncJob",
     "SkillSyncSource",
     "RegistryAccessRole",

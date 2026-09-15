@@ -11,6 +11,7 @@ from .api.v1.mcp.connection_router import router as connection_router
 from .api.v1.mcp.consent_routes import router as consent_router
 from .api.v1.mcp.oauth_router import router as oauth_router
 from .api.v1.meta_routes import router as meta_router
+from .api.v1.model_source.model_source_routes import router as model_source_router
 from .api.v1.search_routes import router as search_router
 from .api.v1.server.server_routes import router as servers_router_v1
 from .api.v1.skill.skill_routes import router as skill_router
@@ -59,5 +60,10 @@ def register_routers(app: FastAPI) -> None:
         skill_sync_source_router,
         prefix=f"/api/{settings.api_version}",
         tags=["Skill Sync Source Management"],
+    )
+    app.include_router(
+        model_source_router,
+        prefix=f"/api/{settings.api_version}",
+        tags=["Model Source Management"],
     )
     app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])
