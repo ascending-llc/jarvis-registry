@@ -38,6 +38,7 @@ from registry_pkgs.workflows.a2a_client import (
     A2ACallResult,
     _ensure_a2a_result_fields,
     _extra_call_headers,
+    _inject_traceparent,
     _poll_until_terminal,
     build_headers,
     call_a2a,
@@ -888,17 +889,49 @@ async def test_call_a2a_continues_when_trace_context_injection_fails(caplog: pyt
     with (
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
         patch(
-            "registry_pkgs.workflows.a2a_client._TRACE_CONTEXT_PROPAGATOR.inject",
+            "registry_pkgs.telemetry.trace_propagation._TRACE_CONTEXT_PROPAGATOR.inject",
             side_effect=RuntimeError("propagator unavailable"),
         ),
-        caplog.at_level("WARNING", logger="registry_pkgs.workflows.a2a_client"),
+        caplog.at_level("WARNING", logger="registry_pkgs.telemetry.trace_propagation"),
     ):
         result = await call_a2a(agent, "test", headers_provider=headers_provider)
 
     assert result.success is True
     send_context = mock_client.send_message.call_args.kwargs["context"]
     assert send_context.state["http_kwargs"]["headers"] == {"Authorization": "Bearer test-token"}
-    assert "Failed to inject trace context into A2A request headers" in caplog.text
+    assert "Failed to inject trace context into outbound headers" in caplog.text
+
+
+def test_inject_traceparent_unchanged_after_shared_helper_refactor():
+    """Regression: _inject_traceparent output is identical to its pre-refactor behavior.
+
+    A2A policy = clear inherited baggage, set only the Langfuse keys, strip pre-existing
+    trace headers, drop tracestate. Pinning the exact output guards the extraction into
+    the shared inject_trace_context helper.
+    """
+    span_context = SpanContext(
+        trace_id=1,
+        span_id=1,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+        trace_state=TraceState([("vendor", "state")]),
+    )
+    incoming = {
+        "Authorization": "Bearer test-token",
+        "Baggage": "environment=demo",
+        "Traceparent": "00-00000000000000000000000000000002-0000000000000002-01",
+        "Tracestate": "old=value",
+    }
+
+    with patch("registry_pkgs.workflows.a2a_client.get_trace_environment", return_value="demo"):
+        with use_span(NonRecordingSpan(span_context), end_on_exit=False):
+            out = _inject_traceparent(incoming)
+
+    assert out == {
+        "Authorization": "Bearer test-token",
+        "baggage": "langfuse.environment=demo",
+        "traceparent": "00-00000000000000000000000000000001-0000000000000001-01",
+    }
 
 
 def test_extra_call_headers_returns_agentcore_session_header_only():
