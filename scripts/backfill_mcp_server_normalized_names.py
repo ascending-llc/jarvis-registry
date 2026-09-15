@@ -70,25 +70,32 @@ def find_normalized_name_conflicts(docs: list[dict]) -> dict[tuple[str | None, s
     return {key: group for key, group in groups.items() if len(group) > 1}
 
 
-async def ensure_normalized_name_index(collection) -> bool:
-    """Create the unique partial index only if absent; no-op (not an error) if already present.
+async def ensure_normalized_name_index(collection, dry_run: bool) -> bool:
+    """Check whether the unique partial index exists; create it if missing and not a dry run.
+
+    The existence check is a safe, read-only call and always runs, even under --dry-run, so the
+    summary can report the index's actual state instead of an unchecked default. Only the
+    `create_index` call itself is skipped when dry_run is True.
 
     DEMO and PROD already have this index — this function must return without attempting
     creation there. Passing the identical index name Chat's own migration uses
     (NORMALIZED_INDEX_NAME) guarantees no name/spec mismatch regardless of which side created it
     first — see the 'index already exists' incident referenced in Change 2.
+
+    Returns True if the index already existed, False if it was missing beforehand.
     """
     existing = await collection.index_information()
     if NORMALIZED_INDEX_NAME in existing:
-        return False
+        return True
 
-    await collection.create_index(
-        [("normalizedServerName", 1), ("tenantId", 1)],
-        name=NORMALIZED_INDEX_NAME,
-        unique=True,
-        partialFilterExpression={"normalizedServerName": {"$exists": True}},
-    )
-    return True
+    if not dry_run:
+        await collection.create_index(
+            [("normalizedServerName", 1), ("tenantId", 1)],
+            name=NORMALIZED_INDEX_NAME,
+            unique=True,
+            partialFilterExpression={"normalizedServerName": {"$exists": True}},
+        )
+    return False
 
 
 async def backfill_normalized_names(dry_run: bool) -> dict:
@@ -96,13 +103,15 @@ async def backfill_normalized_names(dry_run: bool) -> dict:
     writing if any exist. Otherwise, for each doc whose normalizedServerName is missing or
     doesn't match normalize_server_name(serverName), `update_one` with $set (batched, not a
     single transaction — matches migrate_a2a_agent_path_slug.py and mcpServerNames.ts's own
-    bulkWrite-in-batches approach). Then call ensure_normalized_name_index unless dry_run.
-    Returns stats: total, conflicts_found, updated, index_created.
+    bulkWrite-in-batches approach). Always checks the index's existence via
+    ensure_normalized_name_index, even under --dry-run; only the actual creation is skipped then.
+    Returns stats: total, conflicts_found, updated, index_exists, index_created.
     """
     stats = {
         "total": 0,
         "conflicts_found": 0,
         "updated": 0,
+        "index_exists": None,
         "index_created": False,
     }
 
@@ -168,13 +177,15 @@ async def backfill_normalized_names(dry_run: bool) -> dict:
                 )
                 stats["updated"] += 1
 
-    if not dry_run:
-        logger.info("Ensuring 'normalizedServerName_1_tenantId_1' index exists...")
-        stats["index_created"] = await ensure_normalized_name_index(collection)
-        if stats["index_created"]:
-            logger.info("Created index '%s'", NORMALIZED_INDEX_NAME)
-        else:
-            logger.info("Index '%s' already exists, skipping creation", NORMALIZED_INDEX_NAME)
+    logger.info("Checking '%s' index...", NORMALIZED_INDEX_NAME)
+    stats["index_exists"] = await ensure_normalized_name_index(collection, dry_run=dry_run)
+    if stats["index_exists"]:
+        logger.info("Index '%s' already exists", NORMALIZED_INDEX_NAME)
+    elif dry_run:
+        logger.info("Index '%s' does not exist yet; a real run would create it", NORMALIZED_INDEX_NAME)
+    else:
+        stats["index_created"] = True
+        logger.info("Created index '%s'", NORMALIZED_INDEX_NAME)
 
     return stats
 
@@ -211,6 +222,7 @@ async def main(dry_run: bool = False) -> None:
         logger.info(f"Total documents found:    {stats['total']}")
         logger.info(f"Conflicts found:          {stats['conflicts_found']}")
         logger.info(f"Documents updated:        {stats['updated']}")
+        logger.info(f"Index already exists:     {stats['index_exists']}")
         logger.info(f"Index created:            {stats['index_created']}")
 
         if stats["conflicts_found"] > 0:
