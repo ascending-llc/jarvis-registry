@@ -27,9 +27,6 @@ from a2a.types import (
 from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
 from opentelemetry import baggage, trace
-from opentelemetry.baggage.propagation import W3CBaggagePropagator
-from opentelemetry.propagators.composite import CompositePropagator
-from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.core.config import JwtSigningConfig
@@ -39,6 +36,7 @@ from registry_pkgs.models.federation_metadata import (
     AzureFoundryFederationMetadata,
 )
 from registry_pkgs.telemetry import get_trace_environment
+from registry_pkgs.telemetry.trace_propagation import inject_trace_context
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +48,6 @@ _A2A_JWT_TTL_SECONDS = _A2A_TASK_BUDGET_SECONDS + 300
 _A2A_HTTP_TIMEOUT = httpx.Timeout(30.0, read=_A2A_TASK_BUDGET_SECONDS)
 # Preemptive backstop: a still-streaming send never reaches the poll loop's own check.
 _A2A_HARD_TIMEOUT_SECONDS = _A2A_TASK_BUDGET_SECONDS + 60
-_TRACE_CONTEXT_PROPAGATOR = CompositePropagator(
-    [
-        TraceContextTextMapPropagator(),
-        W3CBaggagePropagator(),
-    ]
-)
-_TRACE_CONTEXT_HEADERS = frozenset({"baggage", "traceparent", "tracestate"})
 _LANGFUSE_ENVIRONMENT_BAGGAGE_KEY = "langfuse.environment"
 _LANGFUSE_TRACE_NAME_BAGGAGE_KEY = "langfuse.trace.name"
 _LANGFUSE_TRACE_TAGS_BAGGAGE_KEY = "langfuse.trace.tags"
@@ -208,8 +199,11 @@ def _extra_call_headers(agent: A2AAgent) -> dict[str, str]:
 
 
 def _inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
-    """Return copied headers with the current trace and controlled Langfuse baggage."""
-    outbound_headers = {key: value for key, value in headers.items() if key.lower() not in _TRACE_CONTEXT_HEADERS}
+    """Return copied headers with the current trace and controlled Langfuse baggage.
+
+    A2A policy (clear inherited baggage, set only the curated Langfuse keys) stays
+    local here; the propagation mechanics are shared via ``inject_trace_context``.
+    """
     try:
         outbound_context = baggage.clear()
         environment = get_trace_environment()
@@ -235,14 +229,10 @@ def _inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
                     json.dumps(trace_tags, separators=(",", ":")),
                     context=outbound_context,
                 )
-        _TRACE_CONTEXT_PROPAGATOR.inject(
-            outbound_headers,
-            context=outbound_context,
-        )
     except Exception:
-        logger.warning("Failed to inject trace context into A2A request headers", exc_info=True)
-    outbound_headers.pop("tracestate", None)
-    return outbound_headers
+        logger.warning("Failed to build A2A Langfuse baggage; sending without it", exc_info=True)
+        outbound_context = baggage.clear()
+    return inject_trace_context(headers, context=outbound_context)
 
 
 def _create_message(text: str) -> Message:
