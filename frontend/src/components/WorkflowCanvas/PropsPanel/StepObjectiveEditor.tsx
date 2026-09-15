@@ -75,7 +75,7 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
         onChange={event => onChange(event.target.value)}
         disabled={disabled}
         spellCheck={false}
-        className='h-[144px] min-h-[96px] max-h-[320px] w-full resize-y overflow-auto rounded-md border border-[var(--jarvis-border)] bg-[var(--jarvis-card-muted)] px-2 py-2 font-mono text-xs leading-relaxed text-[var(--jarvis-text-strong)] outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] disabled:cursor-not-allowed disabled:opacity-60'
+        className='step-objective-textarea h-[144px] min-h-[96px] max-h-[320px] w-full resize-y overflow-auto rounded-md border border-[var(--jarvis-border)] bg-[var(--jarvis-card-muted)] px-2 py-2 font-mono text-xs leading-relaxed text-[var(--jarvis-text-strong)] outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] disabled:cursor-not-allowed disabled:opacity-60'
         placeholder={STEP_OBJECTIVE_PLACEHOLDER}
       />
 
@@ -146,7 +146,7 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
                       disabled={disabled || isSaving}
                       spellCheck={false}
                       aria-label='Step objective Markdown source'
-                      className='h-[360px] min-h-[240px] max-h-[60vh] w-full resize-y overflow-auto rounded-lg border border-[var(--jarvis-border)] bg-[var(--jarvis-card-muted)] px-4 py-3 font-mono text-sm leading-relaxed text-[var(--jarvis-text-strong)] outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] disabled:cursor-not-allowed disabled:opacity-60'
+                      className='step-objective-textarea h-[360px] min-h-[240px] max-h-[60vh] w-full resize-y overflow-auto rounded-lg border border-[var(--jarvis-border)] bg-[var(--jarvis-card-muted)] px-4 py-3 font-mono text-sm leading-relaxed text-[var(--jarvis-text-strong)] outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] disabled:cursor-not-allowed disabled:opacity-60'
                       placeholder={STEP_OBJECTIVE_PLACEHOLDER}
                     />
                   </div>
