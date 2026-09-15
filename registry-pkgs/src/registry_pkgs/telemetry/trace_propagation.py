@@ -44,7 +44,16 @@ def bounded_baggage_value(value: str, max_length: int = MAX_BAGGAGE_VALUE_LENGTH
 
 
 def inject_trace_context(headers: dict[str, str], *, context: Context | None = None) -> dict[str, str]:
-    """Return a copy of *headers* with the current (or given) trace context injected."""
+    """Return a copy of *headers* with the current (or given) trace context injected.
+
+    Any pre-existing ``traceparent``/``tracestate``/``baggage`` in *headers* is stripped before
+    injection, regardless of outcome. On injection failure this function does **not** fall back
+    to the caller's original values for those three headers — it still returns them stripped,
+    never re-adding what was removed. This is deliberate, not just fail-open-by-omission: several
+    callers (e.g. the direct-connect proxy) sit behind a trust boundary and must never forward a
+    client-supplied trace-context header downstream, including on our own internal failure. Never
+    raises; a failure is logged as a warning instead.
+    """
     outbound_headers = {k: v for k, v in headers.items() if k.lower() not in _TRACE_CONTEXT_HEADERS}
     try:
         _TRACE_CONTEXT_PROPAGATOR.inject(outbound_headers, context=context)
