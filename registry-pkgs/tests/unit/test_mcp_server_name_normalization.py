@@ -8,6 +8,7 @@ schema and Registry's Beanie model share the same `mcpservers` collection and un
 
 import pytest
 from beanie import PydanticObjectId
+from pydantic import ValidationError
 
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer, normalize_server_name
 
@@ -74,21 +75,21 @@ class TestNormalizeServerName:
 
 
 class TestExtendedMCPServerNormalizedServerNameField:
-    """Test that normalizedServerName is Optional and decoupled from Pydantic validation."""
+    """Test that normalizedServerName is required, matching the generated base class."""
 
-    def test_construction_without_normalized_server_name_does_not_raise(self, monkeypatch):
-        """A dict with no normalizedServerName key at all must not raise ValidationError."""
+    def test_construction_without_normalized_server_name_raises(self, monkeypatch):
+        """A dict with no normalizedServerName key must raise ValidationError — every
+        environment has been backfilled (scripts/backfill_mcp_server_normalized_names.py)."""
         monkeypatch.setattr(ExtendedMCPServer, "get_pymongo_collection", classmethod(lambda cls: None))
 
-        server = ExtendedMCPServer.model_validate(
-            {
-                "serverName": "legacy-server",
-                "config": {},
-                "author": str(PydanticObjectId()),
-            }
-        )
-
-        assert server.normalizedServerName is None
+        with pytest.raises(ValidationError):
+            ExtendedMCPServer.model_validate(
+                {
+                    "serverName": "legacy-server",
+                    "config": {},
+                    "author": str(PydanticObjectId()),
+                }
+            )
 
     def test_construction_with_normalized_server_name_preserves_value(self, monkeypatch):
         monkeypatch.setattr(ExtendedMCPServer, "get_pymongo_collection", classmethod(lambda cls: None))

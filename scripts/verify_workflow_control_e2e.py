@@ -143,6 +143,7 @@ async def _seed_executor_servers(acl_service: ACLService) -> None:
         if server_id is None:
             server = ExtendedMCPServer(
                 serverName=key,
+                normalizedServerName=normalize_server_name(key),
                 path=f"/{key}",
                 config={
                     "enabled": True,
@@ -191,6 +192,7 @@ from registry_pkgs.models.enums import (
     WorkflowRunStatus,
 )
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_mcp_server import normalize_server_name
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
 from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes

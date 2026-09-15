@@ -37,6 +37,7 @@ class TestExtendedMCPServerStructure:
 
         # These fields are required according to the model
         assert "serverName" in required_fields
+        assert "normalizedServerName" in required_fields
         assert "config" in required_fields
         assert "author" in required_fields
         # path is now optional to support external systems that don't provide it
@@ -46,6 +47,7 @@ class TestExtendedMCPServerStructure:
         server = ExtendedMCPServer.model_validate(
             {
                 "serverName": "agentcore-mcp",
+                "normalizedServerName": "agentcore-mcp",
                 "config": {"title": "AgentCore MCP", "enabled": True},
                 "author": str(PydanticObjectId()),
                 "path": "/agentcore/mcp/demo",
