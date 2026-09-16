@@ -575,3 +575,6 @@ models-write:
   - action: delete_model_source
     method: DELETE
     endpoint: /model-sources/{model_source_id}
+  - action: set_default_workflow_model
+    method: PUT
+    endpoint: /model-gateway/selection/default-workflow-model

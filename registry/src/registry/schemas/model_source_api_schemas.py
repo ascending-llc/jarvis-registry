@@ -122,3 +122,7 @@ class ModelSourceDeleteResponse(BaseModel):
 class ModelGatewaySelectionResponse(BaseModel):
     defaultWorkflowModelSourceId: str | None = None
     embeddingModelSourceId: str | None = None
+
+
+class SetDefaultWorkflowModelRequest(BaseModel):
+    modelSourceId: str

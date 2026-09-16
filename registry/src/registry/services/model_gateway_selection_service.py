@@ -1,22 +1,21 @@
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
-from pymongo.errors import DuplicateKeyError
 
+from registry_pkgs.database.model_gateway_selection_repository import (
+    get_model_gateway_selection,
+    set_model_gateway_selection,
+)
 from registry_pkgs.models.enums import ModelSourceMode
-from registry_pkgs.models.model_gateway_selection import MODEL_GATEWAY_SELECTION_ID, ModelGatewaySelection
+from registry_pkgs.models.model_gateway_selection import ModelGatewaySelection
 from registry_pkgs.models.model_source import ModelSource
 
 
 class ModelGatewaySelectionService:
     async def get_selection(self) -> ModelGatewaySelection:
         """Return the singleton selection, creating it under the fixed _id if absent."""
-        selection = await ModelGatewaySelection.find_one({"_id": MODEL_GATEWAY_SELECTION_ID})
+        selection = await get_model_gateway_selection(create_if_missing=True)
         if selection is None:
-            selection = ModelGatewaySelection(id=MODEL_GATEWAY_SELECTION_ID)
-            try:
-                await selection.insert()
-            except DuplicateKeyError:
-                selection = await ModelGatewaySelection.find_one({"_id": MODEL_GATEWAY_SELECTION_ID})
+            raise RuntimeError("Failed to create model gateway selection")
         return selection
 
     async def set_default_workflow_model(
@@ -26,11 +25,11 @@ class ModelGatewaySelectionService:
         updated_by: str | None,
     ) -> ModelGatewaySelection:
         object_id = await self._require_model_source(model_source_id, ModelSourceMode.CHAT)
-        selection = await self.get_selection()
-        selection.defaultWorkflowModelSourceId = object_id
-        selection.updatedBy = updated_by
-        await selection.save()
-        return selection
+        return await set_model_gateway_selection(
+            "defaultWorkflowModelSourceId",
+            object_id,
+            updated_by=updated_by,
+        )
 
     async def set_embedding_model(
         self,
@@ -39,11 +38,11 @@ class ModelGatewaySelectionService:
         updated_by: str | None,
     ) -> ModelGatewaySelection:
         object_id = await self._require_model_source(model_source_id, ModelSourceMode.EMBEDDING)
-        selection = await self.get_selection()
-        selection.embeddingModelSourceId = object_id
-        selection.updatedBy = updated_by
-        await selection.save()
-        return selection
+        return await set_model_gateway_selection(
+            "embeddingModelSourceId",
+            object_id,
+            updated_by=updated_by,
+        )
 
     @staticmethod
     async def _require_model_source(model_source_id: str, expected_mode: ModelSourceMode) -> PydanticObjectId:
