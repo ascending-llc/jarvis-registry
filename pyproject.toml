@@ -246,8 +246,6 @@ export -f _clean_member
 xargs -I % bash -c '[ -d "%" ] && rm -rf "%"' <<EOF
 build-artifacts
 logs
-security_scans
-registry/src/agent_security_scans
 EOF
 
 xargs -I % bash -c '_clean_member "%"' <<EOF
