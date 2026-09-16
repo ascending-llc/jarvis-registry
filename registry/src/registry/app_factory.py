@@ -83,7 +83,7 @@ def _configure_middleware(app: FastAPI) -> None:
         CORSMiddleware,
         allow_origins=[settings.registry_client_origin],
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["Mcp-Session-Id"],
     )

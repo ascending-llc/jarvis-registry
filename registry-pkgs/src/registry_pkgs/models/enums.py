@@ -66,6 +66,20 @@ class SkillSyncProviderType(StrEnum):
     GITHUB = "github"
 
 
+class ModelSourceProviderType(StrEnum):
+    """Cloud provider that hosts a registered model."""
+
+    AWS_BEDROCK = "aws_bedrock"
+    AZURE_OPENAI = "azure_openai"
+
+
+class ModelSourceMode(StrEnum):
+    """Which use case a registered model serves."""
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+
+
 class SkillSyncSourceStatus(StrEnum):
     ACTIVE = "active"
     DELETING = "deleting"

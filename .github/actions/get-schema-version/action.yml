@@ -17,13 +17,19 @@ runs:
       run: |
         # Get the latest release tag from jarvis-api repo (private repo)
         # Using PAT for cross-repo access to private repository
-        SCHEMA_VERSION=$(gh api repos/ascending-llc/jarvis-api/releases/latest --jq '.tag_name' || echo "")
+        # gh api writes the (error) response body to stdout even on failure, so `|| echo ""`
+        # doesn't discard it — capture the exit code instead of relying on stdout emptiness.
+        set +e
+        SCHEMA_VERSION=$(gh api repos/ascending-llc/jarvis-api/releases/latest --jq '.tag_name' 2>&1)
+        SCHEMA_EXIT_CODE=$?
+        set -e
 
-        if [ -z "$SCHEMA_VERSION" ]; then
+        if [ "$SCHEMA_EXIT_CODE" -ne 0 ] || [ -z "$SCHEMA_VERSION" ]; then
           echo "⚠️  Error: Failed to fetch latest release from jarvis-api"
           echo "This could mean:"
           echo "  1. The repository has no releases published yet"
           echo "  2. The PAT doesn't have access to ascending-llc/jarvis-api"
+          echo "gh output: ${SCHEMA_VERSION}"
           exit 1
         fi
 

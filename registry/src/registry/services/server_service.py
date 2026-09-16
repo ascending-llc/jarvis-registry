@@ -24,6 +24,7 @@ from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
 )
+from registry_pkgs.models.extended_mcp_server import normalize_server_name
 from registry_pkgs.oauth.errors import (
     AuthenticationError,
     MissingUserIdError,
@@ -473,7 +474,11 @@ class ServerServiceV1:
 
         # Check if serverName already exists
         server_name = generate_server_name_from_title(data.title)
-        existing_name = await ExtendedMCPServer.find_one({"serverName": server_name}, session=session)
+        normalized_name = normalize_server_name(server_name)
+        existing_name = await ExtendedMCPServer.find_one(
+            {"$or": [{"serverName": server_name}, {"normalizedServerName": normalized_name}]},
+            session=session,
+        )
         if existing_name:
             raise ValueError(f"Server with name '{server_name}' already exists")
 
@@ -502,6 +507,7 @@ class ServerServiceV1:
         now = _get_current_utc_time()
         server = ExtendedMCPServer(
             serverName=server_name,
+            normalizedServerName=normalized_name,
             config=config,
             author=author.id,  # Use PydanticObjectId instead of Link
             # Registry-specific root-level fields

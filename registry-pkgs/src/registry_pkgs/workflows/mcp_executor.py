@@ -15,6 +15,7 @@ from registry_pkgs.core.agentcore_jwt import parse_agentcore_runtime_access, sig
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.telemetry.trace_propagation import inject_trace_context
 from registry_pkgs.telemetry.workflow_metrics import record_tool_calls
 from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.helpers import build_prompt
@@ -134,7 +135,10 @@ def make_mcp_executor(
                 cache_key=f"{redis_key_prefix}:agentcore_jwt:{mcp_server.id}",
                 redis_client=redis_client,
             )
-            return {"Authorization": f"Bearer {token}"}
+            # Relies on ambient workflow_run_id/node_id/attempt baggage that with_control
+            # attached around this executor() call; no tool_name here (one call is a whole
+            # agent run that may invoke multiple downstream tools).
+            return inject_trace_context({"Authorization": f"Bearer {token}"})
 
         async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
             prompt = build_prompt(step_input)
@@ -174,6 +178,7 @@ def make_mcp_executor(
             prompt = build_prompt(step_input)
             target_url = _get_target_url(mcp_server)
             headers = await mcp_headers_provider(mcp_server, auth_context)
+            headers = inject_trace_context(headers)
             mcp_tools = MCPTools(
                 transport="streamable-http",
                 server_params=StreamableHTTPClientParams(url=target_url, headers=headers),

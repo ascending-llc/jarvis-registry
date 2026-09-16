@@ -20,6 +20,8 @@ from ..models import (
     Federation,
     FederationSyncJob,
     Key,
+    ModelGatewaySelection,
+    ModelSource,
     NodeRun,
     RegistryAccessRole,
     RegistryAclEntry,
@@ -153,6 +155,8 @@ class MongoDB:
                     WorkflowVersion,
                     ExtendedSkill,
                     ExtendedSkillFile,
+                    ModelSource,
+                    ModelGatewaySelection,
                 ],
             )
         except Exception:

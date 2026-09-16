@@ -64,4 +64,4 @@ jobs:
       git_ref:     ${{ needs.bump-version-and-tag.outputs.new_tag }}
       version_tag: ${{ needs.bump-version-and-tag.outputs.new_tag }}
     secrets:
-      JARVIS_RELEASE_ACCESS_TOKEN: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
+      GH_COPILOT_KEY: ${{ secrets.GH_COPILOT_KEY }}

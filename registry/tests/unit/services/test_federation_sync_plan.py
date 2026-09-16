@@ -58,6 +58,7 @@ async def test_build_sync_plan_handles_runtime_type_switch_without_discovery_mut
     existing_mcp = SimpleNamespace(
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="runtime-r1",
+        normalizedServerName="runtime-r1",
         path="/agentcore/mcp/runtime-r1",
         config={"runtimeAccess": {"mode": "iam"}},
         numTools=1,
@@ -73,7 +74,7 @@ async def test_build_sync_plan_handles_runtime_type_switch_without_discovery_mut
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing_mcp])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -113,18 +114,20 @@ async def test_build_sync_plan_updates_mcp_when_only_runtime_access_mode_changes
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="auth-mode-mcp",
+        normalizedServerName="auth-mode-mcp",
         config={"runtimeAccess": {"mode": "iam"}},
     )
     discovered_mcp = SimpleNamespace(
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="auth-mode-mcp",
+        normalizedServerName="auth-mode-mcp",
         config={"runtimeAccess": {"mode": "jwt"}},
     )
 
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing_mcp])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -258,18 +261,20 @@ async def test_build_sync_plan_updates_mcp_when_only_jwt_audiences_change(
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="audience-rotation-mcp",
+        normalizedServerName="audience-rotation-mcp",
         config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-services"]}}},
     )
     discovered_mcp = SimpleNamespace(
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="audience-rotation-mcp",
+        normalizedServerName="audience-rotation-mcp",
         config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-managed-agents"]}}},
     )
 
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing_mcp])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -366,18 +371,20 @@ async def test_build_sync_plan_treats_unparseable_existing_runtime_access_as_cha
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="malformed-runtime-access-mcp",
+        normalizedServerName="malformed-runtime-access-mcp",
         config={"runtimeAccess": {"mode": "jwt", "jwt": "not-a-mapping"}},
     )
     discovered_mcp = SimpleNamespace(
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="malformed-runtime-access-mcp",
+        normalizedServerName="malformed-runtime-access-mcp",
         config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-services"]}}},
     )
 
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing_mcp])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -459,12 +466,14 @@ async def test_build_sync_plan_skips_mcp_insert_without_marking_error(
     conflicting_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="shared-server",
+        normalizedServerName="shared-server",
         federationRefId=PydanticObjectId(),
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing"),
     )
     discovered_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="shared-server",
+        normalizedServerName="shared-server",
         tags=[],
         federationRefId=None,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:new", runtime_version="1"),
@@ -474,7 +483,7 @@ async def test_build_sync_plan_skips_mcp_insert_without_marking_error(
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([conflicting_server])
         raise AssertionError(f"unexpected query: {query}")
 
@@ -680,12 +689,14 @@ async def test_build_sync_plan_records_error_when_mcp_create_servername_has_no_f
     orphaned_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="orphaned-server",
+        normalizedServerName="orphaned-server",
         federationRefId=None,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:orphaned"),
     )
     discovered_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="orphaned-server",
+        normalizedServerName="orphaned-server",
         tags=[],
         federationRefId=None,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:new", runtime_version="1"),
@@ -695,7 +706,7 @@ async def test_build_sync_plan_records_error_when_mcp_create_servername_has_no_f
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([orphaned_server])
         raise AssertionError(f"unexpected query: {query}")
 
@@ -726,6 +737,7 @@ async def test_build_sync_plan_skips_mcp_rename_when_servername_owned_by_another
     existing_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="old-name",
+        normalizedServerName="old-name",
         path="/agentcore/mcp/old-name",
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
@@ -735,12 +747,14 @@ async def test_build_sync_plan_skips_mcp_rename_when_servername_owned_by_another
     conflict_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="taken-name",
+        normalizedServerName="taken-name",
         federationRefId=PydanticObjectId(),
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:other"),
     )
     discovered_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="taken-name",
+        normalizedServerName="taken-name",
         path="/agentcore/mcp/taken-name",
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
@@ -751,7 +765,71 @@ async def test_build_sync_plan_skips_mcp_rename_when_servername_owned_by_another
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing_server])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
+            return _FakeQuery([conflict_server])
+        raise AssertionError(f"unexpected query: {query}")
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.updatedMcpServers == 0
+    assert result.summary.errors == 0
+    assert result.summary.errorMessages == []
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_skips_mcp_rename_on_normalized_name_collision_with_different_raw_server_name(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """A rename must be checked against normalizedServerName, not raw serverName: a persisted
+    server owned by a different federation whose *raw* serverName differs from the discovered
+    item's still collides — and must still be skipped — when both normalize to the same value."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    existing_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="old-name",
+        normalizedServerName="old-name",
+        path="/agentcore/mcp/old-name",
+        config={"runtimeAccess": {"mode": "public"}},
+        tags=[],
+        federationRefId=federation.id,
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing", runtime_version="1"),
+    )
+    # Raw serverName differs from the discovered item's ("Taken/Name" vs "taken-name"), but both
+    # normalize to "taken-name" — the collision must still be detected.
+    conflict_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="Taken/Name",
+        normalizedServerName="taken-name",
+        federationRefId=PydanticObjectId(),
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:other"),
+    )
+    discovered_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="taken-name",
+        normalizedServerName="taken-name",
+        path="/agentcore/mcp/taken-name",
+        config={"runtimeAccess": {"mode": "public"}},
+        tags=[],
+        federationRefId=None,
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing", runtime_version="2"),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing_server])
+        if "normalizedServerName" in query:
             return _FakeQuery([conflict_server])
         raise AssertionError(f"unexpected query: {query}")
 
@@ -782,6 +860,7 @@ async def test_build_sync_plan_records_error_when_mcp_rename_servername_has_no_f
     existing_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="old-name",
+        normalizedServerName="old-name",
         path="/agentcore/mcp/old-name",
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
@@ -791,12 +870,14 @@ async def test_build_sync_plan_records_error_when_mcp_rename_servername_has_no_f
     orphaned_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="orphaned-name",
+        normalizedServerName="orphaned-name",
         federationRefId=None,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:orphaned"),
     )
     discovered_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="orphaned-name",
+        normalizedServerName="orphaned-name",
         path="/agentcore/mcp/orphaned-name",
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
@@ -807,7 +888,7 @@ async def test_build_sync_plan_records_error_when_mcp_rename_servername_has_no_f
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing_server])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([orphaned_server])
         raise AssertionError(f"unexpected query: {query}")
 
@@ -893,6 +974,7 @@ async def test_build_sync_plan_same_batch_mcp_create_collision(
     server_a = SimpleNamespace(
         id=None,
         serverName="colliding-name",
+        normalizedServerName="colliding-name",
         tags=[],
         federationRefId=None,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:a", runtime_version="1"),
@@ -901,6 +983,7 @@ async def test_build_sync_plan_same_batch_mcp_create_collision(
     server_b = SimpleNamespace(
         id=None,
         serverName="colliding-name",
+        normalizedServerName="colliding-name",
         tags=[],
         federationRefId=None,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:b", runtime_version="1"),
@@ -910,7 +993,60 @@ async def test_build_sync_plan_same_batch_mcp_create_collision(
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
+            return _FakeQuery([])
+        raise AssertionError(f"unexpected query: {query}")
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[server_a, server_b],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.createdMcpServers == 1
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.errors == 1
+    assert any("collides with another resource discovered in this same sync" in m for m in result.summary.errorMessages)
+    assert result.mcp_creates == [(server_a, "arn:a")]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_same_batch_mcp_create_collision_by_normalized_name_only(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """Two discovered servers with different raw serverNames that normalize to the same value
+    must still be detected as a same-batch collision (AS-1855)."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    server_a = SimpleNamespace(
+        id=None,
+        serverName="github/server",
+        normalizedServerName="github_server",
+        tags=[],
+        federationRefId=None,
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:a", runtime_version="1"),
+        insert=AsyncMock(),
+    )
+    server_b = SimpleNamespace(
+        id=None,
+        serverName="github_server",
+        normalizedServerName="github_server",
+        tags=[],
+        federationRefId=None,
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:b", runtime_version="1"),
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([])
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"unexpected query: {query}")
 
@@ -942,6 +1078,7 @@ async def test_build_sync_plan_same_batch_mcp_rename_collision(
     new_server = SimpleNamespace(
         id=None,
         serverName="target-name",
+        normalizedServerName="target-name",
         tags=[],
         federationRefId=None,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:new", runtime_version="1"),
@@ -950,6 +1087,7 @@ async def test_build_sync_plan_same_batch_mcp_rename_collision(
     existing_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="old-name",
+        normalizedServerName="old-name",
         path="/agentcore/mcp/old-name",
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
@@ -959,6 +1097,7 @@ async def test_build_sync_plan_same_batch_mcp_rename_collision(
     discovered_existing = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="target-name",
+        normalizedServerName="target-name",
         path="/agentcore/mcp/target-name",
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
@@ -969,7 +1108,7 @@ async def test_build_sync_plan_same_batch_mcp_rename_collision(
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing_server])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"unexpected query: {query}")
 
@@ -1036,6 +1175,7 @@ class TestProviderMismatch:
         federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
         item = SimpleNamespace(
             serverName="wrong-provider",
+            normalizedServerName="wrong-provider",
             federationMetadata=make_azure_foundry_metadata(runtime_arn="azure-agent"),
         )
         summary = FederationApplySummary()
@@ -1280,6 +1420,7 @@ async def test_build_sync_plan_skips_mcp_create_on_enrichment_error(
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     discovered = SimpleNamespace(
         serverName="broken-server",
+        normalizedServerName="broken-server",
         federationMetadata=make_agentcore_mcp_metadata(
             runtime_arn="arn:broken", runtime_version="1", enrichment_error="timeout"
         ),
@@ -1288,7 +1429,7 @@ async def test_build_sync_plan_skips_mcp_create_on_enrichment_error(
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -1410,13 +1551,14 @@ async def test_build_sync_plan_records_error_when_mcp_missing_remote_id(
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     discovered = SimpleNamespace(
         serverName="no-arn-server",
+        normalizedServerName="no-arn-server",
         federationMetadata=None,
     )
 
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -1544,10 +1686,12 @@ async def test_build_sync_plan_mcp_enrichment_error_does_not_skip_stale_detectio
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="enrich-fail-server",
+        normalizedServerName="enrich-fail-server",
         config={"runtimeAccess": {"mode": "iam"}},
     )
     discovered = SimpleNamespace(
         serverName="enrich-fail-server",
+        normalizedServerName="enrich-fail-server",
         federationMetadata=make_agentcore_mcp_metadata(
             runtime_arn=runtime_arn, runtime_version="2", enrichment_error="500 error"
         ),
@@ -1556,7 +1700,7 @@ async def test_build_sync_plan_mcp_enrichment_error_does_not_skip_stale_detectio
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([existing])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -1588,6 +1732,7 @@ async def test_build_sync_plan_does_not_delete_runtime_with_transient_discovery_
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="detail-failed",
+        normalizedServerName="detail-failed",
     )
 
     def _fake_mcp_find(query, session=None):
@@ -1733,10 +1878,12 @@ async def test_build_sync_plan_mcp_update_unchanged_tracks_for_acl(
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="steady-server",
+        normalizedServerName="steady-server",
         config={"runtimeAccess": {"mode": "iam"}},
     )
     discovered = SimpleNamespace(
         serverName="steady-server",
+        normalizedServerName="steady-server",
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         config={"runtimeAccess": {"mode": "iam"}},
     )
@@ -1744,7 +1891,7 @@ async def test_build_sync_plan_mcp_update_unchanged_tracks_for_acl(
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([existing])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -1777,10 +1924,12 @@ async def test_build_sync_plan_mcp_rename_self_conflict_is_no_op(
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="old-name",
+        normalizedServerName="old-name",
         config={"runtimeAccess": {"mode": "iam"}},
     )
     discovered = SimpleNamespace(
         serverName="new-name",
+        normalizedServerName="new-name",
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="2"),
         config={"runtimeAccess": {"mode": "iam"}},
     )
@@ -1788,6 +1937,7 @@ async def test_build_sync_plan_mcp_rename_self_conflict_is_no_op(
     persisted_self = SimpleNamespace(
         id=existing_id,
         serverName="new-name",
+        normalizedServerName="new-name",
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn),
     )
@@ -1795,7 +1945,7 @@ async def test_build_sync_plan_mcp_rename_self_conflict_is_no_op(
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([persisted_self])
         raise AssertionError(f"Unexpected MCP query: {query}")
 

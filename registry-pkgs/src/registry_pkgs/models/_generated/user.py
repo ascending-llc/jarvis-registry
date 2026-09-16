@@ -23,6 +23,7 @@ class Favorite(BaseModel):
 
 class Personalization(BaseModel):
     memories: bool = True
+    statefulCodeEnvironment: str = "user"
 
 
 class User(Document):
