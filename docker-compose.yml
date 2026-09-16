@@ -65,7 +65,6 @@ services:
       - "7860:7860"
     volumes:
       - ./registry/logs:/app/logs
-      - ./security_scans:/app/security_scans
     depends_on:
       auth-server:
         condition: service_started
