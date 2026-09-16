@@ -329,7 +329,7 @@ def compile_workflow(
 
         human_review = _to_agno_human_review(node.human_review)
         if node.node_type == WorkflowNodeType.STEP:
-            lookup_key = f"{POOL_KEY_PREFIX}{node.id}" if node.a2a_pool else node.executor_key
+            lookup_key = f"{POOL_KEY_PREFIX}{node.id}" if node.a2a_pool else node.id
 
             # Nodes whose output was produced by a previous run are replaced with
             # a lightweight pass-through executor so they complete instantly without
@@ -340,7 +340,7 @@ def compile_workflow(
                 executor = executor_registry.get(lookup_key)  # type: ignore[arg-type]
                 if executor is None:
                     raise KeyError(
-                        f"executor key {lookup_key!r} not found in executor_registry "
+                        f"executor for node id {node.id!r} not found in executor_registry "
                         f"(registered: {list(executor_registry)})"
                     )
                 # Live executors rely on build_prompt(), so inject per-node intention

@@ -29,6 +29,7 @@ dependencies = [
     "async-lru>=2.0.5",
     # Workflow runtime
     "agno>=2.5.17",
+    "litellm==1.83.0",
     "cel-python>=0.1.5",
     "croniter>=6.0.0",
     "mcp>=1.26.0,<2.0.0",

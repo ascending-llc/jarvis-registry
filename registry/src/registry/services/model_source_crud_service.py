@@ -8,6 +8,8 @@ from registry.utils.crypto_utils import encrypt_value
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
+from registry_pkgs.models.workflow import WorkflowDefinition
+from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 
 from ..schemas.model_source_api_schemas import (
     AwsBedrockModelConfigInput,
@@ -151,7 +153,27 @@ class ModelSourceCrudService:
         except (InvalidId, TypeError, ValueError):
             return False
         selection = await self._selection_service.get_selection()
-        return object_id in (selection.defaultWorkflowModelSourceId, selection.embeddingModelSourceId)
+        if object_id in (selection.defaultWorkflowModelSourceId, selection.embeddingModelSourceId):
+            return True
+        return await self._referenced_by_workflow(object_id)
+
+    @staticmethod
+    async def _referenced_by_workflow(model_source_id: PydanticObjectId) -> bool:
+        """Scan workflow node trees for a ModelSource reference.
+
+        Workflow deletion is low-frequency and the recursive tree cannot be queried reliably as a
+        single indexed Mongo path, so this intentionally scans definitions until the first match.
+        """
+        async for definition in WorkflowDefinition.find({}):
+            for node in flatten_workflow_nodes(definition.nodes):
+                if node.model_source_id is None:
+                    continue
+                try:
+                    if PydanticObjectId(node.model_source_id) == model_source_id:
+                        return True
+                except (InvalidId, TypeError, ValueError):
+                    continue
+        return False
 
     @staticmethod
     async def soft_delete(source: ModelSource) -> ModelSource:

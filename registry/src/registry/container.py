@@ -5,7 +5,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 import httpx
-from agno.models.aws import AwsBedrock
+from agno.models.litellm import LiteLLM
 from beanie import PydanticObjectId
 from redis import Redis
 
@@ -25,6 +25,7 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 from registry_pkgs.workflows.a2a_headers_provider import A2aHeadersProvider, make_a2a_headers_provider
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
+from registry_pkgs.workflows.model_resolution import AzureModelCredential
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 
@@ -381,19 +382,23 @@ class RegistryContainer:
         )
 
     @cached_property
+    def azure_model_credential(self) -> AzureModelCredential:
+        """Own the process-wide Azure credential used by workflow LiteLLM models."""
+        return AzureModelCredential()
+
+    @cached_property
     def workflow_runner(self) -> WorkflowRunner:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
-            llm = AwsBedrock(
-                id=self.settings.workflow_llm_model_id,
-                aws_region=self.settings.aws_region,
-                aws_access_key_id=self.settings.aws_access_key_id,
-                aws_secret_access_key=self.settings.aws_secret_access_key,
-                aws_session_token=self.settings.aws_session_token,
+            fallback_model = LiteLLM(
+                id=f"bedrock/{self.settings.workflow_llm_model_id}",
+                request_params={"aws_region_name": self.settings.aws_region},
             )
 
             return WorkflowRunner(
-                llm=llm,
+                fallback_model=fallback_model,
+                encryption_key=self.settings.encryption_key,
+                azure_ad_token_provider=self.azure_model_credential.token_provider,
                 db_client=MongoDB.get_client(),
                 db_name=MongoDB.database_name,
                 jwt_config=self.settings.jwt_signing_config,
@@ -570,6 +575,7 @@ class RegistryContainer:
         await self.mcp_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()
         await self.a2a_client_registry.close()
+        self.azure_model_credential.close()
         await self.cloud_identity_client.aclose()
 
     def _initialize_federation(self) -> None:

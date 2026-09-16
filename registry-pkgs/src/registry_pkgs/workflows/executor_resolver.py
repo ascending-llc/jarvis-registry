@@ -30,6 +30,7 @@ from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider, make_mcp_executor
+from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider, resolve_model
 from registry_pkgs.workflows.types import (
     BUILTIN_ECHO_EXECUTOR_KEY,
     BUILTIN_SET_VALUE_EXECUTOR_KEY,
@@ -129,29 +130,35 @@ def _builtin_executor(key: str) -> StepExecutor | None:
 
 
 async def build_executor_registry(
-    executor_keys: list[str],
+    nodes: list[WorkflowNode],
     *,
-    llm: Model,
+    default_model: Model,
     auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
+    encryption_key: bytes,
+    azure_ad_token_provider: AzureAdTokenProvider | None,
     pool_nodes: list[WorkflowNode] | None = None,
-    selector_llm: Model | None = None,
     a2a_httpx_client: httpx.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
     redis_client: Any | None = None,
     redis_key_prefix: str | None = None,
     mcp_headers_provider: McpHeadersProvider | None = None,
 ) -> dict[str, StepExecutor]:
-    """Resolve each executor key to an MCP server or A2A agent executor.
+    """Resolve each STEP node to an MCP server / A2A agent / A2A pool executor.
+
+    The registry is keyed by ``node.id`` so two nodes referencing the same backend with different
+    ``model_source_id`` overrides get distinct executors. The actual resolve+build work is still
+    deduplicated per ``(executor_key, model_source_id)`` combo, so the common case (many nodes, no
+    override) costs no more than before.
 
     Args:
-        executor_keys:    All ``executor_key`` values referenced by a WorkflowDefinition.
-                          Duplicates are resolved only once.
-        llm:              agno-compatible Model used by MCP-server executors.
+        nodes:            Non-pool STEP nodes with ``executor_key`` set.
+        default_model:    Model used when a node has no ``model_source_id`` override.
         auth_context:     Triggering user's auth context for manually-registered MCP servers.
         jwt_config:       JWT signing config used by A2A executors and AgentCore MCP servers.
+        encryption_key:   Key used to decrypt a ModelSource's stored Azure credential.
+        azure_ad_token_provider:
         pool_nodes:       STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
-        selector_llm:     Model used only for A2A pool selection; falls back to ``llm``.
         a2a_httpx_client: Optional shared httpx client passed to A2A executors.
         headers_provider: Optional shared headers provider passed to A2A executors.
         redis_client:     Optional shared Redis client for AgentCore JWT caching.
@@ -159,34 +166,49 @@ async def build_executor_registry(
         mcp_headers_provider: Optional headers provider for manually-registered MCP servers.
 
     Returns:
-        dict mapping each ``executor_key`` / pool synthetic-key → ``StepExecutor``.
+        dict mapping each ``node.id`` / pool synthetic-key → ``StepExecutor``.
 
     Raises:
         KeyError:        If an executor_key cannot be resolved to any active server or agent.
     """
     registry: dict[str, StepExecutor] = {}
+    built_by_combo: dict[tuple[str, str | None], StepExecutor] = {}
 
-    for key in dict.fromkeys(executor_keys):  # deduplicate while preserving order
-        raw = await _resolve_executor(
-            key,
-            llm=llm,
-            auth_context=auth_context,
-            jwt_config=jwt_config,
-            a2a_httpx_client=a2a_httpx_client,
-            headers_provider=headers_provider,
-            redis_client=redis_client,
-            redis_key_prefix=redis_key_prefix,
-            mcp_headers_provider=mcp_headers_provider,
-        )
-        registry[key] = _instrumented_executor(raw, _detect_agent_type(raw), key)
+    for node in nodes:
+        combo = (node.executor_key, node.model_source_id)
+        if combo not in built_by_combo:
+            node_model = await resolve_model(
+                node.model_source_id,
+                fallback_model=default_model,
+                encryption_key=encryption_key,
+                azure_ad_token_provider=azure_ad_token_provider,
+            )
+            raw = await _resolve_executor(
+                node.executor_key,
+                llm=node_model,
+                auth_context=auth_context,
+                jwt_config=jwt_config,
+                a2a_httpx_client=a2a_httpx_client,
+                headers_provider=headers_provider,
+                redis_client=redis_client,
+                redis_key_prefix=redis_key_prefix,
+                mcp_headers_provider=mcp_headers_provider,
+            )
+            built_by_combo[combo] = _instrumented_executor(raw, _detect_agent_type(raw), node.executor_key)
+        registry[node.id] = built_by_combo[combo]
 
-    _selector = selector_llm or llm
     for node in pool_nodes or []:
         synthetic_key = f"{POOL_KEY_PREFIX}{node.id}"
+        node_model = await resolve_model(
+            node.model_source_id,
+            fallback_model=default_model,
+            encryption_key=encryption_key,
+            azure_ad_token_provider=azure_ad_token_provider,
+        )
         raw = make_a2a_pool_executor(
             node_name=node.name,
             pool_keys=node.a2a_pool,
-            selector_llm=_selector,
+            selector_llm=node_model,
             jwt_config=jwt_config,
             httpx_client=a2a_httpx_client,
             headers_provider=headers_provider,

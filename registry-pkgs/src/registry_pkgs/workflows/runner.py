@@ -73,6 +73,7 @@ from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledErr
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider
+from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider, resolve_default_workflow_model
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
@@ -113,12 +114,13 @@ class WorkflowRunner:
     parameter is ``auth_context`` passed to ``run()``.
 
     Args:
-        llm:                  Model used by MCP-server executors (e.g. AwsBedrock).
+        fallback_model:       Model used when neither a per-node ``model_source_id`` override nor a
+                              configured default workflow ModelSource resolves (legacy /
+                              fresh-deployment path). The effective default is resolved fresh per run.
+        encryption_key:       Key used to decrypt a ModelSource's stored Azure credential.
         db_client:            pymongo AsyncMongoClient for session + Beanie persistence.
         db_name:              MongoDB database name.
         jwt_config:           JWT signing config used by A2A executors and AgentCore MCP servers.
-        selector_llm:         Optional cheaper/faster model for A2A pool selection.
-                              Falls back to ``llm`` when not provided.
         directive_queue:      Optional in-process signal bus for pause/cancel/retry.
         a2a_httpx_client:     Optional shared httpx client for A2A invocations.
         headers_provider:     Optional shared headers provider for A2A executors.
@@ -130,11 +132,12 @@ class WorkflowRunner:
     def __init__(
         self,
         *,
-        llm: Model,
+        fallback_model: Model,
+        encryption_key: bytes,
+        azure_ad_token_provider: AzureAdTokenProvider | None,
         db_client: Any,
         db_name: str,
         jwt_config: JwtSigningConfig,
-        selector_llm: Model | None = None,
         directive_queue: DirectiveQueue | None = None,
         a2a_httpx_client: httpx.AsyncClient | None = None,
         headers_provider: HeadersProvider | None = None,
@@ -147,8 +150,11 @@ class WorkflowRunner:
         if not db_name:
             raise ValueError("WorkflowRunner requires db_name")
 
-        self._llm = llm
-        self._selector_llm = selector_llm  # None → falls back to _llm inside build_executor_registry
+        # Model used when neither a node override nor a configured default resolves (legacy /
+        # fresh-deployment path). The effective default is resolved fresh per run in _build_registry.
+        self._fallback_model = fallback_model
+        self._encryption_key = encryption_key
+        self._azure_ad_token_provider = azure_ad_token_provider
         self._db_client = db_client
         self._db_name = db_name
         self._jwt_config = jwt_config
@@ -293,24 +299,32 @@ class WorkflowRunner:
         MongoDB and constructs the corresponding executor closures.
         """
         all_nodes = flatten_workflow_nodes(definition.nodes)
-        # Collect unique executor_keys (pool nodes use a synthetic key, not this list).
-        executor_keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
+        # Resolve the effective default model fresh on every run so an admin's change to the
+        # default takes effect on the next run without a pod restart.
+        default_model = await resolve_default_workflow_model(
+            fallback_model=self._fallback_model,
+            encryption_key=self._encryption_key,
+            azure_ad_token_provider=self._azure_ad_token_provider,
+        )
+        # Non-pool STEP nodes keyed by executor_key; pool nodes use a synthetic key.
+        keyed_nodes = [n for n in all_nodes if n.executor_key and not n.a2a_pool]
         pool_nodes = [n for n in all_nodes if n.a2a_pool]
 
         logger.debug(
-            "definition %r: executor_keys=%r  pool_nodes=%r",
+            "definition %r: keyed_nodes=%r  pool_nodes=%r",
             definition.name,
-            executor_keys,
+            [n.executor_key for n in keyed_nodes],
             [n.name for n in pool_nodes],
         )
 
         return await build_executor_registry(
-            executor_keys,
-            llm=self._llm,
+            keyed_nodes,
+            default_model=default_model,
             auth_context=auth_context,
             jwt_config=self._jwt_config,
+            encryption_key=self._encryption_key,
+            azure_ad_token_provider=self._azure_ad_token_provider,
             pool_nodes=pool_nodes,
-            selector_llm=self._selector_llm,
             a2a_httpx_client=self._a2a_httpx_client,
             headers_provider=self._headers_provider,
             redis_client=self._redis_client,

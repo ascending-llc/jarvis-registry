@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from agno.models.aws import AwsBedrock
+from agno.models.litellm import LiteLLM
 from agno.run.cancel import set_cancellation_manager
 
 from registry_pkgs.core.structured_logging import configure_structured_logging
@@ -24,6 +24,7 @@ from registry_pkgs.workflows.a2a_headers_provider import make_a2a_headers_provid
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
 from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
+from registry_pkgs.workflows.model_resolution import AzureModelCredential
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 from workflow_worker.config import settings
@@ -111,21 +112,22 @@ def _build_runner(
     redis_client: Any,
     http_client: httpx.AsyncClient,
     azure_client_cache: AzureFoundryClientCache,
+    azure_model_credential: AzureModelCredential,
 ) -> WorkflowRunner:
     """Construct the workflow runner and its A2A authentication provider."""
-    llm = AwsBedrock(
-        id=settings.workflow_llm_model_id,
-        aws_region=settings.aws_region,
-        aws_access_key_id=settings.aws_access_key_id,
-        aws_secret_access_key=settings.aws_secret_access_key,
-        aws_session_token=settings.aws_session_token,
+    # Legacy fallback model: used only when no ModelSource is set as the default workflow model.
+    fallback_model = LiteLLM(
+        id=f"bedrock/{settings.workflow_llm_model_id}",
+        request_params={"aws_region_name": settings.aws_region},
     )
     headers_provider = make_a2a_headers_provider(
         jwt_config=settings.jwt_signing_config,
         azure_client_cache=azure_client_cache,
     )
     return WorkflowRunner(
-        llm=llm,
+        fallback_model=fallback_model,
+        encryption_key=settings.encryption_key,
+        azure_ad_token_provider=azure_model_credential.token_provider,
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -247,7 +249,14 @@ async def main() -> None:
     # read=None: workflow runs can be long-lived (LLM inference, external API calls)
     http_client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0))
     azure_client_cache = AzureFoundryClientCache(encryption_key=settings.encryption_key)
-    runner = _build_runner(directive_queue, redis_client, http_client, azure_client_cache)
+    azure_model_credential = AzureModelCredential()
+    runner = _build_runner(
+        directive_queue,
+        redis_client,
+        http_client,
+        azure_client_cache,
+        azure_model_credential,
+    )
 
     # -- Register OS signals for graceful shutdown --
     # get_running_loop: obtain the event loop created by asyncio.run()
@@ -263,6 +272,7 @@ async def main() -> None:
     finally:
         await http_client.aclose()
         await azure_client_cache.close()
+        azure_model_credential.close()
         close_redis_client(redis_client)
         await close_mongodb()
         _shutdown_telemetry_safe()
