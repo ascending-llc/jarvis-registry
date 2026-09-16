@@ -14,6 +14,7 @@ from registry.services.model_source_crud_service import ModelSourceCrudService
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
+from registry_pkgs.models.workflow import WorkflowNode
 
 VALID_ID = "0" * 24
 
@@ -37,6 +38,13 @@ class _FakeFinder:
     async def count(self):
         return len(self._items)
 
+    def __aiter__(self):
+        async def _iterate():
+            for item in self._items:
+                yield item
+
+        return _iterate()
+
 
 class _StubModelSource:
     """Stand-in for the Beanie ModelSource document (avoids needing DB init in unit tests)."""
@@ -57,7 +65,8 @@ def selection_service() -> MagicMock:
 
 
 @pytest.fixture
-def service(selection_service: MagicMock) -> ModelSourceCrudService:
+def service(selection_service: MagicMock, monkeypatch: pytest.MonkeyPatch) -> ModelSourceCrudService:
+    monkeypatch.setattr(crud_module.WorkflowDefinition, "find", lambda *_a, **_kw: _FakeFinder([]))
     return ModelSourceCrudService(model_gateway_selection_service=selection_service)
 
 
@@ -276,6 +285,39 @@ async def test_is_in_use_false_when_unreferenced(service, selection_service) -> 
         defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
     )
     assert await service.is_in_use(VALID_ID) is False
+
+
+async def test_is_in_use_true_when_workflow_node_references_source(service, selection_service, monkeypatch) -> None:
+    selection_service.get_selection.return_value = SimpleNamespace(
+        defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
+    )
+    definition = SimpleNamespace(
+        nodes=[WorkflowNode(name="step", executor_key="tool", model_source_id=VALID_ID, step_objective="run")]
+    )
+    monkeypatch.setattr(crud_module.WorkflowDefinition, "find", lambda *_a, **_kw: _FakeFinder([definition]))
+
+    assert await service.is_in_use(VALID_ID) is True
+
+
+async def test_is_in_use_normalizes_workflow_model_source_id(service, selection_service, monkeypatch) -> None:
+    source_id = "abcdefabcdefabcdefabcdef"
+    selection_service.get_selection.return_value = SimpleNamespace(
+        defaultWorkflowModelSourceId=None,
+        embeddingModelSourceId=None,
+    )
+    definition = SimpleNamespace(
+        nodes=[
+            WorkflowNode(
+                name="step",
+                executor_key="tool",
+                model_source_id=source_id.upper(),
+                step_objective="run",
+            )
+        ]
+    )
+    monkeypatch.setattr(crud_module.WorkflowDefinition, "find", lambda *_a, **_kw: _FakeFinder([definition]))
+
+    assert await service.is_in_use(source_id) is True
 
 
 async def test_is_in_use_false_for_invalid_id_without_querying_selection(service, selection_service) -> None:

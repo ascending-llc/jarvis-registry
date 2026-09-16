@@ -71,6 +71,12 @@ def ctx():
     selection.get_selection = AsyncMock(
         return_value=SimpleNamespace(defaultWorkflowModelSourceId=None, embeddingModelSourceId=None)
     )
+    selection.set_default_workflow_model = AsyncMock(
+        return_value=SimpleNamespace(
+            defaultWorkflowModelSourceId=source.id,
+            embeddingModelSourceId=None,
+        )
+    )
 
     app.dependency_overrides[get_current_user] = lambda: {"user_id": USER_ID}
     app.dependency_overrides[get_model_source_crud_service] = lambda: crud
@@ -192,6 +198,37 @@ def test_get_selection(ctx) -> None:
     body = response.json()
     assert body["defaultWorkflowModelSourceId"] is None
     assert body["embeddingModelSourceId"] is None
+
+
+def test_set_default_workflow_model(ctx) -> None:
+    response = ctx.client.put(
+        "/model-gateway/selection/default-workflow-model",
+        json={"modelSourceId": str(ctx.source.id)},
+    )
+    assert response.status_code == 200
+    assert response.json()["defaultWorkflowModelSourceId"] == str(ctx.source.id)
+    ctx.selection.set_default_workflow_model.assert_awaited_once_with(
+        str(ctx.source.id),
+        updated_by=USER_ID,
+    )
+
+
+def test_set_default_workflow_model_maps_missing_to_404(ctx) -> None:
+    ctx.selection.set_default_workflow_model.side_effect = ValueError("Model source 'missing' not found")
+    response = ctx.client.put(
+        "/model-gateway/selection/default-workflow-model",
+        json={"modelSourceId": "missing"},
+    )
+    assert response.status_code == 404
+
+
+def test_set_default_workflow_model_maps_mode_mismatch_to_409(ctx) -> None:
+    ctx.selection.set_default_workflow_model.side_effect = ValueError("expected 'chat'")
+    response = ctx.client.put(
+        "/model-gateway/selection/default-workflow-model",
+        json={"modelSourceId": str(ctx.source.id)},
+    )
+    assert response.status_code == 409
 
 
 def test_scopes_config_grants_are_correct() -> None:

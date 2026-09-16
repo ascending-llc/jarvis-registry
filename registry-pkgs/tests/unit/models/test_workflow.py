@@ -3,7 +3,13 @@
 import pytest
 
 from registry_pkgs.models.enums import WorkflowNodeType
-from registry_pkgs.models.workflow import LoopConfig, RouterChoice, WorkflowNode, collect_executor_keys
+from registry_pkgs.models.workflow import (
+    LoopConfig,
+    RouterChoice,
+    WorkflowDefinition,
+    WorkflowNode,
+    collect_executor_keys,
+)
 
 
 def _step(name: str, executor_key: str) -> WorkflowNode:
@@ -34,6 +40,56 @@ def test_step_objective_normalizes_all_whitespace_to_none() -> None:
     assert WorkflowNode._normalize_step_objective(" \t\r\n ") is None
     with pytest.raises(ValueError, match="step node requires step_objective"):
         WorkflowNode(name="empty-objective", executor_key="tool", step_objective=" \t\r\n ")
+
+
+@pytest.mark.parametrize(
+    "node_kwargs",
+    [
+        {"node_type": WorkflowNodeType.PARALLEL, "children": [_step("a", "a"), _step("b", "b")]},
+        {
+            "node_type": WorkflowNodeType.CONDITION,
+            "condition_cel": "input.ok",
+            "true_steps": [_step("true", "true")],
+        },
+        {
+            "node_type": WorkflowNodeType.LOOP,
+            "children": [_step("body", "body")],
+            "loop_config": LoopConfig(max_iterations=2),
+        },
+        {
+            "node_type": WorkflowNodeType.ROUTER,
+            "condition_cel": "input.route",
+            "choices": [
+                RouterChoice(name="a", steps=[_step("a", "a")]),
+                RouterChoice(name="b", steps=[_step("b", "b")]),
+            ],
+        },
+    ],
+)
+def test_model_source_id_is_rejected_on_non_step_nodes(node_kwargs: dict) -> None:
+    with pytest.raises(ValueError, match="model_source_id is only valid on step nodes"):
+        WorkflowNode(name="container", model_source_id="0" * 24, **node_kwargs)
+
+
+def test_workflow_definition_rejects_duplicate_node_ids_across_nested_tree() -> None:
+    duplicate_id = "shared-node-id"
+    nested = WorkflowNode(
+        name="parallel",
+        node_type=WorkflowNodeType.PARALLEL,
+        children=[
+            WorkflowNode(id=duplicate_id, name="nested", executor_key="nested", step_objective="Run nested"),
+            _step("sibling", "sibling"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="node ids must be unique.*shared-node-id"):
+        WorkflowDefinition(
+            name="duplicate-ids",
+            nodes=[
+                WorkflowNode(id=duplicate_id, name="root", executor_key="root", step_objective="Run root"),
+                nested,
+            ],
+        )
 
 
 def test_collect_executor_keys_empty_tree() -> None:

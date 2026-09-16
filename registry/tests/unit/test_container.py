@@ -31,6 +31,7 @@ def _make_container(settings: MagicMock) -> RegistryContainer:
         redis_client=MagicMock(),
     )
     container.__dict__["a2a_httpx_client"] = MagicMock()
+    container.__dict__["azure_model_credential"] = MagicMock(token_provider=object())
     return container
 
 
@@ -40,42 +41,44 @@ def _stub_shutdown_dependencies(container: RegistryContainer, monkeypatch) -> No
     container.__dict__["mcp_proxy_client"] = MagicMock(aclose=AsyncMock())
     container.__dict__["a2a_httpx_client"] = MagicMock(aclose=AsyncMock())
     container.__dict__["a2a_client_registry"] = MagicMock(close=AsyncMock())
+    container.__dict__["azure_model_credential"] = MagicMock(close=MagicMock())
 
 
 @pytest.mark.unit
 class TestWorkflowRunnerModelSelection:
     @patch("registry.container.WorkflowRunner")
     @patch("registry.container.MongoDB")
-    @patch("registry.container.AwsBedrock")
-    def test_uses_aip_arn_when_set(self, mock_bedrock, mock_mongodb, mock_runner):
+    @patch("registry.container.LiteLLM")
+    def test_uses_aip_arn_when_set(self, mock_litellm, mock_mongodb, mock_runner):
         container = _make_container(_make_settings(aip_arn=_AIP_ARN))
 
         _ = container.workflow_runner
 
-        mock_bedrock.assert_called_once()
-        assert mock_bedrock.call_args.kwargs["id"] == _AIP_ARN
+        mock_litellm.assert_called_once()
+        assert mock_litellm.call_args.kwargs["id"] == f"bedrock/{_AIP_ARN}"
+        assert mock_runner.call_args.kwargs["fallback_model"] is mock_litellm.return_value
 
     @patch("registry.container.WorkflowRunner")
     @patch("registry.container.MongoDB")
-    @patch("registry.container.AwsBedrock")
-    def test_falls_back_to_workflow_llm_model_when_arn_not_set(self, mock_bedrock, mock_mongodb, mock_runner):
+    @patch("registry.container.LiteLLM")
+    def test_falls_back_to_workflow_llm_model_when_arn_not_set(self, mock_litellm, mock_mongodb, mock_runner):
         container = _make_container(_make_settings(aip_arn=None))
 
         _ = container.workflow_runner
 
-        mock_bedrock.assert_called_once()
-        assert mock_bedrock.call_args.kwargs["id"] == _FALLBACK_MODEL
+        mock_litellm.assert_called_once()
+        assert mock_litellm.call_args.kwargs["id"] == f"bedrock/{_FALLBACK_MODEL}"
 
     @patch("registry.container.WorkflowRunner")
     @patch("registry.container.MongoDB")
-    @patch("registry.container.AwsBedrock")
-    def test_falls_back_to_workflow_llm_model_when_arn_empty_string(self, mock_bedrock, mock_mongodb, mock_runner):
+    @patch("registry.container.LiteLLM")
+    def test_falls_back_to_workflow_llm_model_when_arn_empty_string(self, mock_litellm, mock_mongodb, mock_runner):
         container = _make_container(_make_settings(aip_arn=""))
 
         _ = container.workflow_runner
 
-        mock_bedrock.assert_called_once()
-        assert mock_bedrock.call_args.kwargs["id"] == _FALLBACK_MODEL
+        mock_litellm.assert_called_once()
+        assert mock_litellm.call_args.kwargs["id"] == f"bedrock/{_FALLBACK_MODEL}"
 
 
 @pytest.mark.unit

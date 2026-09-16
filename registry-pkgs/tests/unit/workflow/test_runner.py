@@ -59,7 +59,9 @@ def _make_runner(**kwargs) -> runner.WorkflowRunner:
     from registry_pkgs.core.config import JwtSigningConfig
 
     defaults = {
-        "llm": object(),
+        "fallback_model": object(),
+        "encryption_key": b"test-key",
+        "azure_ad_token_provider": None,
         "db_client": object(),
         "db_name": "jarvis",
         "jwt_config": JwtSigningConfig(
@@ -84,10 +86,10 @@ class TestWorkflowRunnerInit:
         with pytest.raises(ValueError, match="db_name"):
             _make_runner(db_name="")
 
-    def test_selector_llm_defaults_to_none(self):
+    def test_stores_fallback_model_and_encryption_key(self):
         r = _make_runner()
-        # selector_llm=None is valid; build_executor_registry falls back to llm.
-        assert r._selector_llm is None
+        assert r._fallback_model is not None
+        assert r._encryption_key == b"test-key"
 
 
 @pytest.mark.unit
@@ -245,20 +247,21 @@ class TestBuildRegistry:
         auth_context = {"user_id": "user-1"}
 
         async def fake_build(
-            executor_keys,
+            nodes,
             *,
-            llm,
+            default_model,
             auth_context,
             jwt_config,
+            encryption_key,
+            azure_ad_token_provider,
             pool_nodes,
-            selector_llm,
             a2a_httpx_client=None,
             headers_provider=None,
             redis_client=None,
             redis_key_prefix=None,
             mcp_headers_provider=None,
         ):
-            captured["executor_keys"] = executor_keys
+            captured["nodes"] = nodes
             captured["pool_nodes"] = [n.name for n in pool_nodes]
             captured["auth_context"] = auth_context
             captured["redis_key_prefix"] = redis_key_prefix
@@ -266,6 +269,7 @@ class TestBuildRegistry:
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
+        monkeypatch.setattr(runner, "resolve_default_workflow_model", AsyncMock(return_value=object()))
 
         r = _make_runner(
             redis_key_prefix="test-registry",
@@ -273,7 +277,7 @@ class TestBuildRegistry:
         )
         await r._build_registry(definition, auth_context)
 
-        assert captured["executor_keys"] == ["mcp-tool"]
+        assert [node.executor_key for node in captured["nodes"]] == ["mcp-tool"]
         assert captured["pool_nodes"] == ["pool-step"]
         assert captured["auth_context"] is auth_context
         assert captured["redis_key_prefix"] == "test-registry"

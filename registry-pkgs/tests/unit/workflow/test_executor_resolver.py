@@ -13,6 +13,7 @@ from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
+from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows import a2a_client, executor_resolver
 from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows.helpers import build_prompt
@@ -95,7 +96,7 @@ class TestExecutorResolver:
         monkeypatch.setattr(executor_resolver.A2AAgent, "path", _FieldExpr("path"), raising=False)
 
     @pytest.mark.asyncio
-    async def test_build_executor_registry_deduplicates_keys(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_build_executor_registry_deduplicates_model_combinations(self, monkeypatch: pytest.MonkeyPatch):
         seen: list[str] = []
 
         async def fake_resolve(key: str, **kwargs):
@@ -103,18 +104,70 @@ class TestExecutorResolver:
             return f"executor:{key}"
 
         monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
+        monkeypatch.setattr(
+            executor_resolver,
+            "resolve_model",
+            AsyncMock(side_effect=lambda _source_id, **kwargs: kwargs["fallback_model"]),
+        )
+        nodes = [
+            WorkflowNode(id="node-a", name="a", executor_key="alpha", step_objective="a"),
+            WorkflowNode(id="node-b", name="b", executor_key="beta", step_objective="b"),
+            WorkflowNode(id="node-c", name="c", executor_key="alpha", step_objective="c"),
+        ]
 
         registry = await executor_resolver.build_executor_registry(
-            ["alpha", "beta", "alpha"],
-            llm=SimpleNamespace(),
+            nodes,
+            default_model=SimpleNamespace(),
             auth_context=None,
             jwt_config=_jwt_config(),
+            encryption_key=b"key",
+            azure_ad_token_provider=None,
         )
 
         assert seen == ["alpha", "beta"]
-        assert set(registry.keys()) == {"alpha", "beta"}
-        for key in ("alpha", "beta"):
+        assert set(registry.keys()) == {"node-a", "node-b", "node-c"}
+        assert registry["node-a"] is registry["node-c"]
+        for key in ("node-a", "node-b", "node-c"):
             assert callable(registry[key])
+
+    @pytest.mark.asyncio
+    async def test_build_executor_registry_separates_same_key_with_different_models(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        resolved_with: list[object] = []
+
+        async def fake_resolve(key: str, *, llm, **_kwargs):
+            resolved_with.append(llm)
+            return f"executor:{key}:{llm}"
+
+        async def fake_model(source_id, **kwargs):
+            return source_id or kwargs["fallback_model"]
+
+        monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
+        monkeypatch.setattr(executor_resolver, "resolve_model", fake_model)
+        nodes = [
+            WorkflowNode(id="default", name="default", executor_key="tool", step_objective="run"),
+            WorkflowNode(
+                id="override",
+                name="override",
+                executor_key="tool",
+                model_source_id="0" * 24,
+                step_objective="run",
+            ),
+        ]
+
+        registry = await executor_resolver.build_executor_registry(
+            nodes,
+            default_model="fallback",
+            auth_context=None,
+            jwt_config=_jwt_config(),
+            encryption_key=b"key",
+            azure_ad_token_provider=None,
+        )
+
+        assert resolved_with == ["fallback", "0" * 24]
+        assert registry["default"] is not registry["override"]
 
     @pytest.mark.asyncio
     async def test_resolve_executor_prefers_active_mcp_server(self, monkeypatch: pytest.MonkeyPatch):
