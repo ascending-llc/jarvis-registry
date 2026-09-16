@@ -36,7 +36,6 @@ from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
-from .services.agent_scanner import AgentScannerService
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
@@ -55,7 +54,6 @@ from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.search.base import VectorSearchService
 from .services.search.service import SearchService
-from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.skill_service import SkillService
 from .services.skill_sync_apply_service import SkillSyncApplyService
@@ -307,14 +305,6 @@ class RegistryContainer:
             jwt_config=self.settings.jwt_signing_config,
             azure_client_cache=self.azure_foundry_client_cache,
         )
-
-    @cached_property
-    def security_scanner_service(self) -> SecurityScannerService:
-        return SecurityScannerService(server_service=self.server_service)
-
-    @cached_property
-    def agent_scanner_service(self) -> AgentScannerService:
-        return AgentScannerService()
 
     @cached_property
     def workflow_service(self) -> WorkflowService:
