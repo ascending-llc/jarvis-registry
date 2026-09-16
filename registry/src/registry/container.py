@@ -314,13 +314,7 @@ class RegistryContainer:
 
     @cached_property
     def model_source_crud_service(self) -> ModelSourceCrudService:
-        return ModelSourceCrudService(
-            model_gateway_selection_service=self.model_gateway_selection_service
-        )
-
-    @cached_property
-    def workflow_service(self) -> WorkflowService:
-        return WorkflowService(acl_service=self.acl_service)
+        return ModelSourceCrudService(model_gateway_selection_service=self.model_gateway_selection_service)
 
     @cached_property
     def workflow_service(self) -> WorkflowService:
