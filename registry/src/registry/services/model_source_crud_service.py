@@ -152,8 +152,12 @@ class ModelSourceCrudService:
             object_id = PydanticObjectId(model_source_id)
         except (InvalidId, TypeError, ValueError):
             return False
-        selection = await self._selection_service.get_selection()
-        if object_id in (selection.defaultWorkflowModelSourceId, selection.embeddingModelSourceId):
+        # Read-only guard: never create the singleton as a side effect of a delete check.
+        selection = await self._selection_service.get_selection_or_none()
+        if selection is not None and object_id in (
+            selection.defaultWorkflowModelSourceId,
+            selection.embeddingModelSourceId,
+        ):
             return True
         return await self._referenced_by_workflow(object_id)
 

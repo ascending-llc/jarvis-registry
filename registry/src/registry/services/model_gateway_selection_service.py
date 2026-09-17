@@ -18,6 +18,10 @@ class ModelGatewaySelectionService:
             raise RuntimeError("Failed to create model gateway selection")
         return selection
 
+    async def get_selection_or_none(self) -> ModelGatewaySelection | None:
+        """Read the singleton without creating it — for read-only callers such as delete guards."""
+        return await get_model_gateway_selection(create_if_missing=False)
+
     async def set_default_workflow_model(
         self,
         model_source_id: str,
