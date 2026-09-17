@@ -5,9 +5,8 @@ from collections.abc import Callable
 from typing import Any
 
 import litellm
-from agno.models.aws import AwsBedrock
-from agno.models.azure import AzureOpenAI
 from agno.models.base import Model
+from agno.models.litellm import LiteLLM
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
 
@@ -19,6 +18,23 @@ from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAI
 logger = logging.getLogger(__name__)
 
 AzureAdTokenProvider = Callable[[], str]
+_BEDROCK_APPLICATION_INFERENCE_PROFILE = ":application-inference-profile/"
+
+
+def _bedrock_model_id(model_id_or_arn: str) -> str:
+    """Return the LiteLLM route for a Bedrock model or application inference profile."""
+    route = "bedrock/converse/" if _BEDROCK_APPLICATION_INFERENCE_PROFILE in model_id_or_arn else "bedrock/"
+    return f"{route}{model_id_or_arn}"
+
+
+def _bedrock_request_params(aws_region: str) -> dict[str, Any]:
+    """LiteLLM request params for every Bedrock model built here.
+
+    ``drop_params`` lets LiteLLM silently drop params a Bedrock model does not accept — agno always
+    sends ``tool_choice="auto"`` when a node has tools (e.g. every MCP node), and Bedrock models such
+    as Nova reject ``tool_choice``. Dropping it is a no-op since ``"auto"`` is the model's default.
+    """
+    return {"aws_region_name": aws_region, "drop_params": True}
 
 
 class AzureModelCredential:
@@ -39,7 +55,10 @@ class AzureModelCredential:
 
 def build_legacy_bedrock_model(model_id: str, aws_region: str) -> Model:
     """Build the Settings-based fallback used before a workflow ModelSource is selected."""
-    return AwsBedrock(id=model_id, aws_region=aws_region)
+    return LiteLLM(
+        id=_bedrock_model_id(model_id),
+        request_params=_bedrock_request_params(aws_region),
+    )
 
 
 def get_litellm_model_info(model: str) -> dict[str, Any]:
@@ -56,20 +75,25 @@ def build_agno_model(
     """Build the agno Model for one ModelSource. No client/connection is constructed here."""
     config = model_source.providerConfig
     if isinstance(config, AwsBedrockModelConfig):
-        # Native AwsBedrock (Converse via boto3) accepts a foundation-model id or an AIP ARN directly.
-        return AwsBedrock(id=config.modelIdOrArn, aws_region=config.awsRegion)
+        return LiteLLM(
+            id=_bedrock_model_id(config.modelIdOrArn),
+            request_params=_bedrock_request_params(config.awsRegion),
+        )
     if isinstance(config, AzureOpenAIModelConfig):
-        common: dict[str, Any] = {
-            "id": config.baseModelId,
-            "azure_deployment": config.deploymentName,
-            "azure_endpoint": config.endpoint,
-            "api_version": config.apiVersion,
-        }
+        request_params: dict[str, Any] = {"api_version": config.apiVersion}
+        api_key: str | None = None
         if config.apiKeyEncrypted:
-            return AzureOpenAI(api_key=decrypt_value(config.apiKeyEncrypted, encryption_key=encryption_key), **common)
-        if azure_ad_token_provider is None:
-            raise RuntimeError("Azure Workload Identity model requires an app-scoped token provider")
-        return AzureOpenAI(azure_ad_token_provider=azure_ad_token_provider, **common)
+            api_key = decrypt_value(config.apiKeyEncrypted, encryption_key=encryption_key)
+        else:
+            if azure_ad_token_provider is None:
+                raise RuntimeError("Azure Workload Identity model requires an app-scoped token provider")
+            request_params["azure_ad_token_provider"] = azure_ad_token_provider
+        return LiteLLM(
+            id=f"azure/{config.deploymentName}",
+            api_base=config.endpoint,
+            api_key=api_key,
+            request_params=request_params,
+        )
     raise TypeError(f"Unsupported model source provider config: {type(config).__name__}")
 
 

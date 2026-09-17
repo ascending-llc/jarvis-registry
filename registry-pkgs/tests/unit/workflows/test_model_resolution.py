@@ -2,8 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from agno.models.aws import AwsBedrock
-from agno.models.azure import AzureOpenAI
+from agno.models.litellm import LiteLLM
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import ModelSourceMode
@@ -36,21 +35,22 @@ def test_build_agno_model_for_bedrock() -> None:
         azure_ad_token_provider=None,
     )
 
-    assert isinstance(model, AwsBedrock)
-    assert model.id == "anthropic.claude-v1"
-    assert model.aws_region == "us-east-1"
+    assert isinstance(model, LiteLLM)
+    assert model.id == "bedrock/anthropic.claude-v1"
+    assert model.get_request_params()["aws_region_name"] == "us-east-1"
 
 
 def test_build_legacy_bedrock_model() -> None:
     model = model_resolution.build_legacy_bedrock_model("amazon.nova-lite-v1:0", "us-west-2")
 
-    assert isinstance(model, AwsBedrock)
-    assert model.id == "amazon.nova-lite-v1:0"
-    assert model.aws_region == "us-west-2"
+    assert isinstance(model, LiteLLM)
+    assert model.id == "bedrock/amazon.nova-lite-v1:0"
+    assert model.get_request_params()["aws_region_name"] == "us-west-2"
+    # LiteLLM must drop params Bedrock rejects (agno sends tool_choice="auto" on every tool node).
+    assert model.get_request_params()["drop_params"] is True
 
 
 def test_build_agno_model_for_bedrock_application_inference_profile() -> None:
-    # agno's native AwsBedrock (Converse) accepts an AIP ARN as the model id directly.
     profile_arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id"
     source = _source(
         AwsBedrockModelConfig(
@@ -66,8 +66,9 @@ def test_build_agno_model_for_bedrock_application_inference_profile() -> None:
         azure_ad_token_provider=None,
     )
 
-    assert model.id == profile_arn
-    assert model.aws_region == "us-east-1"
+    assert isinstance(model, LiteLLM)
+    assert model.id == f"bedrock/converse/{profile_arn}"
+    assert model.get_request_params()["aws_region_name"] == "us-east-1"
 
 
 def test_build_agno_model_for_azure_decrypts_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,12 +89,11 @@ def test_build_agno_model_for_azure_decrypts_api_key(monkeypatch: pytest.MonkeyP
         azure_ad_token_provider=None,
     )
 
-    assert isinstance(model, AzureOpenAI)
-    assert model.id == "gpt-4o"
-    assert model.azure_deployment == "chat"
-    assert model.azure_endpoint == "https://example.openai.azure.com"
-    assert model.api_version == "2024-10-21"
+    assert isinstance(model, LiteLLM)
+    assert model.id == "azure/chat"
+    assert model.api_base == "https://example.openai.azure.com"
     assert model.api_key == "plain-key"
+    assert model.get_request_params()["api_version"] == "2024-10-21"
 
 
 def test_build_agno_model_for_azure_workload_identity_uses_shared_provider() -> None:
@@ -115,13 +115,13 @@ def test_build_agno_model_for_azure_workload_identity_uses_shared_provider() -> 
         azure_ad_token_provider=token_provider,
     )
 
-    assert isinstance(model, AzureOpenAI)
-    assert model.id == "gpt-4o"
-    assert model.azure_deployment == "chat"
-    assert model.azure_endpoint == "https://example.openai.azure.com"
-    assert model.api_version == "2024-10-21"
-    assert model.azure_ad_token_provider is token_provider
+    assert isinstance(model, LiteLLM)
+    assert model.id == "azure/chat"
+    assert model.api_base == "https://example.openai.azure.com"
     assert model.api_key is None
+    params = model.get_request_params()
+    assert params["api_version"] == "2024-10-21"
+    assert params["azure_ad_token_provider"] is token_provider
 
 
 def test_build_agno_model_for_azure_workload_identity_requires_shared_provider() -> None:
@@ -232,3 +232,22 @@ async def test_resolve_default_reads_selection_fresh(monkeypatch: pytest.MonkeyP
         encryption_key=b"key",
         azure_ad_token_provider=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_resolve_default_uses_legacy_fallback_when_selection_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        model_resolution,
+        "get_model_gateway_selection",
+        AsyncMock(return_value=None),
+    )
+
+    result = await model_resolution.resolve_default_workflow_model(
+        fallback_model="legacy",
+        encryption_key=b"key",
+        azure_ad_token_provider=None,
+    )
+
+    assert result == "legacy"
