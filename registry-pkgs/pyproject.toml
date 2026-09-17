@@ -28,12 +28,13 @@ dependencies = [
     "weaviate-client>=4.18.1",
     "async-lru>=2.0.5",
     # Workflow runtime
-    "agno>=2.5.17",
-    "litellm==1.83.0",
+    "agno[litellm]==2.7.2",
     "cel-python>=0.1.5",
     "croniter>=6.0.0",
     "mcp>=1.26.0,<2.0.0",
     "jinja2>=3.1.6",
+    "boto3>=1.35.0",
+    "aioboto3>=7.0.0",
     # agno.workflow unconditionally imports agno.workflow.remote, which imports fastapi.WebSocket
     # at module level. agno only declares fastapi under its dev/os/demo extras, not as a base
     # dependency, so registry_pkgs.workflows.control.wrapper's `from agno.workflow import ...`
