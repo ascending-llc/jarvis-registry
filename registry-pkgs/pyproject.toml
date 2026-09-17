@@ -35,6 +35,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "boto3>=1.35.0",
     "aioboto3>=7.0.0",
+    "litellm>=1.80.16",
     # agno.workflow unconditionally imports agno.workflow.remote, which imports fastapi.WebSocket
     # at module level. agno only declares fastapi under its dev/os/demo extras, not as a base
     # dependency, so registry_pkgs.workflows.control.wrapper's `from agno.workflow import ...`
