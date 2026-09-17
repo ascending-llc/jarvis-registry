@@ -38,7 +38,6 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from registry import settings  # noqa: E402
 from registry.services.access_control_service import ACLService, load_role_cache  # noqa: E402
-from registry.services.group_directory_client import KeycloakGroupDirectoryClient  # noqa: E402
 from registry.services.group_service import GroupService  # noqa: E402
 from registry_pkgs.core.config import MongoConfig  # noqa: E402
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt  # noqa: E402
@@ -112,20 +111,41 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
         name=f"{PREFIX}real-mcp-a2a",
         description="Real MCP + A2A + HITL complex e2e",
         nodes=[
-            WorkflowNode(name="mcp-doc", executor_key=args.mcp_key),
+            WorkflowNode(
+                name="mcp-doc",
+                executor_key=args.mcp_key,
+                step_objective="Use the MCP server to inspect registry documentation and summarize the result.",
+            ),
             WorkflowNode(
                 name="branch",
                 node_type=WorkflowNodeType.CONDITION,
                 condition_cel="session_state.user_text != ''",
-                true_steps=[WorkflowNode(name="a2a-direct", executor_key=args.a2a_direct)],
-                false_steps=[WorkflowNode(name="fallback", executor_key="echo")],
+                true_steps=[
+                    WorkflowNode(
+                        name="a2a-direct",
+                        executor_key=args.a2a_direct,
+                        step_objective="Send the MCP summary to the direct A2A agent and return its response.",
+                    )
+                ],
+                false_steps=[
+                    WorkflowNode(
+                        name="fallback",
+                        executor_key="echo",
+                        step_objective="Echo the workflow input when the direct A2A branch is not selected.",
+                    )
+                ],
             ),
             WorkflowNode(
                 name="review-gate",
                 executor_key="echo",
                 human_review=HumanReviewSpec(requires_confirmation=True),
+                step_objective="Pause for human confirmation before the final A2A pool step.",
             ),
-            WorkflowNode(name="a2a-pool", a2a_pool=args.a2a_pool),
+            WorkflowNode(
+                name="a2a-pool",
+                a2a_pool=args.a2a_pool,
+                step_objective="Select the best A2A agent to produce the final concise answer.",
+            ),
         ],
     )
 
@@ -133,7 +153,7 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
 async def _grant_owner(user_id: str, workflow_id: PydanticObjectId) -> None:
     acl = ACLService(
         user_service=UserService(),
-        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
+        group_service=GroupService(directory_clients={}),
         role_cache=await load_role_cache(),
     )
     await acl.grant_permission(
@@ -154,7 +174,7 @@ async def _grant_agent_access(user_id: str, agent_keys: list[str]) -> None:
     """
     acl = ACLService(
         user_service=UserService(),
-        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
+        group_service=GroupService(directory_clients={}),
         role_cache=await load_role_cache(),
     )
     for key in dict.fromkeys(agent_keys):
