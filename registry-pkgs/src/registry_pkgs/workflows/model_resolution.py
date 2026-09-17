@@ -4,25 +4,25 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+import litellm
+from agno.models.aws import AwsBedrock
+from agno.models.azure import AzureOpenAI
 from agno.models.base import Model
-from agno.models.litellm import LiteLLM
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
 
 from registry_pkgs.core.crypto_utils import decrypt_value
 from registry_pkgs.database.model_gateway_selection_repository import get_model_gateway_selection
 from registry_pkgs.models.enums import ModelSourceMode
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, ModelSource
+from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
 
 logger = logging.getLogger(__name__)
-
-BEDROCK_APPLICATION_INFERENCE_PROFILE_MARKER = ":application-inference-profile/"
 
 AzureAdTokenProvider = Callable[[], str]
 
 
 class AzureModelCredential:
-    """App-scoped Azure credential and synchronous bearer-token provider for LiteLLM."""
+    """App-scoped Azure credential and synchronous bearer-token provider for agno's AzureOpenAI."""
 
     def __init__(self) -> None:
         from azure.identity import DefaultAzureCredential, get_bearer_token_provider
@@ -37,6 +37,16 @@ class AzureModelCredential:
         self._credential.close()
 
 
+def build_legacy_bedrock_model(model_id: str, aws_region: str) -> Model:
+    """Build the Settings-based fallback used before a workflow ModelSource is selected."""
+    return AwsBedrock(id=model_id, aws_region=aws_region)
+
+
+def get_litellm_model_info(model: str) -> dict[str, Any]:
+    """Return metadata from the LiteLLM version selected by Agno's litellm extra."""
+    return litellm.get_model_info(model)
+
+
 def build_agno_model(
     model_source: ModelSource,
     *,
@@ -46,25 +56,21 @@ def build_agno_model(
     """Build the agno Model for one ModelSource. No client/connection is constructed here."""
     config = model_source.providerConfig
     if isinstance(config, AwsBedrockModelConfig):
-        route = (
-            "bedrock/converse/" if BEDROCK_APPLICATION_INFERENCE_PROFILE_MARKER in config.modelIdOrArn else "bedrock/"
-        )
-        return LiteLLM(
-            id=f"{route}{config.modelIdOrArn}",
-            request_params={"aws_region_name": config.awsRegion},
-        )
-
-    # AzureOpenAIModelConfig
-    request_params: dict[str, Any] = {"api_version": config.apiVersion}
-    kwargs: dict[str, Any] = {"id": f"azure/{config.deploymentName}", "api_base": config.endpoint}
-    if config.apiKeyEncrypted:
-        kwargs["api_key"] = decrypt_value(config.apiKeyEncrypted, encryption_key=encryption_key)
-    else:
+        # Native AwsBedrock (Converse via boto3) accepts a foundation-model id or an AIP ARN directly.
+        return AwsBedrock(id=config.modelIdOrArn, aws_region=config.awsRegion)
+    if isinstance(config, AzureOpenAIModelConfig):
+        common: dict[str, Any] = {
+            "id": config.baseModelId,
+            "azure_deployment": config.deploymentName,
+            "azure_endpoint": config.endpoint,
+            "api_version": config.apiVersion,
+        }
+        if config.apiKeyEncrypted:
+            return AzureOpenAI(api_key=decrypt_value(config.apiKeyEncrypted, encryption_key=encryption_key), **common)
         if azure_ad_token_provider is None:
             raise RuntimeError("Azure Workload Identity model requires an app-scoped token provider")
-        request_params["azure_ad_token_provider"] = azure_ad_token_provider
-    kwargs["request_params"] = request_params
-    return LiteLLM(**kwargs)
+        return AzureOpenAI(azure_ad_token_provider=azure_ad_token_provider, **common)
+    raise TypeError(f"Unsupported model source provider config: {type(config).__name__}")
 
 
 async def resolve_model(

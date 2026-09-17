@@ -2,6 +2,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from agno.models.aws import AwsBedrock
+from agno.models.azure import AzureOpenAI
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import ModelSourceMode
@@ -34,11 +36,21 @@ def test_build_agno_model_for_bedrock() -> None:
         azure_ad_token_provider=None,
     )
 
-    assert model.id == "bedrock/anthropic.claude-v1"
-    assert model.request_params == {"aws_region_name": "us-east-1"}
+    assert isinstance(model, AwsBedrock)
+    assert model.id == "anthropic.claude-v1"
+    assert model.aws_region == "us-east-1"
 
 
-def test_build_agno_model_for_bedrock_application_inference_profile_uses_converse() -> None:
+def test_build_legacy_bedrock_model() -> None:
+    model = model_resolution.build_legacy_bedrock_model("amazon.nova-lite-v1:0", "us-west-2")
+
+    assert isinstance(model, AwsBedrock)
+    assert model.id == "amazon.nova-lite-v1:0"
+    assert model.aws_region == "us-west-2"
+
+
+def test_build_agno_model_for_bedrock_application_inference_profile() -> None:
+    # agno's native AwsBedrock (Converse) accepts an AIP ARN as the model id directly.
     profile_arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id"
     source = _source(
         AwsBedrockModelConfig(
@@ -54,8 +66,8 @@ def test_build_agno_model_for_bedrock_application_inference_profile_uses_convers
         azure_ad_token_provider=None,
     )
 
-    assert model.id == f"bedrock/converse/{profile_arn}"
-    assert model.request_params == {"aws_region_name": "us-east-1"}
+    assert model.id == profile_arn
+    assert model.aws_region == "us-east-1"
 
 
 def test_build_agno_model_for_azure_decrypts_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,10 +88,12 @@ def test_build_agno_model_for_azure_decrypts_api_key(monkeypatch: pytest.MonkeyP
         azure_ad_token_provider=None,
     )
 
-    assert model.id == "azure/chat"
-    assert model.api_base == "https://example.openai.azure.com"
+    assert isinstance(model, AzureOpenAI)
+    assert model.id == "gpt-4o"
+    assert model.azure_deployment == "chat"
+    assert model.azure_endpoint == "https://example.openai.azure.com"
+    assert model.api_version == "2024-10-21"
     assert model.api_key == "plain-key"
-    assert model.request_params == {"api_version": "2024-10-21"}
 
 
 def test_build_agno_model_for_azure_workload_identity_uses_shared_provider() -> None:
@@ -101,10 +115,13 @@ def test_build_agno_model_for_azure_workload_identity_uses_shared_provider() -> 
         azure_ad_token_provider=token_provider,
     )
 
-    assert model.request_params == {
-        "api_version": "2024-10-21",
-        "azure_ad_token_provider": token_provider,
-    }
+    assert isinstance(model, AzureOpenAI)
+    assert model.id == "gpt-4o"
+    assert model.azure_deployment == "chat"
+    assert model.azure_endpoint == "https://example.openai.azure.com"
+    assert model.api_version == "2024-10-21"
+    assert model.azure_ad_token_provider is token_provider
+    assert model.api_key is None
 
 
 def test_build_agno_model_for_azure_workload_identity_requires_shared_provider() -> None:
@@ -118,6 +135,17 @@ def test_build_agno_model_for_azure_workload_identity_requires_shared_provider()
     )
 
     with pytest.raises(RuntimeError, match="app-scoped token provider"):
+        model_resolution.build_agno_model(
+            source,
+            encryption_key=b"unused",
+            azure_ad_token_provider=None,
+        )
+
+
+def test_build_agno_model_rejects_unknown_provider_config() -> None:
+    source = ModelSource.model_construct(providerConfig=object())
+
+    with pytest.raises(TypeError, match="Unsupported model source provider config: object"):
         model_resolution.build_agno_model(
             source,
             encryption_key=b"unused",

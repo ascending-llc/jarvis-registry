@@ -157,7 +157,7 @@ async def build_executor_registry(
         auth_context:     Triggering user's auth context for manually-registered MCP servers.
         jwt_config:       JWT signing config used by A2A executors and AgentCore MCP servers.
         encryption_key:   Key used to decrypt a ModelSource's stored Azure credential.
-        azure_ad_token_provider:
+        azure_ad_token_provider: Shared Azure AD bearer-token provider for Workload-Identity models.
         pool_nodes:       STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
         a2a_httpx_client: Optional shared httpx client passed to A2A executors.
         headers_provider: Optional shared headers provider passed to A2A executors.
