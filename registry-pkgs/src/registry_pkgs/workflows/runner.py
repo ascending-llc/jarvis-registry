@@ -29,7 +29,8 @@ If agno raises before ``upsert_session`` is called, ``WorkflowRunner`` writes
 Usage::
 
     runner = WorkflowRunner(
-        llm=AwsBedrock(...),
+        fallback_model=build_legacy_bedrock_model(model_id, aws_region),
+        encryption_key=settings.encryption_key,
         db_client=MongoDB.get_client(),
         db_name="jarvis",
     )

@@ -13,6 +13,10 @@ from registry.auth.dependencies import get_current_user
 from registry.core.config import settings
 from registry.deps import get_model_gateway_selection_service, get_model_source_crud_service
 from registry.schemas.model_source_api_schemas import ModelSourceMetadataResponse
+from registry.services.model_gateway_selection_service import (
+    ModelSourceModeMismatchError,
+    ModelSourceNotFoundError,
+)
 from registry_pkgs.models.enums import ModelSourceMode
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
 
@@ -214,7 +218,7 @@ def test_set_default_workflow_model(ctx) -> None:
 
 
 def test_set_default_workflow_model_maps_missing_to_404(ctx) -> None:
-    ctx.selection.set_default_workflow_model.side_effect = ValueError("Model source 'missing' not found")
+    ctx.selection.set_default_workflow_model.side_effect = ModelSourceNotFoundError("Model source 'missing' not found")
     response = ctx.client.put(
         "/model-gateway/selection/default-workflow-model",
         json={"modelSourceId": "missing"},
@@ -223,7 +227,7 @@ def test_set_default_workflow_model_maps_missing_to_404(ctx) -> None:
 
 
 def test_set_default_workflow_model_maps_mode_mismatch_to_409(ctx) -> None:
-    ctx.selection.set_default_workflow_model.side_effect = ValueError("expected 'chat'")
+    ctx.selection.set_default_workflow_model.side_effect = ModelSourceModeMismatchError("expected 'chat'")
     response = ctx.client.put(
         "/model-gateway/selection/default-workflow-model",
         json={"modelSourceId": str(ctx.source.id)},

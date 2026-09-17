@@ -25,7 +25,11 @@ from ....schemas.model_source_api_schemas import (
     SetDefaultWorkflowModelRequest,
 )
 from ....schemas.server_api_schemas import PaginationMetadata
-from ....services.model_gateway_selection_service import ModelGatewaySelectionService
+from ....services.model_gateway_selection_service import (
+    ModelGatewaySelectionService,
+    ModelSourceModeMismatchError,
+    ModelSourceNotFoundError,
+)
 from ....services.model_metadata_service import get_model_metadata
 from ....services.model_source_crud_service import ModelSourceCrudService
 
@@ -275,10 +279,14 @@ async def set_default_workflow_model(
                 str(selection.embeddingModelSourceId) if selection.embeddingModelSourceId else None
             ),
         )
-    except ValueError as exc:
-        status_code = http_status.HTTP_404_NOT_FOUND if "not found" in str(exc) else http_status.HTTP_409_CONFLICT
-        error_code = ErrorCode.NOT_FOUND if status_code == http_status.HTTP_404_NOT_FOUND else ErrorCode.CONFLICT
-        raise HTTPException(status_code, detail=create_error_detail(error_code, str(exc))) from exc
+    except ModelSourceNotFoundError as exc:
+        raise HTTPException(
+            http_status.HTTP_404_NOT_FOUND, detail=create_error_detail(ErrorCode.NOT_FOUND, str(exc))
+        ) from exc
+    except ModelSourceModeMismatchError as exc:
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT, detail=create_error_detail(ErrorCode.CONFLICT, str(exc))
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:

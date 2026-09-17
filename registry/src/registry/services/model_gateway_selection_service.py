@@ -10,6 +10,14 @@ from registry_pkgs.models.model_gateway_selection import ModelGatewaySelection
 from registry_pkgs.models.model_source import ModelSource
 
 
+class ModelSourceNotFoundError(ValueError):
+    """Raised when a referenced ModelSource is missing, soft-deleted, or has an invalid id."""
+
+
+class ModelSourceModeMismatchError(ValueError):
+    """Raised when a referenced ModelSource exists but has the wrong mode for the target slot."""
+
+
 class ModelGatewaySelectionService:
     async def get_selection(self) -> ModelGatewaySelection:
         """Return the singleton selection, creating it under the fixed _id if absent."""
@@ -53,10 +61,12 @@ class ModelGatewaySelectionService:
         try:
             object_id = PydanticObjectId(model_source_id)
         except (InvalidId, TypeError, ValueError) as exc:
-            raise ValueError(f"Model source '{model_source_id}' not found") from exc
+            raise ModelSourceNotFoundError(f"Model source '{model_source_id}' not found") from exc
         source = await ModelSource.get(object_id)
         if source is None or source.deletedAt is not None:
-            raise ValueError(f"Model source '{model_source_id}' not found")
+            raise ModelSourceNotFoundError(f"Model source '{model_source_id}' not found")
         if source.mode != expected_mode:
-            raise ValueError(f"Model source '{model_source_id}' has mode '{source.mode}', expected '{expected_mode}'")
+            raise ModelSourceModeMismatchError(
+                f"Model source '{model_source_id}' has mode '{source.mode}', expected '{expected_mode}'"
+            )
         return object_id

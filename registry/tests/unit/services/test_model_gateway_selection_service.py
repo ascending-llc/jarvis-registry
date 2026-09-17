@@ -5,7 +5,11 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services import model_gateway_selection_service as svc_module
-from registry.services.model_gateway_selection_service import ModelGatewaySelectionService
+from registry.services.model_gateway_selection_service import (
+    ModelGatewaySelectionService,
+    ModelSourceModeMismatchError,
+    ModelSourceNotFoundError,
+)
 from registry_pkgs.models.enums import ModelSourceMode
 
 VALID_ID = "0" * 24
@@ -52,7 +56,7 @@ async def test_set_default_workflow_model_requires_chat_mode(service, monkeypatc
         "get",
         AsyncMock(return_value=SimpleNamespace(mode=ModelSourceMode.EMBEDDING, deletedAt=None)),
     )
-    with pytest.raises(ValueError, match="expected 'chat'"):
+    with pytest.raises(ModelSourceModeMismatchError, match="expected 'chat'"):
         await service.set_default_workflow_model(VALID_ID, updated_by="admin")
 
 
@@ -83,18 +87,18 @@ async def test_set_embedding_model_requires_embedding_mode(service, monkeypatch)
         "get",
         AsyncMock(return_value=SimpleNamespace(mode=ModelSourceMode.CHAT, deletedAt=None)),
     )
-    with pytest.raises(ValueError, match="expected 'embedding'"):
+    with pytest.raises(ModelSourceModeMismatchError, match="expected 'embedding'"):
         await service.set_embedding_model(VALID_ID, updated_by="admin")
 
 
 async def test_missing_model_source_raises(service, monkeypatch) -> None:
     monkeypatch.setattr(svc_module.ModelSource, "get", AsyncMock(return_value=None))
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ModelSourceNotFoundError, match="not found"):
         await service.set_default_workflow_model(VALID_ID, updated_by="admin")
 
 
 async def test_invalid_id_raises_not_found(service) -> None:
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ModelSourceNotFoundError, match="not found"):
         await service.set_default_workflow_model("not-an-object-id", updated_by="admin")
 
 
@@ -104,5 +108,5 @@ async def test_soft_deleted_source_treated_as_missing(service, monkeypatch) -> N
         "get",
         AsyncMock(return_value=SimpleNamespace(mode=ModelSourceMode.CHAT, deletedAt=object())),
     )
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ModelSourceNotFoundError, match="not found"):
         await service.set_default_workflow_model(VALID_ID, updated_by="admin")
