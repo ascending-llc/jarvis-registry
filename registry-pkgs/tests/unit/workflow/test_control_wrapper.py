@@ -4,7 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from agno.workflow import StepOutput
+from agno.workflow import Step, StepOutput, Workflow
+from agno.workflow.step import OnError
 from beanie import PydanticObjectId
 from opentelemetry import baggage
 
@@ -146,13 +147,14 @@ class TestControlWrapper:
         executor.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_executor_exception_converted_to_failed_step_output(self, monkeypatch: pytest.MonkeyPatch):
-        """An executor that raises should yield StepOutput(success=False) instead of propagating."""
+    async def test_executor_exception_propagates_when_not_skip_tolerated(self, monkeypatch: pytest.MonkeyPatch):
+        """A non-skip executor failure must persist and propagate the original exception."""
         run_id = str(PydanticObjectId())
         queue = DirectiveQueue()
         queue.register(run_id)
 
-        executor = AsyncMock(side_effect=RuntimeError("RuntimeError: downstream server exploded"))
+        original = RuntimeError("RuntimeError: downstream server exploded")
+        executor = AsyncMock(side_effect=original)
         wrapped = with_control(
             executor,
             run_id=run_id,
@@ -176,18 +178,22 @@ class TestControlWrapper:
             record_attempt_result,
         )
 
-        result = await wrapped(SimpleNamespace(input="hello"), {})
+        with pytest.raises(RuntimeError, match="RuntimeError: downstream server exploded") as exc_info:
+            await wrapped(SimpleNamespace(input="hello"), {})
 
-        assert result.success is False
-        assert result.error == "RuntimeError: downstream server exploded"
-        assert result.content == ""
+        assert exc_info.value is original
         executor.assert_awaited_once()
+        record_attempt_result.assert_awaited_once()
+        persisted_result = record_attempt_result.await_args.args[-1]
+        assert persisted_result.success is False
+        assert persisted_result.error == "RuntimeError: downstream server exploded"
+        assert persisted_result.content == ""
         record_attempt_result.assert_awaited_once_with(
             run_id,
             "node-1",
             "github",
             None,
-            result,
+            persisted_result,
         )
 
     @pytest.mark.asyncio
@@ -264,9 +270,9 @@ class TestControlWrapper:
         monkeypatch.setattr(wrapper_module, "_record_attempt_result", record_attempt_result)
         monkeypatch.setattr(wrapper_module.asyncio, "sleep", AsyncMock())
 
-        result = await wrapped(SimpleNamespace(input="hello"), {})
+        with pytest.raises(RuntimeError, match="attempt 3"):
+            await wrapped(SimpleNamespace(input="hello"), {})
 
-        assert result is failures[-1]
         assert executor.await_count == 3
         record_attempt_result.assert_awaited_once_with(
             run_id,
@@ -275,6 +281,90 @@ class TestControlWrapper:
             step_config,
             failures[-1],
         )
+
+    @pytest.mark.asyncio
+    async def test_final_returned_failure_does_not_reuse_previous_exception(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        executor = AsyncMock(
+            side_effect=[
+                RuntimeError("stale exception"),
+                StepOutput(content="", success=False, error="final returned failure"),
+            ]
+        )
+        step_config = StepConfig(on_error="retry", max_retries=1, backoff_base_seconds=0.01)
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="critical",
+            step_config=step_config,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", AsyncMock())
+        monkeypatch.setattr(wrapper_module.asyncio, "sleep", AsyncMock())
+
+        with pytest.raises(RuntimeError, match="final returned failure"):
+            await wrapped(SimpleNamespace(input="hello"), {})
+
+    @pytest.mark.asyncio
+    async def test_failed_output_returns_when_skip_tolerated(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        failure = StepOutput(content="", success=False, error="optional step failed")
+        executor = AsyncMock(return_value=failure)
+        step_config = StepConfig(on_error="skip")
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="optional",
+            step_config=step_config,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        record_attempt_result = AsyncMock()
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", record_attempt_result)
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result is failure
+        record_attempt_result.assert_awaited_once_with(
+            run_id,
+            "node-1",
+            "optional",
+            step_config,
+            failure,
+        )
+
+    @pytest.mark.asyncio
+    async def test_raised_exception_returns_failed_output_when_skip_tolerated(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        executor = AsyncMock(side_effect=RuntimeError("optional exception"))
+        step_config = StepConfig(on_error="skip")
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="optional",
+            step_config=step_config,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", AsyncMock())
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result.success is False
+        assert result.error == "optional exception"
 
     @pytest.mark.asyncio
     async def test_terminal_result_persisted_before_success_returns(self, monkeypatch: pytest.MonkeyPatch):
@@ -502,7 +592,11 @@ class TestControlWrapper:
 
     @pytest.mark.asyncio
     async def test_no_baggage_leak_after_exception(self, monkeypatch: pytest.MonkeyPatch):
-        await self._assert_no_leak(monkeypatch, AsyncMock(side_effect=RuntimeError("boom")))
+        await self._assert_no_leak(
+            monkeypatch,
+            AsyncMock(side_effect=RuntimeError("boom")),
+            expected_error=RuntimeError,
+        )
 
     @pytest.mark.asyncio
     async def test_no_baggage_leak_after_cancelled(self, monkeypatch: pytest.MonkeyPatch):
@@ -561,6 +655,7 @@ class TestControlWrapper:
         executor: AsyncMock,
         *,
         expect_cancel: bool = False,
+        expected_error: type[BaseException] | None = None,
     ) -> None:
         run_id = str(PydanticObjectId())
         queue = DirectiveQueue()
@@ -581,12 +676,66 @@ class TestControlWrapper:
         if expect_cancel:
             with pytest.raises(WorkflowCancelledError):
                 await wrapped(SimpleNamespace(input="hello"), {})
+        elif expected_error is not None:
+            with pytest.raises(expected_error):
+                await wrapped(SimpleNamespace(input="hello"), {})
         else:
             await wrapped(SimpleNamespace(input="hello"), {})
         # Baggage attached around executor() must not leak into a sibling call in this task.
         assert baggage.get_baggage(BAGGAGE_KEY_ATTEMPT) is None
         assert baggage.get_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID) is None
         assert baggage.get_baggage(BAGGAGE_KEY_NODE_ID) is None
+
+
+@pytest.mark.unit
+class TestWithControlHaltsAgnoWorkflow:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raises_exception", [True, False])
+    async def test_non_skip_failure_prevents_downstream_execution(
+        self, monkeypatch: pytest.MonkeyPatch, raises_exception: bool
+    ):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        failing_executor = AsyncMock(
+            side_effect=RuntimeError("downstream server exploded") if raises_exception else None,
+            return_value=StepOutput(content="", success=False, error="downstream server exploded"),
+        )
+        downstream_calls = 0
+
+        async def downstream_executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+            nonlocal downstream_calls
+            downstream_calls += 1
+            return StepOutput(content="should not execute")
+
+        record_attempt_result = AsyncMock()
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", record_attempt_result)
+
+        first_step = Step(
+            name="mcp_node",
+            executor=with_control(
+                failing_executor,
+                run_id=run_id,
+                node_id="node-1",
+                node_name="mcp_node",
+                step_config=None,
+                directive_queue=queue,
+            ),
+            max_retries=0,
+            skip_on_failure=False,
+            on_error=OnError.fail,
+        )
+        second_step = Step(name="downstream", executor=downstream_executor)
+        workflow = Workflow(id="as-1813-test", name="as-1813-test", steps=[first_step, second_step])
+
+        with pytest.raises(RuntimeError, match="downstream server exploded"):
+            await workflow.arun(input="x")
+
+        failing_executor.assert_awaited_once()
+        assert downstream_calls == 0
+        record_attempt_result.assert_awaited_once()
 
 
 @pytest.mark.unit

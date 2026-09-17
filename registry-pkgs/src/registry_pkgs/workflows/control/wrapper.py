@@ -102,6 +102,8 @@ def with_control(
 
     async def wrapped(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
         for attempt in range(max_attempts):
+            last_exc: Exception | None = None
+
             # 1. Check for a pending directive before starting the attempt
             cancel_reason = await _check_and_handle_directive(
                 run_id=run_id,
@@ -135,6 +137,7 @@ def with_control(
             except WorkflowCancelledError:
                 raise
             except Exception as exc:
+                last_exc = exc
                 logger.exception("[run=%s] step %r executor raised", run_id, node_name)
                 result = StepOutput(content="", success=False, error=str(exc))
             finally:
@@ -167,7 +170,11 @@ def with_control(
 
             logger.warning("Node %r: all %d attempt(s) failed, last error: %s", node_name, max_attempts, result.error)
             await _record_attempt_result(run_id, node_id, node_name, step_config, result)
-            return result
+            if is_skip_tolerated_failure(result.success, step_config):
+                return result
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError(result.error or f"Step {node_name!r} failed after {max_attempts} attempt(s)")
 
         return StepOutput(content="", success=False, error="Max retries exceeded")
 
