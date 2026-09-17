@@ -45,8 +45,6 @@ dependencies = [
     "awscli>=1.36.0",
     # Security scanning
     "bandit>=1.8.3",
-    "cisco-ai-mcp-scanner>=3.0.1",
-    "cisco-ai-a2a-scanner>=1.0.0",
     "langchain-text-splitters>=1.1.0",
     "langchain-openai>=1.1.12",
     # microsoft azure

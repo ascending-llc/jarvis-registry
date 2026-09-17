@@ -52,14 +52,6 @@ services:
       - EXTERNAL_REGISTRY_TAGS=${EXTERNAL_REGISTRY_TAGS:-anthropic-registry,workday-asor}
       - ASOR_ACCESS_TOKEN=${ASOR_ACCESS_TOKEN}
       - ASOR_CLIENT_CREDENTIALS=${ASOR_CLIENT_CREDENTIALS}
-      # Security Scanning Configuration
-      - SECURITY_SCAN_ENABLED=${SECURITY_SCAN_ENABLED:-true}
-      - SECURITY_SCAN_ON_REGISTRATION=${SECURITY_SCAN_ON_REGISTRATION:-true}
-      - SECURITY_BLOCK_UNSAFE_SERVERS=${SECURITY_BLOCK_UNSAFE_SERVERS:-true}
-      - SECURITY_ANALYZERS=${SECURITY_ANALYZERS:-yara}
-      - SECURITY_SCAN_TIMEOUT=${SECURITY_SCAN_TIMEOUT:-60}
-      - SECURITY_ADD_PENDING_TAG=${SECURITY_ADD_PENDING_TAG:-true}
-      - MCP_SCANNER_LLM_API_KEY=${MCP_SCANNER_LLM_API_KEY}
       - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
       # Sends logs to OpenTelemetry Collector
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
@@ -76,7 +68,6 @@ services:
       - "7860:7860"
     volumes:
       - ./registry/logs:/app/logs
-      - ./security_scans:/app/security_scans
     depends_on:
       otel-collector:
         condition: service_started

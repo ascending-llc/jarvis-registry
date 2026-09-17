@@ -13,7 +13,6 @@ The Registry is the compliance enforcement layer — not just a catalog. Both MC
 - **Tool Declaration Validation**: Validates that each registered MCP server's tool manifest is complete — required fields, input schemas, and capability declarations are all checked on registration, not at first use
 - **Transport Compliance**: Verifies that declared MCP transports (SSE, Streamable HTTP) match the actual server capabilities before the server is made discoverable; misconfigured transport declarations are rejected before the server is made discoverable
 - **OAuth Egress**: Manages outbound OAuth credentials for MCP servers that call downstream protected APIs — token acquisition, rotation, and per-server credential mapping are handled centrally so individual servers don't carry credentials
-- **Security Scanning**: Registered MCP servers are scanned for common security issues — exposed secrets, overly broad tool scopes, and missing input validation — surfaced as warnings or blocking violations depending on policy
 
 **For A2A agents:**
 
@@ -49,11 +48,10 @@ Single authenticated entry point for AI copilots and MCP-compatible clients — 
 
 ## 3. Agent Gateway
 
-Single authenticated entry point for A2A agents — handling skill discovery, transport negotiation, and security scanning centrally so callers need no platform-specific client code per target runtime.
+Single authenticated entry point for A2A agents — handling skill discovery and transport negotiation centrally so callers need no platform-specific client code per target runtime.
 
 - **Agent & Skill Discovery**: Resolves registered A2A agents and their skills by capability, tags, and spec version — callers query the gateway to find the right agent for a task without knowing which runtime hosts it or which transport it speaks
 - **Transport Negotiation**: Supports JSON-RPC 2.0 over HTTP (primary inter-agent transport, compatible with AWS AgentCore and standard A2A clients) and HTTP+JSON for agents on standard web stacks (ALB, API Gateway, Azure Front Door) — the gateway reads per-agent transport constraints from the Registry and routes accordingly; transport mismatches are caught before the request is forwarded
-- **Security Scanning**: Registered agents are scanned for security issues on registration — misconfigured CORS policies, missing auth declarations, and overly permissive skill scopes are flagged before the agent is made discoverable
 - **Registry-Driven Enforcement**: Routing, rate limiting, and ACL policy are derived from Registry metadata, not hardcoded gateway config; policy changes take effect immediately without gateway redeployment
 
 ---
