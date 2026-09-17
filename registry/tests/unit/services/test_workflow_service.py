@@ -305,6 +305,52 @@ async def test_validate_model_source_refs_rejects_embedding_source(monkeypatch: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_source", ["missing", "deleted", "embedding"])
+async def test_create_workflow_returns_400_for_invalid_model_source(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_source: str,
+) -> None:
+    """Exercise the workflow save boundary, not only the private reference validator."""
+
+    class UnpersistedWorkflow:
+        def __init__(self, **kwargs):
+            self.id = PydanticObjectId()
+            self.name = kwargs["name"]
+            self.nodes = kwargs["nodes"]
+            self.insert = AsyncMock()
+
+    monkeypatch.setattr(workflow_service, "WorkflowDefinition", UnpersistedWorkflow)
+    source_id = PydanticObjectId()
+    sources = []
+    if invalid_source == "deleted":
+        sources = [SimpleNamespace(id=source_id, deletedAt=datetime.now(UTC), mode=ModelSourceMode.CHAT)]
+    elif invalid_source == "embedding":
+        sources = [SimpleNamespace(id=source_id, deletedAt=None, mode=ModelSourceMode.EMBEDDING)]
+    monkeypatch.setattr(workflow_service.ModelSource, "find", lambda *_a, **_kw: _ListQuery(sources))
+    request = WorkflowCreateRequest(
+        name="Invalid model workflow",
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
+        nodes=[
+            WorkflowNodeInput(
+                name="step",
+                nodeType="step",
+                executorKey="tool",
+                modelSourceId=str(source_id),
+                stepObjective="run",
+            )
+        ],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await WorkflowService(acl_service=AsyncMock()).create_workflow(
+            request,
+            user_id=PydanticObjectId(),
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_validate_executor_refs_returns_400_for_unknown_executor_key(monkeypatch: pytest.MonkeyPatch):
     service = WorkflowService(acl_service=AsyncMock())
     _patch_executor_ref_queries(monkeypatch, mcp_names=set(), a2a_paths=set())

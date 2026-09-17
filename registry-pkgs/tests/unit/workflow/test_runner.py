@@ -283,6 +283,22 @@ class TestBuildRegistry:
         assert captured["redis_key_prefix"] == "test-registry"
         assert captured["mcp_headers_provider"] is r._mcp_headers_provider
 
+    @pytest.mark.asyncio
+    async def test_resolves_changed_default_for_each_registry_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A changed gateway default must affect the next run without rebuilding the runner."""
+        definition = _definition()
+        resolve_default = AsyncMock(side_effect=["model-a", "model-b"])
+        build_registry = AsyncMock(return_value={})
+        monkeypatch.setattr(runner, "resolve_default_workflow_model", resolve_default)
+        monkeypatch.setattr(runner, "build_executor_registry", build_registry)
+        workflow_runner = _make_runner()
+
+        await workflow_runner._build_registry(definition, None)
+        await workflow_runner._build_registry(definition, None)
+
+        assert resolve_default.await_count == 2
+        assert [call.kwargs["default_model"] for call in build_registry.await_args_list] == ["model-a", "model-b"]
+
 
 @pytest.mark.unit
 class TestRunSetsRunningStatus:
