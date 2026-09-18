@@ -1,7 +1,17 @@
+import re
+
 from pydantic import BaseModel, Field
 
 from ...core.config import VectorConfig
 from ..enum.enums import EmbeddingProvider, VectorStoreType
+
+
+def extract_azure_resource_name(endpoint: str) -> str:
+    """Derive the Azure OpenAI resource name from its endpoint URL."""
+    match = re.match(r"https://([^.]+)\.openai\.azure\.com", endpoint)
+    if not match:
+        raise ValueError("Failed to extract resource_name from endpoint. Expected a *.openai.azure.com URL.")
+    return match.group(1)
 
 
 class VectorStoreConfig(BaseModel):
@@ -241,17 +251,7 @@ class AzureOpenAIEmbeddingConfig(EmbeddingModelConfig):
 
         # Extract resource_name from endpoint if not provided
         if not resource_name or resource_name.strip() == "":
-            # Extract from endpoint: https://resource-name.openai.azure.com/ -> resource-name
-            import re
-
-            match = re.match(r"https://([^.]+)\.openai\.azure\.com", endpoint)
-            if match:
-                resource_name = match.group(1)
-            else:
-                raise ValueError(
-                    "Failed to extract resource_name from endpoint. "
-                    "Please set AZURE_OPENAI_RESOURCE_NAME environment variable."
-                )
+            resource_name = extract_azure_resource_name(endpoint)
 
         # API version validation
         if not api_version or api_version.strip() == "":

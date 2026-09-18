@@ -578,3 +578,6 @@ models-write:
   - action: set_default_workflow_model
     method: PUT
     endpoint: /model-gateway/selection/default-workflow-model
+  - action: set_embedding_model
+    method: PUT
+    endpoint: /model-gateway/selection/embedding-model

@@ -126,3 +126,7 @@ class ModelGatewaySelectionResponse(BaseModel):
 
 class SetDefaultWorkflowModelRequest(BaseModel):
     modelSourceId: str
+
+
+class SetEmbeddingModelRequest(BaseModel):
+    modelSourceId: str
