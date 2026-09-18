@@ -28,7 +28,7 @@ dependencies = [
     "weaviate-client>=4.18.1",
     "async-lru>=2.0.5",
     # Workflow runtime
-    "agno[litellm]==2.7.2",
+    "agno[litellm]>=2.7.2,<3.0.0",
     "cel-python>=0.1.5",
     "croniter>=6.0.0",
     "mcp>=1.26.0,<2.0.0",

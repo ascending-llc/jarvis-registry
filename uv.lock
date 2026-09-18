@@ -3064,7 +3064,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "a2a-sdk", specifier = "==0.3.24" },
-    { name = "agno", extras = ["litellm"], specifier = "==2.7.2" },
+    { name = "agno", extras = ["litellm"], specifier = ">=2.7.2,<3.0.0" },
     { name = "aioboto3", specifier = ">=7.0.0" },
     { name = "async-lru", specifier = ">=2.0.5" },
     { name = "azure-identity", specifier = ">=1.25.3" },
