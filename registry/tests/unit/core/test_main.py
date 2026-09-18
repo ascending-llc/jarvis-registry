@@ -53,6 +53,7 @@ class TestMainApplication:
             patch("registry.main.create_redis_client") as mock_create_redis_client,
             patch("registry.main.close_redis_client") as mock_close_redis_client,
             patch("registry.main.create_database_client") as mock_create_database_client,
+            patch("registry.main.resolve_vector_backend_config", new=AsyncMock()) as mock_resolve_vector_backend_config,
         ):
             mock_create_redis_client.return_value = Mock()
             mock_create_database_client.return_value = Mock()
@@ -67,6 +68,7 @@ class TestMainApplication:
                 "create_redis_client": mock_create_redis_client,
                 "close_redis_client": mock_close_redis_client,
                 "create_database_client": mock_create_database_client,
+                "resolve_vector_backend_config": mock_resolve_vector_backend_config,
                 "gateway_mcp_app": mock_gateway_mcp_app,
             }
 
@@ -81,7 +83,10 @@ class TestMainApplication:
 
         mock_services["init_mongodb"].assert_awaited_once_with(settings.mongo_config)
         mock_services["create_redis_client"].assert_called_once_with(settings.redis_config)
-        mock_services["create_database_client"].assert_called_once_with(settings.vector_backend_config)
+        mock_services["resolve_vector_backend_config"].assert_awaited_once_with(settings)
+        mock_services["create_database_client"].assert_called_once_with(
+            mock_services["resolve_vector_backend_config"].return_value
+        )
         mock_services["container_cls"].assert_called_once_with(
             settings=settings,
             db_client=mock_services["create_database_client"].return_value,
@@ -190,6 +195,7 @@ class TestLifespanTelemetryShutdown:
             patch("registry.main.create_redis_client", return_value=Mock()),
             patch("registry.main.close_redis_client"),
             patch("registry.main.create_database_client", return_value=Mock()),
+            patch("registry.main.resolve_vector_backend_config", new=AsyncMock()),
         ):
             mock_gateway_mcp_app = Mock()
             mock_gateway_mcp_app.session_manager.run.return_value = _mock_async_context_manager()
