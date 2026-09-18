@@ -8,7 +8,7 @@ from ..enum.enums import EmbeddingProvider, VectorStoreType
 
 def extract_azure_resource_name(endpoint: str) -> str:
     """Derive the Azure OpenAI resource name from its endpoint URL."""
-    match = re.match(r"https://([^.]+)\.openai\.azure\.com", endpoint)
+    match = re.match(r"https://([^./]+)\.openai\.azure\.com(?:/|$)", endpoint)
     if not match:
         raise ValueError("Failed to extract resource_name from endpoint. Expected a *.openai.azure.com URL.")
     return match.group(1)

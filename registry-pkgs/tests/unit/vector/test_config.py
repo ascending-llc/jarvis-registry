@@ -15,6 +15,11 @@ def test_extract_azure_resource_name_rejects_non_azure_endpoint():
         extract_azure_resource_name("https://example.com")
 
 
+def test_extract_azure_resource_name_rejects_lookalike_host():
+    with pytest.raises(ValueError, match="openai.azure.com"):
+        extract_azure_resource_name("https://acme.openai.azure.com.attacker.example")
+
+
 def test_build_vector_store_config_builds_registered_type():
     config = build_vector_store_config(
         VectorConfig(vector_store_type=" Weaviate ", weaviate_host="h", weaviate_port=1234)

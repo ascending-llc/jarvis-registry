@@ -129,7 +129,8 @@ class ModelSourceCrudService:
             # must keep the mode that slot requires. Symmetric with the delete guard.
             if changes["mode"] != source.mode and await self.is_in_use(str(source.id)):
                 raise ModelSourceModeMismatchError(
-                    "Cannot change the mode of a model source that is in use as a default selection"
+                    "Cannot change the mode of a model source that is in use "
+                    "(referenced by a gateway default selection or a workflow node)"
                 )
             source.mode = changes["mode"]
         provider_config = changes.get("providerConfig")
