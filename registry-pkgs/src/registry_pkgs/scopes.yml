@@ -564,7 +564,7 @@ models-read:
     endpoint: /model-gateway/selection
 
 models-write:
-  description: "Create, update, and delete model sources; change the default workflow model and the embedding model."
+  description: "Create, update, and delete model sources; change the default workflow model."
   actions:
   - action: create_model_source
     method: POST
@@ -575,3 +575,6 @@ models-write:
   - action: delete_model_source
     method: DELETE
     endpoint: /model-sources/{model_source_id}
+  - action: set_default_workflow_model
+    method: PUT
+    endpoint: /model-gateway/selection/default-workflow-model

@@ -12,6 +12,7 @@ from typing import Any, NamedTuple
 from uuid import uuid4
 
 from beanie import PydanticObjectId
+from bson.errors import InvalidId
 from fastapi import HTTPException
 from pymongo import ReturnDocument
 from pymongo.asynchronous.client_session import AsyncClientSession
@@ -19,9 +20,10 @@ from pymongo.errors import DuplicateKeyError
 
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.models.enums import WorkflowNodeType, WorkflowRunStatus
+from registry_pkgs.models.enums import ModelSourceMode, WorkflowNodeType, WorkflowRunStatus
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.model_source import ModelSource
 from registry_pkgs.models.workflow import (
     HumanReviewSpec,
     LoopConfig,
@@ -136,6 +138,7 @@ class WorkflowService:
         session: AsyncClientSession | None = None,
     ) -> ExecutorRefResolution:
         """Ensure executor references resolve and return their document IDs."""
+        await self._validate_model_source_refs(nodes, session=session)
         executor_keys, pool_paths = self._collect_executor_refs(nodes)
 
         mcp_server_ids: dict[str, PydanticObjectId] = {}
@@ -176,6 +179,35 @@ class WorkflowService:
                 raise HTTPException(status_code=400, detail=msg)
 
         return ExecutorRefResolution(mcp_server_ids=mcp_server_ids, agent_ids=agent_ids)
+
+    @staticmethod
+    async def _validate_model_source_refs(
+        nodes: list[WorkflowNode],
+        session: AsyncClientSession | None = None,
+    ) -> None:
+        """Require every node model override to reference an active chat ModelSource."""
+        source_ids = {node.model_source_id for node in flatten_workflow_nodes(nodes) if node.model_source_id}
+        if not source_ids:
+            return
+
+        object_ids: dict[str, PydanticObjectId] = {}
+        for source_id in sorted(source_ids):
+            try:
+                object_ids[source_id] = PydanticObjectId(source_id)
+            except (InvalidId, TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"Unknown model source: {source_id!r}") from exc
+
+        sources = await ModelSource.find(
+            {"_id": {"$in": list(object_ids.values())}},
+            session=session,
+        ).to_list()
+        sources_by_id = {source.id: source for source in sources}
+        for source_id in sorted(source_ids):
+            source = sources_by_id.get(object_ids[source_id])
+            if source is None or source.deletedAt is not None:
+                raise HTTPException(status_code=400, detail=f"Unknown model source: {source_id!r}")
+            if source.mode != ModelSourceMode.CHAT:
+                raise HTTPException(status_code=400, detail=f"Model source {source_id!r} must have mode 'chat'")
 
     async def _check_view_permissions(
         self,
@@ -1095,6 +1127,7 @@ class WorkflowService:
             node_type=api_node.nodeType,
             executor_key=api_node.executorKey,
             a2a_pool=api_node.a2aPool,
+            model_source_id=api_node.modelSourceId,
             step_config=step_config,
             config=api_node.config,
             position=WorkflowNodePosition(x=api_node.position.x, y=api_node.position.y),

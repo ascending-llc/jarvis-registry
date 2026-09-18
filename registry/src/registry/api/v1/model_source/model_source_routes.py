@@ -22,9 +22,14 @@ from ....schemas.model_source_api_schemas import (
     ModelSourcePagedResponse,
     ModelSourceProviderConfigResponse,
     ModelSourceUpdateRequest,
+    SetDefaultWorkflowModelRequest,
 )
 from ....schemas.server_api_schemas import PaginationMetadata
-from ....services.model_gateway_selection_service import ModelGatewaySelectionService
+from ....services.model_gateway_selection_service import (
+    ModelGatewaySelectionService,
+    ModelSourceModeMismatchError,
+    ModelSourceNotFoundError,
+)
 from ....services.model_metadata_service import get_model_metadata
 from ....services.model_source_crud_service import ModelSourceCrudService
 
@@ -212,7 +217,7 @@ async def delete_model_source(
                 http_status.HTTP_409_CONFLICT,
                 detail=create_error_detail(
                     ErrorCode.CONFLICT,
-                    "Model source is in use as a default selection and cannot be deleted",
+                    "Model source is in use and cannot be deleted",
                 ),
             )
         source = await service.soft_delete(source)
@@ -247,6 +252,45 @@ async def get_model_gateway_selection(
         raise
     except Exception as exc:
         logger.exception("Failed to get model gateway selection")
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
+
+
+@router.put(
+    "/model-gateway/selection/default-workflow-model",
+    response_model=ModelGatewaySelectionResponse,
+)
+@track_registry_operation("set_default_workflow_model", resource_type="model_gateway_selection")
+async def set_default_workflow_model(
+    data: SetDefaultWorkflowModelRequest,
+    user_context: CurrentUser,
+    selection_service: ModelGatewaySelectionService = Depends(get_model_gateway_selection_service),
+):
+    try:
+        selection = await selection_service.set_default_workflow_model(
+            data.modelSourceId,
+            updated_by=str(user_context["user_id"]),
+        )
+        return ModelGatewaySelectionResponse(
+            defaultWorkflowModelSourceId=str(selection.defaultWorkflowModelSourceId),
+            embeddingModelSourceId=(
+                str(selection.embeddingModelSourceId) if selection.embeddingModelSourceId else None
+            ),
+        )
+    except ModelSourceNotFoundError as exc:
+        raise HTTPException(
+            http_status.HTTP_404_NOT_FOUND, detail=create_error_detail(ErrorCode.NOT_FOUND, str(exc))
+        ) from exc
+    except ModelSourceModeMismatchError as exc:
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT, detail=create_error_detail(ErrorCode.CONFLICT, str(exc))
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to set default workflow model")
         raise HTTPException(
             http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),

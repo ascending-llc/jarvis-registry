@@ -22,8 +22,8 @@ def _azure() -> AzureOpenAIModelConfig:
 
 def test_mapped_model_returns_metadata(monkeypatch) -> None:
     monkeypatch.setattr(
-        model_metadata_service.litellm,
-        "get_model_info",
+        model_metadata_service,
+        "get_litellm_model_info",
         lambda model: {
             "max_input_tokens": 200000,
             "max_output_tokens": 8192,
@@ -45,7 +45,7 @@ def test_uses_azure_prefix_for_azure_config(monkeypatch) -> None:
         seen["model"] = model
         return {"max_input_tokens": 128000}
 
-    monkeypatch.setattr(model_metadata_service.litellm, "get_model_info", _capture)
+    monkeypatch.setattr(model_metadata_service, "get_litellm_model_info", _capture)
     get_model_metadata(_azure())
     assert seen["model"] == "azure/gpt-4o"
 
@@ -54,7 +54,7 @@ def test_unmapped_model_degrades_to_reason(monkeypatch) -> None:
     def _raise(model: str):
         raise Exception("This model isn't mapped yet")
 
-    monkeypatch.setattr(model_metadata_service.litellm, "get_model_info", _raise)
+    monkeypatch.setattr(model_metadata_service, "get_litellm_model_info", _raise)
     meta = get_model_metadata(_bedrock())
     assert meta.maxInputTokens is None
     assert meta.unavailableReason == "This model isn't mapped yet"

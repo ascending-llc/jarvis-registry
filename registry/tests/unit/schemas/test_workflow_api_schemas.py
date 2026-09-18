@@ -15,9 +15,12 @@ from registry.schemas.workflow_api_schemas import (
     WorkflowNodeInput,
     WorkflowNodeOutput,
     WorkflowRunDetailResponse,
+    _convert_node_to_output,
+    convert_node_to_input,
     convert_to_list_item,
 )
-from registry_pkgs.models.workflow import WorkflowDefinition
+from registry_pkgs.models.enums import WorkflowNodeType
+from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
 
 
 def test_workflow_node_output_uses_independent_container_defaults():
@@ -359,3 +362,26 @@ def test_pending_user_input_field_passes_through_authoring_vocab():
     """Already-authoring values stay stable (idempotent normalisation)."""
     field = PendingUserInputField.model_validate({"name": "tags", "field_type": "array"})
     assert field.fieldType == "array"
+
+
+def test_model_source_id_round_trips_through_node_converters():
+    node = WorkflowNode(
+        name="step",
+        node_type=WorkflowNodeType.STEP,
+        executor_key="tool",
+        model_source_id="0" * 24,
+        step_objective="run",
+    )
+    assert _convert_node_to_output(node).modelSourceId == "0" * 24
+    assert convert_node_to_input(node).modelSourceId == "0" * 24
+
+
+def test_model_source_id_defaults_to_none_in_node_converters():
+    node = WorkflowNode(
+        name="step",
+        node_type=WorkflowNodeType.STEP,
+        executor_key="tool",
+        step_objective="run",
+    )
+    assert _convert_node_to_output(node).modelSourceId is None
+    assert convert_node_to_input(node).modelSourceId is None

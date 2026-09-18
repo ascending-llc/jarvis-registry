@@ -77,14 +77,28 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
             name=args.name or "sample-echo-pipeline",
             description=args.description or "Demo workflow: echo + condition (uses local executors).",
             nodes=[
-                WorkflowNode(name="initial-echo", executor_key="echo"),
+                WorkflowNode(
+                    name="initial-echo",
+                    executor_key="echo",
+                    step_objective="Echo the initial workflow input.",
+                ),
                 WorkflowNode(
                     name="value-condition",
                     node_type=WorkflowNodeType.CONDITION,
-                    condition_cel="session_state.echo_count > 0",
-                    children=[
-                        WorkflowNode(name="set-value-on-true", executor_key="set_value"),
-                        WorkflowNode(name="echo-on-false", executor_key="echo"),
+                    condition_cel="input != ''",
+                    true_steps=[
+                        WorkflowNode(
+                            name="set-value-on-true",
+                            executor_key="set_value",
+                            step_objective="Store the non-empty input in workflow session state.",
+                        )
+                    ],
+                    false_steps=[
+                        WorkflowNode(
+                            name="echo-on-false",
+                            executor_key="echo",
+                            step_objective="Echo the empty input without changing session state.",
+                        )
                     ],
                 ),
             ],
@@ -98,12 +112,19 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
             WorkflowNode(
                 name=f"step-{index}-{key.strip('/').replace('/', '-')}",
                 executor_key=key,
+                step_objective=f"Use executor {key!r} to process the current workflow input.",
             )
         )
 
     # Optional pool step appended last.
     if args.a2a_pool:
-        nodes.append(WorkflowNode(name="pool-a2a-step", a2a_pool=args.a2a_pool))
+        nodes.append(
+            WorkflowNode(
+                name="pool-a2a-step",
+                a2a_pool=args.a2a_pool,
+                step_objective="Select the best A2A agent from the configured pool and return its answer.",
+            )
+        )
 
     # Default name from content when not specified.
     if not args.name:

@@ -13,8 +13,7 @@ Usage:
         --prompt "Summarise the latest AI news"
 
 Environment variables:
-    REGISTRY_TOKEN     User-scoped Bearer token. Auto-generated from JWT_PRIVATE_KEY when absent.
-    REGISTRY_CLIENT_ID Client identity used for downstream MCP server OAuth headers.
+    REGISTRY_TOKEN     CRUD-session token. Auto-generated from JWT_PRIVATE_KEY when absent.
     REGISTRY_URL       Registry base URL (default: http://localhost:7860)
     MONGO_URI          MongoDB connection string (default: mongodb://127.0.0.1:27017/jarvis)
     WORKFLOW_TIMEOUT   Maximum number of seconds to poll before failing (default: 300).
@@ -25,25 +24,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 import httpx
+from beanie import PydanticObjectId
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from registry import settings
+from registry.core.config import settings
+from registry.utils.csrf import compute_csrf_token
 from registry_pkgs.core.config import MongoConfig
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
+from registry_pkgs.core.jwt_tokens import mint_crud_session_token
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
+from registry_pkgs.models.workflow import NodeRun
 
 
 def _parse_args() -> argparse.Namespace:
@@ -77,8 +77,22 @@ def _parse_args() -> argparse.Namespace:
 def _build_definition_payload(mcp_key: str, a2a_pool: list[str], pool_only: bool = False) -> dict:
     nodes: list[dict] = []
     if not pool_only:
-        nodes.append({"name": "mcp-step", "nodeType": "step", "executorKey": mcp_key})
-    nodes.append({"name": "pool-a2a-step", "nodeType": "step", "a2aPool": a2a_pool})
+        nodes.append(
+            {
+                "name": "mcp-step",
+                "nodeType": "step",
+                "executorKey": mcp_key,
+                "stepObjective": "Use the MCP server to gather facts required by the user prompt.",
+            }
+        )
+    nodes.append(
+        {
+            "name": "pool-a2a-step",
+            "nodeType": "step",
+            "a2aPool": a2a_pool,
+            "stepObjective": "Select the best A2A agent to synthesize the final response.",
+        }
+    )
     return {
         "name": f"pool-smoke-{mcp_key or 'pool-only'}",
         "description": "Smoke test: pool A2A step" + ("" if pool_only else " with fixed MCP step"),
@@ -87,15 +101,16 @@ def _build_definition_payload(mcp_key: str, a2a_pool: list[str], pool_only: bool
     }
 
 
-def _print_results(run: dict) -> None:
+def _print_results(run: dict, selected_agents: dict[str, str]) -> None:
     print(f"\nWorkflowRun  id={run.get('id')}  status={run.get('status')}")
     if run.get("errorSummary"):
         print(f"  error: {run['errorSummary']}")
     print()
     for node in run.get("nodeRuns", []):
         print(f"  NodeRun  name={node.get('nodeName')}  status={node.get('status')}")
-        if node.get("selectedA2aKey"):
-            print(f"    selected_a2a_key = {node['selectedA2aKey']}")
+        selected_agent = selected_agents.get(node.get("nodeName", ""))
+        if selected_agent:
+            print(f"    selected_a2a_key = {selected_agent}")
         if node.get("error"):
             print(f"    error = {node['error']}")
         if node.get("outputSnapshot"):
@@ -109,66 +124,64 @@ def _print_results(run: dict) -> None:
 
 
 async def _resolve_pool_user_id(a2a_pool: list[str]) -> str | None:
-    """Return the first user_id that has VIEW access to the first pool agent."""
-    for key in a2a_pool:
-        agent = await A2AAgent.find_one({"path": f"/{key}"})
-        if agent is None:
-            continue
-        acls = await RegistryAclEntry.find(
-            {
-                "resourceType": RegistryResourceType.REMOTE_AGENT.value,
-                "resourceId": agent.id,
-                "principalType": "user",
-            }
-        ).to_list()
-        for acl in acls:
-            if int(acl.permBits) & 1:  # VIEW bit
-                return str(acl.principalId)
+    """Return a user_id with VIEW access to every enabled pool agent."""
+    paths = list(dict.fromkeys(key.lstrip("/") for key in a2a_pool))
+    agents = await A2AAgent.find(
+        {
+            "path": {"$in": paths},
+            "config.enabled": True,
+        }
+    ).to_list()
+    if {agent.path for agent in agents} != set(paths):
+        return None
+
+    agent_ids = {agent.id for agent in agents}
+    acls = await RegistryAclEntry.find(
+        {
+            "resourceType": RegistryResourceType.REMOTE_AGENT.value,
+            "resourceId": {"$in": list(agent_ids)},
+            "principalType": "user",
+            "permBits": {"$bitsAllSet": 1},
+        }
+    ).to_list()
+    resources_by_user: dict[object, set[object]] = {}
+    for acl in acls:
+        resources_by_user.setdefault(acl.principalId, set()).add(acl.resourceId)
+    for principal_id, resource_ids in resources_by_user.items():
+        if agent_ids <= resource_ids:
+            return str(principal_id)
     return None
 
 
-def _detect_jwt_issuer(registry_url: str, fallback: str) -> str:
-    """Query the registry's auth config to find the actual JWT issuer in use."""
-    try:
-        auth_config_url = f"{registry_url.rstrip('/')}/api/auth/config"
-        with urllib.request.urlopen(auth_config_url, timeout=3) as resp:  # noqa: S310  # nosec B310
-            config = json.loads(resp.read())
-        auth_server_url = config.get("auth_server_url", "").rstrip("/")
-        if not auth_server_url:
-            return fallback
-        oidc_url = f"{auth_server_url}/.well-known/openid-configuration"
-        with urllib.request.urlopen(oidc_url, timeout=3) as resp:  # noqa: S310  # nosec B310
-            oidc = json.loads(resp.read())
-        return oidc.get("issuer", fallback)
-    except Exception as e:
-        print(e)
-        return fallback
-
-
-async def _make_registry_token(a2a_pool: list[str], registry_url: str) -> str:
-    """Generate a self-signed registry token from JWT_PRIVATE_KEY."""
+async def _make_registry_token(a2a_pool: list[str]) -> str:
+    """Generate a CRUD-session token from JWT_PRIVATE_KEY."""
     if not settings.jwt_private_key:
         raise SystemExit("Set REGISTRY_TOKEN or JWT_PRIVATE_KEY in .env to authenticate against the registry.")
-    issuer = _detect_jwt_issuer(registry_url, settings.jwt_issuer)
     user_id = await _resolve_pool_user_id(a2a_pool)
     if not user_id:
         raise SystemExit("Could not find a user with VIEW access to the requested A2A agents; set REGISTRY_TOKEN.")
     scopes = "workflows-read workflows-write workflows-control servers-read agents-read federations-read"
-    extra: dict = {
-        "scope": scopes,
-        "user_id": user_id,
-        "client_id": os.getenv("REGISTRY_CLIENT_ID", "workflow-pool-script"),
-    }
-    payload = build_jwt_payload(
+    token = mint_crud_session_token(
+        settings.jwt_token_config,
         subject="smoke-test-user",
-        issuer=issuer,
-        audience=settings.jwt_audience,
+        token_type="access_token",
         expires_in_seconds=3600,
-        extra_claims=extra,
+        extra_claims={
+            "scope": scopes,
+            "user_id": user_id,
+            "username": "workflow-pool-script",
+            "groups": ["jarvis-registry-admin"],
+        },
     )
-    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
-    print(f"Generated registry token (sub=smoke-test-user, user_id={user_id}, iss={issuer})")
+    print(f"Generated registry CRUD-session token (sub=smoke-test-user, user_id={user_id})")
     return token
+
+
+def _session_headers(token: str) -> dict[str, str]:
+    return {
+        "Cookie": f"{settings.session_cookie_name}={token}",
+        settings.csrf_header_name: compute_csrf_token(token),
+    }
 
 
 def _api(registry_url: str, path: str) -> str:
@@ -180,7 +193,7 @@ async def _create_and_run(
     args: argparse.Namespace,
     token: str,
 ) -> tuple[str, dict]:
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _session_headers(token)
     create = await client.post(
         _api(args.registry_url, "/workflows"),
         headers=headers,
@@ -221,6 +234,13 @@ async def _create_and_run(
     raise TimeoutError(f"Workflow run {run_id} did not finish within {timeout:g}s")
 
 
+async def _load_selected_agents(run_id: str) -> dict[str, str]:
+    node_runs = await NodeRun.find(NodeRun.workflow_run_id == PydanticObjectId(run_id)).to_list()
+    return {
+        node_run.node_name: node_run.selected_a2a_key for node_run in node_runs if node_run.selected_a2a_key is not None
+    }
+
+
 async def main() -> int:
     args = _parse_args()
 
@@ -240,15 +260,16 @@ async def main() -> int:
     )
 
     try:
-        registry_token = os.getenv("REGISTRY_TOKEN") or await _make_registry_token(args.a2a_pool, args.registry_url)
+        registry_token = os.getenv("REGISTRY_TOKEN") or await _make_registry_token(args.a2a_pool)
         if not args.pool_only:
             print(f"  MCP step  : {args.mcp_key}")
         print(f"  Pool step : {args.a2a_pool}")
         print(f"\nRunning workflow with prompt: {args.prompt!r}\n")
-        headers = {"Authorization": f"Bearer {registry_token}"}
+        headers = _session_headers(registry_token)
         async with httpx.AsyncClient(timeout=30) as client:
             workflow_id, run = await _create_and_run(client, args, registry_token)
-            _print_results(run)
+            selected_agents = await _load_selected_agents(run["id"])
+            _print_results(run, selected_agents)
             if run.get("status") == "awaiting_approval":
                 print(f"WorkflowDefinition kept for approval: id={workflow_id}")
             elif not os.getenv("KEEP_WORKFLOW"):
@@ -262,6 +283,9 @@ async def main() -> int:
         failed = run.get("status") != "completed" or any(
             node.get("status") != "completed" for node in run.get("nodeRuns", [])
         )
+        if not selected_agents.get("pool-a2a-step"):
+            print("Smoke test FAILED: pool selector result was not persisted.")
+            return 1
         if failed:
             print("Smoke test FAILED.")
             return 1

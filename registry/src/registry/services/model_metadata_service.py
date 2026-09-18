@@ -1,8 +1,7 @@
 import logging
 
-import litellm
-
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
+from registry_pkgs.workflows.model_resolution import get_litellm_model_info
 
 from ..schemas.model_source_api_schemas import ModelSourceMetadataResponse
 
@@ -18,7 +17,7 @@ def get_model_metadata(
         else f"azure/{provider_config.baseModelId}"
     )
     try:
-        info = litellm.get_model_info(litellm_model_string)
+        info = get_litellm_model_info(litellm_model_string)
     except Exception as exc:  # litellm raises a bare Exception for an unmapped model
         logger.warning("No litellm model metadata for %s: %s", litellm_model_string, exc)
         return ModelSourceMetadataResponse(unavailableReason=str(exc))

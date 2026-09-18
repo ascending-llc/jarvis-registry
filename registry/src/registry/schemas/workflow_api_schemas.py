@@ -156,6 +156,7 @@ class WorkflowNodeInput(APIBaseModel):
     nodeType: str = Field(description="Node type: step, parallel, loop, condition, router")
     executorKey: str | None = Field(None, description="MCP tool name or A2A agent name (required for step nodes)")
     a2aPool: list[str] = Field(default_factory=list, description="A2A agent pool (max 5 agents)")
+    modelSourceId: str | None = Field(None, description="Optional chat ModelSource override for this step")
     stepConfig: StepConfigInput | None = Field(None, description="Step-level retry and error handling configuration")
     config: dict[str, Any] = Field(default_factory=dict, description="Node configuration")
     position: NodePositionInput = Field(default_factory=NodePositionInput, description="Node position on the canvas")
@@ -211,6 +212,7 @@ class WorkflowNodeOutput(APIBaseModel):
     nodeType: str
     executorKey: str | None = None
     a2aPool: list[str] = Field(default_factory=list)
+    modelSourceId: str | None = None
     stepConfig: StepConfigInput | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     position: NodePositionInput = Field(default_factory=NodePositionInput)
@@ -554,6 +556,7 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
         nodeType=node.node_type.value if hasattr(node.node_type, "value") else node.node_type,
         executorKey=node.executor_key,
         a2aPool=node.a2a_pool,
+        modelSourceId=node.model_source_id,
         stepConfig=(
             StepConfigInput(
                 maxRetries=node.step_config.max_retries,
@@ -629,6 +632,7 @@ def convert_node_to_input(node: Any) -> WorkflowNodeInput:
         nodeType=node.node_type.value if hasattr(node.node_type, "value") else node.node_type,
         executorKey=node.executor_key,
         a2aPool=node.a2a_pool,
+        modelSourceId=node.model_source_id,
         stepConfig=(
             StepConfigInput(
                 maxRetries=node.step_config.max_retries,
