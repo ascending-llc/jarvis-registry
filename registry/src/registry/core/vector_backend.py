@@ -8,7 +8,7 @@ from registry_pkgs.models.model_source import ModelSource
 from registry_pkgs.vector.config.config import (
     BackendConfig,
     RerankConfig,
-    get_vector_store_config_class,
+    build_vector_store_config,
 )
 from registry_pkgs.vector.config.model_source_adapter import embedding_config_from_model_source
 
@@ -31,10 +31,8 @@ async def resolve_vector_backend_config(settings: Settings) -> BackendConfig:
         )
         return BackendConfig.from_vector_config(vector_config)
 
-    # Normalize like BackendConfig.from_vector_config so the ModelSource path accepts the same
-    vector_store_type = (vector_config.vector_store_type or "").strip().lower()
     return BackendConfig(
-        vector_store_config=get_vector_store_config_class(vector_store_type).from_vector_config(vector_config),
+        vector_store_config=build_vector_store_config(vector_config),
         embedding_model_config=embedding_config_from_model_source(model_source, encryption_key=settings.encryption_key),
         rerank_config=RerankConfig.from_vector_config(vector_config),
     )

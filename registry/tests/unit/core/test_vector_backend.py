@@ -58,11 +58,7 @@ async def test_selection_with_bedrock_source_builds_backend_from_source(monkeypa
 
     weaviate = WeaviateConfig(type=VectorStoreType.WEAVIATE, host="h", port=8080)
     bedrock = BedrockEmbeddingConfig(provider=EmbeddingProvider.AWS_BEDROCK, region="us-east-1", model="titan")
-    monkeypatch.setattr(
-        vector_backend,
-        "get_vector_store_config_class",
-        lambda _t: SimpleNamespace(from_vector_config=lambda _cfg: weaviate),
-    )
+    monkeypatch.setattr(vector_backend, "build_vector_store_config", lambda _cfg: weaviate)
     monkeypatch.setattr(vector_backend, "embedding_config_from_model_source", lambda _s, *, encryption_key: bedrock)
     monkeypatch.setattr(RerankConfig, "from_vector_config", classmethod(lambda cls, cfg: RerankConfig()))
 
