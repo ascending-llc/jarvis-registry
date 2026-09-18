@@ -23,6 +23,7 @@ from ....schemas.model_source_api_schemas import (
     ModelSourceProviderConfigResponse,
     ModelSourceUpdateRequest,
     SetDefaultWorkflowModelRequest,
+    SetEmbeddingModelRequest,
 )
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.model_gateway_selection_service import (
@@ -291,6 +292,47 @@ async def set_default_workflow_model(
         raise
     except Exception as exc:
         logger.exception("Failed to set default workflow model")
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
+
+
+@router.put(
+    "/model-gateway/selection/embedding-model",
+    response_model=ModelGatewaySelectionResponse,
+    description="Sets the ModelSource used for vector embedding. Takes effect on the next "
+    "registry pod restart, not immediately (see AS-1853).",
+)
+@track_registry_operation("set_embedding_model", resource_type="model_gateway_selection")
+async def set_embedding_model(
+    data: SetEmbeddingModelRequest,
+    user_context: CurrentUser,
+    selection_service: ModelGatewaySelectionService = Depends(get_model_gateway_selection_service),
+):
+    try:
+        selection = await selection_service.set_embedding_model(
+            data.modelSourceId,
+            updated_by=str(user_context["user_id"]),
+        )
+        return ModelGatewaySelectionResponse(
+            defaultWorkflowModelSourceId=(
+                str(selection.defaultWorkflowModelSourceId) if selection.defaultWorkflowModelSourceId else None
+            ),
+            embeddingModelSourceId=str(selection.embeddingModelSourceId),
+        )
+    except ModelSourceNotFoundError as exc:
+        raise HTTPException(
+            http_status.HTTP_404_NOT_FOUND, detail=create_error_detail(ErrorCode.NOT_FOUND, str(exc))
+        ) from exc
+    except ModelSourceModeMismatchError as exc:
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT, detail=create_error_detail(ErrorCode.CONFLICT, str(exc))
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to set embedding model")
         raise HTTPException(
             http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),

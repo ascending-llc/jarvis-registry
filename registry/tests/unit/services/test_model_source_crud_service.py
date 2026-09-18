@@ -32,6 +32,9 @@ class _FakeFinder:
     def limit(self, *_args, **_kwargs):
         return self
 
+    def project(self, *_args, **_kwargs):
+        return self
+
     async def to_list(self):
         return self._items
 

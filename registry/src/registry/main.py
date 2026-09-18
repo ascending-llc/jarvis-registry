@@ -22,6 +22,7 @@ from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
 from .app_factory import create_app
 from .container import RegistryContainer
 from .core.config import settings
+from .core.vector_backend import resolve_vector_backend_config
 from .mcpgw import create_gateway_mcp_app
 
 if TYPE_CHECKING:
@@ -102,7 +103,8 @@ async def _startup_container(app: FastAPI) -> _RuntimeResources:
     redis_client = create_redis_client(settings.redis_config)
 
     logger.info("Initializing vector database client")
-    db_client = create_database_client(settings.vector_backend_config)
+    backend_config = await resolve_vector_backend_config(settings)
+    db_client = create_database_client(backend_config)
 
     container = RegistryContainer(
         settings=settings,

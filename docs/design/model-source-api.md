@@ -17,6 +17,8 @@ singleton records which ModelSource currently backs each of the two global slots
    - 3.4. [Update Model Source](#4-update-model-source)
    - 3.5. [Delete Model Source](#5-delete-model-source)
    - 3.6. [Get Gateway Selection](#6-get-gateway-selection)
+   - 3.7. [Set Default Workflow Model](#7-set-default-workflow-model)
+   - 3.8. [Set Embedding Model](#8-set-embedding-model)
 4. [Access Control](#access-control)
 5. [Data Models](#data-models)
 6. [Credentials & Encryption](#credentials--encryption)
@@ -210,8 +212,8 @@ Soft-delete — sets `deletedAt`; the row remains in Mongo. A subsequent `GET`/`
 same id returns `404`.
 
 **Delete guard:** returns `409 Conflict` when the model is currently referenced by a gateway
-selection slot (`defaultWorkflowModelSourceId` or `embeddingModelSourceId`). _(AS-1852 extends
-this guard to also block deletion when any `WorkflowNode.model_source_id` references the model.)_
+selection slot (`defaultWorkflowModelSourceId` or `embeddingModelSourceId`), **or** when any
+`WorkflowNode.model_source_id` across any `WorkflowDefinition` references the model.
 
 **Response**: `200 OK`
 ```json
@@ -233,28 +235,56 @@ selection set yet) both are `null`.
 
 ---
 
-### 7. Set Default Workflow Model (Planned — AS-1852)
+### 7. Set Default Workflow Model
 
 **Endpoint**: `PUT /api/v1/model-gateway/selection/default-workflow-model`
 **Scope**: `models-write`
 
-Sets `defaultWorkflowModelSourceId`. Requires the target ModelSource to have `mode == chat`
-(otherwise `409`). Takes effect on the **next workflow run — no restart** (resolved live).
+Sets `defaultWorkflowModelSourceId`. Takes effect on the **next workflow run — no restart**: the
+effective default is resolved fresh (via Beanie) on every run, so a change is picked up without a
+pod restart.
 
 **Request Body**: `{ "modelSourceId": "<id>" }`
 
+**Response**: `200 OK` → the updated selection (same shape as [Get Gateway Selection](#6-get-gateway-selection)).
+```json
+{ "defaultWorkflowModelSourceId": "000000000000000000000001", "embeddingModelSourceId": null }
+```
+
+**Errors**:
+- `404` — `modelSourceId` does not resolve (invalid id, not found, or soft-deleted).
+- `409` — the target ModelSource has `mode != chat`.
+
 ---
 
-### 8. Set Embedding Model (Planned — AS-1853)
+### 8. Set Embedding Model
 
 **Endpoint**: `PUT /api/v1/model-gateway/selection/embedding-model`
 **Scope**: `models-write`
 
-Sets `embeddingModelSourceId`. Requires the target ModelSource to have `mode == embedding`
-(otherwise `409`). Takes effect on the **next registry pod restart**, not immediately (the
-vector `DatabaseClient` is built once at startup).
+Sets `embeddingModelSourceId`. Takes effect on the **next registry pod restart**, not immediately
+— the vector `DatabaseClient` is built once at startup from the resolved embedding config (this
+matches today's env-var behavior, where changing the embedding provider also needs a restart).
 
 **Request Body**: `{ "modelSourceId": "<id>" }`
+
+**Response**: `200 OK` → the updated selection (same shape as [Get Gateway Selection](#6-get-gateway-selection)).
+```json
+{ "defaultWorkflowModelSourceId": null, "embeddingModelSourceId": "000000000000000000000002" }
+```
+
+**Errors**:
+- `404` — `modelSourceId` does not resolve (invalid id, not found, or soft-deleted).
+- `409` — the target ModelSource has `mode != embedding`.
+
+**Startup resolution behavior** (AS-1853):
+- No embedding ModelSource selected → the process uses the legacy env-var `VectorConfig` path
+  (unchanged fresh-deployment / pre-migration behavior).
+- Selected source missing/soft-deleted at startup → logs a warning and **falls back** to the
+  legacy path.
+- Selected Azure source with **no** `apiKeyEncrypted` → startup **fails loudly** (Workload Identity
+  is not supported on the embedding path; see [Data Models](#azureopenaimodelconfig)), rather than
+  silently falling back.
 
 ---
 
@@ -279,6 +309,8 @@ Model sources are **scope-only** — no ACL, no per-record ownership.
 | `PATCH /model-sources/{id}` | `models-write` |
 | `DELETE /model-sources/{id}` | `models-write` |
 | `GET /model-gateway/selection` | `models-read` |
+| `PUT /model-gateway/selection/default-workflow-model` | `models-write` |
+| `PUT /model-gateway/selection/embedding-model` | `models-write` |
 
 ---
 
@@ -367,16 +399,30 @@ Workload Identity.
 
 ## Error Response Format
 
-All error responses use the standard structured shape:
+**Two shapes — the frontend must handle both.**
+
+`403` / `404` / `409` / `500` use a structured **object** `detail` (`error` is a machine-readable
+code, `message` is human-readable):
 
 ```json
 { "detail": { "error": "not_found", "message": "Model source not found" } }
 ```
 
-| Status | Meaning |
-|--------|---------|
-| `403` | Insufficient permissions (missing `models-read` / `models-write`) |
-| `404` | Model source not found or soft-deleted |
-| `409` | Conflict — delete blocked (model in use), or selection mode mismatch (AS-1852/1853) |
-| `422` | Validation error (invalid input / unknown `providerType`) |
-| `500` | Internal server error |
+`error` codes seen on these endpoints: `not_found`, `conflict`, `invalid_request`,
+`internal_error`.
+
+`422` request-validation errors (invalid body, unknown `providerType`, missing/blank required
+field, explicit `null` on a non-nullable field) come from the framework's validation handler and
+use a **string** `detail` (joined `field: message`, truncated):
+
+```json
+{ "detail": "modelIdOrArn: String should have at least 1 character" }
+```
+
+| Status | Meaning | `detail` shape |
+|--------|---------|----------------|
+| `403` | Insufficient permissions (missing `models-read` / `models-write`) | object |
+| `404` | Model source not found or soft-deleted | object |
+| `409` | Conflict — delete blocked (model in use), or selection mode mismatch on a `PUT .../selection/*` | object |
+| `422` | Validation error (invalid input / unknown `providerType`) | **string** |
+| `500` | Internal server error | object |
