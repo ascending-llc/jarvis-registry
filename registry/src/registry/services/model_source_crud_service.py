@@ -3,12 +3,13 @@ from typing import Any
 
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
+from pydantic import BaseModel
 
 from registry.utils.crypto_utils import encrypt_value
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
-from registry_pkgs.models.workflow import WorkflowDefinition
+from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 
 from ..schemas.model_source_api_schemas import (
@@ -16,9 +17,15 @@ from ..schemas.model_source_api_schemas import (
     AzureOpenAIModelConfigInput,
     ModelSourceProviderConfigInput,
 )
-from .model_gateway_selection_service import ModelGatewaySelectionService
+from .model_gateway_selection_service import ModelGatewaySelectionService, ModelSourceModeMismatchError
 
 StoredProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig
+
+
+class _WorkflowNodesProjection(BaseModel):
+    """Projection that loads only a definition's node tree for the delete-guard scan."""
+
+    nodes: list[WorkflowNode]
 
 
 class ModelSourceCrudService:
@@ -121,7 +128,9 @@ class ModelSourceCrudService:
             # Guard the gateway-selection invariant: a source referenced as a default slot
             # must keep the mode that slot requires. Symmetric with the delete guard.
             if changes["mode"] != source.mode and await self.is_in_use(str(source.id)):
-                raise ValueError("Cannot change the mode of a model source that is in use as a default selection")
+                raise ModelSourceModeMismatchError(
+                    "Cannot change the mode of a model source that is in use as a default selection"
+                )
             source.mode = changes["mode"]
         provider_config = changes.get("providerConfig")
         if provider_config is not None:
@@ -167,8 +176,9 @@ class ModelSourceCrudService:
 
         Workflow deletion is low-frequency and the recursive tree cannot be queried reliably as a
         single indexed Mongo path, so this intentionally scans definitions until the first match.
+        Only the node tree is projected — the rest of each definition is never loaded.
         """
-        async for definition in WorkflowDefinition.find({}):
+        async for definition in WorkflowDefinition.find({}).project(_WorkflowNodesProjection):
             for node in flatten_workflow_nodes(definition.nodes):
                 if node.model_source_id is None:
                     continue
