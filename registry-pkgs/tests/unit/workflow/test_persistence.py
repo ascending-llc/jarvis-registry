@@ -42,6 +42,8 @@ def _sync_with_fake_run():
         status=WorkflowRunStatus.RUNNING,
         finished_at=None,
         final_output=None,
+        error_summary=None,
+        pending_requirements=[],
         save=AsyncMock(),
     )
     sync._node_by_name = {}
@@ -132,6 +134,194 @@ class TestWorkflowPersistence:
         assert sync._workflow_run.status == WorkflowRunStatus.FAILED
         assert sync._workflow_run.finished_at is not None
         assert sync._workflow_run.final_output == {"content": "step failed"}
+        assert sync._workflow_run.error_summary == "boom"
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_uses_failed_step_name_when_error_is_empty(self):
+        sync = _sync_with_fake_run()
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(content="step failed", status=RunStatus.completed),
+            [StepOutput(step_name="bad-step", success=False)],
+        )
+
+        assert sync._workflow_run.status == WorkflowRunStatus.FAILED
+        assert sync._workflow_run.error_summary == "Step 'bad-step' failed"
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_prefers_nested_failure_error_over_parallel_aggregate(self):
+        sync = _sync_with_fake_run()
+        child = StepOutput(step_name="bad-step", success=False, error="original auth error", stop=True)
+        parallel = StepOutput(
+            step_name="parallel",
+            step_type="Parallel",
+            success=False,
+            stop=True,
+            steps=[child],
+        )
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(content="step failed", status=RunStatus.completed),
+            persistence._flatten_step_results([parallel]),
+        )
+
+        assert sync._workflow_run.status == WorkflowRunStatus.FAILED
+        assert sync._workflow_run.error_summary == "original auth error"
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_ignores_skip_only_container_aggregate_failure(self):
+        sync = _sync_with_fake_run()
+        sync._node_by_name = {
+            "optional": WorkflowNode(
+                name="optional",
+                executor_key="tool",
+                step_config=StepConfig(on_error="skip"),
+                step_objective="optional work",
+            )
+        }
+        skipped = StepOutput(step_name="optional", success=False, error="optional failure")
+        parallel = StepOutput(
+            step_name="parallel",
+            step_type="Parallel",
+            success=False,
+            steps=[skipped],
+        )
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(content="done", status=RunStatus.completed),
+            persistence._flatten_step_results([parallel]),
+        )
+
+        assert sync._workflow_run.status == WorkflowRunStatus.COMPLETED
+        assert sync._workflow_run.error_summary is None
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_ignores_skipped_error_when_real_failure_follows(self):
+        sync = _sync_with_fake_run()
+        sync._node_by_name = {
+            "optional": WorkflowNode(
+                name="optional",
+                executor_key="tool",
+                step_config=StepConfig(on_error="skip"),
+                step_objective="optional work",
+            ),
+            "critical": WorkflowNode(
+                name="critical",
+                executor_key="tool",
+                step_objective="critical work",
+            ),
+        }
+        skipped = StepOutput(step_name="optional", success=False, error="ignored error")
+        skipped_container = StepOutput(
+            step_name="parallel",
+            step_type="Parallel",
+            success=False,
+            steps=[skipped],
+        )
+        critical = StepOutput(step_name="critical", success=False, error="fatal error", stop=True)
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(content="failed", status=RunStatus.completed),
+            persistence._flatten_step_results([skipped_container, critical]),
+        )
+
+        assert sync._workflow_run.status == WorkflowRunStatus.FAILED
+        assert sync._workflow_run.error_summary == "fatal error"
+        assert sync._workflow_run.pending_requirements == []
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_clears_stale_review_on_stopped_failure(self):
+        sync = _sync_with_fake_run()
+        sync._workflow_run.pending_requirements = [{"step_id": "review"}]
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(status=RunStatus.paused),
+            [StepOutput(step_name="critical", success=False, stop=True, error="fatal")],
+        )
+
+        assert sync._workflow_run.status == WorkflowRunStatus.FAILED
+        assert sync._workflow_run.error_summary == "fatal"
+        assert sync._workflow_run.pending_requirements == []
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_preserves_existing_error_without_step_output(self):
+        sync = _sync_with_fake_run()
+        sync._workflow_run.error_summary = "runtime crashed"
+
+        await sync._update_workflow_run(WorkflowRunOutput(status=RunStatus.error))
+
+        assert sync._workflow_run.status == WorkflowRunStatus.FAILED
+        assert sync._workflow_run.error_summary == "runtime crashed"
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_reports_container_own_failure(self):
+        sync = _sync_with_fake_run()
+        skipped = StepOutput(step_name="optional", success=False, error="ignored")
+        sync._node_by_name = {
+            "optional": WorkflowNode(
+                name="optional",
+                executor_key="tool",
+                step_config=StepConfig(on_error="skip"),
+                step_objective="optional work",
+            )
+        }
+        container = StepOutput(
+            step_name="router",
+            step_type="Router",
+            success=False,
+            error="router crashed",
+            steps=[skipped],
+        )
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(status=RunStatus.completed),
+            persistence._flatten_step_results([container]),
+        )
+
+        assert sync._workflow_run.status == WorkflowRunStatus.FAILED
+        assert sync._workflow_run.error_summary == "router crashed"
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_reports_unexplained_container_failure(self):
+        sync = _sync_with_fake_run()
+        container = StepOutput(
+            step_name="router",
+            step_type="Router",
+            success=False,
+            steps=[StepOutput(step_name="child", success=True)],
+        )
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(status=RunStatus.completed),
+            persistence._flatten_step_results([container]),
+        )
+
+        assert sync._workflow_run.status == WorkflowRunStatus.FAILED
+        assert sync._workflow_run.error_summary == "Step 'router' failed"
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_ignores_nested_skip_aggregates(self):
+        sync = _sync_with_fake_run()
+        sync._node_by_name = {
+            "optional": WorkflowNode(
+                name="optional",
+                executor_key="tool",
+                step_config=StepConfig(on_error="skip"),
+                step_objective="optional work",
+            )
+        }
+        skipped = StepOutput(step_name="optional", success=False, error="ignored")
+        choice = StepOutput(step_name="choice", step_type="Steps", success=False, steps=[skipped])
+        router = StepOutput(step_name="router", step_type="Router", success=False, steps=[choice])
+        parallel = StepOutput(step_name="parallel", step_type="Parallel", success=False, steps=[router])
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(status=RunStatus.completed),
+            persistence._flatten_step_results([parallel]),
+        )
+
+        assert sync._workflow_run.status == WorkflowRunStatus.COMPLETED
+        assert sync._workflow_run.error_summary is None
 
     @pytest.mark.asyncio
     async def test_update_workflow_run_passes_session_to_save(self):
@@ -542,3 +732,56 @@ class TestWorkflowPersistence:
         node_run, _ = saved[0]
         assert node_run.status == NodeRunStatus.SKIPPED
         assert node_run.error == "boom"  # the skip reason is retained for diagnostics
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("child_policy", "expected_status"),
+        [
+            ("skip", NodeRunStatus.COMPLETED),
+            ("fail", NodeRunStatus.FAILED),
+        ],
+    )
+    async def test_upsert_node_run_uses_children_to_classify_container_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        child_policy: str,
+        expected_status: NodeRunStatus,
+    ) -> None:
+        existing = NodeRun.model_construct(
+            workflow_run_id=PydanticObjectId(),
+            node_id="container-id",
+            node_name="container",
+            attempt=0,
+            status=NodeRunStatus.PENDING,
+        )
+        monkeypatch.setattr(NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(NodeRun, "node_id", _FieldExpr("node_id"), raising=False)
+        monkeypatch.setattr(NodeRun, "find_one", AsyncMock(return_value=existing))
+        monkeypatch.setattr(NodeRun, "save", AsyncMock())
+        sync = _sync_with_fake_run()
+        sync._node_by_name = {
+            "container": WorkflowNode(
+                name="container",
+                node_type="parallel",
+                children=[
+                    WorkflowNode(name="optional", executor_key="tool", step_objective="work"),
+                    WorkflowNode(name="sibling", executor_key="tool", step_objective="work"),
+                ],
+            ),
+            "optional": WorkflowNode(
+                name="optional",
+                executor_key="tool",
+                step_config=StepConfig(on_error=child_policy),
+                step_objective="work",
+            ),
+        }
+        output = StepOutput(
+            step_name="container",
+            step_type="Parallel",
+            success=False,
+            steps=[StepOutput(step_name="optional", success=False, error="boom")],
+        )
+
+        await sync._upsert_node_run(output)
+
+        assert existing.status == expected_status
