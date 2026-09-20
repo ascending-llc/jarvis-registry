@@ -204,6 +204,32 @@ async def test_test_connection_reports_detail_when_github_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_test_connection_flags_reauth_when_token_revoked(monkeypatch):
+    from registry.services.skill_sync_github_service import GitHubDownloadError
+    from registry_pkgs.models.enums import SkillSyncJobErrorCode
+
+    monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
+    token_service = MagicMock(resolve_access_token=AsyncMock(return_value="access-token"))
+    github_service = MagicMock(
+        resolve_commit_sha=AsyncMock(
+            side_effect=GitHubDownloadError(
+                "GitHub authentication failed (HTTP 401)",
+                SkillSyncJobErrorCode.GITHUB_AUTH_FAILED,
+            )
+        )
+    )
+
+    result = await _service(token_service=token_service, github_service=github_service).test_connection(
+        source=_source(),
+        user_id="user-1",
+    )
+
+    assert result.ok is False
+    assert result.needs_authorization is True
+    assert "authentication failed" in (result.detail or "")
+
+
+@pytest.mark.asyncio
 async def test_delete_source_persists_typed_delete_snapshot_in_transaction(transaction_client):
     source = _source()
     job = SimpleNamespace(id=PydanticObjectId())

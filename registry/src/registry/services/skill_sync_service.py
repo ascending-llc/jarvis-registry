@@ -6,7 +6,7 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
-from registry_pkgs.models.enums import RoleBits, SkillSyncJobType, SkillSyncTriggerType
+from registry_pkgs.models.enums import RoleBits, SkillSyncJobErrorCode, SkillSyncJobType, SkillSyncTriggerType
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.skill_sync_job import (
     SkillSyncDeleteRequestSnapshot,
@@ -169,7 +169,10 @@ class SkillSyncService:
                 access_token=access_token,
             )
         except GitHubDownloadError as exc:
-            return ConnectionCheckResult(ok=False, detail=str(exc))
+            # A locally-unexpired but revoked/insufficient token surfaces as an auth failure;
+            # route the user back through OAuth rather than reporting a generic config error.
+            needs_auth = exc.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED
+            return ConnectionCheckResult(ok=False, needs_authorization=needs_auth, detail=str(exc))
         return ConnectionCheckResult(ok=True)
 
     async def delete_source_with_skills(

@@ -229,6 +229,16 @@ def test_sync_dry_run_not_blocked_by_in_progress_sync(skill_sync_route_context) 
     assert response.json()["ok"] is True
 
 
+def test_sync_dry_run_rejected_when_source_deleting(skill_sync_route_context) -> None:
+    # dryRun still requires an ACTIVE source: never probe one being deleted.
+    ctx = skill_sync_route_context
+    ctx.source.status = SkillSyncSourceStatus.DELETING
+    ctx.skill_sync_service.test_connection = AsyncMock(return_value=ConnectionCheckResult(ok=True))
+    response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync", json={"dryRun": True})
+    assert response.status_code == 409
+    ctx.skill_sync_service.test_connection.assert_not_awaited()
+
+
 def test_job_polling_is_scoped_to_source(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
     response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}/jobs/{ctx.job.id}")

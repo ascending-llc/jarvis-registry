@@ -387,7 +387,13 @@ async def sync_source(
             required_permission="EDIT",
         )
         if dry_run:
-            # Test-connect is not blocked by an in-progress sync: it neither enqueues nor mutates.
+            # Test-connect skips the pending/syncing guard (read-only, no enqueue), but still
+            # requires an ACTIVE source — don't probe one whose deletion is in progress.
+            if not SkillSyncStateMachine.can_update(source.status):
+                raise HTTPException(
+                    http_status.HTTP_409_CONFLICT,
+                    detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source is not active"),
+                )
             outcome = await sync_service.test_connection(source=source, user_id=user_str_id)
             if outcome.needs_authorization:
                 return SkillSyncDryRunResponse(needsAuthorization=True)
