@@ -18,7 +18,7 @@ from registry.deps import (
     get_skill_sync_token_service,
 )
 from registry.schemas.acl_schema import ResourcePermissions
-from registry.services.skill_sync_service import SyncTriggerResult
+from registry.services.skill_sync_service import ConnectionCheckResult, SyncTriggerResult
 from registry_pkgs.models.enums import (
     SkillSyncJobPhase,
     SkillSyncJobStatus,
@@ -185,6 +185,50 @@ def test_sync_triggers_sync_returns_job(skill_sync_route_context) -> None:
     _assert_permission_checked(ctx, "EDIT")
 
 
+def test_sync_dry_run_returns_ok_without_triggering(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.skill_sync_service.test_connection = AsyncMock(return_value=ConnectionCheckResult(ok=True))
+    ctx.skill_sync_service.trigger_sync = AsyncMock()
+    response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync", json={"dryRun": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["needsAuthorization"] is False
+    _assert_permission_checked(ctx, "EDIT")
+    ctx.skill_sync_service.test_connection.assert_awaited_once()
+    ctx.skill_sync_service.trigger_sync.assert_not_awaited()
+
+
+def test_sync_dry_run_needs_authorization(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.skill_sync_service.test_connection = AsyncMock(return_value=ConnectionCheckResult(needs_authorization=True))
+    response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync", json={"dryRun": True})
+    assert response.status_code == 200
+    assert response.json()["needsAuthorization"] is True
+
+
+def test_sync_dry_run_reports_detail_on_failure(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.skill_sync_service.test_connection = AsyncMock(
+        return_value=ConnectionCheckResult(ok=False, detail="Repository octocat/skills ref main not found")
+    )
+    response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync", json={"dryRun": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "not found" in body["detail"]
+
+
+def test_sync_dry_run_not_blocked_by_in_progress_sync(skill_sync_route_context) -> None:
+    # dryRun must skip the can_start_sync 409 guard: it neither enqueues nor mutates.
+    ctx = skill_sync_route_context
+    ctx.source.syncStatus = SkillSyncStatus.SYNCING
+    ctx.skill_sync_service.test_connection = AsyncMock(return_value=ConnectionCheckResult(ok=True))
+    response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync", json={"dryRun": True})
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
 def test_job_polling_is_scoped_to_source(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
     response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}/jobs/{ctx.job.id}")
@@ -309,19 +353,21 @@ def test_list_sources_maps_acl_runtime_error_to_500(skill_sync_route_context) ->
     assert response.status_code == 500
 
 
-def test_oauth_callback_exchanges_and_triggers_sync(skill_sync_route_context) -> None:
+def test_oauth_callback_stores_token_and_redirects_without_syncing(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
     ctx.oauth_service.exchange_callback = AsyncMock(return_value=USER_ID)
-    ctx.skill_sync_service.trigger_sync = AsyncMock(return_value=SyncTriggerResult(job=ctx.job))
+    ctx.skill_sync_service.trigger_sync = AsyncMock()
     response = ctx.client.get(
         "/skill-sync-sources/oauth/callback?code=code&state=state",
         follow_redirects=False,
     )
     assert response.status_code == 307
-    assert "status=syncing" in response.headers["location"]
-    assert f"/skill-sync-sources/{ctx.source.id}?" in response.headers["location"]
+    location = response.headers["location"]
+    assert f"/skill-sync-sources/{ctx.source.id}?" in location
+    assert "status=connected" in location
     ctx.oauth_service.exchange_callback.assert_awaited_once()
-    ctx.skill_sync_service.trigger_sync.assert_awaited_once()
+    # Option A: authorizing stores the token only; it must NOT auto-trigger a sync.
+    ctx.skill_sync_service.trigger_sync.assert_not_awaited()
 
 
 def test_oauth_callback_resolvable_state_with_error_redirects_to_source(skill_sync_route_context) -> None:
