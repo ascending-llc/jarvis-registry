@@ -360,13 +360,29 @@ skill that disappeared upstream — hard-deletes the same way.
 
 **Endpoint**: `POST /api/v1/skill-sync-sources/{source_id}/sync`
 
-This endpoint:
+**Request Body** (optional):
+```typescript
+{ dryRun?: boolean }  // default false
+```
+
+`dryRun=true` is a **test-connect** (mirrors the federation providers' `dryRun`): it validates the
+configuration only, **synchronously, read-only** — no job is enqueued and no state is mutated. Use it to
+check the config before committing a real sync.
+
+**Behavior — real sync (`dryRun=false`, default):**
 1. Check for an existing OAuth token (access → refresh fallback)
 2. If no valid token is available, return `needsAuthorization: true`
 3. If a token is valid, atomically transition the source to `pending`, persist a `FULL_SYNC` job, and return job details
 4. The app-scoped job runner atomically claims persisted jobs with a renewable lease. An expired lease is reclaimed after process failure; after three abandoned attempts the job is failed and the source is released from its active state
 
-**Response**: `200 OK`
+**Behavior — test connect (`dryRun=true`):**
+1. Check for an existing OAuth token (access → refresh fallback); if none, return `needsAuthorization: true`
+2. With the token, make one read-only GitHub call resolving `owner/repo@ref` (validates repo exists,
+   the GitHub App can read it, and the ref exists)
+3. Return `{ "ok": true }` on success, or `{ "ok": false, "detail": "..." }` on failure
+4. **Never** enqueues a job, marks the source `pending`, or is blocked by an in-progress sync (no `409`)
+
+**Response — real sync**: `200 OK`
 ```json
 {
   "job": {
@@ -392,10 +408,21 @@ Or when re-authorization is needed:
 }
 ```
 
+**Response — test connect (`dryRun=true`)**: `200 OK`
+```json
+{ "ok": true, "needsAuthorization": false, "detail": null }
+```
+```json
+{ "ok": false, "needsAuthorization": false, "detail": "Repository octocat/skills ref main not found" }
+```
+```json
+{ "ok": false, "needsAuthorization": true, "detail": null }
+```
+
 **Error**:
 - `403` User does not have EDIT permission
 - `404` Source not found
-- `409` Source already has an active sync job
+- `409` Source already has an active sync job (real sync only; not raised for `dryRun=true`)
 - `500` Internal server error
 
 ---
@@ -446,10 +473,11 @@ This is the GitHub OAuth redirect target. It is a **single constant URL for the 
 - Otherwise, validates state token and consumes the stored flow from FlowStateManager
 - Exchanges `code` for tokens at `https://github.com/login/oauth/access_token` with `code_verifier`
 - Stores encrypted tokens (access + refresh) in MongoDB `tokens`
-- Triggers a `FULL_SYNC` job with `triggerType=oauth_callback`
+- **Stores the token only — it does NOT auto-trigger a sync.** The frontend then explicitly drives
+  test-connect (`POST /{source_id}/sync {dryRun:true}`) and, when ready, the real sync.
 
 **Response**: `307 Temporary Redirect`
-- Success: `Location: {registry_client_url}/skill-sync-sources/{source_id}?status=syncing`
+- Success: `Location: {registry_client_url}/skill-sync-sources/{source_id}?status=connected`
 - Resolved-source error: `Location: {registry_client_url}/skill-sync-sources/{source_id}?error=auth_failed`
 - Unresolvable state: `Location: {registry_client_url}/skill-sync-sources?error=invalid_callback`
 
@@ -709,10 +737,56 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
      client_id, client_secret, code, redirect_uri, code_verifier
 
 7. Server stores encrypted tokens (AES-CBC) in MongoDB Token collection
+   (token only — no sync is auto-triggered)
 
 8. Server redirects to frontend:
-   → {registry_client_url}/skill-sync-sources/{source_id}?status=syncing
+   → {registry_client_url}/skill-sync-sources/{source_id}?status=connected
+
+9. Frontend then drives test-connect and sync explicitly:
+   → POST /skill-sync-sources/{source_id}/sync { dryRun: true }   # validate config
+   → POST /skill-sync-sources/{source_id}/sync { dryRun: false }  # real sync
 ```
+
+### Frontend Integration
+
+Authorization and syncing are **three explicit steps**. The OAuth callback stores the token only — it
+never auto-triggers a sync — so the frontend decides when to test and when to sync.
+
+**Step 1 — Connect GitHub** (needed once, or whenever the token is gone/expired-and-unrefreshable)
+
+- This is a **full-page browser navigation**, not a `fetch`/XHR — `oauth/initiate` responds `307` to
+  `github.com`, which a fetch cannot follow across origins:
+  `window.location.href = "/api/v1/skill-sync-sources/{source_id}/oauth/initiate"`
+- After the user authorizes, GitHub → callback → the browser lands back on
+  `{registry_client_url}/skill-sync-sources/{source_id}?status=connected`. Read that `status`/`error`
+  query param to show a toast; then proceed to Step 2.
+- Callback error params the frontend should handle: `error=auth_failed` (on the source page) and
+  `error=invalid_callback` (on the generic list page, when the state could not be resolved).
+
+**Step 2 — Test connection** (`POST /{source_id}/sync` with `{ "dryRun": true }`)
+
+- `{ "needsAuthorization": true }` → token missing/expired → send the user back to **Step 1**.
+- `{ "ok": true }` → config valid; enable the "Sync now" button.
+- `{ "ok": false, "detail": "..." }` → show `detail` (repo/ref not found, no access, etc.).
+- Read-only: safe to call anytime, even while a sync is already running (never returns `409`).
+
+**Step 3 — Sync now** (`POST /{source_id}/sync` with `{ "dryRun": false }`, or an empty body)
+
+- `{ "needsAuthorization": true }` → send back to **Step 1**.
+- `{ "job": { ... } }` → poll `GET /{source_id}/jobs/{job_id}` until the job reaches a terminal
+  status (`success` / `partial_success` / `failed`) to render progress.
+- `409` → a sync is already active for this source; surface it and offer to poll the active job.
+
+**Signal summary** (both `dryRun` values share the same token gate):
+
+| Signal | Meaning | Frontend action |
+|---|---|---|
+| `needsAuthorization: true` | No usable OAuth token | Go to Step 1 (`oauth/initiate` full-page redirect) |
+| dryRun `ok: true` | Config valid | Enable "Sync now" |
+| dryRun `ok: false` + `detail` | Config invalid | Show `detail` |
+| real-sync `job` | Sync enqueued | Poll `GET /{source_id}/jobs/{job_id}` |
+| `?status=connected` (callback) | Token stored, no sync started | Toast, then Step 2 |
+| `?error=auth_failed` / `?error=invalid_callback` | OAuth callback failed | Show error |
 
 ### Token Prefix Reference
 
