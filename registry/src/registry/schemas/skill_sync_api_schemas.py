@@ -162,10 +162,20 @@ class SkillSyncSourcePagedResponse(BaseModel):
     pagination: PaginationMetadata
 
 
+class SkillSyncSyncRequest(BaseModel):
+    dryRun: bool = False
+
+
 class SkillSyncTriggerResponse(BaseModel):
     job: SkillSyncJobResponse | None = None
     needsAuthorization: bool = False
     authorizeUrl: str | None = None
+
+
+class SkillSyncDryRunResponse(BaseModel):
+    ok: bool = False
+    needsAuthorization: bool = False
+    detail: str | None = None
 
 
 class SkillSyncDeleteResponse(BaseModel):

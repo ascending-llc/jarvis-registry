@@ -17,6 +17,7 @@ from registry_pkgs.models.skill_sync_source import SkillSyncSource
 
 from ..utils.crypto_utils import decrypt_value
 from .access_control_service import ACLService
+from .skill_sync_github_service import GitHubDownloadError, SkillSyncGitHubService
 from .skill_sync_job_service import SkillSyncJobService
 from .skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .skill_sync_token_service import SkillSyncTokenService
@@ -25,6 +26,13 @@ from .skill_sync_token_service import SkillSyncTokenService
 @dataclass
 class SyncTriggerResult:
     job: SkillSyncJob | None = None
+
+
+@dataclass
+class ConnectionCheckResult:
+    ok: bool = False
+    needs_authorization: bool = False
+    detail: str | None = None
 
 
 class SkillSyncService:
@@ -41,10 +49,12 @@ class SkillSyncService:
         source_crud_service: SkillSyncSourceCrudService,
         job_service: SkillSyncJobService,
         token_service: SkillSyncTokenService,
+        github_service: SkillSyncGitHubService,
     ) -> None:
         self._source_crud_service = source_crud_service
         self._job_service = job_service
         self._token_service = token_service
+        self._github_service = github_service
 
     async def create_source_with_owner_acl(
         self,
@@ -129,6 +139,38 @@ class SkillSyncService:
                     session=mongo_session,
                 )
         return SyncTriggerResult(job=job)
+
+    async def test_connection(
+        self,
+        *,
+        source: SkillSyncSource,
+        user_id: str,
+    ) -> ConnectionCheckResult:
+        """Read-only pre-flight: verify the OAuth token plus repo/ref are reachable.
+
+        This never marks the source pending, never creates a job, and never mutates
+        synchronized skills; it is the non-destructive dry-run counterpart of trigger_sync.
+        """
+        client_secret = decrypt_value(source.githubAppClientSecretEncrypted)
+        access_token = await self._token_service.resolve_access_token(
+            user_id=user_id,
+            source_id=source.id,
+            client_id=source.githubAppClientId,
+            client_secret=client_secret,
+        )
+        if access_token is None:
+            return ConnectionCheckResult(needs_authorization=True)
+
+        try:
+            await self._github_service.resolve_commit_sha(
+                owner=source.owner,
+                repo=source.repo,
+                ref=source.ref,
+                access_token=access_token,
+            )
+        except GitHubDownloadError as exc:
+            return ConnectionCheckResult(ok=False, detail=str(exc))
+        return ConnectionCheckResult(ok=True)
 
     async def delete_source_with_skills(
         self,
