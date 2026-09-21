@@ -52,6 +52,7 @@ import httpx
 from agno.exceptions import RunCancelledException
 from agno.models.base import Model
 from agno.run.cancel import acancel_run as agno_acancel_run
+from agno.run.workflow import WorkflowRunOutput
 from beanie import PydanticObjectId
 from beanie.exceptions import DocumentNotFound
 from beanie.operators import In
@@ -75,6 +76,11 @@ from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider
 from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider, resolve_default_workflow_model
+from registry_pkgs.workflows.persistence import (
+    _first_failure_error,
+    _flatten_step_results,
+    _resolve_workflow_run_status,
+)
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
@@ -485,13 +491,26 @@ class WorkflowRunner:
     async def _handle_run_output(self, run: WorkflowRun, result: Any) -> None:
         """Route the WorkflowRunOutput returned by arun / acontinue_run.
 
-        - If ``result.is_paused``: persist serialized ``step_requirements`` into
-          ``WorkflowRun.pending_requirements`` and flip status to AWAITING_APPROVAL.
-          The runner coroutine then returns (no busy-waiting; pod-restart safe).
-        - Otherwise: trust WorkflowRunSyncer to have already written terminal state,
-          and just reload from Mongo so the in-memory ``run`` reflects what
-          callers will see.
+        Reload the state written by WorkflowRunSyncer first: a terminal step
+        failure may cause agno to request output review, but must never become
+        resumable. Also inspect the returned output in case the syncer's Beanie
+        transaction failed. Only non-terminal pauses become AWAITING_APPROVAL.
         """
+        try:
+            await run.sync()
+        except DocumentNotFound:
+            logger.warning("[run=%s] sync() skipped — document deleted before reload", run.id)
+            return
+
+        # agno checks post-execution output review before StepOutput.stop. A
+        # failing step may therefore report a pause after the syncer has already
+        # persisted FAILED; that terminal outcome must win over human review.
+        if run.status in _TERMINAL_RUN_STATUSES:
+            return
+
+        if await self._persist_stopped_failure(run, result):
+            return
+
         if getattr(result, "is_paused", False):
             serialized: list[dict[str, Any]] = []
             for req in getattr(result, "step_requirements", None) or []:
@@ -520,13 +539,36 @@ class WorkflowRunner:
             )
             return
 
-        try:
-            await run.sync()
-        except DocumentNotFound:
-            # The document was deleted between workflow completion and this sync
-            # (e.g. concurrent cleanup). The run already reached a terminal state
-            # via WorkflowRunSyncer, so there is nothing left to do.
-            logger.warning("[run=%s] sync() skipped — document deleted before reload", run.id)
+    async def _persist_stopped_failure(
+        self,
+        run: WorkflowRun,
+        result: Any,
+    ) -> bool:
+        """Persist a terminal step failure even when the session mirror failed.
+
+        WorkflowRunSyncer logs Beanie transaction errors without raising. Its
+        previously saved agno session may still offer output review, so a stale
+        WorkflowRun must not make the failed output resumable. Save errors must
+        propagate to the caller instead of falling through to approval handling.
+        """
+        if not isinstance(result, WorkflowRunOutput):
+            return False
+        step_outputs = _flatten_step_results(result.step_results)
+        if not any(output.stop for output in step_outputs):
+            return False
+
+        definition = definition_from_snapshot(run.definition_snapshot) if run.definition_snapshot else None
+        nodes = flatten_workflow_nodes(definition.nodes) if definition else []
+        node_by_name = {node.name: node for node in nodes}
+        if _resolve_workflow_run_status(result, step_outputs, node_by_name) != WorkflowRunStatus.FAILED:
+            return False
+
+        run.status = WorkflowRunStatus.FAILED
+        run.error_summary = _first_failure_error(step_outputs, node_by_name) or run.error_summary
+        run.pending_requirements = []
+        run.finished_at = run.finished_at or datetime.now(UTC)
+        await run.save()
+        return True
 
     async def _finalize_cancel(self, run: WorkflowRun, exc: BaseException) -> None:
         """Mark the run CANCELLED and reverse-notify agno (M2)."""
