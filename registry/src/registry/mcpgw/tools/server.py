@@ -305,6 +305,23 @@ async def execute_tool_impl(
                     isError=True,
                 )
 
+            if server.is_tool_disabled(tool_name):
+                logger.info(
+                    "execute_tool: tool_name=%s is disabled on server_id=%s",
+                    tool_name,
+                    server_id,
+                )
+                metrics_ctx.set_error_type("tool_disabled")
+                return CallToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=f"Tool {tool_name!r} is currently disabled on server {server_id!r}.",
+                        )
+                    ],
+                    isError=True,
+                )
+
             client_id = user_context["client_id"]
             requires_server_consent = not is_consent_exempt(
                 client_id,
