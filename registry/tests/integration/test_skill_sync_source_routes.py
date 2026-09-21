@@ -219,6 +219,26 @@ def test_sync_dry_run_reports_detail_on_failure(skill_sync_route_context) -> Non
     assert "not found" in body["detail"]
 
 
+def test_sync_dry_run_returns_429_when_github_rate_limited(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.skill_sync_service.test_connection = AsyncMock(
+        side_effect=HTTPException(429, detail={"error": "rate_limited", "message": "GitHub API rate limit exceeded"})
+    )
+    response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync", json={"dryRun": True})
+    assert response.status_code == 429
+
+
+def test_sync_dry_run_returns_502_on_other_download_failure(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.skill_sync_service.test_connection = AsyncMock(
+        side_effect=HTTPException(
+            502, detail={"error": "external_service_error", "message": "GitHub API returned HTTP 500"}
+        )
+    )
+    response = ctx.client.post(f"/skill-sync-sources/{ctx.source.id}/sync", json={"dryRun": True})
+    assert response.status_code == 502
+
+
 def test_sync_dry_run_not_blocked_by_in_progress_sync(skill_sync_route_context) -> None:
     # dryRun must skip the can_start_sync 409 guard: it neither enqueues nor mutates.
     ctx = skill_sync_route_context
