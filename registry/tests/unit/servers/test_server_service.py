@@ -2,6 +2,7 @@
 Unit tests for server service.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -574,13 +575,9 @@ class TestUpdateDisabledTools:
         """_schedule_tool_enabled_sync partitions the diff into disable/enable groups and pushes
         each batch to Weaviate. Verified by capturing the coroutine handed to asyncio.create_task
         (fire-and-forget) and running it to completion directly, instead of scheduling it."""
-        import registry.services.server_service as server_service_module
-
         service, repo = self._make_service()
         captured: dict = {}
-        monkeypatch.setattr(
-            server_service_module.asyncio, "create_task", lambda coro: captured.setdefault("coro", coro)
-        )
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
 
         service._schedule_tool_enabled_sync("srv-1", {"write_file"}, {"read_file"})
         await captured["coro"]
@@ -590,13 +587,9 @@ class TestUpdateDisabledTools:
 
     async def test_schedule_tool_enabled_sync_empty_group_still_pushed(self, monkeypatch):
         """A group with no members is still passed through (repo no-ops on empty list), never crashes."""
-        import registry.services.server_service as server_service_module
-
         service, repo = self._make_service()
         captured: dict = {}
-        monkeypatch.setattr(
-            server_service_module.asyncio, "create_task", lambda coro: captured.setdefault("coro", coro)
-        )
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
 
         service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
         await captured["coro"]
@@ -611,14 +604,10 @@ class TestUpdateDisabledTools:
 
     async def test_schedule_tool_enabled_sync_logs_errors_without_raising(self, monkeypatch, caplog):
         """A Weaviate failure in the background task is logged, not raised (MongoDB stays authoritative)."""
-        import registry.services.server_service as server_service_module
-
         service, repo = self._make_service()
         repo.update_tools_metadata.side_effect = RuntimeError("weaviate down")
         captured: dict = {}
-        monkeypatch.setattr(
-            server_service_module.asyncio, "create_task", lambda coro: captured.setdefault("coro", coro)
-        )
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
 
         service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
         with caplog.at_level("ERROR", logger="registry.services.server_service"):
