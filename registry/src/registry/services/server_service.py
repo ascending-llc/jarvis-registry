@@ -951,33 +951,40 @@ class ServerServiceV1:
         server.updatedAt = _get_current_utc_time()
         await server.save()
 
-        await self._sync_tool_enabled_metadata(str(server.id), new_disabled, previous_disabled)
+        self._schedule_tool_enabled_sync(str(server.id), new_disabled, previous_disabled)
         return server
 
-    async def _sync_tool_enabled_metadata(
+    def _schedule_tool_enabled_sync(
         self,
         server_id: str,
         new_disabled: set[str],
         previous_disabled: set[str],
     ) -> None:
-        """Push tool_enabled to Weaviate only for tools whose status flipped, batched by new state."""
+        """Schedule a background push of tool_enabled to Weaviate for tools whose status flipped,
+        batched by new state. Fire-and-forget, matching _schedule_vector_sync: MongoDB is
+        authoritative, so a failed or slow vector patch must not block or fail the caller's write.
+        """
         if self.mcp_server_repo is None:
             return
         newly_disabled = sorted(new_disabled - previous_disabled)
         newly_enabled = sorted(previous_disabled - new_disabled)
-        # return_exceptions=True: both groups hit ensure_collection, so a Weaviate outage would raise
-        # in both — without this the second raise is an unretrieved-task warning. Errors are logged, not
-        # propagated: MongoDB is authoritative, so a failed vector patch must not fail the caller's write.
-        results = await asyncio.gather(
-            self.mcp_server_repo.update_tools_metadata(server_id, newly_disabled, {"tool_enabled": False}),
-            self.mcp_server_repo.update_tools_metadata(server_id, newly_enabled, {"tool_enabled": True}),
-            return_exceptions=True,
-        )
-        for outcome in results:
-            if isinstance(outcome, Exception):
-                logger.error(
-                    "tool_enabled metadata sync failed for server %s: %s", server_id, outcome, exc_info=outcome
-                )
+
+        async def _sync_task() -> None:
+            # return_exceptions=True: both groups hit ensure_collection, so a Weaviate outage would raise
+            # in both — without this the second raise is an unretrieved-task warning. Errors are logged,
+            # not propagated: this task is already fire-and-forget, so there is no caller to propagate to.
+            results = await asyncio.gather(
+                self.mcp_server_repo.update_tools_metadata(server_id, newly_disabled, {"tool_enabled": False}),
+                self.mcp_server_repo.update_tools_metadata(server_id, newly_enabled, {"tool_enabled": True}),
+                return_exceptions=True,
+            )
+            for outcome in results:
+                if isinstance(outcome, Exception):
+                    logger.error(
+                        "tool_enabled metadata sync failed for server %s: %s", server_id, outcome, exc_info=outcome
+                    )
+
+        asyncio.create_task(_sync_task())
 
     @track_tool_discovery
     async def retrieve_from_server(
@@ -1225,8 +1232,11 @@ class ServerServiceV1:
         if capabilities:
             config["capabilities"] = json.dumps(capabilities)
 
-        # Update toolFunctions if tools were retrieved
-        if tool_list:
+        # Update toolFunctions if tools were retrieved. tool_list=[] is a legitimate zero-tools
+        # success result (e.g. a server reconfigured to serve only resources/prompts) distinct
+        # from the tool_list is None failure case handled above — it must still clear stale
+        # toolFunctions/tools/numTools and prune registryDisabledTools, not skip this block.
+        if tool_list is not None:
             # Convert tool_list to toolFunctions format
             tool_functions = _convert_tool_list_to_functions(tool_list, server.serverName)
             config["toolFunctions"] = tool_functions

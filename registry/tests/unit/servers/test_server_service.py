@@ -189,6 +189,35 @@ class TestRefreshServerCapabilities:
                     assert "toolFunctions" in mock_server.config
                     assert len(mock_server.config["toolFunctions"]) == 3
 
+    async def test_refresh_server_capabilities_zero_tools_clears_stale_state(self, server_service, mock_server):
+        """A successful refresh with tool_list=[] (server now serves no tools) must still clear
+        stale toolFunctions/numTools/tools and prune registryDisabledTools to [] — tool_list=[] is
+        a legitimate success result, distinct from the tool_list is None failure case."""
+        from unittest.mock import patch
+
+        mock_server.config = {
+            "title": "Test Server",
+            "toolFunctions": {"old_tool_mcp_test": {"mcpToolName": "old_tool"}},
+            "tools": "old_tool",
+        }
+        mock_server.numTools = 1
+        mock_server.registryDisabledTools = ["old_tool"]
+
+        with patch.object(server_service, "get_server_by_id", return_value=mock_server):
+            with patch.object(
+                server_service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=([], [], [], {}, None),
+            ):
+                with patch.object(server_service, "_schedule_vector_sync"):
+                    result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+        assert result["status"] == "success"
+        assert mock_server.config["toolFunctions"] == {}
+        assert mock_server.config["tools"] == ""
+        assert mock_server.numTools == 0
+        assert mock_server.registryDisabledTools == []
+
 
 @pytest.mark.unit
 @pytest.mark.servers
@@ -504,52 +533,98 @@ class TestUpdateDisabledTools:
 
     async def test_drops_unknown_tool_names(self):
         """Submitted names that are not current tools are silently dropped, not persisted."""
-        service, repo = self._make_service()
+        service, _ = self._make_service()
         server = self._make_server()
 
         with patch.object(service, "get_server_by_id", return_value=server):
-            result = await service.update_disabled_tools("srv-1", ["read_file", "ghost_tool"])
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                result = await service.update_disabled_tools("srv-1", ["read_file", "ghost_tool"])
 
         assert result.registryDisabledTools == ["read_file"]  # ghost_tool dropped, sorted
         server.save.assert_awaited_once()
-        # Only the real newly-disabled tool is pushed to Weaviate.
-        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": False})
+        # Only the real newly-disabled tool is scheduled for the Weaviate push.
+        mock_schedule.assert_called_once_with("srv-1", {"read_file"}, set())
 
-    async def test_grouped_batch_push_on_flip(self):
-        """Only flipped tools are pushed, batched by new state (disable vs enable groups)."""
-        service, repo = self._make_service()
+    async def test_schedules_flip_sets_for_weaviate_push(self):
+        """update_disabled_tools schedules the flipped new/previous sets, not the server's whole tool set."""
+        service, _ = self._make_service()
         server = self._make_server(disabled=["read_file"])
 
         with patch.object(service, "get_server_by_id", return_value=server):
-            # read_file re-enabled (removed), write_file newly disabled.
-            await service.update_disabled_tools("srv-1", ["write_file"])
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                # read_file re-enabled (removed), write_file newly disabled.
+                await service.update_disabled_tools("srv-1", ["write_file"])
 
         assert server.registryDisabledTools == ["write_file"]
-        repo.update_tools_metadata.assert_any_await("srv-1", ["write_file"], {"tool_enabled": False})
-        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": True})
+        mock_schedule.assert_called_once_with("srv-1", {"write_file"}, {"read_file"})
 
     async def test_noop_when_unchanged_skips_save_and_weaviate(self):
         """Submitting the same effective list is an idempotent no-op."""
-        service, repo = self._make_service()
+        service, _ = self._make_service()
         server = self._make_server(disabled=["read_file"])
 
         with patch.object(service, "get_server_by_id", return_value=server):
-            await service.update_disabled_tools("srv-1", ["read_file"])
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                await service.update_disabled_tools("srv-1", ["read_file"])
 
         server.save.assert_not_awaited()
-        repo.update_tools_metadata.assert_not_awaited()
+        mock_schedule.assert_not_called()
 
-    async def test_empty_group_not_pushed(self):
-        """A group with no members is still passed (repo no-ops on empty list), never crashes."""
+    async def test_schedule_tool_enabled_sync_batches_by_flip(self, monkeypatch):
+        """_schedule_tool_enabled_sync partitions the diff into disable/enable groups and pushes
+        each batch to Weaviate. Verified by capturing the coroutine handed to asyncio.create_task
+        (fire-and-forget) and running it to completion directly, instead of scheduling it."""
+        import registry.services.server_service as server_service_module
+
         service, repo = self._make_service()
-        server = self._make_server(disabled=[])
+        captured: dict = {}
+        monkeypatch.setattr(
+            server_service_module.asyncio, "create_task", lambda coro: captured.setdefault("coro", coro)
+        )
 
-        with patch.object(service, "get_server_by_id", return_value=server):
-            await service.update_disabled_tools("srv-1", ["read_file"])
+        service._schedule_tool_enabled_sync("srv-1", {"write_file"}, {"read_file"})
+        await captured["coro"]
 
-        # Disable group has read_file; enable group is empty (still called, repo no-ops).
+        repo.update_tools_metadata.assert_any_await("srv-1", ["write_file"], {"tool_enabled": False})
+        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": True})
+
+    async def test_schedule_tool_enabled_sync_empty_group_still_pushed(self, monkeypatch):
+        """A group with no members is still passed through (repo no-ops on empty list), never crashes."""
+        import registry.services.server_service as server_service_module
+
+        service, repo = self._make_service()
+        captured: dict = {}
+        monkeypatch.setattr(
+            server_service_module.asyncio, "create_task", lambda coro: captured.setdefault("coro", coro)
+        )
+
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
+        await captured["coro"]
+
         repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": False})
         repo.update_tools_metadata.assert_any_await("srv-1", [], {"tool_enabled": True})
+
+    async def test_schedule_tool_enabled_sync_no_repo_is_noop(self):
+        """No mcp_server_repo configured -> returns without scheduling anything."""
+        service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=None)
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())  # must not raise
+
+    async def test_schedule_tool_enabled_sync_logs_errors_without_raising(self, monkeypatch, caplog):
+        """A Weaviate failure in the background task is logged, not raised (MongoDB stays authoritative)."""
+        import registry.services.server_service as server_service_module
+
+        service, repo = self._make_service()
+        repo.update_tools_metadata.side_effect = RuntimeError("weaviate down")
+        captured: dict = {}
+        monkeypatch.setattr(
+            server_service_module.asyncio, "create_task", lambda coro: captured.setdefault("coro", coro)
+        )
+
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
+        with caplog.at_level("ERROR", logger="registry.services.server_service"):
+            await captured["coro"]  # must not raise
+
+        assert "tool_enabled metadata sync failed" in caplog.text
 
     async def test_server_not_found_raises(self):
         service, _ = self._make_service()
