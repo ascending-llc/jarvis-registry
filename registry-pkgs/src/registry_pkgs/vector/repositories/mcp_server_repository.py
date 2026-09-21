@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from ...models import ExtendedMCPServer
 from ...models.federation_metadata import extract_runtime_version
@@ -21,6 +22,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         "runtimeArn": "text",
         "path": "text",
         "enabled": "bool",
+        "tool_enabled": "bool",
         # Declared as TEXT explicitly: input_schema holds a JSON-encoded tool parameter
         # schema. Storing it as text bypasses Weaviate's nested-property validation
         # (which rejects reserved keys like `id`/`vector` and non-GraphQL names like
@@ -130,8 +132,24 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
 
         return result.to_dict_mcp()
 
+    async def update_tools_metadata(
+        self,
+        server_id: str,
+        tool_names: list[str],
+        metadata: dict[str, Any],
+    ) -> VectorSyncResult:
+        """Patch metadata on the Weaviate docs for a set of tools on one server — no re-embedding.
+
+        Applies one metadata dict to every doc whose tool_name is in `tool_names`, in a single
+        filter+batch round-trip. No-ops (empty result) when `tool_names` is empty.
+        """
+        if not tool_names:
+            return VectorSyncResult()
+        # Adapter maps a list value to contains_any (len>1) or equal (len==1); empty is guarded above.
+        return await self._update_metadata_by_filters({"server_id": server_id, "tool_name": list(tool_names)}, metadata)
+
     async def delete_by_entity_id(self, entity_id: str, entity_name: str | None = None) -> int:
-        """Remove all Weaviate docs for an MCP server."""
+        """Remove all weaviate docs for an MCP server."""
         await self.ensure_collection()
         if not self._collection_has_property("server_id"):
             logger.info(

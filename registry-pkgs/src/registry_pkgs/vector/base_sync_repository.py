@@ -74,28 +74,34 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         Used for toggle/status-only changes where page_content is unchanged.
         Falls back silently when the adapter does not support update_metadata.
         """
+        return await self._update_metadata_by_filters({entity_id_field: entity_id}, metadata)
+
+    async def _update_metadata_by_filters(
+        self,
+        filters: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> VectorSyncResult:
+        """Patch metadata on all docs matching an arbitrary filter dict — no re-embedding."""
         result = VectorSyncResult()
         if not await self.ensure_collection():
             raise RuntimeError(f"collection '{self.collection}' is not initialized")
         try:
             if not hasattr(self.adapter, "update_metadata"):
                 logger.warning(
-                    "Adapter does not support update_metadata; metadata-only update skipped for %s=%s.",
-                    entity_id_field,
-                    entity_id,
+                    "Adapter does not support update_metadata; metadata-only update skipped for %s.",
+                    filters,
                 )
                 return result
 
             existing_docs = self.adapter.filter_by_metadata(
-                filters={entity_id_field: entity_id},
+                filters=filters,
                 limit=_MAX_METADATA_DOCS,
                 collection_name=self.collection,
             )
             if not existing_docs:
                 logger.debug(
-                    "No Weaviate docs found for %s=%s during metadata-only update, skipping.",
-                    entity_id_field,
-                    entity_id,
+                    "No Weaviate docs found for %s during metadata-only update, skipping.",
+                    filters,
                 )
                 return result
 
@@ -119,17 +125,15 @@ class BaseVectorSyncRepository(Repository[T], ABC):
 
             result.metadata_updated = success
             logger.info(
-                "Metadata-only update: %d/%d docs updated for %s=%s",
+                "Metadata-only update: %d/%d docs updated for %s",
                 success,
                 len(existing_docs),
-                entity_id_field,
-                entity_id,
+                filters,
             )
         except Exception as e:
             logger.error(
-                "Metadata-only update failed for %s=%s: %s",
-                entity_id_field,
-                entity_id,
+                "Metadata-only update failed for %s: %s",
+                filters,
                 e,
                 exc_info=True,
             )

@@ -201,6 +201,10 @@ class SearchService:
     ) -> list:
         filters = _build_filters(search.include_disabled, mcp_types)
         filters["server_id"] = {"$in": allowed_server_ids}
+        # Added here rather than in the shared _build_filters: A2a_agents has no tool_enabled
+        # property, so filtering on it there would error. Resource/prompt docs default to True.
+        if not search.include_disabled:
+            filters["tool_enabled"] = True
         if not query:
             return await self.mcp_server_repo.afilter(filters=filters, limit=search.top_n)
         return await self.mcp_server_repo.asearch_with_rerank(

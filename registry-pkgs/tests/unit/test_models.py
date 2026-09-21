@@ -771,3 +771,62 @@ class TestFromServerInfoNormalizedServerName:
 
         assert server.serverName == "weird path"
         assert server.normalizedServerName == normalize_server_name("weird path")
+
+
+class TestExtendedMCPServerDisabledTools:
+    """Tests for registryDisabledTools: is_tool_disabled() and tool_enabled doc metadata."""
+
+    def _server(self, disabled):
+        return ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="tool-server",
+            config={
+                "title": "Tool Server",
+                "description": "desc",
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "toolFunctions": {
+                    "on_tool_mcp_tool_server": {
+                        "type": "function",
+                        "mcpToolName": "on_tool",
+                        "function": {"name": "on_tool_mcp_tool_server", "description": "d", "parameters": {}},
+                    },
+                    "off_tool_mcp_tool_server": {
+                        "type": "function",
+                        "mcpToolName": "off_tool",
+                        "function": {"name": "off_tool_mcp_tool_server", "description": "d", "parameters": {}},
+                    },
+                },
+                "resources": [{"name": "res1", "uri": "x://res1"}],
+                "prompts": [{"name": "prompt1"}],
+            },
+            author=PydanticObjectId(),
+            path="/mcp/tool-server",
+            registryDisabledTools=disabled,
+        )
+
+    def test_is_tool_disabled(self):
+        server = self._server(["off_tool"])
+        assert server.is_tool_disabled("off_tool") is True
+        assert server.is_tool_disabled("on_tool") is False
+        assert server.is_tool_disabled("unknown") is False
+
+    def test_is_tool_disabled_handles_none(self):
+        server = self._server([])
+        server.registryDisabledTools = None  # defensive: model may carry None from a partial load
+        assert server.is_tool_disabled("anything") is False
+
+    def test_to_documents_sets_tool_enabled_per_tool(self):
+        server = self._server(["off_tool"])
+        docs = server.to_documents()
+        tool_docs = {d.metadata["tool_name"]: d for d in docs if d.metadata.get("entity_type") == "tool"}
+
+        assert tool_docs["off_tool"].metadata["tool_enabled"] is False
+        assert tool_docs["on_tool"].metadata["tool_enabled"] is True
+
+    def test_resource_and_prompt_docs_default_tool_enabled_true(self):
+        server = self._server(["off_tool"])
+        docs = server.to_documents()
+        for d in docs:
+            if d.metadata.get("entity_type") in ("resource", "prompt"):
+                assert d.metadata["tool_enabled"] is True

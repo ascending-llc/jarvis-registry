@@ -134,6 +134,12 @@ class ServerToggleRequest(APIBaseModel):
     enabled: bool = Field(..., description="Enable or disable the server")
 
 
+class ServerToolsUpdateRequest(APIBaseModel):
+    """Request schema for replacing a server's disabled-tools list"""
+
+    disabledTools: list[str] = Field(..., description="Full replacement list of downstream tool names to disable")
+
+
 class ServerConnectionTestRequest(APIBaseModel):
     """Request schema for testing connection to an MCP server URL"""
 
@@ -230,6 +236,9 @@ class ServerDetailResponse(APIBaseModel):
     oauthMetadata: dict[str, Any] | None = Field(None, description="OAuth metadata from autodiscovery")
     tools: str | None = Field(None, description="Comma-separated list of tool names")
     toolFunctions: dict[str, Any] | None = Field(None, description="Complete OpenAI function schemas with mcpToolName")
+    disabledTools: list[str] = Field(
+        default_factory=list, description="Downstream tool names currently disabled on this server"
+    )
     resources: list[dict[str, Any]] | None = Field(None, description="List of available resources")
     prompts: list[dict[str, Any]] | None = Field(None, description="List of available prompts")
     initDuration: int | None = Field(None, description="Initialization duration in ms")
@@ -453,6 +462,7 @@ def convert_to_detail(
         oauthMetadata=convert_dict_keys_to_camel(config.get("oauthMetadata")),
         tools=tools_str,
         toolFunctions=tool_functions,
+        disabledTools=list(getattr(server, "registryDisabledTools", None) or []),
         resources=resources,
         prompts=prompts,
         initDuration=config.get("initDuration"),
