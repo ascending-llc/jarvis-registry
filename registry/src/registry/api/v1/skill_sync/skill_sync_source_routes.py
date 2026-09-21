@@ -3,7 +3,7 @@ import math
 from urllib.parse import urlencode
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
 from fastapi.responses import RedirectResponse
 
@@ -31,6 +31,7 @@ from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....schemas.skill_sync_api_schemas import (
     SkillSyncDeleteResponse,
+    SkillSyncDryRunResponse,
     SkillSyncJobResponse,
     SkillSyncSourceCreateRequest,
     SkillSyncSourceDetailResponse,
@@ -39,6 +40,7 @@ from ....schemas.skill_sync_api_schemas import (
     SkillSyncSourcePagedResponse,
     SkillSyncSourceStatsResponse,
     SkillSyncSourceUpdateRequest,
+    SkillSyncSyncRequest,
     SkillSyncTriggerResponse,
 )
 from ....services.access_control_service import ACLService
@@ -358,16 +360,22 @@ async def delete_source(
         ) from exc
 
 
-@router.post("/{source_id}/sync", response_model=SkillSyncTriggerResponse)
+@router.post("/{source_id}/sync", response_model=SkillSyncTriggerResponse | SkillSyncDryRunResponse)
 @track_registry_operation("sync", resource_type="skill_sync_source")
 async def sync_source(
     source_id: str,
     user_context: CurrentUser,
+    data: SkillSyncSyncRequest | None = Body(default=None),
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     sync_service: SkillSyncService = Depends(get_skill_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
-    """Authorize a manual sync request and enqueue durable work without executing it in the request process."""
+    """Trigger a manual sync, or (dryRun) run a read-only test-connect that validates config only.
+
+    dryRun=True never enqueues work and never mutates state; it mirrors the providers' test-connect.
+    dryRun=False enqueues durable work without executing it in the request process.
+    """
+    dry_run = bool(data and data.dryRun)
     try:
         user_object_id = PydanticObjectId(user_context["user_id"])
         user_str_id = str(user_context["user_id"])
@@ -378,6 +386,18 @@ async def sync_source(
             resource_id=source.id,
             required_permission="EDIT",
         )
+        if dry_run:
+            # Test-connect skips the pending/syncing guard (read-only, no enqueue), but still
+            # requires an ACTIVE source — don't probe one whose deletion is in progress.
+            if not SkillSyncStateMachine.can_update(source.status):
+                raise HTTPException(
+                    http_status.HTTP_409_CONFLICT,
+                    detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source is not active"),
+                )
+            outcome = await sync_service.test_connection(source=source, user_id=user_str_id)
+            if outcome.needs_authorization:
+                return SkillSyncDryRunResponse(needsAuthorization=True)
+            return SkillSyncDryRunResponse(ok=outcome.ok, detail=outcome.detail)
         if not SkillSyncStateMachine.can_start_sync(source.syncStatus):
             raise HTTPException(
                 http_status.HTTP_409_CONFLICT,
@@ -450,7 +470,6 @@ async def skill_sync_oauth_callback(
     error: str | None = Query(default=None),
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     oauth_service: SkillSyncOAuthService = Depends(get_skill_sync_oauth_service),
-    sync_service: SkillSyncService = Depends(get_skill_sync_service),
 ):
     generic_error_redirect = (
         f"{settings.registry_client_url}/skill-sync-sources?{urlencode({'error': 'invalid_callback'})}"
@@ -473,22 +492,14 @@ async def skill_sync_oauth_callback(
     try:
         source = await _required_source(resolved_source_id, source_service)
         redirect_uri = str(request.url_for("skill_sync_oauth_callback"))
-        user_id = await oauth_service.exchange_callback(
+        # Store the token only; the frontend then drives dryRun (test-connect) and sync explicitly.
+        await oauth_service.exchange_callback(
             source=source,
             code=code,
             state=state,
             redirect_uri=redirect_uri,
         )
-        result = await sync_service.trigger_sync(
-            source=source,
-            user_id=user_id,
-            trigger_type=SkillSyncTriggerType.OAUTH_CALLBACK,
-        )
-        if result.job is None:
-            return RedirectResponse(error_redirect)
-        success_redirect = (
-            f"{settings.registry_client_url}/skill-sync-sources/{resolved_source_id}?{urlencode({'status': 'syncing'})}"
-        )
+        success_redirect = f"{settings.registry_client_url}/skill-sync-sources/{resolved_source_id}?{urlencode({'status': 'connected'})}"
         return RedirectResponse(success_redirect)
     except HTTPException:
         return RedirectResponse(error_redirect)

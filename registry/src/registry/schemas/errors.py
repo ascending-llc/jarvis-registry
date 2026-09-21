@@ -88,6 +88,7 @@ class ErrorCode:
 
     CONFLICT = "conflict"
     NOT_FOUND = "not_found"
+    RATE_LIMITED = "rate_limited"
 
 
 def create_error_detail(error_code: str, message: str) -> dict[str, Any]:
