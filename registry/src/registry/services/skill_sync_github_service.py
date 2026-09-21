@@ -64,15 +64,23 @@ class SkillSyncGitHubService:
         repo: str,
         ref: str,
         access_token: str,
+        timeout: httpx.Timeout | None = None,
     ) -> str:
-        """Resolve a mutable branch or tag to the immutable commit used by this job."""
+        """Resolve a mutable branch or tag to the immutable commit used by this job.
+
+        `timeout` overrides the shared client's default (sized for tarball downloads) for
+        callers on a request/response path, such as the dry-run test-connect check.
+        """
         url = f"{_GITHUB_API_BASE}/repos/{owner}/{repo}/commits/{ref}"
         headers = {
             "Authorization": f"token {access_token}",
             "Accept": "application/vnd.github+json",
         }
+        request_kwargs = {"headers": headers}
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
         try:
-            response = await self._http_client.get(url, headers=headers)
+            response = await self._http_client.get(url, **request_kwargs)
             _raise_for_github_status(response, owner, repo, ref)
             return response.json()["sha"]
         except GitHubDownloadError:

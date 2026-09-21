@@ -457,6 +457,7 @@ class RegistryContainer:
             source_crud_service=self.skill_sync_source_crud_service,
             job_service=self.skill_sync_job_service,
             token_service=self.skill_sync_token_service,
+            github_service=self.skill_sync_github_service,
         )
 
     @cached_property

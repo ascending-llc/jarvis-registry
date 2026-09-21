@@ -43,11 +43,12 @@ def _source(**overrides):
     return SimpleNamespace(**values)
 
 
-def _service(source_service=None, job_service=None, token_service=None) -> SkillSyncService:
+def _service(source_service=None, job_service=None, token_service=None, github_service=None) -> SkillSyncService:
     return SkillSyncService(
         source_crud_service=source_service or MagicMock(),
         job_service=job_service or MagicMock(),
         token_service=token_service or MagicMock(),
+        github_service=github_service or MagicMock(),
     )
 
 
@@ -133,6 +134,184 @@ async def test_trigger_sync_without_access_token_does_not_change_source(monkeypa
     assert result.job is None
     source_service.mark_sync_pending.assert_not_awaited()
     job_service.create_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_needs_authorization_when_no_token(monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
+    source_service = MagicMock(mark_sync_pending=AsyncMock())
+    job_service = MagicMock(create_job=AsyncMock())
+    token_service = MagicMock(resolve_access_token=AsyncMock(return_value=None))
+    github_service = MagicMock(resolve_commit_sha=AsyncMock())
+
+    result = await _service(source_service, job_service, token_service, github_service).test_connection(
+        source=_source(),
+        user_id="user-1",
+    )
+
+    assert result.needs_authorization is True
+    assert result.ok is False
+    github_service.resolve_commit_sha.assert_not_awaited()
+    source_service.mark_sync_pending.assert_not_awaited()
+    job_service.create_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_ok_when_repo_ref_resolvable(monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
+    source_service = MagicMock(mark_sync_pending=AsyncMock())
+    job_service = MagicMock(create_job=AsyncMock())
+    token_service = MagicMock(resolve_access_token=AsyncMock(return_value="access-token"))
+    github_service = MagicMock(resolve_commit_sha=AsyncMock(return_value="sha123"))
+
+    result = await _service(source_service, job_service, token_service, github_service).test_connection(
+        source=_source(),
+        user_id="user-1",
+    )
+
+    assert result.ok is True
+    assert result.needs_authorization is False
+    github_service.resolve_commit_sha.assert_awaited_once()
+    # Read-only: never mutates or enqueues.
+    source_service.mark_sync_pending.assert_not_awaited()
+    job_service.create_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_reports_detail_when_github_fails(monkeypatch):
+    from registry.services.skill_sync_github_service import GitHubDownloadError
+    from registry_pkgs.models.enums import SkillSyncJobErrorCode
+
+    monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
+    source_service = MagicMock(mark_sync_pending=AsyncMock())
+    job_service = MagicMock(create_job=AsyncMock())
+    token_service = MagicMock(resolve_access_token=AsyncMock(return_value="access-token"))
+    github_service = MagicMock(
+        resolve_commit_sha=AsyncMock(
+            side_effect=GitHubDownloadError(
+                "Repository octocat/skills ref main not found",
+                SkillSyncJobErrorCode.GITHUB_NOT_FOUND,
+            )
+        )
+    )
+
+    result = await _service(source_service, job_service, token_service, github_service).test_connection(
+        source=_source(),
+        user_id="user-1",
+    )
+
+    assert result.ok is False
+    assert result.needs_authorization is False
+    assert "not found" in (result.detail or "")
+    source_service.mark_sync_pending.assert_not_awaited()
+    job_service.create_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_flags_reauth_when_token_revoked(monkeypatch):
+    from registry.services.skill_sync_github_service import GitHubDownloadError
+    from registry_pkgs.models.enums import SkillSyncJobErrorCode
+
+    monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
+    source_service = MagicMock(mark_sync_pending=AsyncMock())
+    job_service = MagicMock(create_job=AsyncMock())
+    token_service = MagicMock(resolve_access_token=AsyncMock(return_value="access-token"))
+    github_service = MagicMock(
+        resolve_commit_sha=AsyncMock(
+            side_effect=GitHubDownloadError(
+                "GitHub authentication failed (HTTP 401)",
+                SkillSyncJobErrorCode.GITHUB_AUTH_FAILED,
+            )
+        )
+    )
+
+    result = await _service(source_service, job_service, token_service, github_service).test_connection(
+        source=_source(),
+        user_id="user-1",
+    )
+
+    assert result.ok is False
+    assert result.needs_authorization is True
+    assert "authentication failed" in (result.detail or "")
+    source_service.mark_sync_pending.assert_not_awaited()
+    job_service.create_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_raises_429_when_rate_limited(monkeypatch):
+    from fastapi import HTTPException
+
+    from registry.services.skill_sync_github_service import GitHubDownloadError
+    from registry_pkgs.models.enums import SkillSyncJobErrorCode
+
+    monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
+    source_service = MagicMock(mark_sync_pending=AsyncMock())
+    job_service = MagicMock(create_job=AsyncMock())
+    token_service = MagicMock(resolve_access_token=AsyncMock(return_value="access-token"))
+    github_service = MagicMock(
+        resolve_commit_sha=AsyncMock(
+            side_effect=GitHubDownloadError(
+                "GitHub API rate limit exceeded",
+                SkillSyncJobErrorCode.GITHUB_RATE_LIMITED,
+            )
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _service(source_service, job_service, token_service, github_service).test_connection(
+            source=_source(),
+            user_id="user-1",
+        )
+
+    assert exc_info.value.status_code == 429
+    source_service.mark_sync_pending.assert_not_awaited()
+    job_service.create_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_raises_502_when_download_failed(monkeypatch):
+    from fastapi import HTTPException
+
+    from registry.services.skill_sync_github_service import GitHubDownloadError
+    from registry_pkgs.models.enums import SkillSyncJobErrorCode
+
+    monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
+    source_service = MagicMock(mark_sync_pending=AsyncMock())
+    job_service = MagicMock(create_job=AsyncMock())
+    token_service = MagicMock(resolve_access_token=AsyncMock(return_value="access-token"))
+    github_service = MagicMock(
+        resolve_commit_sha=AsyncMock(
+            side_effect=GitHubDownloadError(
+                "GitHub API returned HTTP 500",
+                SkillSyncJobErrorCode.DOWNLOAD_FAILED,
+            )
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _service(source_service, job_service, token_service, github_service).test_connection(
+            source=_source(),
+            user_id="user-1",
+        )
+
+    assert exc_info.value.status_code == 502
+    source_service.mark_sync_pending.assert_not_awaited()
+    job_service.create_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_uses_shorter_github_timeout(monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_service.decrypt_value", lambda value: value)
+    token_service = MagicMock(resolve_access_token=AsyncMock(return_value="access-token"))
+    github_service = MagicMock(resolve_commit_sha=AsyncMock(return_value="sha123"))
+
+    await _service(token_service=token_service, github_service=github_service).test_connection(
+        source=_source(),
+        user_id="user-1",
+    )
+
+    github_service.resolve_commit_sha.assert_awaited_once()
+    assert github_service.resolve_commit_sha.await_args.kwargs["timeout"].connect == 10.0
 
 
 @pytest.mark.asyncio
