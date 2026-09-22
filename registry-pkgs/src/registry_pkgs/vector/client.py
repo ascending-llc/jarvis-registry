@@ -1,8 +1,10 @@
 """Unified database client interface."""
 
 import logging
+from collections.abc import Callable
 from typing import Any, TypeVar
 
+from ..core.exceptions import EmbeddingReindexInProgressException
 from .adapters.adapter import VectorStoreAdapter
 from .adapters.factory import VectorStoreFactory
 from .config import BackendConfig
@@ -38,6 +40,16 @@ class DatabaseClient:
         self._adapter: VectorStoreAdapter | None = None
         self._initialized = False
         self._repositories = {}
+        self._reindex_active_check: Callable[[], bool] | None = None
+
+    def set_reindex_active_check(self, check: Callable[[], bool] | None) -> None:
+        """Wire the embedding-reindex gate so every adapter access can honor it.
+
+        Accepts a plain callable (typically ``EmbeddingMaintenanceWatcher.is_active``)
+        rather than the watcher itself, keeping registry-pkgs free of a dependency
+        on the registry workspace.
+        """
+        self._reindex_active_check = check
 
     def initialize(self, config: BackendConfig | None = None) -> None:
         """
@@ -129,9 +141,17 @@ class DatabaseClient:
         return info
 
     def _ensure_initialized(self) -> None:
-        """Ensure client is initialized."""
+        """Ensure client is initialized and no embedding reindex is in progress.
+
+        This is the single chokepoint every repository write and search passes
+        through (``Repository.adapter`` resolves ``db_client.adapter`` freshly on
+        every call), so gating here also covers any caller that reaches a
+        repository directly rather than through a gated service method.
+        """
         if not self._initialized:
             raise RuntimeError("Database client not initialized. Call initialize() first.")
+        if self._reindex_active_check is not None and self._reindex_active_check():
+            raise EmbeddingReindexInProgressException("An embedding-model reindex is in progress")
 
 
 def create_database_client(config: BackendConfig) -> DatabaseClient:

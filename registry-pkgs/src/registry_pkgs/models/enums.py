@@ -80,6 +80,14 @@ class ModelSourceMode(StrEnum):
     EMBEDDING = "embedding"
 
 
+class EmbeddingReindexJobStatus(StrEnum):
+    """Lifecycle status for an embedding-model reindex job"""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class SkillSyncSourceStatus(StrEnum):
     ACTIVE = "active"
     DELETING = "deleting"
