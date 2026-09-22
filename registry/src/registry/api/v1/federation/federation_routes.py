@@ -17,6 +17,7 @@ from ....core.telemetry_decorators import track_registry_operation
 from ....deps import (
     get_a2a_client_registry,
     get_acl_service,
+    get_embedding_maintenance_watcher,
     get_federation_crud_service,
     get_federation_job_service,
     get_federation_sync_service,
@@ -40,6 +41,7 @@ from ....schemas.federation_api_schemas import (
 )
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.access_control_service import ACLService
+from ....services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
 from ....services.federation.a2a_client_registry import A2AClientRegistry
 from ....services.federation_crud_service import FederationCrudService
 from ....services.federation_job_service import FederationJobService
@@ -564,6 +566,7 @@ async def sync_federation(
     federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
     federation_sync_service: FederationSyncService = Depends(get_federation_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
+    embedding_maintenance_watcher: EmbeddingMaintenanceWatcher = Depends(get_embedding_maintenance_watcher),
 ):
     """
         sync a federation.
@@ -645,6 +648,7 @@ async def sync_federation(
             federation=federation,
             job=job,
             author_id=author_id,
+            embedding_maintenance_watcher=embedding_maintenance_watcher,
         )
         return _to_job_response(job)
     except ValueError as exc:

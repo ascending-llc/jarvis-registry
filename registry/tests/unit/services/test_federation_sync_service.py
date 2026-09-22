@@ -11,11 +11,13 @@ from registry.services.federation.azure_foundry_discovery import AzureFoundryDis
 from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler, AzureAiFoundrySyncHandler
 from registry.services.federation_sync_service import (
     FederationSyncMutationResult,
+    FederationSyncPlan,
     FederationSyncService,
     VectorSyncOutcome,
     run_federation_sync_background,
 )
 from registry_pkgs.models.enums import (
+    FederationJobPhase,
     FederationProviderType,
     FederationStatus,
     FederationSyncStatus,
@@ -51,6 +53,55 @@ async def test_run_federation_sync_background_swallows_execution_error():
         job=job,
         author_id=_DEFAULT_USER_OBJECT_ID,
     )
+
+
+@pytest.mark.asyncio
+async def test_run_federation_sync_background_skips_during_reindex():
+    federation = SimpleNamespace(id=PydanticObjectId())
+    job = SimpleNamespace(id=PydanticObjectId())
+    service = MagicMock()
+    service.run_sync = AsyncMock()
+    service.federation_crud_service.mark_sync_failed = AsyncMock()
+    service.federation_job_service.mark_failed = AsyncMock()
+    watcher = SimpleNamespace(is_active=lambda: True)
+
+    await run_federation_sync_background(
+        federation_sync_service=service,
+        federation=federation,
+        job=job,
+        author_id=_DEFAULT_USER_OBJECT_ID,
+        embedding_maintenance_watcher=watcher,
+    )
+
+    # Skipped without running the sync, and BOTH records finalized (not left PENDING).
+    service.run_sync.assert_not_awaited()
+    service.federation_crud_service.mark_sync_failed.assert_awaited_once()
+    assert "reindex" in service.federation_crud_service.mark_sync_failed.await_args.args[1]
+    service.federation_job_service.mark_failed.assert_awaited_once()
+    job_arg, phase_arg, error_arg = service.federation_job_service.mark_failed.await_args.args
+    assert job_arg is job
+    assert phase_arg == FederationJobPhase.FAILED
+    assert "reindex" in error_arg
+
+
+@pytest.mark.asyncio
+async def test_run_federation_sync_background_runs_when_not_reindexing():
+    federation = SimpleNamespace(id=PydanticObjectId())
+    job = SimpleNamespace(id=PydanticObjectId(), save=AsyncMock())
+    service = MagicMock()
+    service.run_sync = AsyncMock()
+    watcher = SimpleNamespace(is_active=lambda: False)
+
+    await run_federation_sync_background(
+        federation_sync_service=service,
+        federation=federation,
+        job=job,
+        author_id=_DEFAULT_USER_OBJECT_ID,
+        embedding_maintenance_watcher=watcher,
+    )
+
+    service.run_sync.assert_awaited_once()
+    job.save.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -777,8 +828,6 @@ async def test_run_sync_forwards_author_id_to_discover_entities(
 async def test_apply_sync_plan_finishes_deletes_before_starting_creates(
     federation_sync_service: FederationSyncService,
 ):
-    from registry.services.federation_sync_service import FederationSyncPlan
-
     events: list[str] = []
 
     async def _delete() -> None:
@@ -841,8 +890,6 @@ async def test_single_mcp_create_failure_others_persist(
     bad = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("write conflict")))
     ok3 = SimpleNamespace(id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(ok3, "id", PydanticObjectId())))
 
-    from registry.services.federation_sync_service import FederationSyncPlan
-
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(createdMcpServers=3),
         federation_id=federation_id,
@@ -876,8 +923,6 @@ async def test_single_a2a_create_failure_others_persist(
     ok1 = SimpleNamespace(id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(ok1, "id", PydanticObjectId())))
     bad = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("timeout")))
     ok3 = SimpleNamespace(id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(ok3, "id", PydanticObjectId())))
-
-    from registry.services.federation_sync_service import FederationSyncPlan
 
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(createdAgents=3),
@@ -914,8 +959,6 @@ async def test_mixed_type_failure_isolation(
         id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(a2a_ok, "id", PydanticObjectId()))
     )
     a2a_bad = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("a2a fail")))
-
-    from registry.services.federation_sync_service import FederationSyncPlan
 
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(createdMcpServers=2, createdAgents=2),
@@ -983,8 +1026,6 @@ async def test_update_failure_isolation(
         federationMetadata=None,
     )
 
-    from registry.services.federation_sync_service import FederationSyncPlan
-
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(updatedMcpServers=2),
         federation_id=federation_id,
@@ -1018,8 +1059,6 @@ async def test_delete_failure_isolation(
     stale_ok = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock())
     stale_bad = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock(side_effect=Exception("delete failed")))
 
-    from registry.services.federation_sync_service import FederationSyncPlan
-
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(deletedMcpServers=2),
         federation_id=federation_id,
@@ -1051,8 +1090,6 @@ async def test_failed_resource_not_in_changed_runtime_arns(
     federation_id = PydanticObjectId()
     bad_mcp = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("fail")))
     bad_a2a = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("fail")))
-
-    from registry.services.federation_sync_service import FederationSyncPlan
 
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(createdMcpServers=1, createdAgents=1),

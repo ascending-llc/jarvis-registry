@@ -16,6 +16,7 @@ from ._generated import (
     User,
 )
 from .a2a_agent import A2AAgent
+from .embedding_reindex_job import EmbeddingReindexJob
 from .extended_access_role import RegistryAccessRole
 from .extended_acl_entry import RegistryAclEntry
 from .extended_group import ExtendedGroup, ExtendedGroupSource
@@ -41,6 +42,7 @@ from .workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowSchedule
 
 __all__ = [
     "A2AAgent",
+    "EmbeddingReindexJob",
     "RegistryAclEntry",
     "ExtendedMCPServer",
     "ExtendedSkill",

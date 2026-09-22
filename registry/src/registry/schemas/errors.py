@@ -7,7 +7,13 @@ across all API endpoints to ensure consistent error handling.
 
 from typing import Any
 
+from fastapi import HTTPException
+from fastapi import status as http_status
 from pydantic import BaseModel, Field
+
+# Conservative client backoff for the embedding-reindex maintenance gate. The
+# server-side poll interval is 1s, but clients should not hammer the endpoint.
+REINDEX_RETRY_AFTER_SECONDS = "30"
 
 
 class APIErrorDetail(BaseModel):
@@ -122,3 +128,15 @@ def create_error_detail(error_code: str, message: str) -> dict[str, Any]:
         )
     """
     return {"error": error_code, "message": message}
+
+
+def reindex_in_progress_error() -> HTTPException:
+    """Build the standard 503 raised while an embedding-model reindex is in progress."""
+    return HTTPException(
+        status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "error": "reindex_in_progress",
+            "message": "Registry is updating its embedding model. Please try again shortly.",
+        },
+        headers={"Retry-After": REINDEX_RETRY_AFTER_SECONDS},
+    )

@@ -10,6 +10,7 @@ from registry.api.v1.federation.federation_routes import router
 from registry.auth.dependencies import get_current_user
 from registry.deps import (
     get_acl_service,
+    get_embedding_maintenance_watcher,
     get_federation_crud_service,
     get_federation_job_service,
     get_federation_sync_service,
@@ -66,6 +67,7 @@ def federation_route_context():
     app.dependency_overrides[get_federation_sync_service] = lambda: sync_service
     app.dependency_overrides[get_federation_job_service] = lambda: job_service
     app.dependency_overrides[get_acl_service] = lambda: acl_service
+    app.dependency_overrides[get_embedding_maintenance_watcher] = lambda: SimpleNamespace(is_active=lambda: False)
 
     with TestClient(app) as client:
         yield SimpleNamespace(

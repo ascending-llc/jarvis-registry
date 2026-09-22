@@ -45,6 +45,7 @@ from ..utils.crypto_utils import encrypt_auth_fields
 from ..utils.mcp_headers import build_complete_headers_for_server
 from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title
+from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 
 logger = logging.getLogger(__name__)
 
@@ -319,12 +320,14 @@ class ServerServiceV1:
         token_service: TokenService,
         oauth_service: Any,
         mcp_server_repo: MCPServerRepository,
+        embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
     ):
         """Initialize server service with search index manager."""
         self.mcp_server_repo = mcp_server_repo
         self.user_service = user_service
         self.token_service = token_service
         self.oauth_service = oauth_service
+        self._embedding_maintenance_watcher = embedding_maintenance_watcher
         logger.info("ServerServiceV1 initialized with search index manager")
 
     async def list_servers(
@@ -464,6 +467,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If path+url combination already exists, server_name already exists, or tags contain duplicates (case-insensitive)
         """
+        # Guard first: block the Mongo write below when a reindex is in progress.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
+
         # Check if path+url combination already exists
         # Only reject if BOTH path AND url are the same (to allow same path for different services)
         existing_servers = await ExtendedMCPServer.find({"path": data.path}, session=session).to_list()
@@ -692,6 +698,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found
         """
+        # Guard first: block the Mongo write below when a reindex is in progress.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
+
         server = await self.get_server_by_id(server_id, user_id, session=session)
 
         if not server:

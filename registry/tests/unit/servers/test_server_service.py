@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
 from registry.services.server_service import ServerServiceV1
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 
 
 @pytest.mark.unit
@@ -493,6 +495,52 @@ class TestCreateServerNormalizedServerName:
 
             with pytest.raises(ValueError, match="already exists"):
                 await service.create_server(data=data, user_id="user-1")
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestReindexGate:
+    """create_server/update_server must refuse to write while a reindex is active."""
+
+    def _make_service(self, *, reindex_active: bool):
+        from types import SimpleNamespace
+
+        return ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=Mock(),
+            embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: reindex_active),
+        )
+
+    async def test_create_server_raises_before_any_mongo_read_or_write(self):
+
+        service = self._make_service(reindex_active=True)
+        data = ServerCreateRequest(title="Gated Server", path="/gated")
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            with pytest.raises(EmbeddingReindexInProgressException):
+                await service.create_server(data=data, user_id="user-1")
+            MockServer.find.assert_not_called()
+
+    async def test_update_server_raises_before_lookup(self):
+
+        service = self._make_service(reindex_active=True)
+        service.get_server_by_id = AsyncMock()
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.update_server(server_id="srv-gated", data=ServerUpdateRequest())
+        service.get_server_by_id.assert_not_called()
+
+    async def test_inactive_gate_does_not_block(self):
+
+        service = self._make_service(reindex_active=False)
+        service.get_server_by_id = AsyncMock(return_value=None)
+
+        # Gate off -> proceeds to the normal "not found" path instead of raising the gate error.
+        with pytest.raises(ValueError, match="not found"):
+            await service.update_server(server_id="srv-gated", data=ServerUpdateRequest())
 
 
 @pytest.mark.unit

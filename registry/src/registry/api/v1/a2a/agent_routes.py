@@ -36,13 +36,14 @@ from registry_pkgs.core.exceptions import (
     A2AAgentCardParseException,
     A2AAgentCardTransportException,
     A2AAgentCardUpstreamException,
+    EmbeddingReindexInProgressException,
 )
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
 from ....schemas.acl_schema import ResourcePermissions
-from ....schemas.errors import ErrorCode, create_error_detail
+from ....schemas.errors import ErrorCode, create_error_detail, reindex_in_progress_error
 from ....services.a2a_agent_service import A2AAgentService
 from ....services.access_control_service import ACLService
 
@@ -307,6 +308,8 @@ async def create_agent(
 
         return convert_to_detail(agent, acl_permission=permissions)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 
@@ -369,6 +372,8 @@ async def update_agent(
 
         return convert_to_detail(agent, acl_permission=permissions)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 

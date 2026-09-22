@@ -11,6 +11,7 @@ import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type { Agent } from '@/services/agent/type';
+import { getErrorMessage } from '@/utils/getErrorMessage';
 import MainConfigForm from './MainConfigForm';
 import type { AgentConfig } from './types';
 
@@ -40,25 +41,6 @@ const getStatusStyle = (status?: string) =>
     dot: 'bg-[var(--jarvis-warning)]',
     label: 'Unknown',
   };
-
-const getErrorMessage = (error: unknown, fallback: string): string => {
-  if (typeof error === 'string') return error;
-  if (error && typeof error === 'object') {
-    const err = error as {
-      detail?: string | { message?: string; error?: string };
-      message?: string;
-      error?: string;
-    };
-    if (typeof err.detail === 'string') return err.detail;
-    if (err.detail && typeof err.detail === 'object') {
-      if (typeof err.detail.message === 'string') return err.detail.message;
-      if (typeof err.detail.error === 'string') return err.detail.error;
-    }
-    if (typeof err.message === 'string') return err.message;
-    if (typeof err.error === 'string') return err.error;
-  }
-  return fallback;
-};
 
 const AgentRegistryOrEdit: React.FC = () => {
   const navigate = useNavigate();

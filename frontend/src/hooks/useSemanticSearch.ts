@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 import API from '@/services/api';
 import Request from '@/services/request';
+import { getErrorMessage } from '@/utils/getErrorMessage';
 
 type EntityType = 'mcp_server' | 'tool' | 'a2a_agent' | 'skill';
 
@@ -133,9 +134,9 @@ export const useSemanticSearch = (query: string, options: UseSemanticSearchOptio
         if (!cancelled) {
           setResults(responseData as SemanticSearchResponse);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (cancelled) return;
-        const message = err?.detail || err?.message || 'Semantic search failed.';
+        const message = getErrorMessage(err, 'Semantic search failed.');
         setError(message);
         setResults(null);
       } finally {
