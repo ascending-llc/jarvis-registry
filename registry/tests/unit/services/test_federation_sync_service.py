@@ -17,7 +17,7 @@ from registry.services.federation_sync_service import (
     run_federation_sync_background,
 )
 from registry_pkgs.models.enums import (
-    FederationJobStatus,
+    FederationJobPhase,
     FederationProviderType,
     FederationStatus,
     FederationSyncStatus,
@@ -58,9 +58,11 @@ async def test_run_federation_sync_background_swallows_execution_error():
 @pytest.mark.asyncio
 async def test_run_federation_sync_background_skips_during_reindex():
     federation = SimpleNamespace(id=PydanticObjectId())
-    job = SimpleNamespace(id=PydanticObjectId(), status=None, error=None, save=AsyncMock())
+    job = SimpleNamespace(id=PydanticObjectId())
     service = MagicMock()
     service.run_sync = AsyncMock()
+    service.federation_crud_service.mark_sync_failed = AsyncMock()
+    service.federation_job_service.mark_failed = AsyncMock()
     watcher = SimpleNamespace(is_active=lambda: True)
 
     await run_federation_sync_background(
@@ -71,10 +73,15 @@ async def test_run_federation_sync_background_skips_during_reindex():
         embedding_maintenance_watcher=watcher,
     )
 
+    # Skipped without running the sync, and BOTH records finalized (not left PENDING).
     service.run_sync.assert_not_awaited()
-    job.save.assert_awaited_once()
-    assert job.status == FederationJobStatus.FAILED
-    assert "reindex" in job.error
+    service.federation_crud_service.mark_sync_failed.assert_awaited_once()
+    assert "reindex" in service.federation_crud_service.mark_sync_failed.await_args.args[1]
+    service.federation_job_service.mark_failed.assert_awaited_once()
+    job_arg, phase_arg, error_arg = service.federation_job_service.mark_failed.await_args.args
+    assert job_arg is job
+    assert phase_arg == FederationJobPhase.FAILED
+    assert "reindex" in error_arg
 
 
 @pytest.mark.asyncio

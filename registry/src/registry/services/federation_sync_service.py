@@ -14,7 +14,6 @@ from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, Reg
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.enums import (
     FederationJobPhase,
-    FederationJobStatus,
     FederationJobType,
     FederationProviderType,
     FederationSyncStatus,
@@ -223,13 +222,22 @@ async def run_federation_sync_background(
 
     Federation sync bypasses the gated service methods (it drives the repos
     directly and commits Mongo before rebuilding vectors), so it is gated here at
-    the top instead. FederationJobStatus has no "skipped" state, so a skip reuses
-    FAILED with a distinguishing error; the existing retry cadence is unchanged.
+    the top instead. A skip finalizes BOTH the federation and the job as FAILED
+    via the same helpers the normal failure path uses, so neither is left stuck
+    reporting a sync in progress; the existing retry cadence is unchanged.
     """
     if embedding_maintenance_watcher is not None and embedding_maintenance_watcher.is_active():
-        job.status = FederationJobStatus.FAILED
-        job.error = "Skipped: embedding reindex in progress, will retry on next sync"
-        await job.save()
+        error = "Skipped: embedding reindex in progress, will retry on next sync"
+        await federation_sync_service.federation_crud_service.mark_sync_failed(
+            federation,
+            error,
+            last_sync=federation_sync_service._build_failed_last_sync(job, error),
+        )
+        await federation_sync_service.federation_job_service.mark_failed(
+            job,
+            FederationJobPhase.FAILED,
+            error,
+        )
         logger.info(
             "Federation sync skipped (embedding reindex in progress): federation_id=%s job_id=%s",
             federation.id,
