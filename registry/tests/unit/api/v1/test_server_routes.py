@@ -4,9 +4,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from fastapi import HTTPException
 
-from registry.api.v1.server.server_routes import create_server
-from registry.schemas.server_api_schemas import ServerCreateRequest, convert_to_detail, convert_to_list_item
+from registry.api.v1.server.server_routes import create_server, update_server
+from registry.schemas.server_api_schemas import (
+    ServerCreateRequest,
+    ServerUpdateRequest,
+    convert_to_detail,
+    convert_to_list_item,
+)
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -384,3 +391,58 @@ async def test_list_servers_maps_per_item_permission_runtime_error_to_503(sample
         )
 
     assert exc_info.value.status_code == 503
+
+
+def _mock_mongo_transaction(mock_get_client):
+    mock_session = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.start_session.return_value.__aenter__.return_value = mock_session
+    mock_session.start_transaction.return_value.__aenter__.return_value = None
+    mock_get_client.return_value = mock_client
+
+
+@pytest.mark.asyncio
+async def test_create_server_route_returns_503_during_reindex(sample_server_request, sample_user_context):
+
+    mock_server_service = MagicMock()
+    mock_server_service.create_server = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
+
+    with patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client:
+        _mock_mongo_transaction(mock_get_client)
+        with pytest.raises(HTTPException) as excinfo:
+            await create_server(
+                data=sample_server_request,
+                user_context=sample_user_context,
+                server_service=mock_server_service,
+                acl_service=MagicMock(),
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 503
+    assert exc.headers["Retry-After"] == "30"
+    assert exc.detail["error"] == "reindex_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_update_server_route_returns_503_during_reindex(sample_user_context):
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    mock_server_service = MagicMock()
+    mock_server_service.update_server = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
+
+    with patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client:
+        _mock_mongo_transaction(mock_get_client)
+        with pytest.raises(HTTPException) as excinfo:
+            await update_server(
+                server_id=str(PydanticObjectId()),
+                data=ServerUpdateRequest(),
+                user_context=sample_user_context,
+                acl_service=mock_acl_service,
+                server_service=mock_server_service,
+            )
+
+    exc = excinfo.value
+    assert exc.status_code == 503
+    assert exc.headers["Retry-After"] == "30"
+    assert exc.detail["error"] == "reindex_in_progress"

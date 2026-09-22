@@ -13,6 +13,7 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
 
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
@@ -23,7 +24,7 @@ from ....core.telemetry_decorators import track_registry_operation
 from ....deps import get_acl_service, get_mcp_service, get_server_service, get_status_resolver
 from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.enums import ConnectionState
-from ....schemas.errors import ErrorCode, create_error_detail
+from ....schemas.errors import ErrorCode, create_error_detail, reindex_in_progress_error
 from ....schemas.server_api_schemas import (
     PaginationMetadata,
     ServerConnectionTestRequest,
@@ -435,6 +436,8 @@ async def create_server(
         )
         return convert_to_detail(server, acl_permission=perms)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 
@@ -494,6 +497,8 @@ async def update_server(
 
         return convert_to_detail(server, acl_permission=permissions)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 
