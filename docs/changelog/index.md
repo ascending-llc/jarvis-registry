@@ -4,6 +4,7 @@ Release notes for every version of Jarvis Registry.
 
 | Version | Date | Type | Description |
 | ------- | ---- | ---- | ----------- |
+| [asc0.5.10](asc0.5.10.md) | September 22, 2026 | Release | The asc0.5.10 release of Jarvis Registry |
 | [asc0.5.9](asc0.5.9.md) | September 22, 2026 | Release | The asc0.5.9 release of Jarvis Registry |
 | [asc0.5.8](asc0.5.8.md) | September 14, 2026 | Release | The asc0.5.8 release of Jarvis Registry |
 | [asc0.5.7](asc0.5.7.md) | September 01, 2026 | Release | The asc0.5.7 release of Jarvis Registry |
