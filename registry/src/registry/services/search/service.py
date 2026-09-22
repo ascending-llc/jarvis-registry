@@ -1,12 +1,4 @@
-"""Search service: all vector-search logic for MCP and A2A entities.
-
-This service is the single home for discovery logic shared by:
-- the HTTP ``POST /search`` route (structured servers/tools/agents/skills), and
-- the mcpgw ``discover_mcp_entities`` / ``discover_agents`` tools (flat results).
-
-It is intentionally decoupled from the API layer: route handlers and MCP tools
-inject it and map its plain-dict results onto their own response shapes.
-"""
+"""Search service: all vector-search logic for MCP and A2A entities."""
 
 import asyncio
 import logging
@@ -23,6 +15,7 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 
 from ...auth.dependencies import UserContextDict
 from ...services.access_control_service import ACLService
+from ...services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 from ...utils.otel_metrics import record_tool_discovery
 from .base import VectorSearchService
 
@@ -77,11 +70,13 @@ class SearchService:
         mcp_server_repo: MCPServerRepository,
         a2a_agent_repo: A2AAgentRepository,
         acl_service: ACLService,
+        embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
     ) -> None:
         self.vector_service = vector_service
         self.mcp_server_repo = mcp_server_repo
         self.a2a_agent_repo = a2a_agent_repo
         self.acl_service = acl_service
+        self._embedding_maintenance_watcher = embedding_maintenance_watcher
 
     async def _get_accessible_ids(
         self,
@@ -115,9 +110,14 @@ class SearchService:
         ``top_n``. Every document embeds its server/agent context, so no MongoDB
         lookup is required.
 
+        Fail fast during a reindex before paying for ACL lookups; the
+        DatabaseClient backstop would otherwise catch it at the Weaviate query.
+
         ACL filtering is pushed into the Weaviate query so that ``top_n`` is
         respected at the database level, not post-hoc.
         """
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
+
         query = search.query.strip()
         top_n = search.top_n
         start_time = time.perf_counter()
@@ -263,6 +263,8 @@ class SearchService:
         A2A results come from ``a2a_agent_repo`` with ACL filtering applied via
         agent_id/$in. An A2A vector outage degrades gracefully.
         """
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
+
         query = query.strip()
         requested = entity_types or list(_DEFAULT_SEMANTIC_TYPES)
         mcp_types = [t for t in requested if t in _MCP_SEMANTIC_TYPES]

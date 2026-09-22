@@ -36,6 +36,7 @@ from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
+from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
@@ -95,6 +96,14 @@ class RegistryContainer:
         self.redis_client = redis_client
         self.directive_queue = DirectiveQueue()
         self.role_cache: dict[tuple[str, int], PydanticObjectId] = {}
+        # Backstop gate: every vector op resolves db_client.adapter, so wiring the
+        # watcher here blocks any repository access during a reindex, including
+        # callers that bypass the gated service methods.
+        self.db_client.set_reindex_active_check(self.embedding_maintenance_watcher.is_active)
+
+    @cached_property
+    def embedding_maintenance_watcher(self) -> EmbeddingMaintenanceWatcher:
+        return EmbeddingMaintenanceWatcher()
 
     @cached_property
     def mcp_server_repo(self) -> MCPServerRepository:
@@ -141,6 +150,7 @@ class RegistryContainer:
             mcp_server_repo=self.mcp_server_repo,
             a2a_agent_repo=self.a2a_agent_repo,
             acl_service=self.acl_service,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
         )
 
     @cached_property
@@ -298,6 +308,7 @@ class RegistryContainer:
             token_service=self.token_service,
             oauth_service=self.oauth_service,
             mcp_server_repo=self.mcp_server_repo,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
         )
 
     @cached_property
@@ -306,6 +317,7 @@ class RegistryContainer:
             a2a_agent_repo=self.a2a_agent_repo,
             jwt_config=self.settings.jwt_signing_config,
             azure_client_cache=self.azure_foundry_client_cache,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
         )
 
     @cached_property
@@ -557,9 +569,13 @@ class RegistryContainer:
         logger.info("Starting durable skill sync job runner...")
         await self.skill_sync_job_runner.start()
 
+        logger.info("Starting embedding maintenance watcher...")
+        await self.embedding_maintenance_watcher.start()
+
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
         await self.skill_sync_job_runner.shutdown()
+        await self.embedding_maintenance_watcher.shutdown()
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()

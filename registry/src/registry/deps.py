@@ -15,6 +15,7 @@ from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
+from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
@@ -105,6 +106,12 @@ def get_server_service(container: RegistryContainer = Depends(get_container)) ->
 
 def get_a2a_agent_service(container: RegistryContainer = Depends(get_container)) -> A2AAgentService:
     return container.a2a_agent_service
+
+
+def get_embedding_maintenance_watcher(
+    container: RegistryContainer = Depends(get_container),
+) -> EmbeddingMaintenanceWatcher:
+    return container.embedding_maintenance_watcher
 
 
 def get_mcp_proxy_client(container: RegistryContainer = Depends(get_container)) -> httpx.AsyncClient:

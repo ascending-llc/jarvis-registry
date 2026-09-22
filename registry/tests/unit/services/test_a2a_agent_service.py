@@ -9,6 +9,7 @@ from beanie import PydanticObjectId
 
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, NoSupportedTransportError
 from registry_pkgs.testing.federation_metadata import (
     make_agentcore_a2a_metadata,
@@ -827,3 +828,29 @@ def test_resolve_agent_card_path_override_falls_back_when_metadata_path_is_missi
     )
 
     assert A2AAgentService._resolve_agent_card_path_override(agent) is None
+
+
+@pytest.mark.asyncio
+class TestA2AReindexGate:
+    """create_agent/update_agent must refuse to write while a reindex is active."""
+
+    def _service(self, *, reindex_active: bool) -> A2AAgentService:
+        return A2AAgentService(
+            a2a_agent_repo=None,
+            azure_client_cache=MagicMock(),
+            embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: reindex_active),
+        )
+
+    async def test_create_agent_raises_when_reindex_active(self):
+        service = self._service(reindex_active=True)
+        data = AgentCreateRequest(title="Gated", path="/gated", url="https://a.example", type="a2a")
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.create_agent(data=data, user_id="user-1")
+
+    async def test_update_agent_raises_when_reindex_active(self):
+
+        service = self._service(reindex_active=True)
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.update_agent(agent_id="agent-gated", data=AgentUpdateRequest())
