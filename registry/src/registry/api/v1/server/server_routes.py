@@ -34,6 +34,7 @@ from ....schemas.server_api_schemas import (
     ServerListResponse,
     ServerStatsResponse,
     ServerToggleRequest,
+    ServerToolsUpdateRequest,
     ServerUpdateRequest,
     convert_to_detail,
     convert_to_list_item,
@@ -707,6 +708,57 @@ async def get_server_tools(
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error while getting server tools",
+        )
+
+
+@router.patch(
+    "/servers/{server_id}/tools",
+    response_model=ServerDetailResponse,
+    response_model_by_alias=True,
+    summary="Update Server Disabled Tools",
+    description="Replace the set of disabled tools on a server (OWNER only)",
+)
+@track_registry_operation("update", resource_type="tool")
+async def update_server_tools(
+    server_id: str,
+    data: ServerToolsUpdateRequest,
+    user_context: dict = Depends(get_user_context),
+    acl_service: ACLService = Depends(get_acl_service),
+    server_service: ServerServiceV1 = Depends(get_server_service),
+):
+    """Replace a server's disabled-tools list. OWNER only."""
+    try:
+        user_id = user_context.get("user_id")
+        permissions = await acl_service.check_user_permission(
+            user_id=PydanticObjectId(user_id),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_id=PydanticObjectId(server_id),
+            required_permission="SHARE",
+        )
+
+        server = await server_service.update_disabled_tools(
+            server_id=server_id,
+            disabled_tools=data.disabledTools,
+            user_id=user_id,
+        )
+
+        return convert_to_detail(server, acl_permission=permissions)
+
+    except ValueError as e:
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail={"error": "not_found", "message": "Server not found"},
+            )
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=error_msg)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating tools for server {server_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error while updating server tools",
         )
 
 

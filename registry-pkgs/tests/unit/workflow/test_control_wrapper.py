@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from agno.workflow import StepOutput
+from agno.workflow import Condition, Loop, Parallel, Router, Step, StepOutput, Steps, Workflow
 from beanie import PydanticObjectId
 from opentelemetry import baggage
 
@@ -18,6 +18,7 @@ from registry_pkgs.telemetry.trace_propagation import (
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.control import wrapper as wrapper_module
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError, _record_attempt_result, with_control
+from registry_pkgs.workflows.persistence import _flatten_step_results, _resolve_workflow_run_status
 from registry_pkgs.workflows.types import is_skip_tolerated_failure
 
 
@@ -181,6 +182,7 @@ class TestControlWrapper:
         assert result.success is False
         assert result.error == "RuntimeError: downstream server exploded"
         assert result.content == ""
+        assert result.stop is True
         executor.assert_awaited_once()
         record_attempt_result.assert_awaited_once_with(
             run_id,
@@ -197,7 +199,7 @@ class TestControlWrapper:
         queue = DirectiveQueue()
         queue.register(run_id)
 
-        success_output = SimpleNamespace(success=True, content="done", error=None)
+        success_output = StepOutput(success=True, content="done")
         executor = AsyncMock(side_effect=[RuntimeError("transient"), success_output])
 
         step_config = StepConfig(on_error="retry", max_retries=2, backoff_base_seconds=0.01, backoff_max_seconds=0.01)
@@ -229,6 +231,7 @@ class TestControlWrapper:
 
         assert result.success is True
         assert result.content == "done"
+        assert result.stop is False
         assert executor.await_count == 2
         record_attempt_result.assert_awaited_once_with(
             run_id,
@@ -267,6 +270,7 @@ class TestControlWrapper:
         result = await wrapped(SimpleNamespace(input="hello"), {})
 
         assert result is failures[-1]
+        assert result.stop is True
         assert executor.await_count == 3
         record_attempt_result.assert_awaited_once_with(
             run_id,
@@ -274,6 +278,205 @@ class TestControlWrapper:
             "github",
             step_config,
             failures[-1],
+        )
+
+    @pytest.mark.asyncio
+    async def test_skip_tolerated_failure_does_not_request_workflow_stop(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        failure = StepOutput(content="", success=False, error="optional step failed")
+        step_config = StepConfig(on_error="skip")
+        wrapped = with_control(
+            AsyncMock(return_value=failure),
+            run_id=run_id,
+            node_id="node-1",
+            node_name="optional",
+            step_config=step_config,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", AsyncMock())
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result is failure
+        assert result.stop is False
+
+    @pytest.mark.asyncio
+    async def test_terminal_failure_is_persisted_before_stop_is_set(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        failure = StepOutput(content="", success=False, error="boom")
+        stop_values_at_persistence: list[bool] = []
+
+        async def record_result(*args: object) -> None:
+            stop_values_at_persistence.append(args[-1].stop)  # type: ignore[union-attr]
+
+        wrapped = with_control(
+            AsyncMock(return_value=failure),
+            run_id=run_id,
+            node_id="node-1",
+            node_name="critical",
+            step_config=None,
+            directive_queue=queue,
+        )
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", record_result)
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert stop_values_at_persistence == [False]
+        assert result.stop is True
+
+
+@pytest.mark.unit
+class TestWithControlHaltsAgnoWorkflow:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("container_kind", ["sequential", "loop", "parallel", "router", "condition"])
+    async def test_non_skip_failure_stops_following_top_level_step(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        container_kind: str,
+    ) -> None:
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        executed: list[str] = []
+
+        async def fail_executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+            executed.append("failure")
+            raise RuntimeError("terminal failure")
+
+        async def inner_after_executor(step_input: object) -> StepOutput:
+            executed.append("inner-after")
+            return StepOutput(content="inner-after")
+
+        async def sibling_executor(step_input: object) -> StepOutput:
+            executed.append("parallel-sibling")
+            return StepOutput(content="parallel-sibling")
+
+        async def downstream_executor(step_input: object) -> StepOutput:
+            executed.append("downstream")
+            return StepOutput(content="downstream")
+
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", AsyncMock())
+        wrapped = with_control(
+            fail_executor,
+            run_id=run_id,
+            node_id="failure-id",
+            node_name="failure",
+            step_config=None,
+            directive_queue=queue,
+        )
+        failure = Step(name="failure", executor=wrapped, max_retries=0)
+        inner_after = Step(name="inner-after", executor=inner_after_executor, max_retries=0)
+
+        if container_kind == "sequential":
+            first = failure
+        elif container_kind == "loop":
+            first = Loop(name="container", steps=[failure, inner_after], max_iterations=2)
+        elif container_kind == "parallel":
+            first = Parallel(
+                failure,
+                Step(name="parallel-sibling", executor=sibling_executor, max_retries=0),
+                name="container",
+            )
+        elif container_kind == "router":
+            first = Router(
+                name="container",
+                selector=lambda _: "selected",
+                choices=[Steps(name="selected", steps=[failure, inner_after])],
+            )
+        else:
+            first = Condition(name="container", evaluator=lambda _: True, steps=[failure, inner_after])
+
+        workflow = Workflow(
+            name=f"halt-{container_kind}",
+            steps=[first, Step(name="downstream", executor=downstream_executor, max_retries=0)],
+            telemetry=False,
+        )
+
+        result = await workflow.arun(input="hello")
+
+        assert executed.count("failure") == 1
+        assert "downstream" not in executed
+        if container_kind != "parallel":
+            assert "inner-after" not in executed
+        assert result.step_results[-1].stop is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("container_kind", ["parallel", "router", "condition", "loop"])
+    async def test_skip_failure_inside_container_completes_workflow(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        container_kind: str,
+    ) -> None:
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        executed: list[str] = []
+
+        async def fail_executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+            executed.append("optional")
+            return StepOutput(success=False, error="optional error")
+
+        async def succeed(step_input: object) -> StepOutput:
+            executed.append("downstream")
+            return StepOutput(content="done")
+
+        async def sibling(step_input: object) -> StepOutput:
+            executed.append("parallel-sibling")
+            return StepOutput(content="sibling done")
+
+        monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
+        monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
+        monkeypatch.setattr(wrapper_module, "_record_attempt_result", AsyncMock())
+        wrapped = with_control(
+            fail_executor,
+            run_id=run_id,
+            node_id="optional-id",
+            node_name="optional",
+            step_config=StepConfig(on_error="skip"),
+            directive_queue=queue,
+        )
+        optional = Step(name="optional", executor=wrapped, max_retries=0)
+        if container_kind == "parallel":
+            first = Parallel(optional, Step(name="sibling", executor=sibling), name="container")
+        elif container_kind == "router":
+            first = Router(
+                name="container", selector=lambda _: "selected", choices=[Steps(name="selected", steps=[optional])]
+            )
+        elif container_kind == "condition":
+            first = Condition(name="container", evaluator=lambda _: True, steps=[optional])
+        else:
+            first = Loop(name="container", steps=[optional], max_iterations=1)
+
+        workflow = Workflow(
+            name=f"skip-{container_kind}",
+            steps=[first, Step(name="downstream", executor=succeed)],
+            telemetry=False,
+        )
+        result = await workflow.arun(input="hello")
+        skipped_node = SimpleNamespace(step_config=StepConfig(on_error="skip"))
+
+        assert result.status.value == "COMPLETED"
+        assert executed.count("downstream") == 1
+        if container_kind == "parallel":
+            assert executed.count("parallel-sibling") == 1
+        assert all(output.stop is False for output in _flatten_step_results(result.step_results))
+        assert (
+            _resolve_workflow_run_status(
+                result,
+                _flatten_step_results(result.step_results),
+                {"optional": skipped_node},
+            )
+            == WorkflowRunStatus.COMPLETED
         )
 
     @pytest.mark.asyncio

@@ -70,8 +70,9 @@ def _make_ctx(
     return ctx
 
 
-def _make_server(server_id: str | None = None):
+def _make_server(server_id: str | None = None, disabled_tools: list[str] | None = None):
     oid = PydanticObjectId(server_id) if server_id else PydanticObjectId()
+    disabled = disabled_tools or []
     return SimpleNamespace(
         id=oid,
         path="/github",
@@ -82,6 +83,8 @@ def _make_server(server_id: str | None = None):
             "type": "streamable-http",
             "url": "https://example.com/mcp",
         },
+        registryDisabledTools=disabled,
+        is_tool_disabled=lambda name: name in disabled,
     )
 
 
@@ -566,3 +569,43 @@ async def test_execute_tool_impl_downstream_tool_error_records_error_type(monkey
     call_kwargs = mock_record.call_args[1]
     assert call_kwargs["success"] is False
     assert call_kwargs["error_type"] == "downstream_tool_error"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_disabled_tool_returns_error(monkeypatch):
+    """A tool on the server's disabled list is rejected before any downstream call."""
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx()  # permissive ACL: user can view
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(
+        server_id, disabled_tools=["tavily_search"]
+    )
+    downstream_call = AsyncMock()
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert result.isError is True
+    assert "tavily_search" in result.content[0].text
+    assert server_id in result.content[0].text
+    # No consent check and no downstream network call for a disabled tool.
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
+    downstream_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_enabled_tool_not_blocked(monkeypatch):
+    """A tool absent from the disabled list is not blocked by the disabled-tool check."""
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(
+        server_id, disabled_tools=["other_tool"]
+    )
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    downstream_call = AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}})
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert not result.isError
+    downstream_call.assert_awaited()

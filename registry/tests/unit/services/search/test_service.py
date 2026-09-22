@@ -749,3 +749,47 @@ async def test_semantic_search_raises_when_reindex_active():
     with pytest.raises(EmbeddingReindexInProgressException):
         await service.semantic_search(query="x", user_context={"user_id": None})
     acl.get_accessible_resource_ids.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_entities_filters_disabled_tools_by_default():
+    """discover_servers excludes disabled tools via a tool_enabled==True Weaviate filter."""
+    tool_results = [{"server_id": "s1", "server_name": "github", "entity_type": "tool", "tool_name": "t"}]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=tool_results)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1"])
+
+    service = _make_service(mcp_server_repo=mcp_server_repo, acl_service=acl_service)
+    user_ctx = {"user_id": "507f1f77bcf86cd799439011", "username": "alice"}
+
+    await service.search_entities(
+        SearchRequest(query="github", top_n=2, type_list=[MCPEntityType.TOOL]),
+        user_ctx,
+    )
+
+    call_kwargs = mcp_server_repo.asearch_with_rerank.call_args.kwargs
+    assert call_kwargs["filters"]["tool_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_entities_include_disabled_drops_tool_enabled_filter():
+    """include_disabled=True surfaces disabled tools: no tool_enabled filter is applied."""
+    tool_results = [{"server_id": "s1", "server_name": "github", "entity_type": "tool", "tool_name": "t"}]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=tool_results)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1"])
+
+    service = _make_service(mcp_server_repo=mcp_server_repo, acl_service=acl_service)
+    user_ctx = {"user_id": "507f1f77bcf86cd799439011", "username": "alice"}
+
+    await service.search_entities(
+        SearchRequest(query="github", top_n=2, type_list=[MCPEntityType.TOOL], include_disabled=True),
+        user_ctx,
+    )
+
+    call_kwargs = mcp_server_repo.asearch_with_rerank.call_args.kwargs
+    assert "tool_enabled" not in call_kwargs["filters"]

@@ -160,6 +160,10 @@ class WorkflowRunSyncer(AsyncMongoDb):
         run = self._workflow_run
         mapped_status = _resolve_workflow_run_status(run_output, step_outputs or [], self._node_by_name)
         run.status = mapped_status
+        if mapped_status == WorkflowRunStatus.FAILED:
+            run.error_summary = _first_failure_error(step_outputs or [], self._node_by_name) or run.error_summary
+            if any(step.stop and _has_non_skip_failure(step, self._node_by_name) for step in step_outputs or []):
+                run.pending_requirements = []
         if mapped_status in _TERMINAL_STATUSES:
             if run.finished_at is None:
                 run.finished_at = datetime.now(UTC)
@@ -202,10 +206,13 @@ class WorkflowRunSyncer(AsyncMongoDb):
         if node_run.status not in _TERMINAL_NODE_RUN_STATUSES:
             if step_output.success:
                 node_run.status = NodeRunStatus.COMPLETED
-            elif _is_skip_tolerated_failure(step_output, self._node_by_name):
-                # on_error=skip: a tolerated failure is recorded as SKIPPED (not FAILED)
-                # so the UI distinguishes "skipped over" from a hard failure.
-                node_run.status = NodeRunStatus.SKIPPED
+            elif not _has_non_skip_failure(step_output, self._node_by_name):
+                # A container aggregates skip-tolerated child failures into
+                # success=False; those children must not fail the container.
+                if step_output.steps:
+                    node_run.status = NodeRunStatus.COMPLETED
+                else:
+                    node_run.status = NodeRunStatus.SKIPPED
             else:
                 node_run.status = NodeRunStatus.FAILED
             node_run.finished_at = datetime.now(UTC)
@@ -272,6 +279,49 @@ def _is_skip_tolerated_failure(
     return is_skip_tolerated_failure(step_output.success, node.step_config if node else None)
 
 
+def _has_non_skip_failure(
+    step_output: StepOutput,
+    node_by_name: dict[str, WorkflowNode] | None,
+) -> bool:
+    """Ignore a container's aggregate failure when all failed children are skipped."""
+    if step_output.success:
+        return False
+    if step_output.steps:
+        return (
+            bool(step_output.error)
+            or all(child.success for child in step_output.steps)
+            or any(_has_non_skip_failure(child, node_by_name) for child in step_output.steps)
+        )
+    return not _is_skip_tolerated_failure(step_output, node_by_name)
+
+
+def _first_failure_error(
+    step_outputs: list[StepOutput],
+    node_by_name: dict[str, WorkflowNode] | None,
+) -> str | None:
+    """Prefer a failed leaf's original error over a container's aggregate output."""
+    fallback_name: str | None = None
+    container_name: str | None = None
+    container_error: str | None = None
+    for step_output in step_outputs:
+        if not _has_non_skip_failure(step_output, node_by_name):
+            continue
+        if step_output.steps:
+            container_error = container_error or step_output.error
+            container_name = container_name or step_output.step_name
+            continue
+        if step_output.error:
+            return step_output.error
+        fallback_name = fallback_name or step_output.step_name
+    if container_error:
+        return container_error
+    if fallback_name:
+        return f"Step {fallback_name!r} failed"
+    if container_name:
+        return f"Step {container_name!r} failed"
+    return None
+
+
 def _resolve_workflow_run_status(
     run_output: WorkflowRunOutput,
     step_outputs: list[StepOutput],
@@ -286,10 +336,7 @@ def _resolve_workflow_run_status(
 
     # A failed step forces FAILED only when it is *not* tolerated by on_error=skip;
     # skip-tolerated failures keep the run eligible to COMPLETE.
-    if any(
-        not step_output.success and not _is_skip_tolerated_failure(step_output, node_by_name)
-        for step_output in step_outputs
-    ):
+    if any(_has_non_skip_failure(step_output, node_by_name) for step_output in step_outputs):
         return WorkflowRunStatus.FAILED
 
     return mapped_status

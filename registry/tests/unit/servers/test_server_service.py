@@ -2,6 +2,7 @@
 Unit tests for server service.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -34,6 +35,7 @@ class TestRefreshServerCapabilities:
         server.updatedAt = datetime.now(UTC)
         server.vectorContentHash = "old-hash"
         server.numTools = 0
+        server.registryDisabledTools = []
         server.save = AsyncMock()
         return server
 
@@ -189,6 +191,35 @@ class TestRefreshServerCapabilities:
                     # 验证工具信息在 config 中
                     assert "toolFunctions" in mock_server.config
                     assert len(mock_server.config["toolFunctions"]) == 3
+
+    async def test_refresh_server_capabilities_zero_tools_clears_stale_state(self, server_service, mock_server):
+        """A successful refresh with tool_list=[] (server now serves no tools) must still clear
+        stale toolFunctions/numTools/tools and prune registryDisabledTools to [] — tool_list=[] is
+        a legitimate success result, distinct from the tool_list is None failure case."""
+        from unittest.mock import patch
+
+        mock_server.config = {
+            "title": "Test Server",
+            "toolFunctions": {"old_tool_mcp_test": {"mcpToolName": "old_tool"}},
+            "tools": "old_tool",
+        }
+        mock_server.numTools = 1
+        mock_server.registryDisabledTools = ["old_tool"]
+
+        with patch.object(server_service, "get_server_by_id", return_value=mock_server):
+            with patch.object(
+                server_service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=([], [], [], {}, None),
+            ):
+                with patch.object(server_service, "_schedule_vector_sync"):
+                    result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+        assert result["status"] == "success"
+        assert mock_server.config["toolFunctions"] == {}
+        assert mock_server.config["tools"] == ""
+        assert mock_server.numTools == 0
+        assert mock_server.registryDisabledTools == []
 
 
 @pytest.mark.unit
@@ -510,3 +541,162 @@ class TestReindexGate:
         # Gate off -> proceeds to the normal "not found" path instead of raising the gate error.
         with pytest.raises(ValueError, match="not found"):
             await service.update_server(server_id="srv-gated", data=ServerUpdateRequest())
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestUpdateDisabledTools:
+    """Test suite for update_disabled_tools and refresh-time pruning."""
+
+    def _make_service(self):
+        mock_repo = Mock()
+        mock_repo.update_tools_metadata = AsyncMock()
+        service = ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=mock_repo,
+        )
+        return service, mock_repo
+
+    def _make_server(self, disabled=None):
+        from datetime import UTC, datetime
+
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        server = Mock(spec=ExtendedMCPServer)
+        server.id = "srv-1"
+        server.serverName = "test-server"
+        server.config = {
+            "toolFunctions": {
+                "read_file_mcp_test": {"mcpToolName": "read_file"},
+                "write_file_mcp_test": {"mcpToolName": "write_file"},
+                "delete_file_mcp_test": {"mcpToolName": "delete_file"},
+            }
+        }
+        server.registryDisabledTools = disabled if disabled is not None else []
+        server.updatedAt = datetime.now(UTC)
+        server.save = AsyncMock()
+        return server
+
+    async def test_drops_unknown_tool_names(self):
+        """Submitted names that are not current tools are silently dropped, not persisted."""
+        service, _ = self._make_service()
+        server = self._make_server()
+
+        with patch.object(service, "get_server_by_id", return_value=server):
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                result = await service.update_disabled_tools("srv-1", ["read_file", "ghost_tool"])
+
+        assert result.registryDisabledTools == ["read_file"]  # ghost_tool dropped, sorted
+        server.save.assert_awaited_once()
+        # Only the real newly-disabled tool is scheduled for the Weaviate push.
+        mock_schedule.assert_called_once_with("srv-1", {"read_file"}, set())
+
+    async def test_schedules_flip_sets_for_weaviate_push(self):
+        """update_disabled_tools schedules the flipped new/previous sets, not the server's whole tool set."""
+        service, _ = self._make_service()
+        server = self._make_server(disabled=["read_file"])
+
+        with patch.object(service, "get_server_by_id", return_value=server):
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                # read_file re-enabled (removed), write_file newly disabled.
+                await service.update_disabled_tools("srv-1", ["write_file"])
+
+        assert server.registryDisabledTools == ["write_file"]
+        mock_schedule.assert_called_once_with("srv-1", {"write_file"}, {"read_file"})
+
+    async def test_noop_when_unchanged_skips_save_and_weaviate(self):
+        """Submitting the same effective list is an idempotent no-op."""
+        service, _ = self._make_service()
+        server = self._make_server(disabled=["read_file"])
+
+        with patch.object(service, "get_server_by_id", return_value=server):
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                await service.update_disabled_tools("srv-1", ["read_file"])
+
+        server.save.assert_not_awaited()
+        mock_schedule.assert_not_called()
+
+    async def test_schedule_tool_enabled_sync_batches_by_flip(self, monkeypatch):
+        """_schedule_tool_enabled_sync partitions the diff into disable/enable groups and pushes
+        each batch to Weaviate. Verified by capturing the coroutine handed to asyncio.create_task
+        (fire-and-forget) and running it to completion directly, instead of scheduling it."""
+        service, repo = self._make_service()
+        captured: dict = {}
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+
+        service._schedule_tool_enabled_sync("srv-1", {"write_file"}, {"read_file"})
+        await captured["coro"]
+
+        repo.update_tools_metadata.assert_any_await("srv-1", ["write_file"], {"tool_enabled": False})
+        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": True})
+
+    async def test_schedule_tool_enabled_sync_empty_group_still_pushed(self, monkeypatch):
+        """A group with no members is still passed through (repo no-ops on empty list), never crashes."""
+        service, repo = self._make_service()
+        captured: dict = {}
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
+        await captured["coro"]
+
+        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": False})
+        repo.update_tools_metadata.assert_any_await("srv-1", [], {"tool_enabled": True})
+
+    async def test_schedule_tool_enabled_sync_no_repo_is_noop(self):
+        """No mcp_server_repo configured -> returns without scheduling anything."""
+        service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=None)
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())  # must not raise
+
+    async def test_schedule_tool_enabled_sync_logs_errors_without_raising(self, monkeypatch, caplog):
+        """A Weaviate failure in the background task is logged, not raised (MongoDB stays authoritative)."""
+        service, repo = self._make_service()
+        repo.update_tools_metadata.side_effect = RuntimeError("weaviate down")
+        captured: dict = {}
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
+        with caplog.at_level("ERROR", logger="registry.services.server_service"):
+            await captured["coro"]  # must not raise
+
+        assert "tool_enabled metadata sync failed" in caplog.text
+
+    async def test_server_not_found_raises(self):
+        service, _ = self._make_service()
+        with patch.object(service, "get_server_by_id", return_value=None):
+            with pytest.raises(ValueError, match="not found"):
+                await service.update_disabled_tools("missing", ["x"])
+
+    async def test_refresh_prunes_stale_disabled_names(self):
+        """A capabilities refresh drops disabled names that no longer exist downstream."""
+        from datetime import UTC, datetime
+
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        service, _ = self._make_service()
+        server = Mock(spec=ExtendedMCPServer)
+        server.id = "srv-1"
+        server.serverName = "test-server"
+        server.config = {}
+        server.registryDisabledTools = ["read_file", "delete_file"]  # delete_file removed downstream
+        server.lastError = None
+        server.errorMessage = None
+        server.lastConnected = None
+        server.updatedAt = datetime.now(UTC)
+        server.vectorContentHash = "old-hash"
+        server.numTools = 0
+        server.save = AsyncMock()
+
+        with patch.object(service, "get_server_by_id", return_value=server):
+            with patch.object(
+                service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=([{"name": "read_file"}], [], [], {"sampling": {}}, None),
+            ):
+                with patch.object(service, "_schedule_vector_sync"):
+                    result = await service.refresh_server_capabilities(server_id="srv-1", user_id="u1")
+
+        assert result["status"] == "success"
+        assert server.registryDisabledTools == ["read_file"]  # delete_file pruned

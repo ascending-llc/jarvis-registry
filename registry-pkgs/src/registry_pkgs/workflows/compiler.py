@@ -26,6 +26,7 @@ from registry_pkgs.models.workflow import (
     WorkflowNode,
     WorkflowRun,
 )
+from registry_pkgs.workflows.agno_compat import RegistryWorkflow
 from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
 from registry_pkgs.workflows.media_snapshot import (
     media_from_snapshot,
@@ -427,7 +428,7 @@ def compile_workflow(
     }
     if db is not None:
         workflow_kwargs["db"] = db
-    return Workflow(**workflow_kwargs)
+    return RegistryWorkflow(**workflow_kwargs)
 
 
 def step_kwargs(cfg: StepConfig | None) -> dict[str, Any]:

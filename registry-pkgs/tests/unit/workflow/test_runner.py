@@ -1,17 +1,23 @@
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from agno.db.in_memory import InMemoryDb
+from agno.db.mongo.async_mongo import AsyncMongoDb
 from agno.run.base import RunStatus
 from agno.run.workflow import WorkflowRunOutput
+from agno.workflow import Router, Step, StepOutput, Steps, Workflow
+from agno.workflow.types import HumanReview
 from beanie import PydanticObjectId
+from pymongo.errors import AutoReconnect
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
-from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode, WorkflowRun
+from registry_pkgs.models.workflow import StepConfig, WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows import runner
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError
+from registry_pkgs.workflows.persistence import WorkflowRunSyncer, _flatten_step_results
 
 
 class _FieldExpr:
@@ -361,6 +367,149 @@ class TestExecute:
         run_doc.save.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_failed_paused_output_is_not_overwritten_as_awaiting_approval(self):
+        run_doc = SimpleNamespace(
+            id="run-1",
+            status=WorkflowRunStatus.RUNNING,
+            pending_requirements=[],
+            agno_run_id=None,
+            save=AsyncMock(),
+        )
+
+        async def sync_failed_status() -> None:
+            run_doc.status = WorkflowRunStatus.FAILED
+
+        run_doc.sync = AsyncMock(side_effect=sync_failed_status)
+        result = SimpleNamespace(
+            is_paused=True,
+            step_requirements=[SimpleNamespace(step_id="failed-step")],
+            run_id="agno-run-1",
+        )
+
+        await _make_runner()._handle_run_output(run_doc, result)
+
+        assert run_doc.status == WorkflowRunStatus.FAILED
+        assert run_doc.pending_requirements == []
+        run_doc.sync.assert_awaited_once()
+        run_doc.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_successful_output_review_still_transitions_to_awaiting_approval(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        run_doc = SimpleNamespace(
+            id="run-1",
+            status=WorkflowRunStatus.RUNNING,
+            pending_requirements=[],
+            agno_run_id=None,
+            save=AsyncMock(),
+        )
+
+        async def sync_paused_status() -> None:
+            run_doc.status = WorkflowRunStatus.PAUSED
+
+        run_doc.sync = AsyncMock(side_effect=sync_paused_status)
+        requirement = SimpleNamespace(step_id="review-step")
+        result = SimpleNamespace(
+            is_paused=True,
+            step_requirements=[requirement],
+            run_id="agno-run-1",
+        )
+        monkeypatch.setattr(runner, "serialize_requirement", lambda req: {"step_id": req.step_id})
+
+        await _make_runner()._handle_run_output(run_doc, result)
+
+        assert run_doc.status == WorkflowRunStatus.AWAITING_APPROVAL
+        assert run_doc.pending_requirements == [{"step_id": "review-step"}]
+        assert run_doc.agno_run_id == "agno-run-1"
+        run_doc.sync.assert_awaited_once()
+        run_doc.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("review_target", ["step", "router"])
+    @pytest.mark.parametrize("sync_failure", [False, True])
+    async def test_real_agno_output_review_cannot_reopen_stopped_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        review_target: str,
+        sync_failure: bool,
+    ) -> None:
+        executed: list[str] = []
+
+        async def fail(step_input: object) -> StepOutput:
+            executed.append("failure")
+            return StepOutput(success=False, stop=True, error="original auth error")
+
+        async def downstream(step_input: object) -> StepOutput:
+            executed.append("downstream")
+            return StepOutput(content="done")
+
+        review = HumanReview(requires_output_review=True)
+        inner = Step(name="failure", executor=fail, human_review=review if review_target == "step" else None)
+        first = (
+            inner
+            if review_target == "step"
+            else Router(
+                name="router",
+                choices=[Steps(name="choice", steps=[inner])],
+                selector=lambda _: "choice",
+                human_review=review,
+            )
+        )
+        workflow = Workflow(
+            name=f"review-{review_target}",
+            db=InMemoryDb(),
+            steps=[first, Step(name="downstream", executor=downstream)],
+            telemetry=False,
+        )
+        result = await workflow.arun(input="hello")
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            pending_requirements=[],
+            finished_at=None,
+            final_output=None,
+            definition_snapshot=_definition().model_dump(mode="json"),
+            sync=AsyncMock(),
+            save=AsyncMock(),
+        )
+        syncer = object.__new__(WorkflowRunSyncer)
+        syncer._workflow_run = run_doc
+        syncer._node_by_name = {}
+
+        if sync_failure:
+            # The agno session was saved, but the Beanie transaction failed.
+            # Reload must discard any in-memory changes from that transaction.
+            async def fail_mirror(*args: object, **kwargs: object) -> None:
+                run_doc.status = WorkflowRunStatus.FAILED
+                run_doc.error_summary = "uncommitted error"
+                raise AutoReconnect("transient transaction failure")
+
+            async def reload_stale_run() -> None:
+                run_doc.status = WorkflowRunStatus.RUNNING
+                run_doc.error_summary = None
+
+            session = await workflow.aget_session(session_id=result.session_id)
+            monkeypatch.setattr(AsyncMongoDb, "upsert_session", AsyncMock(return_value=session))
+            syncer._sync_to_beanie = AsyncMock(side_effect=fail_mirror)
+            run_doc.sync = AsyncMock(side_effect=reload_stale_run)
+            await syncer.upsert_session(session)
+            syncer._sync_to_beanie.assert_awaited_once()
+        else:
+            await syncer._update_workflow_run(result, _flatten_step_results(result.step_results))
+        await _make_runner()._handle_run_output(run_doc, result)
+
+        assert result.is_paused
+        assert run_doc.status == WorkflowRunStatus.FAILED
+        assert run_doc.error_summary == "original auth error"
+        assert run_doc.pending_requirements == []
+        assert run_doc.finished_at is not None
+        run_doc.save.assert_awaited_once()
+        assert executed == ["failure"]
+
+    @pytest.mark.asyncio
     async def test_marks_run_failed_and_reraises_when_workflow_raises(self, monkeypatch: pytest.MonkeyPatch):
         workflow = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("boom")))
         run_doc = SimpleNamespace(
@@ -579,6 +728,139 @@ class TestExecute:
         assert run_doc.error_summary == "user cancelled"
         run_doc.save.assert_awaited_once()
         assert any("failed to clean up dangling NodeRuns" in record.message for record in caplog.records)
+
+
+@pytest.mark.unit
+class TestStoppedFailureFallback:
+    @pytest.fixture
+    def stale_run(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            pending_requirements=[{"step_id": "old-review"}],
+            finished_at=None,
+            definition_snapshot=_definition().model_dump(mode="json"),
+            sync=AsyncMock(),
+            save=AsyncMock(),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["original auth error", None])
+    async def test_non_paused_stopped_failure_is_persisted(
+        self,
+        stale_run: SimpleNamespace,
+        error: str | None,
+    ) -> None:
+        failed = StepOutput(step_name="fetch", success=False, stop=True, error=error)
+        container = StepOutput(step_name="parallel", success=False, stop=True, steps=[failed])
+        result = WorkflowRunOutput(status=RunStatus.completed, step_results=[container])
+
+        await _make_runner()._handle_run_output(stale_run, result)
+
+        assert stale_run.status == WorkflowRunStatus.FAILED
+        assert stale_run.error_summary == (error or "Step 'fetch' failed")
+        assert stale_run.pending_requirements == []
+        assert stale_run.finished_at is not None
+        stale_run.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("success", [False, True])
+    async def test_tolerated_failure_and_success_still_allow_review(
+        self,
+        stale_run: SimpleNamespace,
+        success: bool,
+    ) -> None:
+        definition = _definition()
+        definition.nodes[0].step_config = StepConfig(on_error="skip")
+        stale_run.definition_snapshot = definition.model_dump(mode="json")
+        # Even an explicit stop signal must not turn a skip-tolerated failure
+        # or a successful early stop into FAILED.
+        output = StepOutput(step_name="fetch", success=success, stop=True, error=None if success else "ignored")
+        result = WorkflowRunOutput(status=RunStatus.paused, step_results=[output])
+
+        await _make_runner()._handle_run_output(stale_run, result)
+
+        assert stale_run.status == WorkflowRunStatus.AWAITING_APPROVAL
+        assert stale_run.error_summary is None
+        assert stale_run.finished_at is None
+        stale_run.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancellation_source", ["database", "agno"])
+    async def test_cancellation_takes_precedence_over_stopped_failure(
+        self,
+        stale_run: SimpleNamespace,
+        cancellation_source: str,
+    ) -> None:
+        if cancellation_source == "database":
+            stale_run.status = WorkflowRunStatus.CANCELLED
+        result = WorkflowRunOutput(
+            status=RunStatus.cancelled if cancellation_source == "agno" else RunStatus.paused,
+            step_results=[StepOutput(step_name="fetch", success=False, stop=True, error="auth error")],
+        )
+        original_status = stale_run.status
+
+        await _make_runner()._handle_run_output(stale_run, result)
+
+        assert stale_run.status == original_status
+        assert stale_run.error_summary is None
+        stale_run.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fallback_save_error_propagates_without_publishing_approval(
+        self,
+        stale_run: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        stale_run.save.side_effect = AutoReconnect("database still unavailable")
+        serialize = Mock()
+        monkeypatch.setattr(runner, "serialize_requirement", serialize)
+        result = WorkflowRunOutput(
+            status=RunStatus.paused,
+            step_results=[StepOutput(step_name="fetch", success=False, stop=True, error="auth error")],
+        )
+
+        with pytest.raises(AutoReconnect, match="database still unavailable"):
+            await _make_runner()._handle_run_output(stale_run, result)
+
+        assert stale_run.status == WorkflowRunStatus.FAILED
+        assert stale_run.pending_requirements == []
+        assert stale_run.error_summary == "auth error"
+        stale_run.save.assert_awaited_once()
+        serialize.assert_not_called()
+
+
+@pytest.mark.unit
+class TestContinueRunTerminalGuard:
+    @pytest.mark.asyncio
+    async def test_failed_run_cannot_resume_even_with_stale_requirements(self, monkeypatch: pytest.MonkeyPatch):
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.FAILED,
+            pending_requirements=[{"step_id": "failed-router"}],
+        )
+        collection = SimpleNamespace(update_one=AsyncMock(return_value=SimpleNamespace(modified_count=0)))
+        # Use the same client indexing contract as production without connecting to MongoDB.
+        client = {"jarvis": SimpleNamespace(get_collection=lambda name: collection)}
+        compile_mock = Mock()
+        monkeypatch.setattr(runner.WorkflowRun, "get_settings", lambda: SimpleNamespace(name="workflow_runs"))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(
+            runner.NodeRun, "find", lambda *args, **kwargs: SimpleNamespace(to_list=AsyncMock(return_value=[]))
+        )
+        monkeypatch.setattr(runner, "compile_workflow", compile_mock)
+
+        result, nodes = await _make_runner(db_client=client).continue_run(
+            existing_run_id=str(run_doc.id), auth_context=None
+        )
+
+        assert result is run_doc
+        assert nodes == []
+        assert result.status == WorkflowRunStatus.FAILED
+        assert collection.update_one.call_args.args[0]["status"] == WorkflowRunStatus.AWAITING_APPROVAL.value
+        compile_mock.assert_not_called()
 
 
 @pytest.mark.unit

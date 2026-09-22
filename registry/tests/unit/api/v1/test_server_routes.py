@@ -393,6 +393,107 @@ async def test_list_servers_maps_per_item_permission_runtime_error_to_503(sample
     assert exc_info.value.status_code == 503
 
 
+def test_convert_to_detail_includes_disabled_tools():
+    server = _fake_mcp_server(enabled=True)
+    server.registryDisabledTools = ["delete_repo", "force_push"]
+    detail = convert_to_detail(server)
+    assert detail.disabledTools == ["delete_repo", "force_push"]
+
+
+def test_convert_to_detail_disabled_tools_defaults_empty():
+    """A server without the field (or None) yields an empty list, never an error."""
+    server = _fake_mcp_server(enabled=True)  # no registryDisabledTools attribute
+    detail = convert_to_detail(server)
+    assert detail.disabledTools == []
+
+
+@pytest.mark.asyncio
+async def test_update_server_tools_owner_success():
+    """OWNER (SHARE) can replace the disabled-tools list; service is called with the submitted list."""
+    from registry.api.v1.server.server_routes import update_server_tools
+    from registry.schemas.server_api_schemas import ServerToolsUpdateRequest
+
+    server_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=None)
+
+    updated_server = _fake_mcp_server(enabled=True)
+    updated_server.registryDisabledTools = ["delete_repo"]
+    mock_server_service = MagicMock()
+    mock_server_service.update_disabled_tools = AsyncMock(return_value=updated_server)
+
+    result = await update_server_tools(
+        server_id=server_id,
+        data=ServerToolsUpdateRequest(disabledTools=["delete_repo"]),
+        user_context=user_context,
+        acl_service=mock_acl_service,
+        server_service=mock_server_service,
+    )
+
+    # Gated on SHARE (OWNER-only).
+    assert mock_acl_service.check_user_permission.call_args.kwargs["required_permission"] == "SHARE"
+    mock_server_service.update_disabled_tools.assert_awaited_once()
+    assert mock_server_service.update_disabled_tools.call_args.kwargs["disabled_tools"] == ["delete_repo"]
+    assert result.disabledTools == ["delete_repo"]
+
+
+@pytest.mark.asyncio
+async def test_update_server_tools_non_owner_forbidden():
+    """A VIEWER/EDITOR (lacking SHARE) gets 403 and the service is never called."""
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import update_server_tools
+    from registry.schemas.server_api_schemas import ServerToolsUpdateRequest
+
+    server_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(side_effect=HTTPException(status_code=403, detail="Forbidden"))
+
+    mock_server_service = MagicMock()
+    mock_server_service.update_disabled_tools = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_server_tools(
+            server_id=server_id,
+            data=ServerToolsUpdateRequest(disabledTools=["x"]),
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            server_service=mock_server_service,
+        )
+
+    assert exc_info.value.status_code == 403
+    mock_server_service.update_disabled_tools.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_server_tools_server_not_found():
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import update_server_tools
+    from registry.schemas.server_api_schemas import ServerToolsUpdateRequest
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    mock_server_service = MagicMock()
+    mock_server_service.update_disabled_tools = AsyncMock(side_effect=ValueError("Server not found"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_server_tools(
+            server_id=str(PydanticObjectId()),
+            data=ServerToolsUpdateRequest(disabledTools=["x"]),
+            user_context={"user_id": str(PydanticObjectId())},
+            acl_service=mock_acl_service,
+            server_service=mock_server_service,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "not_found" in str(exc_info.value.detail)
+
+
 def _mock_mongo_transaction(mock_get_client):
     mock_session = AsyncMock()
     mock_client = MagicMock()

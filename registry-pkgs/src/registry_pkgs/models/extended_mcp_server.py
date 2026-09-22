@@ -216,6 +216,11 @@ class ExtendedMCPServer(MCPServer):
         description="SHA-256 of vectorized page_content; used to skip re-embedding when content is unchanged",
     )
 
+    registryDisabledTools: list[str] = Field(
+        default_factory=list,
+        description="Downstream tool names (mcpToolName) disabled by this server's OWNER. All tools are enabled by default.",
+    )
+
     class Settings:
         name = "mcpservers"
         keep_nulls = False
@@ -239,6 +244,10 @@ class ExtendedMCPServer(MCPServer):
         return (
             bool(self.config.get("enabled")) if self.config and isinstance(self.config.get("enabled"), bool) else False
         )
+
+    def is_tool_disabled(self, tool_name: str) -> bool:
+        """Return whether `tool_name` (the downstream mcpToolName) is on this server's owner-configured disabled list."""
+        return tool_name in (self.registryDisabledTools or [])
 
     @property
     def mcp_auth_mode(self) -> McpAuthMode:
@@ -322,6 +331,8 @@ class ExtendedMCPServer(MCPServer):
 
         metadata = self._get_base_metadata(MCPEntityType.TOOL)
         metadata["tool_name"] = downstream_tool_name
+        if self.is_tool_disabled(downstream_tool_name):
+            metadata["tool_enabled"] = False
         # Store the full parameter schema so LLMs can execute without a separate lookup.
         # Serialize as JSON string: Weaviate rejects nested property names that collide with
         # reserved keys (`id`, `vector`) or that aren't valid GraphQL identifiers (e.g. `$ref`),
@@ -363,6 +374,7 @@ class ExtendedMCPServer(MCPServer):
             "server_name": self.serverName,
             "path": self.path,
             "enabled": enabled,
+            "tool_enabled": True,
         }
         # Federation metadata lets vector sync target one federated MCP runtime precisely.
         if self.federationRefId is not None:

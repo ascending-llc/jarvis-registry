@@ -20,10 +20,15 @@
    of each attempt, and the terminal outcome is written as soon as the final
    attempt finishes so later steps never leave a completed node looking active.
 
+5. **Workflow-level halting** — a terminal failure not tolerated by
+   ``on_error="skip"`` sets agno's ``StepOutput.stop`` signal. Containers
+   propagate the signal so no later sequential step starts; already-running
+   branches inside a ``Parallel`` are not cancelled.
+
 Node-level HITL (confirmation / user_input / output_review / iteration review)
 is handled by agno's native ``HumanReview`` configuration — agno's execution
 loop detects and pauses on its own, and we surface the pause via
-``WorkflowRunner._handle_run_output`` writing ``WorkflowRun.pending_requirements``.
+``WorkflowRunner._handle_run_output`` for runs without a terminal failure.
 This wrapper covers what agno does not: ad-hoc pause/resume, exponential-backoff
 retry, and per-attempt persistence.
 """
@@ -167,6 +172,8 @@ def with_control(
 
             logger.warning("Node %r: all %d attempt(s) failed, last error: %s", node_name, max_attempts, result.error)
             await _record_attempt_result(run_id, node_id, node_name, step_config, result)
+            if not is_skip_tolerated_failure(result.success, step_config):
+                result.stop = True
             return result
 
         return StepOutput(content="", success=False, error="Max retries exceeded")
