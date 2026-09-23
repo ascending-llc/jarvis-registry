@@ -241,6 +241,11 @@ services:
     ports:
       - 8099:8080
       - 50051:50051
+    environment:
+      # Without these, Weaviate writes to /data inside the container and loses it on recreate.
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      # Fixed node name so persisted Raft state still matches after the container hostname changes.
+      CLUSTER_HOSTNAME: node1
     env_file:
       - .env
     volumes:
