@@ -5,10 +5,13 @@ This module provides MongoDB connection management with connection pooling
 and Beanie ODM initialization for the MCP Gateway Registry.
 """
 
+import logging
 from urllib.parse import quote_plus, urlsplit
 
-from beanie import init_beanie
+from beanie import Document, init_beanie
 from pymongo import AsyncMongoClient
+from pymongo.asynchronous.database import AsyncDatabase
+from pymongo.errors import OperationFailure
 
 from ..core.config import MongoConfig
 from ..models import (
@@ -35,6 +38,59 @@ from ..models import (
     WorkflowSchedule,
     WorkflowVersion,
 )
+
+logger = logging.getLogger(__name__)
+
+_NAMESPACE_EXISTS_CODE = 48
+
+_DOCUMENT_MODELS: list[type[Document]] = [
+    User,
+    RegistryAccessRole,
+    ExtendedGroup,
+    RegistryAclEntry,
+    ExtendedMCPServer,
+    Token,
+    Key,
+    A2AAgent,
+    Federation,
+    FederationSyncJob,
+    SkillSyncSource,
+    SkillSyncJob,
+    WorkflowDefinition,
+    WorkflowRun,
+    WorkflowSchedule,
+    NodeRun,
+    WorkflowVersion,
+    ExtendedSkill,
+    ExtendedSkillFile,
+    ModelSource,
+    ModelGatewaySelection,
+    EmbeddingReindexJob,
+]
+
+
+async def ensure_collections(database: AsyncDatabase, document_models: list[type[Document]]) -> None:
+    """Create each model's collection if it does not exist yet, so no transaction has to create it.
+
+    MongoDB lets a transaction create a missing collection on first insert, but only one transaction at a time:
+    concurrent transactions that race to create the same collection abort with WriteConflict. On a fresh database
+    that fails parallel writers such as GitHub skill sync. Jarvis Chat, which owns several of these collections,
+    tolerates an existing collection the same way (Mongoose ignores NamespaceExists), as do other replicas starting
+    at the same time.
+    """
+    existing = set(await database.list_collection_names())
+    for model in document_models:
+        name = model.get_collection_name()
+        if name in existing:
+            continue
+        try:
+            await database.create_collection(name, check_exists=False)
+            logger.info("Created MongoDB collection %s", name)
+        except OperationFailure as exc:
+            if exc.code != _NAMESPACE_EXISTS_CODE:
+                raise
+            logger.debug("MongoDB collection %s was created concurrently", name)
+        existing.add(name)
 
 
 class MongoDB:
@@ -136,31 +192,9 @@ class MongoDB:
             # Initialize Beanie with all document models
             await init_beanie(
                 database=db,
-                document_models=[
-                    User,
-                    RegistryAccessRole,
-                    ExtendedGroup,
-                    RegistryAclEntry,
-                    ExtendedMCPServer,
-                    Token,
-                    Key,
-                    A2AAgent,
-                    Federation,
-                    FederationSyncJob,
-                    SkillSyncSource,
-                    SkillSyncJob,
-                    WorkflowDefinition,
-                    WorkflowRun,
-                    WorkflowSchedule,
-                    NodeRun,
-                    WorkflowVersion,
-                    ExtendedSkill,
-                    ExtendedSkillFile,
-                    ModelSource,
-                    ModelGatewaySelection,
-                    EmbeddingReindexJob,
-                ],
+                document_models=_DOCUMENT_MODELS,
             )
+            await ensure_collections(db, _DOCUMENT_MODELS)
         except Exception:
             raise
 

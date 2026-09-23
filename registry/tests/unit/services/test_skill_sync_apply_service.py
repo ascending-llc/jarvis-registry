@@ -17,22 +17,27 @@ from registry_pkgs.models.skill_sync_job import (
 )
 
 
-class _FakeTransaction:
-    async def __aenter__(self):
-        return None
-
-    async def __aexit__(self, *args):
-        return None
-
-
 class _FakeSession:
-    async def start_transaction(self):
-        return _FakeTransaction()
+    """Runs a with_transaction callback `attempts` times, as pymongo does after transient aborts."""
+
+    def __init__(self, attempts: int = 1):
+        self.attempts = attempts
+        self.with_transaction_calls = 0
+
+    async def with_transaction(self, callback):
+        self.with_transaction_calls += 1
+        result = None
+        for _ in range(self.attempts):
+            result = await callback(self)
+        return result
 
 
 class _FakeSessionContext:
+    def __init__(self, session: _FakeSession | None = None):
+        self.session = session or _FakeSession()
+
     async def __aenter__(self):
-        return _FakeSession()
+        return self.session
 
     async def __aexit__(self, *args):
         return None
@@ -482,6 +487,7 @@ async def test_update_skill_replaces_synced_fields_and_preserves_registry_bookke
         "a" * 40,
         _snapshot(),
         now,
+        version=5,
         session=MagicMock(),
     )
 
@@ -543,7 +549,7 @@ async def test_apply_one_skill_shares_transaction_across_skill_files_and_acl(mon
     client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext()))
     monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
     service = _service()
-    existing = SimpleNamespace(id=PydanticObjectId())
+    existing = SimpleNamespace(id=PydanticObjectId(), version=1)
     service._update_skill = AsyncMock()
     service._sync_skill_files = AsyncMock(return_value=(1, 2, 3))
 
@@ -560,6 +566,100 @@ async def test_apply_one_skill_shares_transaction_across_skill_files_and_acl(mon
 
     assert counts == (1, 2, 3)
     assert service._update_skill.await_args.kwargs["session"] is service._sync_skill_files.await_args.kwargs["session"]
+
+
+@pytest.mark.asyncio
+async def test_retried_update_bumps_the_version_only_once(monkeypatch):
+    session = _FakeSession(attempts=2)
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext(session)))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+    service = _service()
+    existing = SimpleNamespace(id=PydanticObjectId(), version=4, sourceMetadata={}, save=AsyncMock())
+    service._sync_skill_files = AsyncMock(return_value=(1, 0, 0))
+
+    created, counts = await service._apply_discovered_skill(
+        existing=existing,
+        discovered=_discovered(),
+        source=SimpleNamespace(id=PydanticObjectId()),
+        commit_sha="a" * 40,
+        request_snapshot=_snapshot(),
+        author_id=PydanticObjectId(),
+        author_name="Jane Doe",
+        now=datetime.now(UTC),
+    )
+
+    assert session.with_transaction_calls == 1
+    assert existing.save.await_count == 2
+    assert existing.version == 5
+    assert (created, counts) == (False, (1, 0, 0))
+
+
+@pytest.mark.asyncio
+async def test_retried_create_builds_a_new_skill_each_attempt(monkeypatch):
+    session = _FakeSession(attempts=2)
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext(session)))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+    service = _service()
+    built = [SimpleNamespace(id=PydanticObjectId()), SimpleNamespace(id=PydanticObjectId())]
+    service._create_skill = AsyncMock(side_effect=built)
+    service._sync_skill_files = AsyncMock(return_value=(0, 2, 0))
+
+    created, counts = await service._apply_discovered_skill(
+        existing=None,
+        discovered=_discovered(),
+        source=SimpleNamespace(id=PydanticObjectId()),
+        commit_sha="a" * 40,
+        request_snapshot=_snapshot(),
+        author_id=PydanticObjectId(),
+        author_name="Jane Doe",
+        now=datetime.now(UTC),
+    )
+
+    assert service._create_skill.await_count == 2
+    assert [call.args[0] for call in service._sync_skill_files.await_args_list] == [skill.id for skill in built]
+    assert (created, counts) == (True, (0, 2, 0))
+
+
+@pytest.mark.asyncio
+async def test_transaction_error_that_outlasts_retries_propagates(monkeypatch):
+    from pymongo.errors import OperationFailure
+
+    conflict = OperationFailure("WriteConflict", code=112)
+    session = MagicMock(with_transaction=AsyncMock(side_effect=conflict))
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext(session)))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+
+    with pytest.raises(OperationFailure):
+        await _service()._apply_discovered_skill(
+            existing=None,
+            discovered=_discovered(),
+            source=SimpleNamespace(id=PydanticObjectId()),
+            commit_sha="a" * 40,
+            request_snapshot=_snapshot(),
+            author_id=PydanticObjectId(),
+            author_name="Jane Doe",
+            now=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+async def test_retried_delete_reports_the_last_attempts_count(monkeypatch):
+    session = _FakeSession(attempts=2)
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext(session)))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+    acl_service = MagicMock(delete_acl_entries_for_resource=AsyncMock())
+    skill = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock())
+    finder = MagicMock(
+        delete=AsyncMock(side_effect=[SimpleNamespace(deleted_count=3), SimpleNamespace(deleted_count=3)])
+    )
+
+    with patch("registry.services.skill_sync_apply_service.SkillFile") as skill_file:
+        skill_file.find.return_value = finder
+        deleted = await _service(acl_service)._delete_skill(skill)
+
+    assert deleted == 3
+    assert skill.delete.await_count == 2
+    assert acl_service.delete_acl_entries_for_resource.await_count == 2
 
 
 def test_text_detection_rejects_nul_and_invalid_utf8():

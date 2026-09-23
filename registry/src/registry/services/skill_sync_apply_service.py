@@ -46,6 +46,11 @@ class SkillSyncApplyService:
     applies each Skill and its files in an isolated transaction, manages Skill ACL changes,
     and returns an apply summary while allowing sibling items to continue after failure.
     It does not own job leases, execution phases, credentials, or GitHub I/O.
+
+    Transactions run through ``with_transaction``, which retries transient errors (e.g. a
+    WriteConflict with a concurrent writer) for up to 120 seconds. Each transaction body
+    must therefore be safe to rerun: it re-reads files, writes whole documents with values
+    fixed before the first attempt, and builds new documents on every attempt.
     """
 
     def __init__(self, acl_service: ACLService, user_service: UserService) -> None:
@@ -306,16 +311,19 @@ class SkillSyncApplyService:
         because an empty discovery never reaches apply and a skill this run failed to parse
         is never treated as stale.
         """
+
+        async def _delete(session: AsyncClientSession) -> int:
+            result = await SkillFile.find({"skillId": skill.id}).delete(session=session)
+            await skill.delete(session=session)
+            await self._acl_service.delete_acl_entries_for_resource(
+                resource_type=RegistryResourceType.SKILL.value,
+                resource_id=skill.id,
+                session=session,
+            )
+            return result.deleted_count if result else 0
+
         async with MongoDB.get_client().start_session() as session:
-            async with await session.start_transaction():
-                result = await SkillFile.find({"skillId": skill.id}).delete(session=session)
-                await skill.delete(session=session)
-                await self._acl_service.delete_acl_entries_for_resource(
-                    resource_type=RegistryResourceType.SKILL.value,
-                    resource_id=skill.id,
-                    session=session,
-                )
-        return result.deleted_count if result else 0
+            return await session.with_transaction(_delete)
 
     async def _apply_discovered_skill(
         self,
@@ -330,26 +338,37 @@ class SkillSyncApplyService:
         now: datetime,
     ) -> tuple[bool, tuple[int, int, int]]:
         """Create or update one skill and synchronize all auxiliary files atomically."""
+        # Computed once: a retried attempt must not bump the version again.
+        next_version = (existing.version or 0) + 1 if existing is not None else 1
+
+        async def _write(session: AsyncClientSession) -> tuple[bool, tuple[int, int, int]]:
+            if existing is None:
+                skill = await self._create_skill(
+                    discovered,
+                    source,
+                    commit_sha,
+                    request_snapshot,
+                    author_id,
+                    author_name,
+                    now,
+                    session=session,
+                )
+            else:
+                await self._update_skill(
+                    existing,
+                    discovered,
+                    commit_sha,
+                    request_snapshot,
+                    now,
+                    version=next_version,
+                    session=session,
+                )
+                skill = existing
+            file_counts = await self._sync_skill_files(skill.id, discovered, now, session=session)
+            return existing is None, file_counts
+
         async with MongoDB.get_client().start_session() as session:
-            async with await session.start_transaction():
-                if existing is None:
-                    skill = await self._create_skill(
-                        discovered,
-                        source,
-                        commit_sha,
-                        request_snapshot,
-                        author_id,
-                        author_name,
-                        now,
-                        session=session,
-                    )
-                    created = True
-                else:
-                    await self._update_skill(existing, discovered, commit_sha, request_snapshot, now, session=session)
-                    skill = existing
-                    created = False
-                file_counts = await self._sync_skill_files(skill.id, discovered, now, session=session)
-        return created, file_counts
+            return await session.with_transaction(_write)
 
     async def _create_skill(
         self,
@@ -413,6 +432,7 @@ class SkillSyncApplyService:
         request_snapshot: SkillSyncFullRequestSnapshot,
         now: datetime,
         *,
+        version: int,
         session: AsyncClientSession,
     ) -> None:
         existing.description = discovered.description
@@ -432,7 +452,7 @@ class SkillSyncApplyService:
             "syncedAt": now.isoformat(),
             "syncStatus": "synced",
         }
-        existing.version = (existing.version or 0) + 1
+        existing.version = version
         existing.updatedAt = now
         await existing.save(session=session)
 
