@@ -1,5 +1,22 @@
+import pytest
+from beanie import PydanticObjectId
+from pydantic import ValidationError
+
 from registry_pkgs.models.embedding_reindex_job import EmbeddingReindexJob
 from registry_pkgs.models.enums import EmbeddingReindexJobStatus
+
+
+def test_target_embedding_model_source_id_is_required() -> None:
+    # The executor cannot run a job without knowing which model to re-embed against.
+    with pytest.raises(ValidationError):
+        EmbeddingReindexJob()
+
+
+def test_target_embedding_model_source_id_is_stored() -> None:
+    target = PydanticObjectId()
+    job = EmbeddingReindexJob.model_construct(targetEmbeddingModelSourceId=target)
+    assert job.targetEmbeddingModelSourceId == target
+    assert job.status == EmbeddingReindexJobStatus.RUNNING
 
 
 def test_status_enum_values() -> None:

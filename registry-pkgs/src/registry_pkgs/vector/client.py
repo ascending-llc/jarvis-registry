@@ -106,6 +106,20 @@ class DatabaseClient:
         except Exception as e:
             logger.error(f"Error closing database client: {e}")
 
+    def swap_adapter(self, new_adapter: VectorStoreAdapter, new_config: BackendConfig) -> VectorStoreAdapter:
+        """Atomically replace the live adapter in place; return the old one for the caller to close.
+
+        Every repository resolves ``db_client.adapter`` freshly on each call, so mutating
+        ``_adapter`` on this one shared instance is visible everywhere immediately — including
+        repositories cached elsewhere that hold a reference to this ``DatabaseClient``. A single
+        attribute assignment is atomic under asyncio's single-threaded loop (no ``await`` between
+        the read and the write), so no lock is needed. The caller owns closing the returned adapter.
+        """
+        old_adapter = self._adapter
+        self._adapter = new_adapter
+        self._config = new_config
+        return old_adapter
+
     def is_initialized(self) -> bool:
         """Check if the client is initialized."""
         return self._initialized and self._adapter is not None

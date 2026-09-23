@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from beanie import Document
+from beanie import Document, PydanticObjectId
 from pydantic import ConfigDict, Field
 from pymongo import IndexModel
 
@@ -16,6 +16,10 @@ class EmbeddingReindexJob(Document):
     stuck in maintenance mode forever.
     """
 
+    # The ModelSource the sweep re-embeds every document against; the executor
+    # resolves it to build the job-local vector client and, on success, the new
+    # live adapter.
+    targetEmbeddingModelSourceId: PydanticObjectId
     status: EmbeddingReindexJobStatus = EmbeddingReindexJobStatus.RUNNING
     leaseOwner: str | None = None
     leaseExpiresAt: datetime | None = None
