@@ -30,6 +30,7 @@ from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....schemas.skill_sync_api_schemas import (
+    SkillSyncAuthorizationResponse,
     SkillSyncDeleteResponse,
     SkillSyncDryRunResponse,
     SkillSyncJobResponse,
@@ -116,14 +117,19 @@ def _to_list_response(
 async def _to_detail_response(
     source: SkillSyncSource,
     source_service: SkillSyncSourceCrudService,
+    token_service: SkillSyncTokenService,
+    *,
+    user_id: str,
     permissions: ResourcePermissions | None = None,
 ) -> SkillSyncSourceDetailResponse:
     recent_jobs = await source_service.get_recent_jobs(source.id)
+    connected = await token_service.is_connected(user_id=user_id, source_id=source.id)
     base = _to_list_response(source, permissions)
     return SkillSyncSourceDetailResponse(
         **base.model_dump(),
         githubAppClientId=source.githubAppClientId,
         hasClientSecret=bool(source.githubAppClientSecretEncrypted),
+        authorization=SkillSyncAuthorizationResponse(connected=connected),
         recentJobs=[_to_job_response(job) for job in recent_jobs],
         createdBy=source.createdBy,
         updatedBy=source.updatedBy,
@@ -147,6 +153,7 @@ async def create_source(
     user_context: CurrentUser,
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     skill_sync_service: SkillSyncService = Depends(get_skill_sync_service),
+    token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     user_str_id = str(user_context["user_id"])
@@ -169,7 +176,9 @@ async def create_source(
         return await _to_detail_response(
             source,
             source_service,
-            ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True),
+            token_service,
+            user_id=user_str_id,
+            permissions=ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True),
         )
     except HTTPException:
         raise
@@ -238,6 +247,7 @@ async def get_source(
     source_id: str,
     user_context: CurrentUser,
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
+    token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
@@ -249,7 +259,13 @@ async def get_source(
             resource_id=source.id,
             required_permission="VIEW",
         )
-        return await _to_detail_response(source, source_service, permissions)
+        return await _to_detail_response(
+            source,
+            source_service,
+            token_service,
+            user_id=str(user_context["user_id"]),
+            permissions=permissions,
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -287,9 +303,8 @@ async def update_source(
                 detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source cannot be updated"),
             )
         changes = data.model_dump(exclude_unset=True, exclude={"syncAfterUpdate"})
-        credentials_changed = "githubAppClientId" in changes or "githubAppClientSecret" in changes
-        source = await source_service.update_source(source, changes, updated_by=user_str_id)
-        if credentials_changed:
+        source, changed_fields = await source_service.update_source(source, changes, updated_by=user_str_id)
+        if changed_fields & SkillSyncSourceCrudService.CREDENTIAL_FIELDS:
             await token_service.delete_source_tokens(source.id)
         if data.syncAfterUpdate:
             result = await sync_service.trigger_sync(
@@ -300,7 +315,13 @@ async def update_source(
             if result.job is None:
                 return SkillSyncTriggerResponse(needsAuthorization=True)
             return SkillSyncTriggerResponse(job=_to_job_response(result.job))
-        return await _to_detail_response(source, source_service, permissions)
+        return await _to_detail_response(
+            source,
+            source_service,
+            token_service,
+            user_id=user_str_id,
+            permissions=permissions,
+        )
     except HTTPException:
         raise
     except ValueError as exc:
