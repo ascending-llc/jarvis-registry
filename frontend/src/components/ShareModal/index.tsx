@@ -4,22 +4,24 @@ import { Fragment } from 'react';
 import { FiUserCheck } from 'react-icons/fi';
 import { HiOutlineUsers } from 'react-icons/hi2';
 import IconButton from '@/components/IconButton';
+import type { AclResourceType } from '@/services/acl/type';
 import { PermissionList, PrincipalSearch, PublicShare } from './components';
 import { type ShareModalProps, useShareModal } from './useShareModal';
 
-const RESOURCE_LABELS: Record<string, string> = {
+const RESOURCE_LABELS: Record<AclResourceType, string> = {
   remoteAgent: 'Agent',
   federation: 'External Registry',
   mcpServer: 'MCP Server',
   workflow: 'Workflow',
+  workflowSchedule: 'Workflow Schedule',
   skill: 'Skill',
-  skill_sync_source: 'External Provider',
+  skillSyncSource: 'External Provider',
 };
 
 export const ShareModal: React.FC<ShareModalProps> = props => {
   const { isOpen, onClose, itemName, resourceType } = props;
   const { search, permissions, publicShare, roles, saving, handleSave } = useShareModal(props);
-  const resourceLabel = RESOURCE_LABELS[resourceType ?? 'mcpServer'] || 'MCP Server';
+  const resourceLabel = RESOURCE_LABELS[resourceType ?? 'mcpServer'];
 
   return (
     <Transition.Root show={isOpen} as={Fragment}>

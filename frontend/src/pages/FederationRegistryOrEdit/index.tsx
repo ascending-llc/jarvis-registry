@@ -499,7 +499,7 @@ const FederationRegistryOrEdit: React.FC = () => {
         <ShareModal
           itemName={formData.displayName || activeProvider?.displayName || 'External Provider'}
           resourceId={id}
-          resourceType={isGithubSource ? 'skill_sync_source' : 'federation'}
+          resourceType={isGithubSource ? 'skillSyncSource' : 'federation'}
           isOpen={shareOpen}
           onClose={() => setShareOpen(false)}
         />
