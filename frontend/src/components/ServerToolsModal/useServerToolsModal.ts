@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGlobal } from '@/contexts/GlobalContext';
 import SERVICES from '@/services';
-import type { Tool } from '@/services/server/type';
+import type { GetServerToolsResponse, Tool } from '@/services/server/type';
 import { getErrorMessage } from '@/utils/getErrorMessage';
 
 export interface ServerToolsModalProps {
@@ -21,10 +21,15 @@ interface ServerToolsModalState {
   loading: boolean;
   loaded: boolean;
   saving: boolean;
+  /** Whether the ticks differ from the last loaded or saved `disabledTools`. */
+  hasChanges: boolean;
   toggleTool: (mcpToolName: string) => void;
   handleSave: () => Promise<void>;
   requestClose: () => void;
 }
+
+const sameMembers = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean =>
+  a.size === b.size && [...a].every(name => b.has(name));
 
 /** Mirror the backend's `td.get("mcpToolName", key)` so ids match what `disabledTools` stores. */
 export const toServerTools = (toolFunctions: Record<string, Tool> | undefined): ServerTool[] =>
@@ -41,23 +46,40 @@ export const useServerToolsModal = ({
   const wasOpenRef = useRef(false);
   const [tools, setTools] = useState<ServerTool[]>([]);
   const [disabledTools, setDisabledTools] = useState<Set<string>>(() => new Set());
+  const [savedDisabledTools, setSavedDisabledTools] = useState<ReadonlySet<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  const hasChanges = useMemo(
+    () => !sameMembers(disabledTools, savedDisabledTools),
+    [disabledTools, savedDisabledTools],
+  );
+
+  const applyServerState = useCallback((result: GetServerToolsResponse) => {
+    const saved = result.disabledTools || [];
+    setTools(toServerTools(result.toolFunctions));
+    setDisabledTools(new Set(saved));
+    setSavedDisabledTools(new Set(saved));
+  }, []);
+
+  const resetState = useCallback(() => {
+    setTools([]);
+    setDisabledTools(new Set());
+    setSavedDisabledTools(new Set());
+  }, []);
 
   const fetchData = useCallback(async () => {
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setLoaded(false);
-    setTools([]);
-    setDisabledTools(new Set());
+    resetState();
 
     try {
       const result = await SERVICES.SERVER.getServerTools(serverId);
       if (requestId !== requestIdRef.current) return;
 
-      setTools(toServerTools(result.toolFunctions));
-      setDisabledTools(new Set(result.disabledTools || []));
+      applyServerState(result);
       setLoaded(true);
     } catch {
       if (requestId === requestIdRef.current) {
@@ -68,7 +90,7 @@ export const useServerToolsModal = ({
         setLoading(false);
       }
     }
-  }, [serverId, showToast]);
+  }, [applyServerState, resetState, serverId, showToast]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -76,15 +98,14 @@ export const useServerToolsModal = ({
       if (wasOpenRef.current) {
         setLoading(false);
         setLoaded(false);
-        setTools([]);
-        setDisabledTools(new Set());
+        resetState();
       }
       wasOpenRef.current = false;
       return;
     }
     wasOpenRef.current = true;
     void fetchData();
-  }, [isOpen, fetchData]);
+  }, [isOpen, fetchData, resetState]);
 
   const toggleTool = useCallback(
     (mcpToolName: string) => {
@@ -107,19 +128,22 @@ export const useServerToolsModal = ({
   }, [onClose, saving]);
 
   const handleSave = useCallback(async () => {
-    if (!canManageTools || !loaded || loading || saving) return;
+    if (!canManageTools || !loaded || loading || saving || !hasChanges) return;
 
+    // Closing the modal or switching servers bumps requestIdRef; a late response must not repopulate it.
+    const requestId = requestIdRef.current;
     setSaving(true);
     try {
-      await SERVICES.SERVER.updateServerTools(serverId, { disabledTools: Array.from(disabledTools) });
+      const result = await SERVICES.SERVER.updateServerTools(serverId, { disabledTools: Array.from(disabledTools) });
       showToast?.('Tool settings updated successfully', 'success');
-      onClose();
+      // Show what the server stored (it drops names that are not current tools), not what was sent.
+      if (requestId === requestIdRef.current) applyServerState(result);
     } catch (error) {
       showToast?.(getErrorMessage(error, 'Failed to update tool settings'), 'error');
     } finally {
       setSaving(false);
     }
-  }, [canManageTools, disabledTools, loaded, loading, onClose, saving, serverId, showToast]);
+  }, [applyServerState, canManageTools, disabledTools, hasChanges, loaded, loading, saving, serverId, showToast]);
 
-  return { tools, disabledTools, loading, loaded, saving, toggleTool, handleSave, requestClose };
+  return { tools, disabledTools, loading, loaded, saving, hasChanges, toggleTool, handleSave, requestClose };
 };

@@ -7,7 +7,7 @@ import { type ServerToolsModalProps, useServerToolsModal } from './useServerTool
 
 const ServerToolsModal: React.FC<ServerToolsModalProps> = props => {
   const { isOpen, serverId, serverName, canManageTools } = props;
-  const { tools, disabledTools, loading, loaded, saving, toggleTool, handleSave, requestClose } =
+  const { tools, disabledTools, loading, loaded, saving, hasChanges, toggleTool, handleSave, requestClose } =
     useServerToolsModal(props);
 
   return (
@@ -126,12 +126,12 @@ const ServerToolsModal: React.FC<ServerToolsModalProps> = props => {
                     disabled={saving}
                     className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-4 py-2 text-sm font-semibold text-[var(--jarvis-text)] transition-colors hover:bg-[var(--jarvis-card-muted)] disabled:cursor-not-allowed disabled:opacity-50'
                   >
-                    Cancel
+                    {hasChanges ? 'Cancel' : 'Close'}
                   </button>
                   <button
                     type='button'
                     onClick={handleSave}
-                    disabled={saving || loading || !loaded}
+                    disabled={saving || loading || !loaded || !hasChanges}
                     className='inline-flex items-center gap-2 rounded-lg bg-[var(--jarvis-primary)] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[var(--jarvis-primary)] disabled:cursor-not-allowed disabled:opacity-50'
                   >
                     {saving && <div className='h-4 w-4 animate-spin rounded-full border-b-2 border-white' />}

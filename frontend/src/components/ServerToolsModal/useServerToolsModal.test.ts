@@ -188,6 +188,7 @@ describe('useServerToolsModal', () => {
     const save = deferred<GetServerToolsResponse>();
     mocks.updateServerTools.mockReturnValueOnce(save.promise);
     const { result } = await renderLoaded();
+    act(() => result.current.toggleTool('fetch'));
 
     act(() => {
       void result.current.handleSave();
@@ -199,7 +200,8 @@ describe('useServerToolsModal', () => {
     await act(async () => save.resolve(makeResponse()));
   });
 
-  test('handleSave sends exactly the unticked mcpToolNames, then toasts and closes', async () => {
+  test('handleSave sends exactly the unticked mcpToolNames, then toasts and stays open', async () => {
+    mocks.updateServerTools.mockResolvedValueOnce(makeResponse({ disabledTools: ['fetch', 'search'] }));
     const { result, onClose } = await renderLoaded();
     act(() => result.current.toggleTool('search'));
 
@@ -212,7 +214,9 @@ describe('useServerToolsModal', () => {
     expect(serverId).toBe('server-1');
     expect([...payload.disabledTools].sort()).toEqual(['fetch', 'search']);
     expect(mocks.showToast).toHaveBeenCalledWith('Tool settings updated successfully', 'success');
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(result.current.loaded).toBe(true);
+    expect(result.current.saving).toBe(false);
   });
 
   test('handleSave keys the payload by the fallback id when mcpToolName is missing', async () => {
@@ -243,6 +247,7 @@ describe('useServerToolsModal', () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(result.current.saving).toBe(false);
     expect(result.current.disabledTools.has('search')).toBe(true);
+    expect(result.current.hasChanges).toBe(true);
     expect(result.current.loaded).toBe(true);
   });
 
@@ -260,6 +265,7 @@ describe('useServerToolsModal', () => {
     const save = deferred<GetServerToolsResponse>();
     mocks.updateServerTools.mockReturnValueOnce(save.promise);
     const { result, onClose } = await renderLoaded();
+    act(() => result.current.toggleTool('search'));
 
     act(() => {
       void result.current.handleSave();
@@ -268,9 +274,118 @@ describe('useServerToolsModal', () => {
     expect(onClose).not.toHaveBeenCalled();
 
     await act(async () => save.resolve(makeResponse()));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
 
     act(() => result.current.requestClose());
-    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('hasChanges tracks whether the ticks differ from the loaded state', async () => {
+    const { result } = await renderLoaded();
+    expect(result.current.hasChanges).toBe(false);
+
+    act(() => result.current.toggleTool('search'));
+    expect(result.current.hasChanges).toBe(true);
+
+    act(() => result.current.toggleTool('search'));
+    expect(result.current.hasChanges).toBe(false);
+  });
+
+  test('hasChanges is false when two edits swap which tool is disabled back and forth', async () => {
+    const { result } = await renderLoaded();
+
+    act(() => result.current.toggleTool('fetch'));
+    act(() => result.current.toggleTool('search'));
+    expect(result.current.hasChanges).toBe(true);
+
+    act(() => result.current.toggleTool('search'));
+    act(() => result.current.toggleTool('fetch'));
+    expect(result.current.hasChanges).toBe(false);
+  });
+
+  test('handleSave does nothing when nothing changed', async () => {
+    const { result } = await renderLoaded();
+
+    await act(async () => {
+      await result.current.handleSave();
+    });
+
+    expect(mocks.updateServerTools).not.toHaveBeenCalled();
+  });
+
+  test('a successful save applies the server response, not the sent payload', async () => {
+    // The backend drops names that are not current tools, and may return a refreshed tool list.
+    mocks.updateServerTools.mockResolvedValueOnce(
+      makeResponse({
+        toolFunctions: { search: makeTool('search'), fetch: makeTool('fetch'), write: makeTool('write') },
+        disabledTools: ['search'],
+      }),
+    );
+    const { result } = await renderLoaded();
+    act(() => result.current.toggleTool('search'));
+
+    await act(async () => {
+      await result.current.handleSave();
+    });
+
+    expect(result.current.tools.map(tool => tool.mcpToolName)).toEqual(['search', 'fetch', 'write']);
+    expect([...result.current.disabledTools]).toEqual(['search']);
+    expect(result.current.hasChanges).toBe(false);
+  });
+
+  test('after a save, further edits are measured against the saved state', async () => {
+    mocks.updateServerTools.mockResolvedValueOnce(makeResponse({ disabledTools: ['fetch', 'search'] }));
+    const { result } = await renderLoaded();
+    act(() => result.current.toggleTool('search'));
+    await act(async () => {
+      await result.current.handleSave();
+    });
+
+    act(() => result.current.toggleTool('search'));
+    expect(result.current.hasChanges).toBe(true);
+
+    await act(async () => {
+      await result.current.handleSave();
+    });
+    expect(mocks.updateServerTools).toHaveBeenLastCalledWith('server-1', { disabledTools: ['fetch'] });
+  });
+
+  test('a save response that arrives after the modal closed is discarded', async () => {
+    const save = deferred<GetServerToolsResponse>();
+    mocks.updateServerTools.mockReturnValueOnce(save.promise);
+    const { result, rerender } = await renderLoaded();
+    act(() => result.current.toggleTool('search'));
+    act(() => {
+      void result.current.handleSave();
+    });
+
+    rerender({ isOpen: false, serverId: 'server-1', canManageTools: true });
+    await act(async () => save.resolve(makeResponse({ disabledTools: ['fetch', 'search'] })));
+
+    expect(result.current.tools).toEqual([]);
+    expect(result.current.disabledTools.size).toBe(0);
+    expect(result.current.saving).toBe(false);
+    expect(mocks.showToast).toHaveBeenCalledWith('Tool settings updated successfully', 'success');
+  });
+
+  test('a save response that arrives after switching servers is discarded', async () => {
+    const save = deferred<GetServerToolsResponse>();
+    mocks.updateServerTools.mockReturnValueOnce(save.promise);
+    const { result, rerender } = await renderLoaded();
+    act(() => result.current.toggleTool('search'));
+    act(() => {
+      void result.current.handleSave();
+    });
+
+    mocks.getServerTools.mockResolvedValueOnce(
+      makeResponse({ id: 'server-2', toolFunctions: { other: makeTool('other') }, disabledTools: [] }),
+    );
+    rerender({ isOpen: true, serverId: 'server-2', canManageTools: true });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    await act(async () => save.resolve(makeResponse({ disabledTools: ['fetch', 'search'] })));
+
+    expect(result.current.tools.map(tool => tool.mcpToolName)).toEqual(['other']);
+    expect(result.current.disabledTools.size).toBe(0);
+    expect(result.current.hasChanges).toBe(false);
   });
 });
