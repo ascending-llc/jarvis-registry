@@ -1,6 +1,7 @@
-import { createBrowserRouter, Navigate, RouterProvider, useLocation, useParams } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
+import SkillSyncSourceRouteBridge from './components/SkillSyncSourceRouteBridge';
 import { getBasePath } from './config';
 import { AuthProvider } from './contexts/AuthContext';
 import { GlobalProvider } from './contexts/GlobalContext';
@@ -22,22 +23,6 @@ import SkillsPage from './pages/Skills';
 import TokenGeneration from './pages/TokenGeneration';
 import WorkflowRegistryOrEdit from './pages/WorkflowRegistryOrEdit';
 import { APP_ROUTES } from './routes';
-
-const SkillSyncSourceRouteBridge = ({ list = false }: { list?: boolean }) => {
-  const { id } = useParams();
-  const location = useLocation();
-  const params = new URLSearchParams(location.search);
-
-  if (list) {
-    params.set('tab', 'external');
-    return <Navigate replace to={`${APP_ROUTES.root}?${params.toString()}`} />;
-  }
-
-  if (!id) return <Navigate replace to={`${APP_ROUTES.root}?tab=external`} />;
-  params.set('id', id);
-  params.set('provider', 'github');
-  return <Navigate replace to={`${APP_ROUTES.federationEdit}?${params.toString()}`} />;
-};
 
 const router = createBrowserRouter(
   [
