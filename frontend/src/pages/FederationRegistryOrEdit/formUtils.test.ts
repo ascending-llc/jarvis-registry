@@ -231,9 +231,7 @@ describe('buildGithubUpdatePayload', () => {
 
   test('sends nothing for a blank description when none is stored', () => {
     expect(buildGithubUpdatePayload(makeSource({ description: null }), makeForm({ description: '' }))).toEqual({});
-    expect(buildGithubUpdatePayload(makeSource({ description: undefined }), makeForm({ description: '' }))).toEqual(
-      {},
-    );
+    expect(buildGithubUpdatePayload(makeSource({ description: undefined }), makeForm({ description: '' }))).toEqual({});
   });
 
   test('sends a new description trimmed', () => {

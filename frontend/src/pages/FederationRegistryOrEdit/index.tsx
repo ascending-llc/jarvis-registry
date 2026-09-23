@@ -1,4 +1,4 @@
-import { CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { ArrowPathIcon, CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FiServer } from 'react-icons/fi';
@@ -8,19 +8,18 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
-import { useFederationSyncPolling } from '@/hooks/useFederationSyncPolling';
+import { useExternalProviderSync } from '@/hooks/useExternalProviderSync';
 import SERVICES from '@/services';
+import {
+  confirmGithubAuthorizationRedirect,
+  redirectToGithubAuthorization,
+} from '@/services/externalProvider/githubAuthorization';
 import {
   clearGithubOauthIntent,
   consumeGithubOauthIntent,
   type GithubOauthIntent,
-  saveGithubOauthIntent,
 } from '@/services/externalProvider/oauthIntent';
-import {
-  getSkillSyncJobAsFederation,
-  getSkillSyncSourceCallbackUrl,
-  getSkillSyncSourceOauthUrl,
-} from '@/services/externalProvider/sync';
+import { getSkillSyncSourceCallbackUrl } from '@/services/externalProvider/sync';
 import type { Federation } from '@/services/federation/type';
 import type { SkillSyncSourceDetail } from '@/services/skillSyncSource/type';
 import UTILS from '@/utils';
@@ -35,6 +34,7 @@ import {
   normalizeTags,
   validateGithubForm,
 } from './formUtils';
+import GithubAuthorizationPanel from './GithubAuthorizationPanel';
 import MainConfigForm from './MainConfigForm';
 import type { FederationFormConfig } from './types';
 
@@ -87,8 +87,6 @@ const FederationRegistryOrEdit: React.FC = () => {
   const [shareOpen, setShareOpen] = useState(false);
   const currentProviderIdRef = useRef(id);
   const detailRequestGenerationRef = useRef(0);
-  const syncRequestPendingRef = useRef(false);
-  const syncRequestGenerationRef = useRef(0);
   const oauthCallbackHandledRef = useRef(false);
   currentProviderIdRef.current = id;
 
@@ -166,22 +164,29 @@ const FederationRegistryOrEdit: React.FC = () => {
     }
   }, [id, isGithubSource, showToast]);
 
-  const { isPolling, startPolling, stopPolling } = useFederationSyncPolling(
-    job => {
-      if (job.federationId !== currentProviderIdRef.current) return;
-      if (job.status === 'success') showToast('Sync completed successfully', 'success');
-      else if (job.status === 'partial_success') showToast('Sync completed with some errors', 'info');
-      else showToast(job.error || 'Sync failed', 'error');
-      void getDetail();
-    },
-    isGithubSource ? getSkillSyncJobAsFederation : undefined,
-  );
+  const refreshDetail = useCallback(() => {
+    void getDetail();
+  }, [getDetail]);
+
+  const sourceActiveJob = skillSyncSource?.recentJobs.find(job => job.status === 'pending' || job.status === 'syncing');
+  const activeJobId = isGithubSource
+    ? sourceActiveJob?.id || skillSyncSource?.lastSync?.jobId
+    : federation?.lastSync?.jobId;
+  const canEditProvider = activeProvider?.permissions.EDIT ?? false;
+
+  const { syncView, startSync, runSyncAction, stopPolling } = useExternalProviderSync({
+    providerId: id,
+    isGithub: isGithubSource,
+    canEdit: canEditProvider,
+    serverStatus: activeProvider?.syncStatus,
+    syncMessage: activeProvider?.syncMessage,
+    serverJobId: activeJobId,
+    onSettled: refreshDetail,
+  });
 
   useEffect(() => {
     stopPolling();
     detailRequestGenerationRef.current += 1;
-    syncRequestGenerationRef.current += 1;
-    syncRequestPendingRef.current = false;
     setFederation(null);
     setSkillSyncSource(null);
     setErrors({});
@@ -195,20 +200,6 @@ const FederationRegistryOrEdit: React.FC = () => {
     setFormData(INIT_DATA);
     setLoadingDetail(false);
   }, [getDetail, id, stopPolling]);
-
-  const sourceActiveJob = skillSyncSource?.recentJobs.find(job => job.status === 'pending' || job.status === 'syncing');
-  const activeJobId = isGithubSource
-    ? sourceActiveJob?.id || skillSyncSource?.lastSync?.jobId
-    : federation?.lastSync?.jobId;
-  const activeSyncStatus = activeProvider?.syncStatus;
-
-  useEffect(() => {
-    if (id && activeJobId && (activeSyncStatus === 'pending' || activeSyncStatus === 'syncing')) {
-      startPolling(id, activeJobId);
-      return;
-    }
-    stopPolling();
-  }, [activeJobId, activeSyncStatus, id, startPolling, stopPolling]);
 
   const validate = (data: FederationFormConfig): boolean => {
     if (data.providerType === 'github') {
@@ -292,14 +283,11 @@ const FederationRegistryOrEdit: React.FC = () => {
     }
   };
 
-  const redirectToGithubOauth = useCallback(
-    (intent: GithubOauthIntent) => {
-      if (!id) return;
-      saveGithubOauthIntent(id, intent);
-      window.location.assign(getSkillSyncSourceOauthUrl(id));
-    },
-    [id],
-  );
+  const handleConnectGithub = () => {
+    if (!id) return;
+    // After the callback the page validates the new authorization with a test-connect.
+    redirectToGithubAuthorization(id, 'test');
+  };
 
   const runGithubConnectionTest = useCallback(
     async ({
@@ -316,12 +304,13 @@ const FederationRegistryOrEdit: React.FC = () => {
       try {
         const result = await SERVICES.SKILL_SYNC_SOURCE.syncSkillSyncSource(id, { dryRun: true });
         if (result.needsAuthorization) {
-          if (allowAuthorizationRedirect) {
-            redirectToGithubOauth(redirectIntent);
-          } else {
+          const redirected = allowAuthorizationRedirect && confirmGithubAuthorizationRedirect(id, redirectIntent);
+          if (!redirected) {
             setTestConnectionResult({
               success: false,
-              message: 'GitHub authorization did not provide a usable token. Please connect again.',
+              message: allowAuthorizationRedirect
+                ? 'GitHub authorization is required. Use Connect GitHub to authorize.'
+                : 'GitHub authorization did not provide a usable token. Please connect again.',
             });
           }
           return false;
@@ -343,42 +332,7 @@ const FederationRegistryOrEdit: React.FC = () => {
         setTestConnectionLoading(false);
       }
     },
-    [id, redirectToGithubOauth],
-  );
-
-  const triggerGithubSync = useCallback(
-    async (allowAuthorizationRedirect: boolean): Promise<boolean> => {
-      if (!id || syncRequestPendingRef.current || isPolling) return false;
-
-      syncRequestPendingRef.current = true;
-      const syncRequestGeneration = ++syncRequestGenerationRef.current;
-      try {
-        const result = await SERVICES.SKILL_SYNC_SOURCE.syncSkillSyncSource(id, { dryRun: false });
-        if (syncRequestGeneration !== syncRequestGenerationRef.current) return false;
-        if (result.needsAuthorization) {
-          if (allowAuthorizationRedirect) {
-            redirectToGithubOauth('sync');
-          } else {
-            showToast('GitHub authorization is required before syncing.', 'error');
-          }
-          return false;
-        }
-        if (!result.job) throw new Error('Failed to start sync');
-
-        showToast('Sync started in background', 'info');
-        startPolling(id, result.job.id);
-        return true;
-      } catch (error: unknown) {
-        if (syncRequestGeneration !== syncRequestGenerationRef.current) return false;
-        showToast(getErrorMessage(error, 'Failed to start sync'), 'error');
-        return false;
-      } finally {
-        if (syncRequestGeneration === syncRequestGenerationRef.current) {
-          syncRequestPendingRef.current = false;
-        }
-      }
-    },
-    [id, isPolling, redirectToGithubOauth, showToast, startPolling],
+    [id],
   );
 
   const handleTestConnection = async () => {
@@ -453,18 +407,11 @@ const FederationRegistryOrEdit: React.FC = () => {
     showToast('GitHub connected. Validating the connection now.', 'info');
     void (async () => {
       const connected = await runGithubConnectionTest({ allowAuthorizationRedirect: false });
-      if (intent === 'sync' && connected) await triggerGithubSync(false);
+      if (intent === 'sync' && connected) await startSync({ allowAuthorizationRedirect: false });
+      // Pick up the new per-user authorization state (and any job the sync just queued).
+      await getDetail();
     })();
-  }, [
-    getDetail,
-    id,
-    isGithubSource,
-    runGithubConnectionTest,
-    searchParams,
-    setSearchParams,
-    showToast,
-    triggerGithubSync,
-  ]);
+  }, [getDetail, id, isGithubSource, runGithubConnectionTest, searchParams, setSearchParams, showToast, startSync]);
 
   const handleSave = async () => {
     const preparedForm = isGithubForm
@@ -594,6 +541,16 @@ const FederationRegistryOrEdit: React.FC = () => {
                     </span>
                   </div>
                 )}
+                {isGithubSource && skillSyncSource && (
+                  <GithubAuthorizationPanel
+                    connected={skillSyncSource.authorization.connected}
+                    canConnect={skillSyncSource.permissions.EDIT}
+                    connectDisabledReason={
+                      !isReadOnly && hasUnsavedGithubChanges ? 'Save changes before connecting' : undefined
+                    }
+                    onConnect={handleConnectGithub}
+                  />
+                )}
                 <MainConfigForm
                   formData={formData}
                   updateField={updateField}
@@ -693,6 +650,31 @@ const FederationRegistryOrEdit: React.FC = () => {
               >
                 {isReadOnly ? 'Back' : 'Cancel'}
               </button>
+
+              {isReadOnly && activeProvider && (
+                <>
+                  {syncView.kind !== 'idle' && (
+                    <span
+                      className='self-center text-sm text-[var(--jarvis-muted)]'
+                      aria-live='polite'
+                      title={syncView.detail ?? undefined}
+                    >
+                      {syncView.label}
+                    </span>
+                  )}
+                  {canEditProvider && (
+                    <button
+                      type='button'
+                      onClick={runSyncAction}
+                      disabled={loading || loadingDetail || syncView.action === 'none'}
+                      className='inline-flex min-w-[80px] items-center justify-center gap-2 rounded-md border border-[var(--jarvis-primary-soft)] bg-[var(--jarvis-card)] px-4 py-2 text-sm font-medium text-[var(--jarvis-primary)] shadow-sm hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[120px] md:min-w-[160px]'
+                    >
+                      <ArrowPathIcon className={`h-4 w-4 ${syncView.isBusy ? 'animate-spin' : ''}`} />
+                      {syncView.actionLabel}
+                    </button>
+                  )}
+                </>
+              )}
 
               {!isReadOnly && (
                 <button

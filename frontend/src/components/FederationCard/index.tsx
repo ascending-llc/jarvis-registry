@@ -1,21 +1,16 @@
 import { ArrowPathIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback } from 'react';
 import { CgBrowser } from 'react-icons/cg';
 import { FaAws, FaGithub, FaMicrosoft } from 'react-icons/fa';
 import { FiClock, FiTag } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
 
 import IconButton from '@/components/IconButton';
-import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
-import { getFederationSyncViewState, useFederationSyncPolling } from '@/hooks/useFederationSyncPolling';
-import SERVICES from '@/services';
-import { saveGithubOauthIntent } from '@/services/externalProvider/oauthIntent';
-import { getSkillSyncJobAsFederation, getSkillSyncSourceOauthUrl } from '@/services/externalProvider/sync';
+import { useExternalProviderSync } from '@/hooks/useExternalProviderSync';
 import type { ExternalProviderEntity } from '@/services/externalProvider/type';
 import UTILS from '@/utils';
-import { getErrorMessage } from '@/utils/getErrorMessage';
 
 interface FederationCardProps {
   externalProvider: ExternalProviderEntity;
@@ -23,11 +18,7 @@ interface FederationCardProps {
 
 const FederationCard: React.FC<FederationCardProps> = ({ externalProvider }) => {
   const navigate = useNavigate();
-  const { showToast } = useGlobal();
   const { refreshFederationData } = useServer();
-  const [isStartingSync, setIsStartingSync] = useState(false);
-  const syncRequestPendingRef = useRef(false);
-  const syncRequestGenerationRef = useRef(0);
 
   const isGithub = externalProvider.backendKind === 'skill-sync-source';
   const provider = externalProvider.data;
@@ -36,104 +27,26 @@ const FederationCard: React.FC<FederationCardProps> = ({ externalProvider }) => 
   const lastSync = provider.lastSync;
   const canEdit = provider.permissions.EDIT;
 
-  const { jobStatus, isPolling, pollingError, startPolling, retryPolling, stopPolling } = useFederationSyncPolling(
-    job => {
-      if (job.status === 'success') showToast?.('Sync completed successfully', 'success');
-      else if (job.status === 'partial_success') showToast?.('Sync completed with some errors', 'info');
-      else showToast?.(job.error || 'Sync failed', 'error');
-      void refreshFederationData();
-    },
-    isGithub ? getSkillSyncJobAsFederation : undefined,
-  );
+  const refreshProviders = useCallback(() => {
+    void refreshFederationData();
+  }, [refreshFederationData]);
 
-  useEffect(() => {
-    const jobId = lastSync?.jobId;
-    if (jobId && (provider.syncStatus === 'pending' || provider.syncStatus === 'syncing')) {
-      startPolling(provider.id, jobId);
-      return;
-    }
-    stopPolling();
-  }, [lastSync?.jobId, provider.id, provider.syncStatus, startPolling, stopPolling]);
-
-  useEffect(
-    () => () => {
-      syncRequestGenerationRef.current += 1;
-      syncRequestPendingRef.current = false;
-    },
-    [],
-  );
-
-  const syncView = getFederationSyncViewState({
+  const { syncView, runSyncAction } = useExternalProviderSync({
+    providerId: provider.id,
+    isGithub,
+    canEdit,
     serverStatus: provider.syncStatus,
     syncMessage: provider.syncMessage,
-    hasServerJobId: Boolean(lastSync?.jobId),
-    isStarting: isStartingSync,
-    isPolling,
-    pollingError,
-    jobStatus,
+    serverJobId: lastSync?.jobId,
+    onSettled: refreshProviders,
   });
 
   const handleSyncClick = useCallback(
-    async (event: React.MouseEvent) => {
+    (event: React.MouseEvent) => {
       event.stopPropagation();
-      if (!canEdit || syncRequestPendingRef.current || isPolling) return;
-
-      if (syncView.action === 'retry') {
-        retryPolling();
-        return;
-      }
-      if (syncView.action === 'refresh') {
-        void refreshFederationData();
-        return;
-      }
-      if (syncView.action === 'none') return;
-
-      syncRequestPendingRef.current = true;
-      const syncRequestGeneration = ++syncRequestGenerationRef.current;
-      setIsStartingSync(true);
-
-      try {
-        if (isGithub) {
-          const result = await SERVICES.SKILL_SYNC_SOURCE.syncSkillSyncSource(provider.id, { dryRun: false });
-          if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
-          if (result.needsAuthorization) {
-            saveGithubOauthIntent(provider.id, 'sync');
-            window.location.assign(getSkillSyncSourceOauthUrl(provider.id));
-            return;
-          }
-          if (!result.job) throw new Error('Failed to start sync');
-          showToast?.('Sync started in background', 'info');
-          startPolling(provider.id, result.job.id);
-          return;
-        }
-
-        const job = await SERVICES.FEDERATION.syncFederation(provider.id);
-        if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
-        if (!('id' in job)) throw new Error('Failed to start sync');
-        showToast?.('Sync started in background', 'info');
-        startPolling(provider.id, job.id);
-      } catch (error: unknown) {
-        if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
-        console.error('Failed to sync external provider:', error);
-        showToast?.(getErrorMessage(error, 'Failed to start sync'), 'error');
-      } finally {
-        if (syncRequestGeneration === syncRequestGenerationRef.current) {
-          syncRequestPendingRef.current = false;
-          setIsStartingSync(false);
-        }
-      }
+      runSyncAction();
     },
-    [
-      canEdit,
-      isGithub,
-      isPolling,
-      provider.id,
-      refreshFederationData,
-      retryPolling,
-      showToast,
-      startPolling,
-      syncView.action,
-    ],
+    [runSyncAction],
   );
 
   const handleEditClick = useCallback(
