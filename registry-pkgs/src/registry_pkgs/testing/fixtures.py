@@ -41,9 +41,14 @@ def setup_registry_test_env() -> rsa.RSAPrivateKey:
     - ``CREDS_KEY`` (hex-encoded encryption key)
     - ``SECRET_KEY`` (HMAC / signing key)
     - ``TOOL_DISCOVERY_MODE`` (required validator value)
+    - ``LITELLM_MODE=PRODUCTION``: in its default "DEV" mode, ``import litellm`` calls
+      ``dotenv.load_dotenv()``, which finds the developer's repo-root ``.env`` and copies it into
+      ``os.environ``, so local config such as ``REGISTRY_URL`` would leak into tests. Must be set
+      before anything imports litellm.
 
     Returns the RSA private key for reuse in test fixtures.
     """
+    os.environ["LITELLM_MODE"] = "PRODUCTION"
     os.environ["TOOL_DISCOVERY_MODE"] = "external"
     os.environ["CREDS_KEY"] = os.urandom(32).hex()
     os.environ["SECRET_KEY"] = os.urandom(32).hex()
