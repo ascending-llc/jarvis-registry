@@ -10,7 +10,7 @@ import { type ShareModalProps, useShareModal } from './useShareModal';
 
 const RESOURCE_LABELS: Record<AclResourceType, string> = {
   remoteAgent: 'Agent',
-  federation: 'External Registry',
+  federation: 'External Provider',
   mcpServer: 'MCP Server',
   workflow: 'Workflow',
   workflowSchedule: 'Workflow Schedule',
