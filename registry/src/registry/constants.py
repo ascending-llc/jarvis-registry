@@ -8,6 +8,9 @@ MAX_SKILL_FILES_TOTAL_SIZE = 10 * 1024 * 1024
 MAX_SKILL_FILE_COUNT = 50
 MAX_SKILL_FILE_RELATIVE_PATH_LENGTH = 512
 RESERVED_SKILL_FILE_NAMES = frozenset({"skill.md"})
+# SkillFile.source for files whose bytes Registry stores inline in `body` (created in Registry or by GitHub
+# skill sync). Any other source was written by Jarvis Chat, whose file storage Registry cannot read.
+REGISTRY_SKILL_FILE_SOURCE = "registry-inline"
 
 
 class DownstreamOAuthConstants:

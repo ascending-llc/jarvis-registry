@@ -27,6 +27,7 @@ from ..constants import (
     MAX_SKILL_FILE_RELATIVE_PATH_LENGTH,
     MAX_SKILL_FILE_SIZE,
     MAX_SKILL_FILES_TOTAL_SIZE,
+    REGISTRY_SKILL_FILE_SOURCE,
     RESERVED_SKILL_FILE_NAMES,
 )
 from ..models.skill_frontmatter import (
@@ -49,7 +50,6 @@ from .access_control_service import ACLService
 
 logger = logging.getLogger(__name__)
 
-_REGISTRY_FILE_SOURCE = "registry-inline"
 _UNAVAILABLE_FILE_REASON = "File content is not available in Registry because it was created in Jarvis Chat."
 _MONGO_WRITE_CONFLICT_CODE = 112
 
@@ -211,7 +211,7 @@ def _build_inline_skill_file(skill_id: PydanticObjectId, prepared: _PreparedFile
     return SkillFile(
         skillId=skill_id,
         relativePath=prepared.relative_path,
-        source=_REGISTRY_FILE_SOURCE,
+        source=REGISTRY_SKILL_FILE_SOURCE,
         mimeType=prepared.mime_type,
         bytes=len(prepared.raw),
         content=None,
@@ -268,7 +268,7 @@ def _registry_file_text(skill_file: SkillFile) -> str | None:
 
 
 def _sync_file_response(skill_file: SkillFile) -> SkillFileResponse:
-    if skill_file.source != _REGISTRY_FILE_SOURCE:
+    if skill_file.source != REGISTRY_SKILL_FILE_SOURCE:
         return SkillFileResponse(
             relativePath=skill_file.relativePath,
             mimeType=skill_file.mimeType,
@@ -418,7 +418,7 @@ class SkillService:
         skill_file = await SkillFile.find_one({"skillId": skill_id, "relativePath": relative_path})
         if skill_file is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill file not found")
-        if skill_file.source != _REGISTRY_FILE_SOURCE:
+        if skill_file.source != REGISTRY_SKILL_FILE_SOURCE:
             return SkillFileContentResponse(
                 relativePath=skill_file.relativePath,
                 mimeType=skill_file.mimeType,
@@ -546,7 +546,7 @@ class SkillService:
                     existing = await SkillFile.find_one(
                         {"skillId": skill_id, "relativePath": relative_path}, session=mongo_session
                     )
-                    if existing is not None and existing.source != _REGISTRY_FILE_SOURCE:
+                    if existing is not None and existing.source != REGISTRY_SKILL_FILE_SOURCE:
                         raise HTTPException(
                             status_code=status.HTTP_409_CONFLICT,
                             detail="Cannot overwrite a file that was not created in Registry",
@@ -566,7 +566,7 @@ class SkillService:
                             detail=f"Total file size exceeds the {MAX_SKILL_FILES_TOTAL_SIZE}-byte limit",
                         )
                     if existing is not None:
-                        # existing.source is already _REGISTRY_FILE_SOURCE here (checked above).
+                        # existing.source is already REGISTRY_SKILL_FILE_SOURCE here (checked above).
                         existing.mimeType = prepared.mime_type
                         existing.bytes = len(prepared.raw)
                         existing.content = None
@@ -624,7 +624,7 @@ class SkillService:
                     )
                     if existing is None:
                         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill file not found")
-                    if existing.source != _REGISTRY_FILE_SOURCE:
+                    if existing.source != REGISTRY_SKILL_FILE_SOURCE:
                         raise HTTPException(
                             status_code=status.HTTP_409_CONFLICT,
                             detail="Cannot delete a file that was not created in Registry",

@@ -26,6 +26,7 @@ class GitHubDownloadError(Exception):
 
 @dataclass
 class ExtractedAuxFile:
+    # Path inside the skill folder (e.g. "scripts/run.sh"), the same shape SkillFile.relativePath uses.
     relative_path: str
     absolute_path: Path
     size: int
@@ -277,7 +278,7 @@ def _two_pass_extract(
             else:
                 aux_files.append(
                     ExtractedAuxFile(
-                        relative_path=relative_path,
+                        relative_path=suffix_in_folder,
                         absolute_path=on_disk,
                         size=member.size,
                         is_executable=bool(member.mode & 0o100),

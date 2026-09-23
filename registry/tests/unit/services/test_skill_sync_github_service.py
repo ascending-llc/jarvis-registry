@@ -272,7 +272,7 @@ def test_extract_basic_skill_folder(tmp_path):
     assert folder.skill_md_path.exists()
     assert folder.skill_md_path.read_bytes() == b"---\nname: hello\n---\nHello"
     assert len(folder.aux_files) == 1
-    assert folder.aux_files[0].relative_path == "skills/hello/helper.py"
+    assert folder.aux_files[0].relative_path == "helper.py"
     assert folder.aux_files[0].absolute_path.exists()
     assert folder.aux_files[0].absolute_path.read_bytes() == b"print('hi')"
 
@@ -294,8 +294,8 @@ def test_extract_preserves_executable_bit(tmp_path):
     service = SkillSyncGitHubService(AsyncMock())
     result = service.extract_skill_folders(tarball_path, paths=["skills"], extraction_dir=extraction_dir)
     aux_by_path = {aux.relative_path: aux for aux in result.skill_folders[0].aux_files}
-    assert aux_by_path["skills/hello/run.sh"].is_executable is True
-    assert aux_by_path["skills/hello/notes.txt"].is_executable is False
+    assert aux_by_path["run.sh"].is_executable is True
+    assert aux_by_path["notes.txt"].is_executable is False
 
 
 def test_extract_multiple_skill_folders(tmp_path):
@@ -458,9 +458,32 @@ def test_extract_recursive_aux_files(tmp_path):
     assert len(result.skill_folders) == 1
     assert len(result.skill_folders[0].aux_files) == 3
     aux_paths = {af.relative_path for af in result.skill_folders[0].aux_files}
-    assert "skills/deploy/scripts/run.sh" in aux_paths
-    assert "skills/deploy/scripts/utils/helper.sh" in aux_paths
-    assert "skills/deploy/config.yml" in aux_paths
+    assert aux_paths == {"scripts/run.sh", "scripts/utils/helper.sh", "config.yml"}
+
+
+@pytest.mark.parametrize(
+    ("configured_path", "skill_root"),
+    [(".claude/skills", ".claude/skills/review"), (".", "review")],
+)
+def test_extract_aux_paths_are_relative_to_the_skill_folder(tmp_path, configured_path, skill_root):
+    """SkillFile.relativePath must not carry the repository path leading to the skill folder."""
+    tarball_path = tmp_path / "tarball.tar.gz"
+    tarball_path.write_bytes(
+        _make_tarball(
+            {
+                f"{skill_root}/SKILL.md": b"---\nname: review\n---\nR",
+                f"{skill_root}/scripts/fetch-pr-data": b"#!/bin/bash",
+            }
+        )
+    )
+    extraction_dir = tmp_path / "extracted"
+    extraction_dir.mkdir()
+    service = SkillSyncGitHubService(AsyncMock())
+    result = service.extract_skill_folders(tarball_path, paths=[configured_path], extraction_dir=extraction_dir)
+    folder = result.skill_folders[0]
+    assert folder.root_relative_path == skill_root
+    assert [aux.relative_path for aux in folder.aux_files] == ["scripts/fetch-pr-data"]
+    assert folder.aux_files[0].absolute_path.read_bytes() == b"#!/bin/bash"
 
 
 def test_extract_oversized_file_rejects_whole_folder(tmp_path, monkeypatch):
