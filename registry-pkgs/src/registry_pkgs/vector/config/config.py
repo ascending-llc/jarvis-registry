@@ -1,7 +1,17 @@
+import re
+
 from pydantic import BaseModel, Field
 
 from ...core.config import VectorConfig
 from ..enum.enums import EmbeddingProvider, VectorStoreType
+
+
+def extract_azure_resource_name(endpoint: str) -> str:
+    """Derive the Azure OpenAI resource name from its endpoint URL."""
+    match = re.match(r"https://([^./]+)\.openai\.azure\.com(?:/|$)", endpoint)
+    if not match:
+        raise ValueError("Failed to extract resource_name from endpoint. Expected a *.openai.azure.com URL.")
+    return match.group(1)
 
 
 class VectorStoreConfig(BaseModel):
@@ -79,6 +89,30 @@ def get_registered_vector_stores() -> list:
 def get_registered_embedding_models() -> list:
     """Get list of registered embedding providers."""
     return list(_EMBEDDING_MODEL_REGISTRY.keys())
+
+
+def build_vector_store_config(config: VectorConfig) -> "VectorStoreConfig":
+    """Validate ``config.vector_store_type`` and build its VectorStoreConfig.
+
+    Shared by ``BackendConfig.from_vector_config`` (env-driven path) and any caller that
+    assembles a ``BackendConfig`` from a non-default embedding source (e.g. a ``ModelSource``)
+    but still needs the same vector-store resolution.
+    """
+    vector_store_type = config.vector_store_type
+    if not vector_store_type or vector_store_type.strip() == "":
+        raise ValueError(
+            "vector_store_type must be set in the supplied vector config. "
+            f"Valid values: {', '.join(get_registered_vector_stores())}"
+        )
+
+    vector_store_type = vector_store_type.strip().lower()
+    if vector_store_type not in get_registered_vector_stores():
+        raise ValueError(
+            f"Unsupported vector_store_type: '{vector_store_type}'. "
+            f"Supported: {', '.join(get_registered_vector_stores())}"
+        )
+
+    return get_vector_store_config_class(vector_store_type).from_vector_config(config)
 
 
 @register_vector_store_config(VectorStoreType.WEAVIATE)
@@ -241,17 +275,7 @@ class AzureOpenAIEmbeddingConfig(EmbeddingModelConfig):
 
         # Extract resource_name from endpoint if not provided
         if not resource_name or resource_name.strip() == "":
-            # Extract from endpoint: https://resource-name.openai.azure.com/ -> resource-name
-            import re
-
-            match = re.match(r"https://([^.]+)\.openai\.azure\.com", endpoint)
-            if match:
-                resource_name = match.group(1)
-            else:
-                raise ValueError(
-                    "Failed to extract resource_name from endpoint. "
-                    "Please set AZURE_OPENAI_RESOURCE_NAME environment variable."
-                )
+            resource_name = extract_azure_resource_name(endpoint)
 
         # API version validation
         if not api_version or api_version.strip() == "":
@@ -318,15 +342,9 @@ class BackendConfig(BaseModel):
         Raises:
             ValueError: If required fields are missing or invalid
         """
-        vector_store_type = config.vector_store_type
         embedding_provider = config.embedding_provider
 
         # Required validation
-        if not vector_store_type or vector_store_type.strip() == "":
-            raise ValueError(
-                "vector_store_type must be set in the supplied vector config. "
-                f"Valid values: {', '.join(get_registered_vector_stores())}"
-            )
         if not embedding_provider or embedding_provider.strip() == "":
             raise ValueError(
                 "embedding_provider must be set in the supplied vector config. "
@@ -334,16 +352,9 @@ class BackendConfig(BaseModel):
             )
 
         # Normalize
-        vector_store_type = vector_store_type.strip().lower()
         embedding_provider = embedding_provider.strip().lower()
 
         # Validate against registered types
-        if vector_store_type not in get_registered_vector_stores():
-            raise ValueError(
-                f"Unsupported vector_store_type: '{vector_store_type}'. "
-                f"Supported: {', '.join(get_registered_vector_stores())}"
-            )
-
         if embedding_provider not in get_registered_embedding_models():
             raise ValueError(
                 f"Unsupported embedding_provider: '{embedding_provider}'. "
@@ -351,11 +362,10 @@ class BackendConfig(BaseModel):
             )
 
         # Create configs
-        vector_store_class = get_vector_store_config_class(vector_store_type)
         embedding_class = get_embedding_model_config_class(embedding_provider)
 
         return cls(
-            vector_store_config=vector_store_class.from_vector_config(config),
+            vector_store_config=build_vector_store_config(config),
             embedding_model_config=embedding_class.from_vector_config(config),
             rerank_config=RerankConfig.from_vector_config(config),
         )

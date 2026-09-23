@@ -13,7 +13,6 @@ The Registry is the compliance enforcement layer — not just a catalog. Both MC
 - **Tool Declaration Validation**: Validates that each registered MCP server's tool manifest is complete — required fields, input schemas, and capability declarations are all checked on registration, not at first use
 - **Transport Compliance**: Verifies that declared MCP transports (SSE, Streamable HTTP) match the actual server capabilities before the server is made discoverable; misconfigured transport declarations are rejected before the server is made discoverable
 - **OAuth Egress**: Manages outbound OAuth credentials for MCP servers that call downstream protected APIs — token acquisition, rotation, and per-server credential mapping are handled centrally so individual servers don't carry credentials
-- **Security Scanning**: Registered MCP servers are scanned for common security issues — exposed secrets, overly broad tool scopes, and missing input validation — surfaced as warnings or blocking violations depending on policy
 
 **For A2A agents:**
 
@@ -49,23 +48,22 @@ Single authenticated entry point for AI copilots and MCP-compatible clients — 
 
 ## 3. Agent Gateway
 
-Single authenticated entry point for A2A agents — handling skill discovery, transport negotiation, and security scanning centrally so callers need no platform-specific client code per target runtime.
+Single authenticated entry point for A2A agents — handling skill discovery and transport negotiation centrally so callers need no platform-specific client code per target runtime.
 
 - **Agent & Skill Discovery**: Resolves registered A2A agents and their skills by capability, tags, and spec version — callers query the gateway to find the right agent for a task without knowing which runtime hosts it or which transport it speaks
 - **Transport Negotiation**: Supports JSON-RPC 2.0 over HTTP (primary inter-agent transport, compatible with AWS AgentCore and standard A2A clients) and HTTP+JSON for agents on standard web stacks (ALB, API Gateway, Azure Front Door) — the gateway reads per-agent transport constraints from the Registry and routes accordingly; transport mismatches are caught before the request is forwarded
-- **Security Scanning**: Registered agents are scanned for security issues on registration — misconfigured CORS policies, missing auth declarations, and overly permissive skill scopes are flagged before the agent is made discoverable
 - **Registry-Driven Enforcement**: Routing, rate limiting, and ACL policy are derived from Registry metadata, not hardcoded gateway config; policy changes take effect immediately without gateway redeployment
 
 ---
 
 ## 4. Skill Gateway
 
-The Skill Gateway is the organization-wide control plane for AI skills — managing how skills are defined, organized, discovered, and kept in sync with your source of truth. Callers never need to know where a skill lives, which transport it speaks, or which team owns it.
+The Skill Gateway is the private control plane for organization-curated AI skills — managing how approved skills are authored, organized, governed, imported, and distributed without publishing private content publicly.
 
-- **Organization Skill Management**: Define and organize skills across teams, domains, and environments from a central control plane — skills are versioned, tagged by capability and owner, and grouped into namespaces so large organizations can manage hundreds of skills without collision or sprawl
-- **Skill Discovery**: Semantic vector search matches natural language queries to skills by description, tags, and declared capabilities — ACL-filtered so callers only see skills they are authorized to invoke; see [Enterprise RAG architecture](https://exploreagentic.ai/enterprise-rag/) for the retrieval patterns that underpin this feature
-- **Skill Lifecycle Management**: Skills have explicit lifecycle states (draft, active, deprecated) — deprecated skills surface warnings to callers before they are removed, and active skills can be promoted or rolled back without gateway redeployment
-- **Git Provider Sync**: Skills are synced bidirectionally with your Git provider (GitHub, GitLab, Bitbucket) — skill definitions live in version-controlled repositories and changes are reflected in the gateway automatically; pull requests, branch-based staging, and audit history flow from your existing Git workflow into the Skill Gateway without manual import steps
+- **Organization Skill Management**: Create and edit skills in the Registry UI or API, organize them with categories and tags, track versions, attach supporting text or binary files, and enable or disable skills as their availability changes
+- **Skill Access & Governance**: Keep skills private by default and use resource-level ACL permissions to control who can view, edit, delete, or share each skill; access is filtered for the authenticated user before content is delivered
+- **Git Provider Sync**: Import skills one-way from GitHub into the Registry — discover `SKILL.md` files, safely extract an immutable repository snapshot, apply valid changes atomically, and report errors per skill; the [AI Skills CLI](features/ai-skills-cli.md) then delivers accessible approved skills to Claude Code, Codex, and GitHub Copilot
+- **Private Developer Distribution**: Deliver approved Registry skills consistently to personal or project environments through the [AI Skills CLI](features/ai-skills-cli.md), with the [Skill Gateway](features/skill-gateway.md) serving as the authoring and governance source of truth
 
 ---
 

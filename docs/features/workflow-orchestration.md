@@ -75,5 +75,5 @@ Configure retry limits, backoff, and fallback targets so workflows can recover f
 
 - [AgentCore Federation](agentcore-federation.md) — how AgentCore agents participate in workflows
 - [Azure AI Foundry Federation](foundry-ai-federation.md) — importing Foundry agents for use in workflows
-- [Skill Gateway](skill-gateway.md) — how skills are resolved at workflow runtime
+- [Skill Gateway](skill-gateway.md) — how skills are authored, governed, imported, and distributed
 - [MCP Gateway](mcp-gateway-registry.md) — tool and resource access within workflow steps

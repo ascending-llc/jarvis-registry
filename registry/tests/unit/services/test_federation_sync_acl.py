@@ -131,12 +131,14 @@ async def test_build_sync_plan_tracks_unchanged_resources_for_acl_inheritance(
     existing_mcp = SimpleNamespace(
         id=mcp_id,
         serverName="unchanged-mcp",
+        normalizedServerName="unchanged-mcp",
         federationRefId=federation.id,
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=mcp_runtime_arn, runtime_version="1"),
     )
     discovered_mcp = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="unchanged-mcp",
+        normalizedServerName="unchanged-mcp",
         federationMetadata=make_agentcore_mcp_metadata(runtime_arn=mcp_runtime_arn, runtime_version="1"),
     )
     existing_a2a = SimpleNamespace(
@@ -157,7 +159,7 @@ async def test_build_sync_plan_tracks_unchanged_resources_for_acl_inheritance(
     def _fake_mcp_find(query, session=None):
         if "federationRefId" in query:
             return _FakeQuery([existing_mcp])
-        if "serverName" in query:
+        if "normalizedServerName" in query:
             return _FakeQuery([])
         raise AssertionError(f"unexpected MCP query: {query}")
 

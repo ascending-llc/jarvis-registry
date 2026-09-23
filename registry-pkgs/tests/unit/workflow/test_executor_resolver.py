@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from a2a.types import AgentCard
@@ -10,10 +10,12 @@ from pydantic import HttpUrl
 from registry_pkgs.core import agentcore_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, ModelSourceMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
-from registry_pkgs.workflows import a2a_client, executor_resolver
+from registry_pkgs.models.model_source import AwsBedrockModelConfig, ModelSource
+from registry_pkgs.models.workflow import WorkflowNode
+from registry_pkgs.workflows import a2a_client, executor_resolver, model_resolution
 from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows.helpers import build_prompt
 from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
@@ -95,7 +97,7 @@ class TestExecutorResolver:
         monkeypatch.setattr(executor_resolver.A2AAgent, "path", _FieldExpr("path"), raising=False)
 
     @pytest.mark.asyncio
-    async def test_build_executor_registry_deduplicates_keys(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_build_executor_registry_deduplicates_model_combinations(self, monkeypatch: pytest.MonkeyPatch):
         seen: list[str] = []
 
         async def fake_resolve(key: str, **kwargs):
@@ -103,18 +105,109 @@ class TestExecutorResolver:
             return f"executor:{key}"
 
         monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
+        monkeypatch.setattr(
+            executor_resolver,
+            "resolve_model",
+            AsyncMock(side_effect=lambda _source_id, **kwargs: kwargs["fallback_model"]),
+        )
+        nodes = [
+            WorkflowNode(id="node-a", name="a", executor_key="alpha", step_objective="a"),
+            WorkflowNode(id="node-b", name="b", executor_key="beta", step_objective="b"),
+            WorkflowNode(id="node-c", name="c", executor_key="alpha", step_objective="c"),
+        ]
 
         registry = await executor_resolver.build_executor_registry(
-            ["alpha", "beta", "alpha"],
-            llm=SimpleNamespace(),
+            nodes,
+            default_model=SimpleNamespace(),
             auth_context=None,
             jwt_config=_jwt_config(),
+            encryption_key=b"key",
+            azure_ad_token_provider=None,
         )
 
         assert seen == ["alpha", "beta"]
-        assert set(registry.keys()) == {"alpha", "beta"}
-        for key in ("alpha", "beta"):
+        assert set(registry.keys()) == {"node-a", "node-b", "node-c"}
+        assert registry["node-a"] is registry["node-c"]
+        for key in ("node-a", "node-b", "node-c"):
             assert callable(registry[key])
+
+    @pytest.mark.asyncio
+    async def test_build_executor_registry_separates_same_key_with_different_models(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        resolved_with: list[object] = []
+
+        async def fake_resolve(key: str, *, llm, **_kwargs):
+            resolved_with.append(llm)
+            return f"executor:{key}:{llm}"
+
+        async def fake_model(source_id, **kwargs):
+            return source_id or kwargs["fallback_model"]
+
+        monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
+        monkeypatch.setattr(executor_resolver, "resolve_model", fake_model)
+        nodes = [
+            WorkflowNode(id="default", name="default", executor_key="tool", step_objective="run"),
+            WorkflowNode(
+                id="override",
+                name="override",
+                executor_key="tool",
+                model_source_id="0" * 24,
+                step_objective="run",
+            ),
+        ]
+
+        registry = await executor_resolver.build_executor_registry(
+            nodes,
+            default_model="fallback",
+            auth_context=None,
+            jwt_config=_jwt_config(),
+            encryption_key=b"key",
+            azure_ad_token_provider=None,
+        )
+
+        assert resolved_with == ["fallback", "0" * 24]
+        assert registry["default"] is not registry["override"]
+
+    @pytest.mark.asyncio
+    async def test_mcp_node_override_threads_resolved_model_into_make_mcp_executor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+
+        self._patch_beanie_filters(monkeypatch)
+        monkeypatch.setattr(
+            executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=_mcp_server("tool"))
+        )
+        captured: dict[str, object] = {}
+
+        def fake_make_mcp(mcp_server, *, llm, **kwargs):
+            captured["llm"] = llm
+            return "mcp-executor"
+
+        monkeypatch.setattr(executor_resolver, "make_mcp_executor", fake_make_mcp)
+        override = ModelSource.model_construct(
+            id=PydanticObjectId("0" * 24),
+            mode=ModelSourceMode.CHAT,
+            deletedAt=None,
+            providerConfig=AwsBedrockModelConfig(
+                awsRegion="us-east-1", modelIdOrArn="override-model", baseModelId="override-model"
+            ),
+        )
+        monkeypatch.setattr(model_resolution.ModelSource, "get", AsyncMock(return_value=override))
+
+        registry = await executor_resolver.build_executor_registry(
+            [WorkflowNode(id="n1", name="n", executor_key="tool", model_source_id="0" * 24, step_objective="run")],
+            default_model=SimpleNamespace(id="DEFAULT"),
+            auth_context=None,
+            jwt_config=_jwt_config(),
+            encryption_key=b"key",
+            azure_ad_token_provider=None,
+        )
+
+        assert callable(registry["n1"])
+        # The MCP executor received the per-node override model, not the default.
+        assert captured["llm"].id == "bedrock/override-model"
 
     @pytest.mark.asyncio
     async def test_resolve_executor_prefers_active_mcp_server(self, monkeypatch: pytest.MonkeyPatch):
@@ -181,6 +274,33 @@ class TestExecutorResolver:
         assert len(captured_agents) == 1
         assert captured_agents[0].path == "deep-intel"  # Path is now normalized (no slashes)
         find_one.assert_awaited_once_with(("path", "==", "deep-intel"), {"config.enabled": True})
+
+    @pytest.mark.asyncio
+    async def test_single_a2a_executor_ignores_model_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Single-agent A2A construction must not receive or depend on the resolved model."""
+        self._patch_beanie_filters(monkeypatch)
+        agent = _a2a_agent("deep-intel")
+        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
+        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
+        make_a2a = MagicMock(return_value="a2a-executor")
+        monkeypatch.setattr(executor_resolver, "make_a2a_executor", make_a2a)
+
+        without_override = await executor_resolver._resolve_executor(
+            "deep-intel",
+            llm="default-model",
+            auth_context=None,
+            jwt_config=_jwt_config(),
+        )
+        with_override = await executor_resolver._resolve_executor(
+            "deep-intel",
+            llm="override-model",
+            auth_context=None,
+            jwt_config=_jwt_config(),
+        )
+
+        assert without_override == with_override == "a2a-executor"
+        assert make_a2a.call_count == 2
+        assert all("llm" not in call.kwargs for call in make_a2a.call_args_list)
 
     @pytest.mark.asyncio
     async def test_resolve_executor_raises_when_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch):

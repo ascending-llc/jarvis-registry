@@ -22,12 +22,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 import httpx
@@ -38,15 +36,16 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from registry import settings  # noqa: E402
 from registry.services.access_control_service import ACLService, load_role_cache  # noqa: E402
-from registry.services.group_directory_client import KeycloakGroupDirectoryClient  # noqa: E402
 from registry.services.group_service import GroupService  # noqa: E402
+from registry.utils.csrf import compute_csrf_token  # noqa: E402
 from registry_pkgs.core.config import MongoConfig  # noqa: E402
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt  # noqa: E402
+from registry_pkgs.core.jwt_tokens import mint_crud_session_token  # noqa: E402
 from registry_pkgs.database.mongodb import MongoDB  # noqa: E402
 from registry_pkgs.models import PrincipalType  # noqa: E402
 from registry_pkgs.models.a2a_agent import A2AAgent  # noqa: E402
 from registry_pkgs.models.enums import RoleBits, WorkflowNodeType, WorkflowRunStatus  # noqa: E402
 from registry_pkgs.models.extended_access_role import RegistryResourceType  # noqa: E402
+from registry_pkgs.models.extended_acl_entry import RegistryAclEntry  # noqa: E402
 from registry_pkgs.models.workflow import (  # noqa: E402
     HumanReviewSpec,
     NodeRun,
@@ -72,38 +71,42 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--a2a-pool", nargs="+", default=DEFAULT_POOL, help="2-5 A2A agent keys for the pool step.")
     parser.add_argument("--prompt", default="Look up the registry documentation and summarize it briefly.")
     parser.add_argument("--registry-url", default=os.getenv("REGISTRY_URL", "http://localhost:7860"))
+    parser.add_argument(
+        "--model-source-id",
+        default=None,
+        help="Optional chat ModelSource id applied to model-backed nodes; otherwise use the gateway default.",
+    )
     parser.add_argument("--keep-data", action="store_true", help="Keep created records on exit (for debugging).")
     return parser.parse_args()
 
 
-def _detect_jwt_issuer(registry_url: str, fallback: str) -> str:
-    """Resolve the JWT issuer the registry actually validates against."""
-    try:
-        with urllib.request.urlopen(f"{registry_url.rstrip('/')}/api/auth/config", timeout=3) as resp:  # noqa: S310  # nosec B310
-            auth_server_url = json.loads(resp.read()).get("auth_server_url", "").rstrip("/")
-        if not auth_server_url:
-            return fallback
-        with urllib.request.urlopen(f"{auth_server_url}/.well-known/openid-configuration", timeout=3) as resp:  # noqa: S310  # nosec B310
-            return json.loads(resp.read()).get("issuer", fallback)
-    except Exception as exc:
-        logger.warning("issuer detection failed, using fallback %r: %s", fallback, exc)
-        return fallback
-
-
-def _make_token(user_id: str, registry_url: str) -> str:
-    """Self-sign a registry token carrying user_id + the scopes the control routes require."""
+def _make_token(user_id: str) -> str:
+    """Mint the CRUD-session token required by state-changing registry routes."""
     if not settings.jwt_private_key:
         raise SystemExit("Set REGISTRY_TOKEN or JWT_PRIVATE_KEY in .env to authenticate against the registry.")
-    issuer = _detect_jwt_issuer(registry_url, settings.jwt_issuer)
-    scopes = "workflows-control mcp-proxy-ops servers-read agents-read agents-write federations-read"
-    payload = build_jwt_payload(
-        subject="real-e2e-user",
-        issuer=issuer,
-        audience=settings.jwt_audience,
-        expires_in_seconds=3600,
-        extra_claims={"scope": scopes, "user_id": user_id},
+    scopes = (
+        "workflows-read workflows-write workflows-control mcp-proxy-ops "
+        "servers-read agents-read agents-write federations-read"
     )
-    return encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
+    return mint_crud_session_token(
+        settings.jwt_token_config,
+        subject="real-e2e-user",
+        token_type="access_token",
+        expires_in_seconds=3600,
+        extra_claims={
+            "scope": scopes,
+            "user_id": user_id,
+            "username": "real-workflow-e2e",
+            "groups": ["jarvis-registry-admin"],
+        },
+    )
+
+
+def _session_headers(token: str) -> dict[str, str]:
+    return {
+        "Cookie": f"{settings.session_cookie_name}={token}",
+        settings.csrf_header_name: compute_csrf_token(token),
+    }
 
 
 def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
@@ -111,21 +114,45 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
     return WorkflowDefinition(
         name=f"{PREFIX}real-mcp-a2a",
         description="Real MCP + A2A + HITL complex e2e",
+        enabled=True,
         nodes=[
-            WorkflowNode(name="mcp-doc", executor_key=args.mcp_key),
+            WorkflowNode(
+                name="mcp-doc",
+                executor_key=args.mcp_key,
+                model_source_id=args.model_source_id,
+                step_objective="Use the MCP server to inspect registry documentation and summarize the result.",
+            ),
             WorkflowNode(
                 name="branch",
                 node_type=WorkflowNodeType.CONDITION,
                 condition_cel="session_state.user_text != ''",
-                true_steps=[WorkflowNode(name="a2a-direct", executor_key=args.a2a_direct)],
-                false_steps=[WorkflowNode(name="fallback", executor_key="echo")],
+                true_steps=[
+                    WorkflowNode(
+                        name="a2a-direct",
+                        executor_key=args.a2a_direct,
+                        step_objective="Send the MCP summary to the direct A2A agent and return its response.",
+                    )
+                ],
+                false_steps=[
+                    WorkflowNode(
+                        name="fallback",
+                        executor_key="echo",
+                        step_objective="Echo the workflow input when the direct A2A branch is not selected.",
+                    )
+                ],
             ),
             WorkflowNode(
                 name="review-gate",
                 executor_key="echo",
                 human_review=HumanReviewSpec(requires_confirmation=True),
+                step_objective="Pause for human confirmation before the final A2A pool step.",
             ),
-            WorkflowNode(name="a2a-pool", a2a_pool=args.a2a_pool),
+            WorkflowNode(
+                name="a2a-pool",
+                a2a_pool=args.a2a_pool,
+                model_source_id=args.model_source_id,
+                step_objective="Select the best A2A agent to produce the final concise answer.",
+            ),
         ],
     )
 
@@ -133,7 +160,7 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
 async def _grant_owner(user_id: str, workflow_id: PydanticObjectId) -> None:
     acl = ACLService(
         user_service=UserService(),
-        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
+        group_service=GroupService(directory_clients={}),
         role_cache=await load_role_cache(),
     )
     await acl.grant_permission(
@@ -145,30 +172,30 @@ async def _grant_owner(user_id: str, workflow_id: PydanticObjectId) -> None:
     )
 
 
-async def _grant_agent_access(user_id: str, agent_keys: list[str]) -> None:
-    """Grant the ephemeral user VIEW on each A2A agent used by the flow.
+async def _resolve_test_user_id(agent_keys: list[str]) -> str:
+    """Find an existing user with VIEW access to every requested A2A agent."""
+    paths = list(dict.fromkeys(key.lstrip("/") for key in agent_keys))
+    agents = await A2AAgent.find({"path": {"$in": paths}, "config.enabled": True}).to_list()
+    if {agent.path for agent in agents} != set(paths):
+        missing = sorted(set(paths) - {agent.path for agent in agents})
+        raise SystemExit(f"Enabled A2A agents not found: {', '.join(missing)}")
 
-    The HTTP-triggered run resolves executors with the JWT's user_id, which
-    enforces REMOTE_AGENT ACL (unlike the user_id=None bypass that one-off
-    scripts use). Without this grant the run fails at A2A resolution.
-    """
-    acl = ACLService(
-        user_service=UserService(),
-        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
-        role_cache=await load_role_cache(),
-    )
-    for key in dict.fromkeys(agent_keys):
-        agent = await A2AAgent.find_one({"path": f"/{key.lstrip('/')}"})
-        if agent is None:
-            print(f"{FAIL} A2A agent not found for key {key!r}; flow will fail at resolution")
-            continue
-        await acl.grant_permission(
-            principal_type=PrincipalType.USER,
-            principal_id=PydanticObjectId(user_id),
-            resource_type=RegistryResourceType.REMOTE_AGENT,
-            resource_id=agent.id,
-            perm_bits=RoleBits.VIEWER,
-        )
+    agent_ids = {agent.id for agent in agents}
+    acls = await RegistryAclEntry.find(
+        {
+            "resourceType": RegistryResourceType.REMOTE_AGENT.value,
+            "resourceId": {"$in": list(agent_ids)},
+            "principalType": PrincipalType.USER.value,
+            "permBits": {"$bitsAllSet": int(RoleBits.VIEWER)},
+        }
+    ).to_list()
+    resources_by_user: dict[PydanticObjectId, set[PydanticObjectId]] = {}
+    for acl in acls:
+        resources_by_user.setdefault(acl.principalId, set()).add(acl.resourceId)
+    for principal_id, resource_ids in resources_by_user.items():
+        if agent_ids <= resource_ids:
+            return str(principal_id)
+    raise SystemExit("No existing user has VIEW access to every requested A2A agent")
 
 
 async def _cleanup(workflow_id: PydanticObjectId, user_id: str) -> None:
@@ -184,8 +211,13 @@ async def _cleanup(workflow_id: PydanticObjectId, user_id: str) -> None:
             {"session_id": {"$in": [str(r) for r in run_ids]}}
         )
     await db.get_collection("workflow_definitions").delete_many({"_id": workflow_id})
-    # The ephemeral user owns only the grants we created (workflow + agents).
-    await db.get_collection("aclentries").delete_many({"principalId": PydanticObjectId(user_id)})
+    await db.get_collection("aclentries").delete_many(
+        {
+            "principalId": PydanticObjectId(user_id),
+            "resourceType": RegistryResourceType.WORKFLOW.value,
+            "resourceId": workflow_id,
+        }
+    )
 
 
 async def _poll(predicate, timeout: float, interval: float = 0.5):
@@ -260,7 +292,7 @@ async def _run_lifecycle(client: httpx.AsyncClient, args: argparse.Namespace, he
         headers=headers,
         json={"initialInput": {"user_text": args.prompt}, "triggerSource": "real-e2e"},
     )
-    if resp.status_code != 202:
+    if resp.status_code not in {200, 202}:
         print(f"{FAIL} trigger failed: HTTP {resp.status_code} {resp.text}")
         return 1
     run_id = resp.json()["runId"]
@@ -315,18 +347,17 @@ async def amain(args: argparse.Namespace) -> int:
         ),
     )
     try:
-        user_id = str(PydanticObjectId())
-        token = os.getenv("REGISTRY_TOKEN") or _make_token(user_id, args.registry_url)
+        user_id = await _resolve_test_user_id([args.a2a_direct, *args.a2a_pool])
+        token = os.getenv("REGISTRY_TOKEN") or _make_token(user_id)
         print(f"{PASS} token ready (user_id={user_id})")
 
         definition = _build_definition(args)
         await definition.insert()
         await _grant_owner(user_id, definition.id)
-        await _grant_agent_access(user_id, [args.a2a_direct, *args.a2a_pool])
-        print(f"{PASS} definition inserted + workflow/agent ACL granted (id={definition.id})")
+        print(f"{PASS} definition inserted + workflow ACL granted (id={definition.id})")
 
         try:
-            headers = {"Authorization": f"Bearer {token}"}
+            headers = _session_headers(token)
             async with httpx.AsyncClient(timeout=30) as client:
                 return await _run_lifecycle(client, args, headers, str(definition.id))
         finally:

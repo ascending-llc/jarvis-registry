@@ -7,11 +7,13 @@ These cover the search logic extracted out of api/v1/search_routes.py:
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from registry.services.search.service import SearchRequest, SearchService
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.vector.enum.enums import SearchType
@@ -24,12 +26,20 @@ def _make_permissive_acl_service() -> MagicMock:
     return acl
 
 
-def _make_service(*, vector_service=None, mcp_server_repo=None, a2a_agent_repo=None, acl_service=None) -> SearchService:
+def _make_service(
+    *,
+    vector_service=None,
+    mcp_server_repo=None,
+    a2a_agent_repo=None,
+    acl_service=None,
+    embedding_maintenance_watcher=None,
+) -> SearchService:
     return SearchService(
         vector_service=vector_service or MagicMock(),
         mcp_server_repo=mcp_server_repo or MagicMock(),
         a2a_agent_repo=a2a_agent_repo or MagicMock(),
         acl_service=acl_service or _make_permissive_acl_service(),
+        embedding_maintenance_watcher=embedding_maintenance_watcher,
     )
 
 
@@ -704,3 +714,82 @@ async def test_search_a2a_for_semantic_degrades_on_runtime_error():
     agents, skills = await service._search_a2a_for_semantic("intel", [A2AEntityType.AGENT], 5, False, _AUTH_CTX)
 
     assert (agents, skills) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# Reindex maintenance gate (fail-fast before ACL lookups)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_entities_raises_when_reindex_active():
+    from types import SimpleNamespace
+
+    from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+
+    acl = _make_permissive_acl_service()
+    service = _make_service(
+        acl_service=acl,
+        embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: True),
+    )
+
+    with pytest.raises(EmbeddingReindexInProgressException):
+        await service.search_entities(SearchRequest(query="x", type_list=[MCPEntityType.TOOL]), {"user_id": None})
+    acl.get_accessible_resource_ids.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_raises_when_reindex_active():
+    acl = _make_permissive_acl_service()
+    service = _make_service(
+        acl_service=acl,
+        embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: True),
+    )
+
+    with pytest.raises(EmbeddingReindexInProgressException):
+        await service.semantic_search(query="x", user_context={"user_id": None})
+    acl.get_accessible_resource_ids.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_entities_filters_disabled_tools_by_default():
+    """discover_servers excludes disabled tools via a tool_enabled==True Weaviate filter."""
+    tool_results = [{"server_id": "s1", "server_name": "github", "entity_type": "tool", "tool_name": "t"}]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=tool_results)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1"])
+
+    service = _make_service(mcp_server_repo=mcp_server_repo, acl_service=acl_service)
+    user_ctx = {"user_id": "507f1f77bcf86cd799439011", "username": "alice"}
+
+    await service.search_entities(
+        SearchRequest(query="github", top_n=2, type_list=[MCPEntityType.TOOL]),
+        user_ctx,
+    )
+
+    call_kwargs = mcp_server_repo.asearch_with_rerank.call_args.kwargs
+    assert call_kwargs["filters"]["tool_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_entities_include_disabled_drops_tool_enabled_filter():
+    """include_disabled=True surfaces disabled tools: no tool_enabled filter is applied."""
+    tool_results = [{"server_id": "s1", "server_name": "github", "entity_type": "tool", "tool_name": "t"}]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=tool_results)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1"])
+
+    service = _make_service(mcp_server_repo=mcp_server_repo, acl_service=acl_service)
+    user_ctx = {"user_id": "507f1f77bcf86cd799439011", "username": "alice"}
+
+    await service.search_entities(
+        SearchRequest(query="github", top_n=2, type_list=[MCPEntityType.TOOL], include_disabled=True),
+        user_ctx,
+    )
+
+    call_kwargs = mcp_server_repo.asearch_with_rerank.call_args.kwargs
+    assert "tool_enabled" not in call_kwargs["filters"]

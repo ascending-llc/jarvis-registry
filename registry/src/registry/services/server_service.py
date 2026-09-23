@@ -24,6 +24,7 @@ from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
 )
+from registry_pkgs.models.extended_mcp_server import normalize_server_name
 from registry_pkgs.oauth.errors import (
     AuthenticationError,
     MissingUserIdError,
@@ -44,6 +45,7 @@ from ..utils.crypto_utils import encrypt_auth_fields
 from ..utils.mcp_headers import build_complete_headers_for_server
 from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title
+from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 
 logger = logging.getLogger(__name__)
 
@@ -318,12 +320,14 @@ class ServerServiceV1:
         token_service: TokenService,
         oauth_service: Any,
         mcp_server_repo: MCPServerRepository,
+        embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
     ):
         """Initialize server service with search index manager."""
         self.mcp_server_repo = mcp_server_repo
         self.user_service = user_service
         self.token_service = token_service
         self.oauth_service = oauth_service
+        self._embedding_maintenance_watcher = embedding_maintenance_watcher
         logger.info("ServerServiceV1 initialized with search index manager")
 
     async def list_servers(
@@ -463,6 +467,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If path+url combination already exists, server_name already exists, or tags contain duplicates (case-insensitive)
         """
+        # Guard first: block the Mongo write below when a reindex is in progress.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
+
         # Check if path+url combination already exists
         # Only reject if BOTH path AND url are the same (to allow same path for different services)
         existing_servers = await ExtendedMCPServer.find({"path": data.path}, session=session).to_list()
@@ -473,7 +480,11 @@ class ServerServiceV1:
 
         # Check if serverName already exists
         server_name = generate_server_name_from_title(data.title)
-        existing_name = await ExtendedMCPServer.find_one({"serverName": server_name}, session=session)
+        normalized_name = normalize_server_name(server_name)
+        existing_name = await ExtendedMCPServer.find_one(
+            {"$or": [{"serverName": server_name}, {"normalizedServerName": normalized_name}]},
+            session=session,
+        )
         if existing_name:
             raise ValueError(f"Server with name '{server_name}' already exists")
 
@@ -502,6 +513,7 @@ class ServerServiceV1:
         now = _get_current_utc_time()
         server = ExtendedMCPServer(
             serverName=server_name,
+            normalizedServerName=normalized_name,
             config=config,
             author=author.id,  # Use PydanticObjectId instead of Link
             # Registry-specific root-level fields
@@ -686,6 +698,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found
         """
+        # Guard first: block the Mongo write below when a reindex is in progress.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
+
         server = await self.get_server_by_id(server_id, user_id, session=session)
 
         if not server:
@@ -915,6 +930,70 @@ class ServerServiceV1:
 
         tool_functions = _extract_config_field(server, "toolFunctions", {})
         return server, tool_functions
+
+    async def update_disabled_tools(
+        self,
+        server_id: str,
+        disabled_tools: list[str],
+        user_id: str | None = None,
+    ) -> ExtendedMCPServer:
+        """Full-replace the server's disabled-tools list.
+
+        Silently drops any submitted name that isn't a current tool (validated against the cached
+        config["toolFunctions"] snapshot, no live downstream call). Pushes tool_enabled metadata to
+        Weaviate only for tools whose status actually flipped — batched by new state, at most two
+        round-trips, not the server's entire tool set.
+        """
+        server = await self.get_server_by_id(server_id, user_id)
+        if not server:
+            raise ValueError("Server not found")
+
+        tool_functions = _extract_config_field(server, "toolFunctions", {})
+        known_tool_names = {td.get("mcpToolName", key) for key, td in tool_functions.items()}
+
+        new_disabled = set(disabled_tools) & known_tool_names
+        previous_disabled = set(server.registryDisabledTools or [])
+        if new_disabled == previous_disabled:
+            return server
+
+        server.registryDisabledTools = sorted(new_disabled)
+        server.updatedAt = _get_current_utc_time()
+        await server.save()
+
+        self._schedule_tool_enabled_sync(str(server.id), new_disabled, previous_disabled)
+        return server
+
+    def _schedule_tool_enabled_sync(
+        self,
+        server_id: str,
+        new_disabled: set[str],
+        previous_disabled: set[str],
+    ) -> None:
+        """Schedule a background push of tool_enabled to Weaviate for tools whose status flipped,
+        batched by new state. Fire-and-forget, matching _schedule_vector_sync: MongoDB is
+        authoritative, so a failed or slow vector patch must not block or fail the caller's write.
+        """
+        if self.mcp_server_repo is None:
+            return
+        newly_disabled = sorted(new_disabled - previous_disabled)
+        newly_enabled = sorted(previous_disabled - new_disabled)
+
+        async def _sync_task() -> None:
+            # return_exceptions=True: both groups hit ensure_collection, so a Weaviate outage would raise
+            # in both — without this the second raise is an unretrieved-task warning. Errors are logged,
+            # not propagated: this task is already fire-and-forget, so there is no caller to propagate to.
+            results = await asyncio.gather(
+                self.mcp_server_repo.update_tools_metadata(server_id, newly_disabled, {"tool_enabled": False}),
+                self.mcp_server_repo.update_tools_metadata(server_id, newly_enabled, {"tool_enabled": True}),
+                return_exceptions=True,
+            )
+            for outcome in results:
+                if isinstance(outcome, Exception):
+                    logger.error(
+                        "tool_enabled metadata sync failed for server %s: %s", server_id, outcome, exc_info=outcome
+                    )
+
+        asyncio.create_task(_sync_task())
 
     @track_tool_discovery
     async def retrieve_from_server(
@@ -1162,11 +1241,20 @@ class ServerServiceV1:
         if capabilities:
             config["capabilities"] = json.dumps(capabilities)
 
-        # Update toolFunctions if tools were retrieved
-        if tool_list:
+        # Update toolFunctions if tools were retrieved. tool_list=[] is a legitimate zero-tools
+        # success result (e.g. a server reconfigured to serve only resources/prompts) distinct
+        # from the tool_list is None failure case handled above — it must still clear stale
+        # toolFunctions/tools/numTools and prune registryDisabledTools, not skip this block.
+        if tool_list is not None:
             # Convert tool_list to toolFunctions format
             tool_functions = _convert_tool_list_to_functions(tool_list, server.serverName)
             config["toolFunctions"] = tool_functions
+
+            # Drop disabled-tool names that no longer exist downstream. When this prunes anything,
+            # the tool set itself changed, so page_content (hence vectorContentHash) changed too, and
+            # the _schedule_vector_sync call below already takes the full-rebuild branch.
+            known_tool_names = {td.get("mcpToolName", key) for key, td in tool_functions.items()}
+            server.registryDisabledTools = [t for t in (server.registryDisabledTools or []) if t in known_tool_names]
 
             # Update tools string (comma-separated tool names)
             tool_names = [tool.get("name", "") for tool in tool_list if tool.get("name")]

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from beanie import Document, PydanticObjectId
 
@@ -10,9 +11,10 @@ class SkillFile(Document):
     mimeType: str
     bytes: int
     isExecutable: bool = False
-    tenantId: str | None = None
     content: str | None = None
     isBinary: bool | None = None
+    codeEnvRefs: dict[str, Any] | None = None
+    tenantId: str | None = None
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 

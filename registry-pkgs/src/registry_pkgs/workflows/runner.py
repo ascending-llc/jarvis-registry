@@ -29,7 +29,8 @@ If agno raises before ``upsert_session`` is called, ``WorkflowRunner`` writes
 Usage::
 
     runner = WorkflowRunner(
-        llm=AwsBedrock(...),
+        fallback_model=build_legacy_bedrock_model(model_id, aws_region),
+        encryption_key=settings.encryption_key,
         db_client=MongoDB.get_client(),
         db_name="jarvis",
     )
@@ -51,6 +52,7 @@ import httpx
 from agno.exceptions import RunCancelledException
 from agno.models.base import Model
 from agno.run.cancel import acancel_run as agno_acancel_run
+from agno.run.workflow import WorkflowRunOutput
 from beanie import PydanticObjectId
 from beanie.exceptions import DocumentNotFound
 from beanie.operators import In
@@ -73,6 +75,12 @@ from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledErr
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider
+from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider, resolve_default_workflow_model
+from registry_pkgs.workflows.persistence import (
+    _first_failure_error,
+    _flatten_step_results,
+    _resolve_workflow_run_status,
+)
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
@@ -113,12 +121,13 @@ class WorkflowRunner:
     parameter is ``auth_context`` passed to ``run()``.
 
     Args:
-        llm:                  Model used by MCP-server executors (e.g. AwsBedrock).
+        fallback_model:       Model used when neither a per-node ``model_source_id`` override nor a
+                              configured default workflow ModelSource resolves (legacy /
+                              fresh-deployment path). The effective default is resolved fresh per run.
+        encryption_key:       Key used to decrypt a ModelSource's stored Azure credential.
         db_client:            pymongo AsyncMongoClient for session + Beanie persistence.
         db_name:              MongoDB database name.
         jwt_config:           JWT signing config used by A2A executors and AgentCore MCP servers.
-        selector_llm:         Optional cheaper/faster model for A2A pool selection.
-                              Falls back to ``llm`` when not provided.
         directive_queue:      Optional in-process signal bus for pause/cancel/retry.
         a2a_httpx_client:     Optional shared httpx client for A2A invocations.
         headers_provider:     Optional shared headers provider for A2A executors.
@@ -130,11 +139,12 @@ class WorkflowRunner:
     def __init__(
         self,
         *,
-        llm: Model,
+        fallback_model: Model,
+        encryption_key: bytes,
+        azure_ad_token_provider: AzureAdTokenProvider | None,
         db_client: Any,
         db_name: str,
         jwt_config: JwtSigningConfig,
-        selector_llm: Model | None = None,
         directive_queue: DirectiveQueue | None = None,
         a2a_httpx_client: httpx.AsyncClient | None = None,
         headers_provider: HeadersProvider | None = None,
@@ -147,8 +157,11 @@ class WorkflowRunner:
         if not db_name:
             raise ValueError("WorkflowRunner requires db_name")
 
-        self._llm = llm
-        self._selector_llm = selector_llm  # None → falls back to _llm inside build_executor_registry
+        # Model used when neither a node override nor a configured default resolves (legacy /
+        # fresh-deployment path). The effective default is resolved fresh per run in _build_registry.
+        self._fallback_model = fallback_model
+        self._encryption_key = encryption_key
+        self._azure_ad_token_provider = azure_ad_token_provider
         self._db_client = db_client
         self._db_name = db_name
         self._jwt_config = jwt_config
@@ -293,24 +306,32 @@ class WorkflowRunner:
         MongoDB and constructs the corresponding executor closures.
         """
         all_nodes = flatten_workflow_nodes(definition.nodes)
-        # Collect unique executor_keys (pool nodes use a synthetic key, not this list).
-        executor_keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
+        # Resolve the effective default model fresh on every run so an admin's change to the
+        # default takes effect on the next run without a pod restart.
+        default_model = await resolve_default_workflow_model(
+            fallback_model=self._fallback_model,
+            encryption_key=self._encryption_key,
+            azure_ad_token_provider=self._azure_ad_token_provider,
+        )
+        # Non-pool STEP nodes keyed by executor_key; pool nodes use a synthetic key.
+        keyed_nodes = [n for n in all_nodes if n.executor_key and not n.a2a_pool]
         pool_nodes = [n for n in all_nodes if n.a2a_pool]
 
         logger.debug(
-            "definition %r: executor_keys=%r  pool_nodes=%r",
+            "definition %r: keyed_nodes=%r  pool_nodes=%r",
             definition.name,
-            executor_keys,
+            [n.executor_key for n in keyed_nodes],
             [n.name for n in pool_nodes],
         )
 
         return await build_executor_registry(
-            executor_keys,
-            llm=self._llm,
+            keyed_nodes,
+            default_model=default_model,
             auth_context=auth_context,
             jwt_config=self._jwt_config,
+            encryption_key=self._encryption_key,
+            azure_ad_token_provider=self._azure_ad_token_provider,
             pool_nodes=pool_nodes,
-            selector_llm=self._selector_llm,
             a2a_httpx_client=self._a2a_httpx_client,
             headers_provider=self._headers_provider,
             redis_client=self._redis_client,
@@ -470,13 +491,26 @@ class WorkflowRunner:
     async def _handle_run_output(self, run: WorkflowRun, result: Any) -> None:
         """Route the WorkflowRunOutput returned by arun / acontinue_run.
 
-        - If ``result.is_paused``: persist serialized ``step_requirements`` into
-          ``WorkflowRun.pending_requirements`` and flip status to AWAITING_APPROVAL.
-          The runner coroutine then returns (no busy-waiting; pod-restart safe).
-        - Otherwise: trust WorkflowRunSyncer to have already written terminal state,
-          and just reload from Mongo so the in-memory ``run`` reflects what
-          callers will see.
+        Reload the state written by WorkflowRunSyncer first: a terminal step
+        failure may cause agno to request output review, but must never become
+        resumable. Also inspect the returned output in case the syncer's Beanie
+        transaction failed. Only non-terminal pauses become AWAITING_APPROVAL.
         """
+        try:
+            await run.sync()
+        except DocumentNotFound:
+            logger.warning("[run=%s] sync() skipped — document deleted before reload", run.id)
+            return
+
+        # agno checks post-execution output review before StepOutput.stop. A
+        # failing step may therefore report a pause after the syncer has already
+        # persisted FAILED; that terminal outcome must win over human review.
+        if run.status in _TERMINAL_RUN_STATUSES:
+            return
+
+        if await self._persist_stopped_failure(run, result):
+            return
+
         if getattr(result, "is_paused", False):
             serialized: list[dict[str, Any]] = []
             for req in getattr(result, "step_requirements", None) or []:
@@ -505,13 +539,36 @@ class WorkflowRunner:
             )
             return
 
-        try:
-            await run.sync()
-        except DocumentNotFound:
-            # The document was deleted between workflow completion and this sync
-            # (e.g. concurrent cleanup). The run already reached a terminal state
-            # via WorkflowRunSyncer, so there is nothing left to do.
-            logger.warning("[run=%s] sync() skipped — document deleted before reload", run.id)
+    async def _persist_stopped_failure(
+        self,
+        run: WorkflowRun,
+        result: Any,
+    ) -> bool:
+        """Persist a terminal step failure even when the session mirror failed.
+
+        WorkflowRunSyncer logs Beanie transaction errors without raising. Its
+        previously saved agno session may still offer output review, so a stale
+        WorkflowRun must not make the failed output resumable. Save errors must
+        propagate to the caller instead of falling through to approval handling.
+        """
+        if not isinstance(result, WorkflowRunOutput):
+            return False
+        step_outputs = _flatten_step_results(result.step_results)
+        if not any(output.stop for output in step_outputs):
+            return False
+
+        definition = definition_from_snapshot(run.definition_snapshot) if run.definition_snapshot else None
+        nodes = flatten_workflow_nodes(definition.nodes) if definition else []
+        node_by_name = {node.name: node for node in nodes}
+        if _resolve_workflow_run_status(result, step_outputs, node_by_name) != WorkflowRunStatus.FAILED:
+            return False
+
+        run.status = WorkflowRunStatus.FAILED
+        run.error_summary = _first_failure_error(step_outputs, node_by_name) or run.error_summary
+        run.pending_requirements = []
+        run.finished_at = run.finished_at or datetime.now(UTC)
+        await run.save()
+        return True
 
     async def _finalize_cancel(self, run: WorkflowRun, exc: BaseException) -> None:
         """Mark the run CANCELLED and reverse-notify agno (M2)."""

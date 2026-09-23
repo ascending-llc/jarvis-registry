@@ -20,10 +20,15 @@
    of each attempt, and the terminal outcome is written as soon as the final
    attempt finishes so later steps never leave a completed node looking active.
 
+5. **Workflow-level halting** — a terminal failure not tolerated by
+   ``on_error="skip"`` sets agno's ``StepOutput.stop`` signal. Containers
+   propagate the signal so no later sequential step starts; already-running
+   branches inside a ``Parallel`` are not cancelled.
+
 Node-level HITL (confirmation / user_input / output_review / iteration review)
 is handled by agno's native ``HumanReview`` configuration — agno's execution
 loop detects and pauses on its own, and we surface the pause via
-``WorkflowRunner._handle_run_output`` writing ``WorkflowRun.pending_requirements``.
+``WorkflowRunner._handle_run_output`` for runs without a terminal failure.
 This wrapper covers what agno does not: ad-hoc pause/resume, exponential-backoff
 retry, and per-attempt persistence.
 """
@@ -38,9 +43,17 @@ from datetime import UTC, datetime
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
+from opentelemetry import baggage
+from opentelemetry import context as context_api
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, StepConfig, WorkflowRun
+from registry_pkgs.telemetry.trace_propagation import (
+    BAGGAGE_KEY_ATTEMPT,
+    BAGGAGE_KEY_NODE_ID,
+    BAGGAGE_KEY_WORKFLOW_RUN_ID,
+    bounded_baggage_value,
+)
 from registry_pkgs.workflows.control.queue import DirectiveQueue
 from registry_pkgs.workflows.hitl import PendingDirectiveProjection
 from registry_pkgs.workflows.types import is_skip_tolerated_failure
@@ -114,6 +127,14 @@ def with_control(
                 attempt + 1,
                 max_attempts,
             )
+            # Attach workflow identity as OTEL baggage for the executor() call only (ambient context
+            # is the only channel across agno's fixed StepExecutor signature); detach on every exit.
+            ctx = baggage.set_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID, bounded_baggage_value(run_id))
+            ctx = baggage.set_baggage(BAGGAGE_KEY_NODE_ID, bounded_baggage_value(node_id), context=ctx)
+            ctx = baggage.set_baggage(
+                BAGGAGE_KEY_ATTEMPT, str(attempt + 1), context=ctx
+            )  # 1-based, matches NodeRun.attempt
+            token = context_api.attach(ctx)
             try:
                 result: StepOutput = await executor(step_input, session_state)
             except WorkflowCancelledError:
@@ -121,6 +142,8 @@ def with_control(
             except Exception as exc:
                 logger.exception("[run=%s] step %r executor raised", run_id, node_name)
                 result = StepOutput(content="", success=False, error=str(exc))
+            finally:
+                context_api.detach(token)
 
             if result.success:
                 preview = (result.content or "")[:300]
@@ -149,6 +172,8 @@ def with_control(
 
             logger.warning("Node %r: all %d attempt(s) failed, last error: %s", node_name, max_attempts, result.error)
             await _record_attempt_result(run_id, node_id, node_name, step_config, result)
+            if not is_skip_tolerated_failure(result.success, step_config):
+                result.stop = True
             return result
 
         return StepOutput(content="", success=False, error="Max retries exceeded")

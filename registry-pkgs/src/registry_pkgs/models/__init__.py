@@ -16,6 +16,7 @@ from ._generated import (
     User,
 )
 from .a2a_agent import A2AAgent
+from .embedding_reindex_job import EmbeddingReindexJob
 from .extended_access_role import RegistryAccessRole
 from .extended_acl_entry import RegistryAclEntry
 from .extended_group import ExtendedGroup, ExtendedGroupSource
@@ -32,6 +33,8 @@ from .federation_metadata import (
     FederationMetadata,
 )
 from .federation_sync_job import FederationSyncJob
+from .model_gateway_selection import ModelGatewaySelection
+from .model_source import ModelSource
 from .skill_sync_job import SkillSyncJob
 from .skill_sync_source import SkillSyncSource
 from .token_type import TokenType
@@ -39,6 +42,7 @@ from .workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowSchedule
 
 __all__ = [
     "A2AAgent",
+    "EmbeddingReindexJob",
     "RegistryAclEntry",
     "ExtendedMCPServer",
     "ExtendedSkill",
@@ -51,6 +55,8 @@ __all__ = [
     "AzureFoundryFederationMetadata",
     "FederationMetadata",
     "FederationSyncJob",
+    "ModelGatewaySelection",
+    "ModelSource",
     "SkillSyncJob",
     "SkillSyncSource",
     "RegistryAccessRole",

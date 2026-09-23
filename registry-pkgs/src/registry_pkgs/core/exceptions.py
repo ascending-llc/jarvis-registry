@@ -6,6 +6,11 @@ class InternalServerException(McpGatewayException):
     """Represents rare, unexpected internal runtime failures."""
 
 
+class EmbeddingReindexInProgressException(McpGatewayException):
+    """Raised when an embedding-dependent write or search is attempted while an
+    embedding-model reindex is in progress."""
+
+
 class UrlElicitationRequiredException(McpGatewayException):
     """Raised when the caller must complete URL elicitation for OAuth flow."""
 

@@ -38,6 +38,7 @@ from registry_pkgs.workflows.a2a_client import build_headers, is_azure_foundry_r
 
 from ..core.config import settings
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
+from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +82,12 @@ class A2AAgentService:
         jwt_config: JwtSigningConfig | None = None,
         *,
         azure_client_cache: AzureFoundryClientCache,
+        embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
     ):
         self._a2a_agent_repo = a2a_agent_repo
         self._jwt_config = jwt_config
         self._azure_client_cache = azure_client_cache
+        self._embedding_maintenance_watcher = embedding_maintenance_watcher
 
     @staticmethod
     def _path_conflict_message(input_path: Any, normalized_path: str) -> str:
@@ -522,6 +525,8 @@ class A2AAgentService:
         Raises:
             ValueError: If path already exists or validation fails
         """
+        # Guard first: block the Mongo write below when a reindex is in progress.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             # Validate transport type
             from registry_pkgs.models.a2a_agent import VALID_TRANSPORT_TYPES
@@ -613,6 +618,8 @@ class A2AAgentService:
         Raises:
             ValueError: If agent not found or validation fails
         """
+        # Guard first: block the Mongo write below when a reindex is in progress.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:

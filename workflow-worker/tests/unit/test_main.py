@@ -32,6 +32,7 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     cancellation_manager = object()
     http_client = SimpleNamespace(aclose=AsyncMock())
     azure_client_cache = SimpleNamespace(close=AsyncMock())
+    azure_model_credential = SimpleNamespace(token_provider=object(), close=MagicMock())
     runner = object()
     repository = object()
     loop = SimpleNamespace(add_signal_handler=MagicMock())
@@ -54,6 +55,7 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     monkeypatch.setattr(main, "set_cancellation_manager", MagicMock())
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_kwargs: http_client)
     monkeypatch.setattr(main, "AzureFoundryClientCache", lambda **_kwargs: azure_client_cache)
+    monkeypatch.setattr(main, "AzureModelCredential", lambda: azure_model_credential)
     monkeypatch.setattr(main, "_build_runner", lambda *_args: runner)
     monkeypatch.setattr(main.asyncio, "get_running_loop", lambda: loop)
     monkeypatch.setattr(main, "_run_scheduler_loop", run_scheduler_loop)
@@ -69,6 +71,7 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     assert loop.add_signal_handler.call_count == 2
     http_client.aclose.assert_awaited_once_with()
     azure_client_cache.close.assert_awaited_once_with()
+    azure_model_credential.close.assert_called_once_with()
     close_redis_client.assert_called_once_with(redis_client)
     close_mongodb.assert_awaited_once_with()
     initialize_telemetry.assert_called_once_with()
@@ -165,6 +168,11 @@ async def test_main_shuts_down_telemetry_after_scheduler_drains(monkeypatch: pyt
     monkeypatch.setattr(main, "set_cancellation_manager", MagicMock())
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_kwargs: SimpleNamespace(aclose=AsyncMock()))
     monkeypatch.setattr(main, "AzureFoundryClientCache", lambda **_kwargs: SimpleNamespace(close=AsyncMock()))
+    monkeypatch.setattr(
+        main,
+        "AzureModelCredential",
+        lambda: SimpleNamespace(token_provider=object(), close=MagicMock()),
+    )
     monkeypatch.setattr(main, "_build_runner", lambda *_args: object())
     monkeypatch.setattr(main.asyncio, "get_running_loop", lambda: SimpleNamespace(add_signal_handler=MagicMock()))
     monkeypatch.setattr(main, "_run_scheduler_loop", scheduler_loop)
@@ -183,15 +191,18 @@ def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPa
         aws_access_key_id=None,
         aws_secret_access_key=None,
         aws_session_token=None,
+        encryption_key=b"test-key",
         jwt_signing_config=object(),
         redis_key_prefix="worker-prefix",
     )
     headers_provider = object()
     mcp_headers_provider = object()
+    fallback_model = object()
+    model_factory = MagicMock(return_value=fallback_model)
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(main, "settings", mock_settings)
-    monkeypatch.setattr(main, "AwsBedrock", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "build_legacy_bedrock_model", model_factory)
     monkeypatch.setattr(main.MongoDB, "get_client", lambda: object())
     monkeypatch.setattr(main.MongoDB, "database_name", "jarvis", raising=False)
     monkeypatch.setattr(main, "make_a2a_headers_provider", lambda **kwargs: headers_provider)
@@ -199,10 +210,14 @@ def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(main, "WorkflowRunner", lambda **kwargs: captured.update(kwargs) or object())
 
     azure_client_cache = object()
-    main._build_runner(object(), object(), object(), azure_client_cache)
+    azure_model_credential = SimpleNamespace(token_provider=object())
+    main._build_runner(object(), object(), object(), azure_client_cache, azure_model_credential)
 
+    model_factory.assert_called_once_with("model", "us-east-1")
     assert captured["headers_provider"] is headers_provider
+    assert captured["fallback_model"] is fallback_model
     assert captured["mcp_headers_provider"] is mcp_headers_provider
+    assert captured["azure_ad_token_provider"] is azure_model_credential.token_provider
 
 
 def test_build_mcp_headers_provider_is_non_interactive(monkeypatch: pytest.MonkeyPatch) -> None:

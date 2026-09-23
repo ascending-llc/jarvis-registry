@@ -21,6 +21,7 @@ from registry_pkgs.models.enums import (
 )
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
+from registry_pkgs.models.extended_mcp_server import normalize_server_name
 from registry_pkgs.models.federation import (
     AgentCoreRuntimeAccessConfig,
     Federation,
@@ -42,6 +43,7 @@ from registry_pkgs.models.federation_sync_job import (
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
+from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
     AzureAiFoundrySyncHandler,
@@ -214,8 +216,34 @@ async def run_federation_sync_background(
     federation: Federation,
     job: FederationSyncJob,
     author_id: PydanticObjectId,
+    embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
 ) -> None:
-    """Run a federation sync after the triggering response has been sent."""
+    """Run a federation sync after the triggering response has been sent.
+
+    Federation sync bypasses the gated service methods (it drives the repos
+    directly and commits Mongo before rebuilding vectors), so it is gated here at
+    the top instead. A skip finalizes BOTH the federation and the job as FAILED
+    via the same helpers the normal failure path uses, so neither is left stuck
+    reporting a sync in progress; the existing retry cadence is unchanged.
+    """
+    if embedding_maintenance_watcher is not None and embedding_maintenance_watcher.is_active():
+        error = "Skipped: embedding reindex in progress, will retry on next sync"
+        await federation_sync_service.federation_crud_service.mark_sync_failed(
+            federation,
+            error,
+            last_sync=federation_sync_service._build_failed_last_sync(job, error),
+        )
+        await federation_sync_service.federation_job_service.mark_failed(
+            job,
+            FederationJobPhase.FAILED,
+            error,
+        )
+        logger.info(
+            "Federation sync skipped (embedding reindex in progress): federation_id=%s job_id=%s",
+            federation.id,
+            job.id,
+        )
+        return
     try:
         await federation_sync_service.run_sync(
             federation=federation,
@@ -751,10 +779,10 @@ class FederationSyncService:
         )
         existing_a2a, existing_a2a_by_remote = await self._load_existing_by_remote(A2AAgent, federation.id, session)
 
-        existing_mcp_by_server_name = await self._prefetch_unique_key_owners(
+        existing_mcp_by_normalized_name = await self._prefetch_unique_key_owners(
             ExtendedMCPServer,
-            "serverName",
-            sorted({item.serverName for item in discovered_mcp if item.serverName}),
+            "normalizedServerName",
+            sorted({item.normalizedServerName for item in discovered_mcp if item.normalizedServerName}),
             session,
         )
         existing_a2a_by_path = await self._prefetch_unique_key_owners(
@@ -765,7 +793,12 @@ class FederationSyncService:
         )
 
         discovered_mcp_ids = self._classify_mcp_items(
-            federation, discovered_mcp, existing_mcp_by_remote, existing_mcp_by_server_name, apply_summary, sync_plan
+            federation,
+            discovered_mcp,
+            existing_mcp_by_remote,
+            existing_mcp_by_normalized_name,
+            apply_summary,
+            sync_plan,
         )
         discovered_mcp_ids.update(protected_runtime_arns or set())
         self._collect_stale_items(
@@ -875,20 +908,21 @@ class FederationSyncService:
         federation: Federation,
         discovered_mcp: list[Any],
         existing_by_remote: dict[str, Any],
-        existing_by_server_name: dict[str, Any],
+        existing_by_normalized_name: dict[str, Any],
         summary: FederationApplySummary,
         plan: FederationSyncPlan,
     ) -> set[str]:
         """Classify each discovered MCP server as create, update, unchanged, or skip.
 
-        For new items (no existing doc matched by runtime ARN), checks serverName against
-        persisted owners and the current batch. For existing items whose serverName changed
-        (rename), applies the same conflict checks before allowing the update.
+        For new items (no existing doc matched by runtime ARN), checks normalizedServerName
+        against persisted owners and the current batch. For existing items whose
+        normalizedServerName changed (rename), applies the same conflict checks before allowing
+        the update.
 
         Returns the set of discovered runtime ARNs (used to detect stale items afterward).
         """
         discovered_ids: set[str] = set()
-        planned_server_names: dict[str, Any] = {}
+        planned_normalized_names: dict[str, Any] = {}
 
         for item in discovered_mcp:
             remote_id = self._extract_runtime_arn(item.federationMetadata)
@@ -916,10 +950,11 @@ class FederationSyncService:
                 if self._skip_on_conflict(
                     summary,
                     federation.id,
-                    item.serverName,
+                    item.normalizedServerName,
                     "MCP server",
-                    existing_by_server_name.get(item.serverName),
-                    planned_server_names,
+                    existing_by_normalized_name.get(item.normalizedServerName),
+                    planned_normalized_names,
+                    key_label="normalizedServerName",
                     discovered_remote_id=remote_id,
                 ):
                     summary.skippedMcpServers += 1
@@ -935,22 +970,23 @@ class FederationSyncService:
             if existing is None:
                 summary.createdMcpServers += 1
                 plan.mcp_creates.append((item, remote_id))
-                planned_server_names[item.serverName] = item
+                planned_normalized_names[item.normalizedServerName] = item
             else:
-                if existing.serverName != item.serverName:
+                if existing.normalizedServerName != item.normalizedServerName:
                     if self._skip_on_conflict(
                         summary,
                         federation.id,
-                        item.serverName,
+                        item.normalizedServerName,
                         "MCP server",
-                        existing_by_server_name.get(item.serverName),
-                        planned_server_names,
+                        existing_by_normalized_name.get(item.normalizedServerName),
+                        planned_normalized_names,
                         existing_self_id=getattr(existing, "id", None),
+                        key_label="normalizedServerName",
                         discovered_remote_id=remote_id,
                     ):
                         summary.skippedMcpServers += 1
                         continue
-                    planned_server_names[item.serverName] = existing
+                    planned_normalized_names[item.normalizedServerName] = existing
 
                 if self._is_resource_unchanged(existing, item):
                     summary.unchangedMcpServers += 1
@@ -1365,6 +1401,7 @@ class FederationSyncService:
     @staticmethod
     def _copy_mcp_update_fields(existing: Any, discovered: Any) -> None:
         existing.serverName = discovered.serverName
+        existing.normalizedServerName = normalize_server_name(discovered.serverName)
         existing.path = discovered.path
         existing.tags = list(discovered.tags or [])
         existing.config = dict(discovered.config or {})

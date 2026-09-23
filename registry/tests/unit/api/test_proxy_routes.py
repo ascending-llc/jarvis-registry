@@ -11,11 +11,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
+import httpx
 import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from starlette.requests import Request
 
+from registry.api import proxy_routes
 from registry.api.proxy_routes import (
     _serve_managed_agent_card,
     dynamic_mcp_get_proxy,
@@ -327,6 +332,31 @@ async def test_post_proxy_acl_allowed_continues(monkeypatch):
     assert "Access denied" not in body["result"]["content"][0]["text"]
 
 
+async def test_post_proxy_rejects_non_string_method(monkeypatch):
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": 123, "id": 1}),
+    )
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server()),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert body["result"]["isError"] is True
+    assert "'method'" in body["result"]["content"][0]["text"]
+
+
 async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeypatch):
     monkeypatch.setattr(
         "registry.api.proxy_routes._parse_json_rpc_body",
@@ -566,3 +596,281 @@ def test_httpx_decoders_supported_decoders_is_accessible():
     import httpx
 
     assert frozenset(httpx._decoders.SUPPORTED_DECODERS.keys())
+
+
+def _proxy_receive():
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    return receive
+
+
+def _proxy_post_request(extra_headers: list[tuple[bytes, bytes]]) -> Request:
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "path": f"/proxy/server/{VALID_OBJECT_ID}/github",
+        "query_string": b"",
+        "headers": [(b"accept", b"text/event-stream"), *extra_headers],
+        "path_params": {"user_id": VALID_OBJECT_ID, "server_path": "github"},
+    }
+    return Request(scope, receive=_proxy_receive())
+
+
+async def _run_proxy_and_capture(monkeypatch, msg_body: dict, extra_headers=None):
+    """Drive dynamic_mcp_post_proxy through a real (mocked) downstream call.
+
+    Returns (captured_downstream_headers, exported_spans).
+    """
+
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(proxy_routes, "_TRACER", provider.get_tracer("test"))
+
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value=msg_body),
+    )
+
+    # build_authenticated_headers passes the accumulated headers straight through, so the
+    # injection step is what must strip any client-supplied trace headers.
+    async def fake_build(**kwargs):
+        return dict(kwargs["additional_headers"])
+
+    monkeypatch.setattr(proxy_routes, "build_authenticated_headers", AsyncMock(side_effect=fake_build))
+
+    captured: dict = {}
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return SimpleNamespace(
+                headers=httpx.Headers({"content-type": "application/json"}),
+                status_code=200,
+                aread=AsyncMock(return_value=b'{"jsonrpc":"2.0","id":1,"result":{}}'),
+            )
+
+        async def __aexit__(self, *args):
+            return False
+
+    def fake_stream(method, url, headers=None, content=None):
+        captured["headers"] = headers
+        return _FakeStreamCtx()
+
+    proxy_client = Mock()
+    proxy_client.stream = fake_stream
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_proxy_post_request(extra_headers or []),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(enabled=True)),
+        oauth_service=Mock(),
+        proxy_client=proxy_client,
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(has_server_consent=True),
+    )
+    assert resp.status_code == 200
+    return captured["headers"], exporter.get_finished_spans()
+
+
+async def test_proxy_creates_span_and_injects_fresh_trace_context(monkeypatch):
+    headers, spans = await _run_proxy_and_capture(
+        monkeypatch, {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "search"}, "id": 1}
+    )
+
+    assert any(s.name == "proxy.dynamic_mcp_post_proxy" for s in spans)
+    assert "traceparent" in headers
+    # W3C baggage percent-encodes reserved chars, so "tools/call" → "tools%2Fcall".
+    assert "jarvis.mcp.method=tools%2Fcall" in headers["baggage"]
+    assert "jarvis.mcp.tool_name=search" in headers["baggage"]
+
+
+async def test_proxy_strips_client_supplied_trace_headers(monkeypatch):
+    attacker = [
+        (b"traceparent", b"00-11111111111111111111111111111111-2222222222222222-01"),
+        (b"tracestate", b"attacker=1"),
+        (b"baggage", b"attacker=pwned"),
+    ]
+    headers, _ = await _run_proxy_and_capture(
+        monkeypatch,
+        {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "search"}, "id": 1},
+        extra_headers=attacker,
+    )
+
+    assert headers.get("traceparent") != "00-11111111111111111111111111111111-2222222222222222-01"
+    assert "attacker" not in headers.get("baggage", "")
+    assert "tracestate" not in headers
+
+
+async def test_proxy_tool_name_baggage_only_for_tools_call(monkeypatch):
+    headers, _ = await _run_proxy_and_capture(monkeypatch, {"jsonrpc": "2.0", "method": "initialize", "id": 1})
+
+    assert "jarvis.mcp.method=initialize" in headers["baggage"]
+    assert "jarvis.mcp.tool_name" not in headers["baggage"]
+
+
+async def test_proxy_truncates_overlong_tool_name(monkeypatch):
+    from registry_pkgs.telemetry.trace_propagation import MAX_BAGGAGE_VALUE_LENGTH
+
+    long_name = "a" * (MAX_BAGGAGE_VALUE_LENGTH + 100)
+    headers, _ = await _run_proxy_and_capture(
+        monkeypatch,
+        {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": long_name}, "id": 1},
+    )
+
+    injected = headers["baggage"]
+    assert "jarvis.mcp.tool_name=" + "a" * MAX_BAGGAGE_VALUE_LENGTH in injected
+    assert "a" * (MAX_BAGGAGE_VALUE_LENGTH + 1) not in injected
+
+
+async def test_proxy_truncates_overlong_mcp_method(monkeypatch):
+    from registry_pkgs.telemetry.trace_propagation import MAX_BAGGAGE_VALUE_LENGTH
+
+    long_method = "m" * (MAX_BAGGAGE_VALUE_LENGTH + 100)
+    headers, _ = await _run_proxy_and_capture(monkeypatch, {"jsonrpc": "2.0", "method": long_method, "id": 1})
+
+    injected = headers["baggage"]
+    assert "jarvis.mcp.method=" + "m" * MAX_BAGGAGE_VALUE_LENGTH in injected
+    assert "m" * (MAX_BAGGAGE_VALUE_LENGTH + 1) not in injected
+
+
+# --- Trace-context propagation on the GET/SSE MCP proxy and the A2A passthrough (AS-1847 follow-up) ---
+
+
+def _tracer_with_exporter(monkeypatch):
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from registry.api import proxy_routes
+
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(proxy_routes, "_TRACER", provider.get_tracer("test"))
+    return exporter
+
+
+_ATTACKER_TRACE_HEADERS = [
+    (b"traceparent", b"00-11111111111111111111111111111111-2222222222222222-01"),
+    (b"tracestate", b"attacker=1"),
+    (b"baggage", b"attacker=pwned"),
+]
+
+
+async def test_get_proxy_strips_client_trace_headers_and_creates_span(monkeypatch):
+    import httpx
+
+    from registry.api import proxy_routes
+
+    exporter = _tracer_with_exporter(monkeypatch)
+    monkeypatch.setattr(
+        proxy_routes, "build_authenticated_headers", AsyncMock(side_effect=lambda **kw: dict(kw["additional_headers"]))
+    )
+
+    captured: dict = {}
+
+    class _Ctx:
+        async def __aenter__(self):
+            return SimpleNamespace(
+                headers=httpx.Headers({"content-type": "text/event-stream"}),
+                status_code=200,
+                aiter_bytes=lambda: iter(()),
+            )
+
+        async def __aexit__(self, *a):
+            return False
+
+    def fake_stream(method, url, headers=None, content=None, timeout=None):
+        captured["headers"] = headers
+        return _Ctx()
+
+    proxy_client = Mock()
+    proxy_client.stream = fake_stream
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "path": f"/proxy/server/{VALID_OBJECT_ID}/github",
+        "query_string": b"",
+        "headers": [(b"accept", b"text/event-stream"), *_ATTACKER_TRACE_HEADERS],
+        "path_params": {"user_id": VALID_OBJECT_ID, "server_path": "github"},
+    }
+    request = Request(scope, receive=_proxy_receive())
+
+    resp = await dynamic_mcp_get_proxy(
+        request=request,
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(enabled=True)),
+        oauth_service=Mock(),
+        proxy_client=proxy_client,
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+    )
+
+    assert resp.status_code == 200
+    headers = captured["headers"]
+    assert "traceparent" in headers
+    assert headers.get("traceparent") != "00-11111111111111111111111111111111-2222222222222222-01"
+    assert "attacker" not in headers.get("baggage", "")
+    assert "tracestate" not in headers
+    assert any(s.name == "proxy.dynamic_mcp_get_proxy" for s in exporter.get_finished_spans())
+
+
+async def test_forward_a2a_strips_client_trace_headers_and_creates_span(monkeypatch):
+    import httpx
+
+    from registry.api import proxy_routes
+
+    exporter = _tracer_with_exporter(monkeypatch)
+
+    captured: dict = {}
+
+    class _Ctx:
+        async def __aenter__(self):
+            return SimpleNamespace(
+                headers=httpx.Headers({"content-type": "application/json"}),
+                status_code=200,
+                aread=AsyncMock(return_value=b"{}"),
+            )
+
+        async def __aexit__(self, *a):
+            return False
+
+    def fake_stream(method, url, headers=None, content=None, params=None, timeout=None):
+        captured["headers"] = headers
+        return _Ctx()
+
+    proxy_client = Mock()
+    proxy_client.stream = fake_stream
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "path": "/gateway/proxy/a2a/test-agent",
+        "query_string": b"",
+        "headers": [(b"authorization", b"Bearer caller-token"), *_ATTACKER_TRACE_HEADERS],
+        "path_params": {"agent_path": "test-agent"},
+    }
+    request = Request(scope, receive=_proxy_receive())
+
+    resp = await proxy_routes._forward_a2a(request, "https://agent.example.com/a2a", proxy_client, "test-agent")
+
+    assert resp.status_code == 200
+    headers = captured["headers"]
+    assert "traceparent" in headers
+    assert headers.get("traceparent") != "00-11111111111111111111111111111111-2222222222222222-01"
+    assert "attacker" not in headers.get("baggage", "")
+    assert "tracestate" not in headers
+    assert any(s.name == "proxy.forward_a2a" for s in exporter.get_finished_spans())

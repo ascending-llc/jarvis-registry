@@ -11,7 +11,7 @@ Tests:
   1. Pause → Resume → run completes normally
   2. Pause → Cancel → run ends with CANCELLED
   3. Cancel mid-execution → run ends with CANCELLED
-  4. Retry a COMPLETED run → child run is created (PENDING → fires in background)
+  4. Retry a COMPLETED run → child run is created and completes
 
 Usage:
     uv run python scripts/test_control_e2e.py
@@ -34,11 +34,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agno.models.aws import AwsBedrock
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
+
+from registry_pkgs.workflows.model_resolution import build_legacy_bedrock_model
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -83,7 +86,8 @@ class MockWorkflowRunner(WorkflowRunner):
     ) -> dict[str, StepExecutor]:
         """Return a slow mock executor for every executor_key in the definition."""
         all_nodes = flatten_workflow_nodes(definition.nodes)
-        executor_keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
+        # Registry is keyed by node.id
+        keyed_nodes = [n for n in all_nodes if n.executor_key and not n.a2a_pool]
 
         duration = self._step_duration
 
@@ -96,23 +100,19 @@ class MockWorkflowRunner(WorkflowRunner):
 
             return mock
 
-        return {key: _make_executor(key) for key in executor_keys}
+        return {node.id: _make_executor(node.executor_key) for node in keyed_nodes}
 
 
 def _make_runner(queue: DirectiveQueue) -> MockWorkflowRunner:
     """Build a MockWorkflowRunner wired to *queue*."""
-    llm = AwsBedrock(
-        id=resolve_bedrock_model_id(
-            model_env_var="BEDROCK_MODEL",
-            fallback_model_id="us.amazon.nova-lite-v1:0",
-        ),
-        aws_region=settings.aws_region,
-        aws_session_token=settings.aws_session_token,
-        aws_access_key_id=settings.aws_access_key_id,
-        aws_secret_access_key=settings.aws_secret_access_key,
+    fallback_model = build_legacy_bedrock_model(
+        resolve_bedrock_model_id(model_env_var="BEDROCK_MODEL", fallback_model_id="us.amazon.nova-lite-v1:0"),
+        settings.aws_region,
     )
     return MockWorkflowRunner(
-        llm=llm,
+        fallback_model=fallback_model,
+        encryption_key=settings.encryption_key,
+        azure_ad_token_provider=None,
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -128,6 +128,7 @@ async def _create_definition(name: str, n_steps: int = 2) -> WorkflowDefinition:
             name=f"step-{i}",
             node_type=WorkflowNodeType.STEP,
             executor_key=f"mock-step-{i}",
+            step_objective=f"Execute mock workflow-control step {i}.",
         )
         for i in range(1, n_steps + 1)
     ]
@@ -294,7 +295,7 @@ async def test_cancel_mid_run(queue: DirectiveQueue) -> bool:
 
 
 async def test_retry_completed(queue: DirectiveQueue) -> bool:
-    """Retry a COMPLETED run → child WorkflowRun is created."""
+    """Retry a COMPLETED run and wait for the child WorkflowRun to complete."""
     print("\n── Test 4: Retry a COMPLETED run → child run created ────────────")
     from registry.services.workflow_control_service import WorkflowControlService
 
@@ -339,7 +340,10 @@ async def test_retry_completed(queue: DirectiveQueue) -> bool:
         child_doc is not None and str(child_doc.status) in ("running", "completed"),
     )
 
-    return child_doc is not None and child_id != run_id
+    child_final = await _poll_status(child_id, until=STEP_DURATION * 4)
+    _check(f"Child run completed (final={child_final!r})", child_final == "completed")
+
+    return child_doc is not None and child_id != run_id and child_final == "completed"
 
 
 async def main() -> int:
@@ -354,7 +358,7 @@ async def main() -> int:
     queue = DirectiveQueue()
 
     print(f"\nStep duration: {STEP_DURATION}s  (override with STEP_DURATION env var)")
-    print(f"Estimated total runtime: ~{int(STEP_DURATION * 6)}s\n")
+    print(f"Estimated total runtime: ~{int(STEP_DURATION * 8)}s\n")
 
     try:
         results = [

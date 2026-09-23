@@ -197,6 +197,9 @@ class WorkflowNode(BaseModel):
 
     executor_key: str | None = None
     a2a_pool: list[str] = Field(default_factory=list)
+    # STEP nodes only: optional per-node model override (a ModelSource id). No-op when the
+    # executor_key resolves to a single A2A agent at runtime (that path takes no llm).
+    model_source_id: str | None = None
     # Per-step retry and error-handling policy (STEP nodes only).
     step_config: StepConfig | None = None
     config: dict[str, Any] = Field(default_factory=dict)
@@ -283,6 +286,8 @@ class WorkflowNode(BaseModel):
             raise ValueError("referenced_node_names is only supported on step nodes")
         if self.step_objective is not None:
             raise ValueError("step_objective is only valid on step nodes")
+        if self.model_source_id is not None:
+            raise ValueError("model_source_id is only valid on step nodes")
 
         if self.node_type == WorkflowNodeType.PARALLEL:
             if len(self.children) < 2:
@@ -432,17 +437,17 @@ class ResolvedDependency(BaseModel):
     source_node_run_id: PydanticObjectId | None = None
 
 
-def _collect_node_names_with_duplicates(nodes: list[WorkflowNode]) -> list[str]:
-    """Depth-first collect of every node name, preserving duplicates for Counter-based uniqueness check."""
-    names: list[str] = []
+def _collect_node_identity_values(nodes: list[WorkflowNode], attribute: Literal["id", "name"]) -> list[str]:
+    """Depth-first collect of node ids or names, preserving duplicates for uniqueness checks."""
+    values: list[str] = []
     for node in nodes:
-        names.append(node.name)
-        names.extend(_collect_node_names_with_duplicates(node.children))
-        names.extend(_collect_node_names_with_duplicates(node.true_steps))
-        names.extend(_collect_node_names_with_duplicates(node.false_steps))
+        values.append(getattr(node, attribute))
+        values.extend(_collect_node_identity_values(node.children, attribute))
+        values.extend(_collect_node_identity_values(node.true_steps, attribute))
+        values.extend(_collect_node_identity_values(node.false_steps, attribute))
         for choice in node.choices:
-            names.extend(_collect_node_names_with_duplicates(choice.steps))
-    return names
+            values.extend(_collect_node_identity_values(choice.steps, attribute))
+    return values
 
 
 def _collect_all_node_names(nodes: list[WorkflowNode]) -> set[str]:
@@ -510,18 +515,23 @@ class WorkflowDefinition(Document):
         return value
 
     @model_validator(mode="after")
-    def _validate_node_names_unique(self) -> WorkflowDefinition:
-        """Every node name must be unique across the entire workflow tree.
+    def _validate_node_identities_unique(self) -> WorkflowDefinition:
+        """Every node id and name must be unique across the entire workflow tree.
 
         referenced_node_names resolution relies on one flat name→node map spanning
-        the whole tree, so two nodes sharing a name in different branches are already
-        ambiguous even if they never execute concurrently.
+        the whole tree. Executor resolution is keyed by node id. Duplicates in either
+        identity would therefore make execution ambiguous.
         """
-        duplicates = sorted(
-            name for name, count in Counter(_collect_node_names_with_duplicates(self.nodes)).items() if count > 1
-        )
-        if duplicates:
-            raise ValueError(f"node names must be unique across the workflow; duplicates found: {duplicates}")
+        for attribute in ("id", "name"):
+            duplicates = sorted(
+                value
+                for value, count in Counter(_collect_node_identity_values(self.nodes, attribute)).items()
+                if count > 1
+            )
+            if duplicates:
+                raise ValueError(
+                    f"node {attribute}s must be unique across the workflow; duplicates found: {duplicates}"
+                )
         return self
 
     @model_validator(mode="after")

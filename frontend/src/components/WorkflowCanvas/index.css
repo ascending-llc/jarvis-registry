@@ -83,6 +83,19 @@
   margin: 12px !important;
 }
 
+/* Keep the Step Objective resize handle aligned with the active theme. */
+.step-objective-textarea::-webkit-resizer {
+  background-color: var(--jarvis-card-muted);
+  background-image: linear-gradient(
+    135deg,
+    transparent 0 48%,
+    var(--jarvis-primary) 48% 56%,
+    transparent 56% 68%,
+    var(--jarvis-primary) 68% 76%,
+    transparent 76%
+  );
+}
+
 /* Shared live-status animation for canvas nodes and run history. */
 @keyframes workflow-status-spin {
   from {

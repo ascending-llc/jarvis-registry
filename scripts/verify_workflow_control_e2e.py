@@ -42,13 +42,14 @@ import time
 import traceback
 from pathlib import Path
 
-from agno.models.aws import AwsBedrock
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
 from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 from fastapi import HTTPException
+
+from registry_pkgs.workflows.model_resolution import build_legacy_bedrock_model
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -143,6 +144,7 @@ async def _seed_executor_servers(acl_service: ACLService) -> None:
         if server_id is None:
             server = ExtendedMCPServer(
                 serverName=key,
+                normalizedServerName=normalize_server_name(key),
                 path=f"/{key}",
                 config={
                     "enabled": True,
@@ -176,7 +178,6 @@ async def _cleanup_executor_servers() -> None:
 
 
 from registry.services.access_control_service import ACLService, load_role_cache
-from registry.services.group_directory_client import KeycloakGroupDirectoryClient
 from registry.services.group_service import GroupService
 from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_service import WorkflowService
@@ -191,6 +192,7 @@ from registry_pkgs.models.enums import (
     WorkflowRunStatus,
 )
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_mcp_server import normalize_server_name
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
 from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
@@ -218,7 +220,7 @@ class MockRunner(WorkflowRunner):
 
     async def _build_registry(self, definition, auth_context):
         all_nodes = flatten_workflow_nodes(definition.nodes)
-        keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
+        keyed_nodes = [node for node in all_nodes if node.executor_key]
 
         def make(key: str) -> StepExecutor:
             async def mock(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
@@ -237,22 +239,18 @@ class MockRunner(WorkflowRunner):
 
             return mock
 
-        return {k: make(k) for k in keys}
+        return {node.id: make(node.executor_key) for node in keyed_nodes}
 
 
 def _build_runner(queue: DirectiveQueue) -> MockRunner:
-    llm = AwsBedrock(
-        id=resolve_bedrock_model_id(
-            model_env_var="BEDROCK_MODEL",
-            fallback_model_id="us.amazon.nova-lite-v1:0",
-        ),
-        aws_region=settings.aws_region,
-        aws_session_token=settings.aws_session_token,
-        aws_access_key_id=settings.aws_access_key_id,
-        aws_secret_access_key=settings.aws_secret_access_key,
+    fallback_model = build_legacy_bedrock_model(
+        resolve_bedrock_model_id(model_env_var="BEDROCK_MODEL", fallback_model_id="us.amazon.nova-lite-v1:0"),
+        settings.aws_region,
     )
     return MockRunner(
-        llm=llm,
+        fallback_model=fallback_model,
+        encryption_key=settings.encryption_key,
+        azure_ad_token_provider=None,
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -276,7 +274,7 @@ class FailingMockRunner(WorkflowRunner):
 
     async def _build_registry(self, definition, auth_context):
         all_nodes = flatten_workflow_nodes(definition.nodes)
-        keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
+        keyed_nodes = [node for node in all_nodes if node.executor_key]
 
         def make(key: str) -> StepExecutor:
             async def mock(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
@@ -288,22 +286,18 @@ class FailingMockRunner(WorkflowRunner):
 
             return mock
 
-        return {k: make(k) for k in keys}
+        return {node.id: make(node.executor_key) for node in keyed_nodes}
 
 
 def _build_failing_runner(queue: DirectiveQueue, fail_counts: dict[str, int]) -> FailingMockRunner:
-    llm = AwsBedrock(
-        id=resolve_bedrock_model_id(
-            model_env_var="BEDROCK_MODEL",
-            fallback_model_id="us.amazon.nova-lite-v1:0",
-        ),
-        aws_region=settings.aws_region,
-        aws_session_token=settings.aws_session_token,
-        aws_access_key_id=settings.aws_access_key_id,
-        aws_secret_access_key=settings.aws_secret_access_key,
+    fallback_model = build_legacy_bedrock_model(
+        resolve_bedrock_model_id(model_env_var="BEDROCK_MODEL", fallback_model_id="us.amazon.nova-lite-v1:0"),
+        settings.aws_region,
     )
     return FailingMockRunner(
-        llm=llm,
+        fallback_model=fallback_model,
+        encryption_key=settings.encryption_key,
+        azure_ad_token_provider=None,
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -1578,7 +1572,7 @@ async def amain(selected: list[str], keep_data: bool) -> int:
     runner = _build_runner(queue)
     acl_service = ACLService(
         user_service=UserService(),
-        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
+        group_service=GroupService(directory_clients={}),
         role_cache=await load_role_cache(),
     )
     workflow_service = WorkflowService(acl_service=acl_service)

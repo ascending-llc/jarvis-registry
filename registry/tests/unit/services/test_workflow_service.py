@@ -23,6 +23,7 @@ from registry.services.workflow_service import (
     WorkflowService,
 )
 from registry_pkgs.database.mongodb import MongoDB
+from registry_pkgs.models.enums import ModelSourceMode
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.workflow import WorkflowNode
 
@@ -239,6 +240,114 @@ async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(
     )
     assert captured_queries[1] == ("a2a", {"path": {"$in": ["deep-intel"]}, "config.enabled": True})
     assert captured_queries[2] == ("a2a", {"path": {"$in": ["researcher"]}, "config.enabled": True})
+
+
+@pytest.mark.asyncio
+async def test_validate_model_source_refs_accepts_active_chat_source(monkeypatch: pytest.MonkeyPatch):
+    source_id = PydanticObjectId()
+    source = SimpleNamespace(id=source_id, deletedAt=None, mode=ModelSourceMode.CHAT)
+    monkeypatch.setattr(workflow_service.ModelSource, "find", lambda *_a, **_kw: _ListQuery([source]))
+    node = WorkflowNode(name="step", executor_key="tool", model_source_id=str(source_id), step_objective="run")
+
+    await WorkflowService._validate_model_source_refs([node])
+
+
+@pytest.mark.asyncio
+async def test_validate_model_source_refs_accepts_uppercase_object_id(monkeypatch: pytest.MonkeyPatch):
+    source_id = PydanticObjectId("abcdefabcdefabcdefabcdef")
+    source = SimpleNamespace(id=source_id, deletedAt=None, mode=ModelSourceMode.CHAT)
+    monkeypatch.setattr(workflow_service.ModelSource, "find", lambda *_a, **_kw: _ListQuery([source]))
+    node = WorkflowNode(
+        name="step",
+        executor_key="tool",
+        model_source_id=str(source_id).upper(),
+        step_objective="run",
+    )
+
+    await WorkflowService._validate_model_source_refs([node])
+
+
+@pytest.mark.asyncio
+async def test_validate_model_source_refs_rejects_invalid_id() -> None:
+    node = WorkflowNode(name="step", executor_key="tool", model_source_id="invalid", step_objective="run")
+
+    with pytest.raises(HTTPException, match="Unknown model source") as exc_info:
+        await WorkflowService._validate_model_source_refs([node])
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True])
+async def test_validate_model_source_refs_rejects_missing_or_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+    deleted: bool,
+) -> None:
+    source_id = PydanticObjectId()
+    sources = [SimpleNamespace(id=source_id, deletedAt=datetime.now(UTC), mode=ModelSourceMode.CHAT)] if deleted else []
+    monkeypatch.setattr(workflow_service.ModelSource, "find", lambda *_a, **_kw: _ListQuery(sources))
+    node = WorkflowNode(name="step", executor_key="tool", model_source_id=str(source_id), step_objective="run")
+
+    with pytest.raises(HTTPException, match="Unknown model source") as exc_info:
+        await WorkflowService._validate_model_source_refs([node])
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_validate_model_source_refs_rejects_embedding_source(monkeypatch: pytest.MonkeyPatch):
+    source_id = PydanticObjectId()
+    source = SimpleNamespace(id=source_id, deletedAt=None, mode=ModelSourceMode.EMBEDDING)
+    monkeypatch.setattr(workflow_service.ModelSource, "find", lambda *_a, **_kw: _ListQuery([source]))
+    node = WorkflowNode(name="step", executor_key="tool", model_source_id=str(source_id), step_objective="run")
+
+    with pytest.raises(HTTPException, match="must have mode 'chat'") as exc_info:
+        await WorkflowService._validate_model_source_refs([node])
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_source", ["missing", "deleted", "embedding"])
+async def test_create_workflow_returns_400_for_invalid_model_source(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_source: str,
+) -> None:
+    """Exercise the workflow save boundary, not only the private reference validator."""
+
+    class UnpersistedWorkflow:
+        def __init__(self, **kwargs):
+            self.id = PydanticObjectId()
+            self.name = kwargs["name"]
+            self.nodes = kwargs["nodes"]
+            self.insert = AsyncMock()
+
+    monkeypatch.setattr(workflow_service, "WorkflowDefinition", UnpersistedWorkflow)
+    source_id = PydanticObjectId()
+    sources = []
+    if invalid_source == "deleted":
+        sources = [SimpleNamespace(id=source_id, deletedAt=datetime.now(UTC), mode=ModelSourceMode.CHAT)]
+    elif invalid_source == "embedding":
+        sources = [SimpleNamespace(id=source_id, deletedAt=None, mode=ModelSourceMode.EMBEDDING)]
+    monkeypatch.setattr(workflow_service.ModelSource, "find", lambda *_a, **_kw: _ListQuery(sources))
+    request = WorkflowCreateRequest(
+        name="Invalid model workflow",
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
+        nodes=[
+            WorkflowNodeInput(
+                name="step",
+                nodeType="step",
+                executorKey="tool",
+                modelSourceId=str(source_id),
+                stepObjective="run",
+            )
+        ],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await WorkflowService(acl_service=AsyncMock()).create_workflow(
+            request,
+            user_id=PydanticObjectId(),
+        )
+
+    assert exc_info.value.status_code == 400
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 import httpx
-from agno.models.aws import AwsBedrock
 from beanie import PydanticObjectId
 from redis import Redis
 
@@ -25,6 +24,7 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 from registry_pkgs.workflows.a2a_headers_provider import A2aHeadersProvider, make_a2a_headers_provider
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
+from registry_pkgs.workflows.model_resolution import AzureModelCredential, build_legacy_bedrock_model
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 
@@ -36,7 +36,7 @@ from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
-from .services.agent_scanner import AgentScannerService
+from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
@@ -50,12 +50,13 @@ from .services.group_directory_client import (
     KeycloakGroupDirectoryClient,
 )
 from .services.group_service import GroupService
+from .services.model_gateway_selection_service import ModelGatewaySelectionService
+from .services.model_source_crud_service import ModelSourceCrudService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.search.base import VectorSearchService
 from .services.search.service import SearchService
-from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.skill_service import SkillService
 from .services.skill_sync_apply_service import SkillSyncApplyService
@@ -95,6 +96,14 @@ class RegistryContainer:
         self.redis_client = redis_client
         self.directive_queue = DirectiveQueue()
         self.role_cache: dict[tuple[str, int], PydanticObjectId] = {}
+        # Backstop gate: every vector op resolves db_client.adapter, so wiring the
+        # watcher here blocks any repository access during a reindex, including
+        # callers that bypass the gated service methods.
+        self.db_client.set_reindex_active_check(self.embedding_maintenance_watcher.is_active)
+
+    @cached_property
+    def embedding_maintenance_watcher(self) -> EmbeddingMaintenanceWatcher:
+        return EmbeddingMaintenanceWatcher()
 
     @cached_property
     def mcp_server_repo(self) -> MCPServerRepository:
@@ -141,6 +150,7 @@ class RegistryContainer:
             mcp_server_repo=self.mcp_server_repo,
             a2a_agent_repo=self.a2a_agent_repo,
             acl_service=self.acl_service,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
         )
 
     @cached_property
@@ -298,6 +308,7 @@ class RegistryContainer:
             token_service=self.token_service,
             oauth_service=self.oauth_service,
             mcp_server_repo=self.mcp_server_repo,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
         )
 
     @cached_property
@@ -306,15 +317,16 @@ class RegistryContainer:
             a2a_agent_repo=self.a2a_agent_repo,
             jwt_config=self.settings.jwt_signing_config,
             azure_client_cache=self.azure_foundry_client_cache,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
         )
 
     @cached_property
-    def security_scanner_service(self) -> SecurityScannerService:
-        return SecurityScannerService(server_service=self.server_service)
+    def model_gateway_selection_service(self) -> ModelGatewaySelectionService:
+        return ModelGatewaySelectionService()
 
     @cached_property
-    def agent_scanner_service(self) -> AgentScannerService:
-        return AgentScannerService()
+    def model_source_crud_service(self) -> ModelSourceCrudService:
+        return ModelSourceCrudService(model_gateway_selection_service=self.model_gateway_selection_service)
 
     @cached_property
     def workflow_service(self) -> WorkflowService:
@@ -371,19 +383,23 @@ class RegistryContainer:
         )
 
     @cached_property
+    def azure_model_credential(self) -> AzureModelCredential:
+        """Own the process-wide Azure credential used by workflow LiteLLM models."""
+        return AzureModelCredential()
+
+    @cached_property
     def workflow_runner(self) -> WorkflowRunner:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
-            llm = AwsBedrock(
-                id=self.settings.workflow_llm_model_id,
-                aws_region=self.settings.aws_region,
-                aws_access_key_id=self.settings.aws_access_key_id,
-                aws_secret_access_key=self.settings.aws_secret_access_key,
-                aws_session_token=self.settings.aws_session_token,
+            fallback_model = build_legacy_bedrock_model(
+                self.settings.workflow_llm_model_id,
+                self.settings.aws_region,
             )
 
             return WorkflowRunner(
-                llm=llm,
+                fallback_model=fallback_model,
+                encryption_key=self.settings.encryption_key,
+                azure_ad_token_provider=self.azure_model_credential.token_provider,
                 db_client=MongoDB.get_client(),
                 db_name=MongoDB.database_name,
                 jwt_config=self.settings.jwt_signing_config,
@@ -453,6 +469,7 @@ class RegistryContainer:
             source_crud_service=self.skill_sync_source_crud_service,
             job_service=self.skill_sync_job_service,
             token_service=self.skill_sync_token_service,
+            github_service=self.skill_sync_github_service,
         )
 
     @cached_property
@@ -552,14 +569,19 @@ class RegistryContainer:
         logger.info("Starting durable skill sync job runner...")
         await self.skill_sync_job_runner.start()
 
+        logger.info("Starting embedding maintenance watcher...")
+        await self.embedding_maintenance_watcher.start()
+
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
         await self.skill_sync_job_runner.shutdown()
+        await self.embedding_maintenance_watcher.shutdown()
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()
         await self.a2a_client_registry.close()
+        self.azure_model_credential.close()
         await self.cloud_identity_client.aclose()
 
     def _initialize_federation(self) -> None:

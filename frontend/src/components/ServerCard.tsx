@@ -140,9 +140,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   // Check if this is an Anthropic registry server
   const isAnthropicServer = server.tags?.includes('anthropic-registry');
 
-  // Check if this server has security pending
-  const isSecurityPending = server.tags?.includes('security-pending');
-
   const hasAgentCoreTags =
     server.tags?.includes(FEDERATED_TAG) && server.tags?.includes('aws') && server.tags?.includes('agentcore');
   const hasAzureFoundryTags =
@@ -197,11 +194,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                 {server.tags?.includes('asor') && (
                   <span className='whitespace-nowrap rounded-full border border-[var(--jarvis-warning)]/35 bg-[var(--jarvis-warning-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-warning-text)]'>
                     ASOR
-                  </span>
-                )}
-                {isSecurityPending && (
-                  <span className='whitespace-nowrap rounded-full border border-[var(--jarvis-warning)]/35 bg-[var(--jarvis-warning-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-warning-text)]'>
-                    SECURITY PENDING
                   </span>
                 )}
               </div>

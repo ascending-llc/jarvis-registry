@@ -28,7 +28,18 @@ class _FakeAdapter:
         return True
 
     def filter_by_metadata(self, filters, limit: int, collection_name: str | None = None, **kwargs) -> list[Document]:
-        matched = [doc for doc in self.docs if all(doc.metadata.get(k) == v for k, v in filters.items())]
+        def matches(doc) -> bool:
+            for k, v in filters.items():
+                field = doc.metadata.get(k)
+                # A list value means membership (mirrors the real adapter's list -> contains_any).
+                if isinstance(v, list):
+                    if field not in v:
+                        return False
+                elif field != v:
+                    return False
+            return True
+
+        matched = [doc for doc in self.docs if matches(doc)]
         return matched[:limit]
 
     def delete(self, ids: list[str], collection_name: str | None = None) -> None:
@@ -247,3 +258,55 @@ async def test_delete_by_runtime_identity_skips_when_schema_missing():
     deleted = await repo.delete_by_runtime_identity("fed-X", "arn:runtime:1")
 
     assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# update_tools_metadata / _update_metadata_by_filters
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mcp_update_tools_metadata_patches_only_named_tools():
+    """update_tools_metadata patches only the docs whose tool_name is in the given set, on that server."""
+    docs = [
+        Document(page_content="a", metadata={"server_id": "srv-1", "tool_name": "read_file"}, id="d1"),
+        Document(page_content="b", metadata={"server_id": "srv-1", "tool_name": "write_file"}, id="d2"),
+        Document(page_content="c", metadata={"server_id": "srv-1", "tool_name": "delete_file"}, id="d3"),
+        Document(page_content="d", metadata={"server_id": "srv-2", "tool_name": "read_file"}, id="d4"),
+    ]
+    repo = _make_mcp_repo(docs)
+
+    result = await repo.update_tools_metadata("srv-1", ["read_file", "write_file"], {"tool_enabled": False})
+
+    assert result.metadata_updated == 2
+    updated_ids = [doc_id for doc_id, _ in repo.adapter.metadata_updates]
+    assert set(updated_ids) == {"d1", "d2"}  # not delete_file (d3), not srv-2 (d4)
+
+
+@pytest.mark.asyncio
+async def test_mcp_update_tools_metadata_empty_is_noop():
+    """An empty tool_names list makes no adapter calls."""
+    docs = [Document(page_content="a", metadata={"server_id": "srv-1", "tool_name": "read_file"}, id="d1")]
+    repo = _make_mcp_repo(docs)
+
+    result = await repo.update_tools_metadata("srv-1", [], {"tool_enabled": True})
+
+    assert result.metadata_updated == 0
+    assert repo.adapter.metadata_updates == []
+
+
+@pytest.mark.asyncio
+async def test_update_entity_metadata_still_delegates_to_shared_helper():
+    """The refactored update_entity_metadata keeps its whole-entity behavior (multi-key not needed)."""
+    docs = [
+        Document(page_content="a", metadata={"server_id": "srv-1", "tool_name": "read_file"}, id="d1"),
+        Document(page_content="b", metadata={"server_id": "srv-1", "tool_name": "write_file"}, id="d2"),
+        Document(page_content="c", metadata={"server_id": "srv-2", "tool_name": "read_file"}, id="d3"),
+    ]
+    repo = _make_mcp_repo(docs)
+
+    result = await repo.update_entity_metadata("server_id", "srv-1", {"tool_enabled": True})
+
+    assert result.metadata_updated == 2  # both srv-1 docs, regardless of tool_name
+    updated_ids = {doc_id for doc_id, _ in repo.adapter.metadata_updates}
+    assert updated_ids == {"d1", "d2"}

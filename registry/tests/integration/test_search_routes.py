@@ -142,6 +142,20 @@ class TestSearchRoutes:
         assert response.status_code == 503
         assert "temporarily unavailable" in response.json()["detail"]
 
+    def test_search_returns_503_during_reindex(self, test_client: TestClient):
+        """An embedding reindex surfaces as a distinct 503 with Retry-After."""
+        from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+
+        search_service = AsyncMock()
+        search_service.semantic_search = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
+        app.dependency_overrides[get_container] = make_container_factory(search_service=search_service)
+
+        response = test_client.post("/api/v1/search", json={"query": "alpha"})
+
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "30"
+        assert response.json()["detail"]["error"] == "reindex_in_progress"
+
     def test_deleted_routes_return_404(self, test_client: TestClient):
         """The removed /search/servers and /search/agents routes no longer exist."""
         servers_response = test_client.post("/api/v1/search/servers", json={"query": "x", "top_n": 5})

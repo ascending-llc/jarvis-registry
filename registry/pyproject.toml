@@ -39,18 +39,14 @@ dependencies = [
     "aiohttp>=3.8.0",
     "rich>=13.0.0",
     "cachetools>=6.2.4",
-    "litellm>=1.50.0",
     "inflection>=0.5.1",
-    # AWS (if needed for registry specifically)
+    # boto3/aioboto3 are declared by the registry-pkgs workspace dependency (needed by the workflow
+    # model path); registry inherits them, so they are not repeated here.
     "awscli>=1.36.0",
-    "boto3>=1.35.0",
     # Security scanning
     "bandit>=1.8.3",
-    "cisco-ai-mcp-scanner>=3.0.1",
-    "cisco-ai-a2a-scanner>=1.0.0",
     "langchain-text-splitters>=1.1.0",
     "langchain-openai>=1.1.12",
-    "aioboto3>=7.0.0",
     # microsoft azure
     "azure-ai-projects>=2.1.0",
 ]

@@ -16,6 +16,7 @@ services:
       - tempo
     profiles:
       - full
+      - dev
 
   # Tempo stores OTLP traces for local Grafana exploration.
   tempo:
@@ -29,6 +30,7 @@ services:
     restart: unless-stopped
     profiles:
       - full
+      - dev
 
   # Registry service (includes nginx, SSL, FAISS, models)
   registry:
@@ -41,6 +43,7 @@ services:
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
       - AWS_REGION=${AWS_REGION:-us-east-1}
+      - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-True}
       - HEALTH_CHECK_INTERVAL_SECONDS=${HEALTH_CHECK_INTERVAL_SECONDS:-30}
       - SRE_GATEWAY_AUTH_TOKEN=${SRE_GATEWAY_AUTH_TOKEN}
       - ATLASSIAN_AUTH_TOKEN=${ATLASSIAN_AUTH_TOKEN}
@@ -49,17 +52,9 @@ services:
       - EXTERNAL_REGISTRY_TAGS=${EXTERNAL_REGISTRY_TAGS:-anthropic-registry,workday-asor}
       - ASOR_ACCESS_TOKEN=${ASOR_ACCESS_TOKEN}
       - ASOR_CLIENT_CREDENTIALS=${ASOR_CLIENT_CREDENTIALS}
-      # Security Scanning Configuration
-      - SECURITY_SCAN_ENABLED=${SECURITY_SCAN_ENABLED:-true}
-      - SECURITY_SCAN_ON_REGISTRATION=${SECURITY_SCAN_ON_REGISTRATION:-true}
-      - SECURITY_BLOCK_UNSAFE_SERVERS=${SECURITY_BLOCK_UNSAFE_SERVERS:-true}
-      - SECURITY_ANALYZERS=${SECURITY_ANALYZERS:-yara}
-      - SECURITY_SCAN_TIMEOUT=${SECURITY_SCAN_TIMEOUT:-60}
-      - SECURITY_ADD_PENDING_TAG=${SECURITY_ADD_PENDING_TAG:-true}
-      - MCP_SCANNER_LLM_API_KEY=${MCP_SCANNER_LLM_API_KEY}
       - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
       # Sends logs to OpenTelemetry Collector
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       - OTEL_SERVICE_NAME=mcp-gateway-registry
 
       # Embeddings Configuration
@@ -73,8 +68,9 @@ services:
       - "7860:7860"
     volumes:
       - ./registry/logs:/app/logs
-      - ./security_scans:/app/security_scans
     depends_on:
+      otel-collector:
+        condition: service_started
       auth-server:
         condition: service_started
       weaviate:
@@ -111,14 +107,17 @@ services:
       - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
       - REDIS_URI=redis://registry-redis:6379/1
       - AWS_REGION=${AWS_REGION:-us-east-1}
+      - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-True}
       - AWS_WORKFLOW_LLM_MODEL=${AWS_WORKFLOW_LLM_MODEL:-amazon.nova-2-lite-v1:0}
       - WORKFLOW_WORKER_MAX_SLEEP_SECONDS=${WORKFLOW_WORKER_MAX_SLEEP_SECONDS:-30}
       - WORKFLOW_WORKER_MAX_CONCURRENT_RUNS=${WORKFLOW_WORKER_MAX_CONCURRENT_RUNS:-5}
       - WORKFLOW_WORKER_MAX_CLAIMED_RUNS=${WORKFLOW_WORKER_MAX_CLAIMED_RUNS:-10}
       - WORKFLOW_WORKER_LEASE_DURATION_SECONDS=${WORKFLOW_WORKER_LEASE_DURATION_SECONDS:-300}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       - OTEL_SERVICE_NAME=workflow-worker
     depends_on:
+      otel-collector:
+        condition: service_started
       registry-mongodb:
         condition: service_healthy
       registry-redis:
@@ -202,7 +201,7 @@ services:
       - ENTRA_EMAIL_CLAIM=${ENTRA_EMAIL_CLAIM:-upn}
       - ENTRA_NAME_CLAIM=${ENTRA_NAME_CLAIM:-name}
       - ENTRA_ROLE_TOKEN_KIND=${ENTRA_ROLE_TOKEN_KIND:-id}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       - OTEL_SERVICE_NAME=auth-server
       # MongoDB configuration
       - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
@@ -210,6 +209,11 @@ services:
       - "8888:8888"
     volumes:
       - ./auth-server/logs:/app/logs
+    depends_on:
+      otel-collector:
+        condition: service_started
+      registry-mongodb:
+        condition: service_healthy
     restart: unless-stopped
     env_file:
       - .env

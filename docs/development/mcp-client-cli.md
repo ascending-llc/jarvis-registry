@@ -1,4 +1,6 @@
-# MCP Client CLI Guide
+# Internal MCP Client CLI Guide
+
+> **Internal tooling:** This archived guide documents the repository's Python scripts for MCP testing and A2A agent management. It is not the public Jarvis Registry CLI for delivering skills to developer tools. For that product, see the [AI Skills CLI](../features/ai-skills-cli.md).
 
 This guide documents how to interact with MCP servers and manage A2A agents using the command-line interface.
 
@@ -19,7 +21,7 @@ Two CLI tools are available:
 
 ## A2A Agent Management
 
-For complete A2A agent management documentation, see: [A2A Agent Management Guide](a2a-agent-management.md)
+For complete A2A agent management documentation, see: [A2A Agent Management Guide](../a2a-agent-management.md)
 
 Quick start with the `mcp-gateway-m2m` service account:
 ```bash
@@ -261,21 +263,21 @@ uv run cli/mcp_client.py --url http://localhost/currenttime/mcp call \
 ### Common Issues
 
 1. **HTTP 403: Access forbidden**
-   - Check if your token has the required permissions
-   - Verify the scopes.yml configuration includes the tool you're trying to access
+    - Check if your token has the required permissions
+    - Verify the scopes.yml configuration includes the tool you're trying to access
 
 2. **HTTP 405: Method Not Allowed**
-   - Ensure the server path is correct
-   - Verify the server is registered and running
+    - Ensure the server path is correct
+    - Verify the server is registered and running
 
 3. **Token Expired**
-   - Refresh your authentication token
-   - For ingress tokens: Run the token refresh script
-   - For M2M: Re-authenticate with credentials
+    - Refresh your authentication token
+    - For ingress tokens: Run the token refresh script
+    - For M2M: Re-authenticate with credentials
 
 4. **Connection Refused**
-   - Check if the target server is running
-   - Verify the proxy_pass_url in the service registration
+    - Check if the target server is running
+    - Verify the proxy_pass_url in the service registration
 
 ## Notes
 

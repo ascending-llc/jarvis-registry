@@ -2,11 +2,14 @@
 Unit tests for server service.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
 from registry.services.server_service import ServerServiceV1
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 
 
 @pytest.mark.unit
@@ -32,6 +35,7 @@ class TestRefreshServerCapabilities:
         server.updatedAt = datetime.now(UTC)
         server.vectorContentHash = "old-hash"
         server.numTools = 0
+        server.registryDisabledTools = []
         server.save = AsyncMock()
         return server
 
@@ -187,6 +191,35 @@ class TestRefreshServerCapabilities:
                     # 验证工具信息在 config 中
                     assert "toolFunctions" in mock_server.config
                     assert len(mock_server.config["toolFunctions"]) == 3
+
+    async def test_refresh_server_capabilities_zero_tools_clears_stale_state(self, server_service, mock_server):
+        """A successful refresh with tool_list=[] (server now serves no tools) must still clear
+        stale toolFunctions/numTools/tools and prune registryDisabledTools to [] — tool_list=[] is
+        a legitimate success result, distinct from the tool_list is None failure case."""
+        from unittest.mock import patch
+
+        mock_server.config = {
+            "title": "Test Server",
+            "toolFunctions": {"old_tool_mcp_test": {"mcpToolName": "old_tool"}},
+            "tools": "old_tool",
+        }
+        mock_server.numTools = 1
+        mock_server.registryDisabledTools = ["old_tool"]
+
+        with patch.object(server_service, "get_server_by_id", return_value=mock_server):
+            with patch.object(
+                server_service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=([], [], [], {}, None),
+            ):
+                with patch.object(server_service, "_schedule_vector_sync"):
+                    result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+        assert result["status"] == "success"
+        assert mock_server.config["toolFunctions"] == {}
+        assert mock_server.config["tools"] == ""
+        assert mock_server.numTools == 0
+        assert mock_server.registryDisabledTools == []
 
 
 @pytest.mark.unit
@@ -389,3 +422,281 @@ async def test_list_servers_without_enabled_only_has_no_status_filter():
 
         query_filter = MockServer.find.call_args.args[0]
         assert query_filter == {}
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestCreateServerNormalizedServerName:
+    """create_server must compute and persist normalizedServerName (AS-1855)."""
+
+    def _make_service(self):
+        from beanie import PydanticObjectId
+
+        service = ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=Mock(),
+        )
+        service.user_service.get_user_by_user_id = AsyncMock(return_value=Mock(id=PydanticObjectId()))
+        return service
+
+    async def test_sets_normalized_server_name_on_construction(self):
+        from registry.schemas.server_api_schemas import ServerCreateRequest
+
+        service = self._make_service()
+        data = ServerCreateRequest(title="Example Server!!", path="/example")
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            MockServer.find.return_value.to_list = AsyncMock(return_value=[])
+            MockServer.find_one = AsyncMock(return_value=None)
+            MockServer.return_value.insert = AsyncMock()
+
+            await service.create_server(data=data, user_id="user-1")
+
+            _, kwargs = MockServer.call_args
+            assert kwargs["serverName"] == "example-server"
+            assert kwargs["normalizedServerName"] == "example-server"
+
+    async def test_duplicate_check_matches_on_either_server_name_or_normalized_name(self):
+        """The lookup query must OR serverName and normalizedServerName together."""
+        from registry.schemas.server_api_schemas import ServerCreateRequest
+
+        service = self._make_service()
+        data = ServerCreateRequest(title="Example Server", path="/example")
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            MockServer.find.return_value.to_list = AsyncMock(return_value=[])
+            MockServer.find_one = AsyncMock(return_value=None)
+            MockServer.return_value.insert = AsyncMock()
+
+            await service.create_server(data=data, user_id="user-1")
+
+            query_filter = MockServer.find_one.call_args.args[0]
+            assert query_filter == {
+                "$or": [{"serverName": "example-server"}, {"normalizedServerName": "example-server"}]
+            }
+
+    async def test_rejects_normalized_name_collision_even_when_raw_server_names_differ(self):
+        """A new slug-based server_name must be rejected if it collides on normalizedServerName
+        with an existing document whose raw serverName differs (e.g. it predates normalization
+        or used unsafe characters that normalize to the new slug)."""
+        from registry.schemas.server_api_schemas import ServerCreateRequest
+
+        service = self._make_service()
+        data = ServerCreateRequest(title="Weird Server", path="/weird")
+
+        existing_conflict = Mock(serverName="Weird/Server", normalizedServerName="weird-server")
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            MockServer.find.return_value.to_list = AsyncMock(return_value=[])
+            MockServer.find_one = AsyncMock(return_value=existing_conflict)
+
+            with pytest.raises(ValueError, match="already exists"):
+                await service.create_server(data=data, user_id="user-1")
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestReindexGate:
+    """create_server/update_server must refuse to write while a reindex is active."""
+
+    def _make_service(self, *, reindex_active: bool):
+        from types import SimpleNamespace
+
+        return ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=Mock(),
+            embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: reindex_active),
+        )
+
+    async def test_create_server_raises_before_any_mongo_read_or_write(self):
+
+        service = self._make_service(reindex_active=True)
+        data = ServerCreateRequest(title="Gated Server", path="/gated")
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            with pytest.raises(EmbeddingReindexInProgressException):
+                await service.create_server(data=data, user_id="user-1")
+            MockServer.find.assert_not_called()
+
+    async def test_update_server_raises_before_lookup(self):
+
+        service = self._make_service(reindex_active=True)
+        service.get_server_by_id = AsyncMock()
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.update_server(server_id="srv-gated", data=ServerUpdateRequest())
+        service.get_server_by_id.assert_not_called()
+
+    async def test_inactive_gate_does_not_block(self):
+
+        service = self._make_service(reindex_active=False)
+        service.get_server_by_id = AsyncMock(return_value=None)
+
+        # Gate off -> proceeds to the normal "not found" path instead of raising the gate error.
+        with pytest.raises(ValueError, match="not found"):
+            await service.update_server(server_id="srv-gated", data=ServerUpdateRequest())
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestUpdateDisabledTools:
+    """Test suite for update_disabled_tools and refresh-time pruning."""
+
+    def _make_service(self):
+        mock_repo = Mock()
+        mock_repo.update_tools_metadata = AsyncMock()
+        service = ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=mock_repo,
+        )
+        return service, mock_repo
+
+    def _make_server(self, disabled=None):
+        from datetime import UTC, datetime
+
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        server = Mock(spec=ExtendedMCPServer)
+        server.id = "srv-1"
+        server.serverName = "test-server"
+        server.config = {
+            "toolFunctions": {
+                "read_file_mcp_test": {"mcpToolName": "read_file"},
+                "write_file_mcp_test": {"mcpToolName": "write_file"},
+                "delete_file_mcp_test": {"mcpToolName": "delete_file"},
+            }
+        }
+        server.registryDisabledTools = disabled if disabled is not None else []
+        server.updatedAt = datetime.now(UTC)
+        server.save = AsyncMock()
+        return server
+
+    async def test_drops_unknown_tool_names(self):
+        """Submitted names that are not current tools are silently dropped, not persisted."""
+        service, _ = self._make_service()
+        server = self._make_server()
+
+        with patch.object(service, "get_server_by_id", return_value=server):
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                result = await service.update_disabled_tools("srv-1", ["read_file", "ghost_tool"])
+
+        assert result.registryDisabledTools == ["read_file"]  # ghost_tool dropped, sorted
+        server.save.assert_awaited_once()
+        # Only the real newly-disabled tool is scheduled for the Weaviate push.
+        mock_schedule.assert_called_once_with("srv-1", {"read_file"}, set())
+
+    async def test_schedules_flip_sets_for_weaviate_push(self):
+        """update_disabled_tools schedules the flipped new/previous sets, not the server's whole tool set."""
+        service, _ = self._make_service()
+        server = self._make_server(disabled=["read_file"])
+
+        with patch.object(service, "get_server_by_id", return_value=server):
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                # read_file re-enabled (removed), write_file newly disabled.
+                await service.update_disabled_tools("srv-1", ["write_file"])
+
+        assert server.registryDisabledTools == ["write_file"]
+        mock_schedule.assert_called_once_with("srv-1", {"write_file"}, {"read_file"})
+
+    async def test_noop_when_unchanged_skips_save_and_weaviate(self):
+        """Submitting the same effective list is an idempotent no-op."""
+        service, _ = self._make_service()
+        server = self._make_server(disabled=["read_file"])
+
+        with patch.object(service, "get_server_by_id", return_value=server):
+            with patch.object(service, "_schedule_tool_enabled_sync") as mock_schedule:
+                await service.update_disabled_tools("srv-1", ["read_file"])
+
+        server.save.assert_not_awaited()
+        mock_schedule.assert_not_called()
+
+    async def test_schedule_tool_enabled_sync_batches_by_flip(self, monkeypatch):
+        """_schedule_tool_enabled_sync partitions the diff into disable/enable groups and pushes
+        each batch to Weaviate. Verified by capturing the coroutine handed to asyncio.create_task
+        (fire-and-forget) and running it to completion directly, instead of scheduling it."""
+        service, repo = self._make_service()
+        captured: dict = {}
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+
+        service._schedule_tool_enabled_sync("srv-1", {"write_file"}, {"read_file"})
+        await captured["coro"]
+
+        repo.update_tools_metadata.assert_any_await("srv-1", ["write_file"], {"tool_enabled": False})
+        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": True})
+
+    async def test_schedule_tool_enabled_sync_empty_group_still_pushed(self, monkeypatch):
+        """A group with no members is still passed through (repo no-ops on empty list), never crashes."""
+        service, repo = self._make_service()
+        captured: dict = {}
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
+        await captured["coro"]
+
+        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": False})
+        repo.update_tools_metadata.assert_any_await("srv-1", [], {"tool_enabled": True})
+
+    async def test_schedule_tool_enabled_sync_no_repo_is_noop(self):
+        """No mcp_server_repo configured -> returns without scheduling anything."""
+        service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=None)
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())  # must not raise
+
+    async def test_schedule_tool_enabled_sync_logs_errors_without_raising(self, monkeypatch, caplog):
+        """A Weaviate failure in the background task is logged, not raised (MongoDB stays authoritative)."""
+        service, repo = self._make_service()
+        repo.update_tools_metadata.side_effect = RuntimeError("weaviate down")
+        captured: dict = {}
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+
+        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
+        with caplog.at_level("ERROR", logger="registry.services.server_service"):
+            await captured["coro"]  # must not raise
+
+        assert "tool_enabled metadata sync failed" in caplog.text
+
+    async def test_server_not_found_raises(self):
+        service, _ = self._make_service()
+        with patch.object(service, "get_server_by_id", return_value=None):
+            with pytest.raises(ValueError, match="not found"):
+                await service.update_disabled_tools("missing", ["x"])
+
+    async def test_refresh_prunes_stale_disabled_names(self):
+        """A capabilities refresh drops disabled names that no longer exist downstream."""
+        from datetime import UTC, datetime
+
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        service, _ = self._make_service()
+        server = Mock(spec=ExtendedMCPServer)
+        server.id = "srv-1"
+        server.serverName = "test-server"
+        server.config = {}
+        server.registryDisabledTools = ["read_file", "delete_file"]  # delete_file removed downstream
+        server.lastError = None
+        server.errorMessage = None
+        server.lastConnected = None
+        server.updatedAt = datetime.now(UTC)
+        server.vectorContentHash = "old-hash"
+        server.numTools = 0
+        server.save = AsyncMock()
+
+        with patch.object(service, "get_server_by_id", return_value=server):
+            with patch.object(
+                service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=([{"name": "read_file"}], [], [], {"sampling": {}}, None),
+            ):
+                with patch.object(service, "_schedule_vector_sync"):
+                    result = await service.refresh_server_capabilities(server_id="srv-1", user_id="u1")
+
+        assert result["status"] == "success"
+        assert server.registryDisabledTools == ["read_file"]  # delete_file pruned

@@ -19,7 +19,7 @@ on:
         required: false
         default: false
     secrets:
-      JARVIS_RELEASE_ACCESS_TOKEN:
+      GH_COPILOT_KEY:
         required: true
 
 permissions:
@@ -40,7 +40,7 @@ jobs:
         id: schema
         uses: ./.github/actions/get-schema-version
         with:
-          github-token: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
+          github-token: ${{ secrets.GH_COPILOT_KEY }}
 
       - name: Set up Python
         uses: actions/setup-python@v6

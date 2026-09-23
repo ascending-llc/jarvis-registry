@@ -78,24 +78,6 @@ class Settings(JarvisBaseSettings):
     mcpgw_allowed_hosts: str = "jarvis-demo.ascendingdc.com,jarvis-demo.ascendingdc.com:*"
     mcpgw_allowed_origins: str = "https://jarvis-demo.ascendingdc.com,https://jarvis-demo.ascendingdc.com:*"
 
-    # ==================== Server Security Scanning ====================
-    security_scan_enabled: bool = True
-    security_scan_on_registration: bool = True
-    security_block_unsafe_servers: bool = True
-    security_analyzers: str = "yara"
-    security_scan_timeout: int = 60
-    security_add_pending_tag: bool = True
-    mcp_scanner_llm_api_key: str | None = None
-
-    # ==================== Agent Security Scanning ====================
-    agent_security_scan_enabled: bool = True
-    agent_security_scan_on_registration: bool = True
-    agent_security_block_unsafe_agents: bool = True
-    agent_security_analyzers: str = "yara,spec"
-    agent_security_scan_timeout: int = 60
-    agent_security_add_pending_tag: bool = True
-    a2a_scanner_llm_api_key: str | None = None
-
     # ==================== Container Paths ====================
     container_registry_dir: Path = Path("/app/registry")
 
@@ -152,8 +134,6 @@ class Settings(JarvisBaseSettings):
     azure_openai_api_version: str = "2024-06-01"
     azure_openai_resource_name: str = ""
     azure_openai_embedding_deployment: str = ""
-    azure_openai_llm_deployment: str = ""
-    llm_model: str = "gpt-4"
 
     # ==================== Entra Group Sync ====================
     # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
@@ -334,7 +314,6 @@ class Settings(JarvisBaseSettings):
             azure_openai_api_version=self.azure_openai_api_version,
             azure_openai_resource_name=self.azure_openai_resource_name,
             azure_openai_embedding_deployment=self.azure_openai_embedding_deployment,
-            azure_openai_llm_deployment=self.azure_openai_llm_deployment,
         )
 
     @cached_property

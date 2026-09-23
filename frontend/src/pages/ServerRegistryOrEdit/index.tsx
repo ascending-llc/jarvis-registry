@@ -10,6 +10,7 @@ import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type { GetServersDetailResponse, Server } from '@/services/server/type';
+import { getErrorMessage } from '@/utils/getErrorMessage';
 import MainConfigForm from './MainConfigForm';
 import McpPlaygroundModal from './McpPlaygroundModal';
 import type { AuthenticationConfig as AuthConfigType, ServerConfig } from './types';
@@ -268,8 +269,8 @@ const ServerRegistryOrEdit: React.FC = () => {
       showToast('Server deleted successfully', 'success');
       navigate('/', { replace: true });
       refreshServerData(true);
-    } catch (error: any) {
-      showToast(error?.detail || error, 'error');
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to delete server'), 'error');
     }
   };
 
@@ -296,8 +297,8 @@ const ServerRegistryOrEdit: React.FC = () => {
         refreshServerData(true);
       }
       goBack();
-    } catch (error: any) {
-      showToast(error?.detail || error, 'error');
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to save server'), 'error');
     } finally {
       setLoading(false);
     }

@@ -13,6 +13,7 @@ from registry.schemas.a2a_agent_api_schemas import (
     convert_to_detail,
     convert_to_list_item,
 )
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -618,3 +619,65 @@ def test_convert_to_detail_uses_config_enabled_without_status():
     detail = convert_to_detail(agent, 15)
     assert not hasattr(detail, "status")
     assert detail.enabled is True
+
+
+def _agent_route_mongo(mock_get_client):
+    mock_session = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.start_session.return_value.__aenter__.return_value = mock_session
+    mock_session.start_transaction.return_value.__aenter__.return_value = None
+    mock_get_client.return_value = mock_client
+
+
+@pytest.mark.asyncio
+async def test_create_agent_returns_503_during_reindex(sample_user_context):
+
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.create_agent = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
+    request = AgentCreateRequest(
+        path="/gated-agent",
+        title="Gated Agent",
+        description="d",
+        url="https://agent.example.com",
+        type="jsonrpc",
+    )
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
+        _agent_route_mongo(mock_get_client)
+        with pytest.raises(HTTPException) as exc_info:
+            await create_agent(
+                data=request,
+                user_context=sample_user_context,
+                acl_service=MagicMock(),
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    exc = exc_info.value
+    assert exc.status_code == 503
+    assert exc.headers["Retry-After"] == "30"
+    assert exc.detail["error"] == "reindex_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_update_agent_returns_503_during_reindex(sample_user_context):
+
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=15)
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.update_agent = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
+        _agent_route_mongo(mock_get_client)
+        with pytest.raises(HTTPException) as exc_info:
+            await update_agent(
+                agent_id=str(PydanticObjectId()),
+                data=AgentUpdateRequest(),
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    exc = exc_info.value
+    assert exc.status_code == 503
+    assert exc.headers["Retry-After"] == "30"
+    assert exc.detail["error"] == "reindex_in_progress"

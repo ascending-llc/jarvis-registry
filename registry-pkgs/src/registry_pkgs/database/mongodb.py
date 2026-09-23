@@ -13,6 +13,7 @@ from pymongo import AsyncMongoClient
 from ..core.config import MongoConfig
 from ..models import (
     A2AAgent,
+    EmbeddingReindexJob,
     ExtendedGroup,
     ExtendedMCPServer,
     ExtendedSkill,
@@ -20,6 +21,8 @@ from ..models import (
     Federation,
     FederationSyncJob,
     Key,
+    ModelGatewaySelection,
+    ModelSource,
     NodeRun,
     RegistryAccessRole,
     RegistryAclEntry,
@@ -153,6 +156,9 @@ class MongoDB:
                     WorkflowVersion,
                     ExtendedSkill,
                     ExtendedSkillFile,
+                    ModelSource,
+                    ModelGatewaySelection,
+                    EmbeddingReindexJob,
                 ],
             )
         except Exception:

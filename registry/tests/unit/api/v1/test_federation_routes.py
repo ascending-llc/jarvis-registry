@@ -660,6 +660,7 @@ async def test_sync_federation_returns_before_background_discovery_failure(
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
         acl_service=acl_service,
+        embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: False),
     )
     await background_tasks()
 
