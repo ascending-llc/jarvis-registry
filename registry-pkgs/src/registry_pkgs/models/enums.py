@@ -155,6 +155,7 @@ class SkillSyncSkillErrorCode(StrEnum):
     DUPLICATE_SKILL_NAME = "duplicate_skill_name"
     FILE_TOO_LARGE = "file_too_large"
     TOO_MANY_FILES = "too_many_files"
+    SKILL_TOO_LARGE = "skill_too_large"
     WRITE_FAILED = "write_failed"
     DELETE_FAILED = "delete_failed"
 

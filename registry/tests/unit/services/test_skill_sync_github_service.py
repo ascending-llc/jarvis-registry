@@ -487,7 +487,7 @@ def test_extract_aux_paths_are_relative_to_the_skill_folder(tmp_path, configured
 
 
 def test_extract_oversized_file_rejects_whole_folder(tmp_path, monkeypatch):
-    monkeypatch.setattr("registry.services.skill_sync_github_service.MAX_SINGLE_FILE_SIZE", 30)
+    monkeypatch.setattr("registry.services.skill_sync_github_service.MAX_SKILL_FILE_SIZE", 30)
     tarball_path = tmp_path / "tarball.tar.gz"
     tarball_path.write_bytes(
         _make_tarball(

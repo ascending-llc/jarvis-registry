@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from registry_pkgs.models.enums import SkillSyncSkillErrorCode
 from registry_pkgs.models.skill_sync_job import SkillSyncDiscoverySummary, SkillSyncSkillError
 
+from ..constants import MAX_SKILL_FILE_COUNT, MAX_SKILL_FILES_TOTAL_SIZE
 from ..models.skill_frontmatter import (
     ClaudeCodeSkillFrontmatter,
     dump_claude_code_frontmatter,
@@ -16,8 +17,6 @@ from ..models.skill_frontmatter import (
 from .skill_sync_github_service import ExtractedAuxFile, ExtractedSkillFolder, ExtractionResult
 
 logger = logging.getLogger(__name__)
-
-MAX_FILES_PER_SKILL = 50
 
 
 @dataclass
@@ -151,12 +150,23 @@ def _process_skill_folder(
 
     seen_names[frontmatter.name] = path
 
-    if len(folder.aux_files) > MAX_FILES_PER_SKILL:
+    if len(folder.aux_files) > MAX_SKILL_FILE_COUNT:
         return SkillSyncSkillError(
             skillPath=path,
             upstreamId=path,
             errorCode=SkillSyncSkillErrorCode.TOO_MANY_FILES,
-            errorMessage=f"Skill has {len(folder.aux_files)} auxiliary files, max {MAX_FILES_PER_SKILL}",
+            errorMessage=f"Skill has {len(folder.aux_files)} auxiliary files, max {MAX_SKILL_FILE_COUNT}",
+            phase="discovery",
+        )
+
+    # The same cap Registry's skill API applies, so a synced skill stays editable there.
+    total_size = sum(aux_file.size for aux_file in folder.aux_files)
+    if total_size > MAX_SKILL_FILES_TOTAL_SIZE:
+        return SkillSyncSkillError(
+            skillPath=path,
+            upstreamId=path,
+            errorCode=SkillSyncSkillErrorCode.SKILL_TOO_LARGE,
+            errorMessage=f"Skill's auxiliary files total {total_size} bytes, max {MAX_SKILL_FILES_TOTAL_SIZE}",
             phase="discovery",
         )
 

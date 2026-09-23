@@ -6,7 +6,7 @@ The Skill Gateway privately hosts organization-curated AI skills, governs who ca
 
 Skills can be created and edited through the Registry UI or API. Teams can organize them with categories and tags, track a version, and enable or disable a skill as its availability changes. Each skill can include its `SKILL.md` content and supporting text or binary files.
 
-Supporting files are validated before they are stored. Paths must be normalized relative POSIX paths, individual files are limited to 5 MiB, a skill can contain up to 50 files, and the total supporting-file payload is limited to 10 MiB. These limits keep skill content predictable for both the Registry and downstream sync clients.
+Supporting files are validated before they are stored. Paths must be normalized relative POSIX paths, individual files are limited to 5 MiB, a skill can contain up to 200 files, and the total supporting-file payload is limited to 10 MiB. These limits keep skill content predictable for both the Registry and downstream sync clients.
 
 ## Govern Access with ACLs
 

@@ -183,7 +183,7 @@ performed on `(name, author)` — returns 409 on conflict.
 **Server-enforced limits** (all return 422 on breach):
 - Single file: 5 MiB (`MAX_SKILL_FILE_SIZE`), applied to the **decoded** byte count.
 - Total per skill: 10 MiB (`MAX_SKILL_FILES_TOTAL_SIZE`).
-- Count per skill: 50 (`MAX_SKILL_FILE_COUNT`).
+- Count per skill: 200 (`MAX_SKILL_FILE_COUNT`).
 - Duplicate `relativePath` within a single request is rejected.
 
 > **Wire size note.** Binary payloads travel as base64 in JSON, which expands the raw bytes by ~1.33×.

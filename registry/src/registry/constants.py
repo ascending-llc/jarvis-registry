@@ -1,11 +1,14 @@
 MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 
-# Inline skill supporting-file limits. Each SkillFile is its own MongoDB document, so the single-file
-# cap keeps one file inside the 16 MB document limit; the total/count caps bound a single skill's payload.
+# Inline skill supporting-file limits, shared by Registry's skill API and GitHub skill sync. Each SkillFile is
+# its own MongoDB document, so the single-file cap keeps one file inside the 16 MB document limit. The total cap
+# bounds a skill's whole payload: create_skill takes every file in one base64 JSON request, which must fit the
+# frontend Nginx `client_max_body_size` (16m), and /skills/{id}/content returns every file in one response.
+# The count cap only bounds per-file overhead.
 MAX_SKILL_FILE_SIZE = 5 * 1024 * 1024
 MAX_SKILL_FILES_TOTAL_SIZE = 10 * 1024 * 1024
-MAX_SKILL_FILE_COUNT = 50
+MAX_SKILL_FILE_COUNT = 200
 MAX_SKILL_FILE_RELATIVE_PATH_LENGTH = 512
 RESERVED_SKILL_FILE_NAMES = frozenset({"skill.md"})
 # SkillFile.source for files whose bytes Registry stores inline in `body` (created in Registry or by GitHub
