@@ -20,6 +20,11 @@ class EmbeddingReindexJob(Document):
     # resolves it to build the job-local vector client and, on success, the new
     # live adapter.
     targetEmbeddingModelSourceId: PydanticObjectId
+    # Who triggered the switch. The gateway selection is committed by the executor
+    # only after a successful swap (so a failed/crashed reindex never leaves the
+    # selection pointing at a model the index was never built with), and this
+    # preserves the audit of that deferred commit.
+    triggeredBy: str | None = None
     status: EmbeddingReindexJobStatus = EmbeddingReindexJobStatus.RUNNING
     leaseOwner: str | None = None
     leaseExpiresAt: datetime | None = None
@@ -32,6 +37,14 @@ class EmbeddingReindexJob(Document):
 
     class Settings:
         name = "embedding_reindex_jobs"
-        indexes = [IndexModel([("status", 1), ("leaseExpiresAt", 1)])]
+        indexes = [
+            IndexModel([("status", 1), ("leaseExpiresAt", 1)]),
+            IndexModel(
+                [("status", 1)],
+                unique=True,
+                partialFilterExpression={"status": EmbeddingReindexJobStatus.RUNNING.value},
+                name="uniq_running_embedding_reindex_job",
+            ),
+        ]
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)

@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 from beanie import PydanticObjectId
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from registry.core.config import Settings
 from registry.core.vector_backend import smoke_test_embedding_model
@@ -53,25 +54,27 @@ class EmbeddingReindexJobService:
         return await get_active_embedding_reindex_job()
 
     async def trigger_reindex(self, model_source_id: str, *, updated_by: str | None) -> ModelGatewaySelection:
-        """Validate + smoke-test the target model, create the running job, then persist the selection.
+        """Validate + smoke-test the target model and create the running job.
 
         Nothing is written to Mongo unless the target model both validates and passes the pre-flight
         embed check, so a broken model source is rejected before the registry enters maintenance mode.
         The job is created directly in RUNNING with no lease owner: it already satisfies AS-1867's
         gate, so writes and searches are blocked the instant this commits, with no unguarded window.
 
-        The job is created BEFORE the selection is persisted so the two writes are all-or-nothing for a
-        single request: if persisting the selection then fails, the job is deleted (compensating
-        rollback) rather than left RUNNING pointing at a stale selection — which would swap the live
-        adapter to the new model while the persisted selection still names the old one, diverging on
-        the next restart.
+        The gateway selection is deliberately NOT persisted here — the executor commits it only after
+        a successful adapter swap. Committing it up front would let a failed or crashed reindex leave
+        ``embeddingModelSourceId`` pointing at a model the weaviate index was never rebuilt with, so a
+        restart would build that model against the old index. The 202 response therefore reflects the
+        REQUESTED target (what will be in effect once the job completes), not a persisted change.
 
-        Concurrency note: the ``get_active_job()`` check is not atomic with the insert below, so two
-        truly simultaneous triggers can both pass it and create two jobs. That is tolerated: the
-        reindex is idempotent per document and the runner processes jobs serially. A status-based
-        unique index is deliberately NOT used — it would let a crashed/poison RUNNING job (which
-        AS-1867 keeps RUNNING but treats as inactive via its expired lease) block every future
-        trigger. Strict single-flight would require reworking AS-1867's lease-based liveness model.
+        Single-flight: the ``get_active_job()`` check gives a friendly 409 in the common case, and
+        the partial unique index on ``status == "running"`` is the atomic backstop. Two truly
+        simultaneous triggers can both pass the check, but only one insert wins — the other's
+        duplicate-key error is mapped to 409. This guarantees at most one RUNNING job, so two
+        concurrent sweeps can never write different embedding models into the same collection. A
+        crashed job that stays RUNNING with an expired lease holds the slot only until a runner
+        reclaims and terminalizes it (~1s), or, during a persistent outage, until the sweep can
+        finally complete — a self-healing bound, since you cannot reindex during such an outage anyway.
         """
         model_source = await self._selection_service.resolve_embedding_model_source(model_source_id)
 
@@ -88,27 +91,26 @@ class EmbeddingReindexJobService:
             raise EmbeddingModelSmokeTestError(str(exc)) from exc
 
         now = datetime.now(UTC)
-        job = EmbeddingReindexJob(
-            targetEmbeddingModelSourceId=model_source.id,
-            status=EmbeddingReindexJobStatus.RUNNING,
-            leaseOwner=None,
-            leaseExpiresAt=now + _INITIAL_CLAIM_WINDOW,
-            startedAt=now,
-        )
-        await job.insert()
         try:
-            selection = await self._selection_service.set_embedding_model(model_source_id, updated_by=updated_by)
-        except Exception:
-            try:
-                await job.delete()
-            except Exception:
-                logger.exception(
-                    "Failed to roll back reindex job %s after selection persist failed; it is left RUNNING",
-                    job.id,
-                )
-            raise
+            await EmbeddingReindexJob(
+                targetEmbeddingModelSourceId=model_source.id,
+                triggeredBy=updated_by,
+                status=EmbeddingReindexJobStatus.RUNNING,
+                leaseOwner=None,
+                leaseExpiresAt=now + _INITIAL_CLAIM_WINDOW,
+                startedAt=now,
+            ).insert()
+        except DuplicateKeyError as exc:
+            # Lost the single-flight race to a concurrent trigger between the check above and here.
+            raise EmbeddingReindexAlreadyRunningError("An embedding-model reindex is already running") from exc
         logger.info("Embedding reindex job created for model source %s", model_source.id)
-        return selection
+
+        # Response only: reflect the requested target without persisting it (see docstring).
+        current = await self._selection_service.get_selection_or_none()
+        return ModelGatewaySelection.model_construct(
+            defaultWorkflowModelSourceId=current.defaultWorkflowModelSourceId if current else None,
+            embeddingModelSourceId=model_source.id,
+        )
 
     async def claim_job(self, *, lease_owner: str, lease_duration: timedelta) -> EmbeddingReindexJob | None:
         """Atomically claim an unclaimed or lease-expired RUNNING job and establish a renewable lease."""

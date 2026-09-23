@@ -15,6 +15,7 @@ def _job():
     return SimpleNamespace(
         id=PydanticObjectId(),
         targetEmbeddingModelSourceId=PydanticObjectId(),
+        triggeredBy="user-1",
         status=EmbeddingReindexJobStatus.RUNNING,
         error=None,
         finishedAt=None,
@@ -25,11 +26,12 @@ def _job():
 
 
 def _wire(monkeypatch, *, servers, agents, mcp_sync, a2a_sync, job_local_adapter):
-    """Patch the module's collaborators; return the shared live db_client mock."""
-    monkeypatch.setattr(exec_module.ModelSource, "get", AsyncMock(return_value=SimpleNamespace(id=PydanticObjectId())))
+    """Patch the module's collaborators; return a namespace of the mocks tests assert on."""
+    model_source = SimpleNamespace(id=PydanticObjectId())
+    monkeypatch.setattr(exec_module.ModelSource, "get", AsyncMock(return_value=model_source))
     monkeypatch.setattr(exec_module, "build_backend_config_from_model_source", lambda *a, **k: SimpleNamespace())
 
-    job_local_client = SimpleNamespace(adapter=job_local_adapter)
+    job_local_client = SimpleNamespace(adapter=job_local_adapter, close=MagicMock())
     monkeypatch.setattr(exec_module, "create_database_client", lambda config: job_local_client)
 
     mcp_repo = MagicMock()
@@ -46,9 +48,17 @@ def _wire(monkeypatch, *, servers, agents, mcp_sync, a2a_sync, job_local_adapter
         exec_module.A2AAgent, "find_all", lambda: SimpleNamespace(to_list=AsyncMock(return_value=agents))
     )
     monkeypatch.setattr(exec_module, "_close_adapter", MagicMock())
+    set_selection = AsyncMock()
+    monkeypatch.setattr(exec_module, "set_model_gateway_selection", set_selection)
 
-    db_client = MagicMock()
-    return db_client, mcp_repo, a2a_repo
+    return SimpleNamespace(
+        db_client=MagicMock(),
+        mcp_repo=mcp_repo,
+        a2a_repo=a2a_repo,
+        set_selection=set_selection,
+        model_source=model_source,
+        job_local_client=job_local_client,
+    )
 
 
 def _service(db_client):
@@ -66,25 +76,30 @@ async def test_all_documents_reindexed_then_adapter_swapped_and_completed(monkey
     new_adapter = object()
     old_adapter = object()
 
-    db_client, mcp_repo, a2a_repo = _wire(
+    w = _wire(
         monkeypatch, servers=servers, agents=agents, mcp_sync=mcp_sync, a2a_sync=a2a_sync, job_local_adapter=new_adapter
     )
-    db_client.swap_adapter = MagicMock(return_value=old_adapter)
+    w.db_client.swap_adapter = MagicMock(return_value=old_adapter)
     job = _job()
 
-    await _service(db_client).run_claimed_job(job)
+    await _service(w.db_client).run_claimed_job(job)
 
     assert mcp_sync.await_count == 2
     assert a2a_sync.await_count == 1
-    db_client.swap_adapter.assert_called_once()
-    swapped_adapter, _config = db_client.swap_adapter.call_args.args
+    w.db_client.swap_adapter.assert_called_once()
+    swapped_adapter, _config = w.db_client.swap_adapter.call_args.args
     assert swapped_adapter is new_adapter
     exec_module._close_adapter.assert_called_once_with(old_adapter)
+    # Selection is committed only after the swap, and carries the job's triggering user for audit.
+    w.set_selection.assert_awaited_once_with("embeddingModelSourceId", w.model_source.id, updated_by="user-1")
+    # The adapter was handed to container.db_client, so the job-local client must NOT be closed.
+    w.job_local_client.close.assert_not_called()
     assert job.status == EmbeddingReindexJobStatus.COMPLETED
+    assert job.error is None
     assert job.leaseOwner is None
 
 
-async def test_one_failure_fails_job_and_skips_swap_without_cancelling_siblings(monkeypatch):
+async def test_partial_failure_still_swaps_and_completes_recording_failed_docs(monkeypatch):
     servers = [SimpleNamespace(id="s1"), SimpleNamespace(id="s2")]
     agents = [SimpleNamespace(id="a1")]
     # Second server fails (repo reports failure via its result dict, not by raising).
@@ -95,27 +110,37 @@ async def test_one_failure_fails_job_and_skips_swap_without_cancelling_siblings(
         ]
     )
     a2a_sync = AsyncMock(return_value={"indexed": 1, "failed": 0, "error": None})
+    new_adapter = object()
+    old_adapter = object()
 
-    db_client, mcp_repo, a2a_repo = _wire(
-        monkeypatch, servers=servers, agents=agents, mcp_sync=mcp_sync, a2a_sync=a2a_sync, job_local_adapter=object()
+    w = _wire(
+        monkeypatch, servers=servers, agents=agents, mcp_sync=mcp_sync, a2a_sync=a2a_sync, job_local_adapter=new_adapter
     )
-    db_client.swap_adapter = MagicMock()
+    w.db_client.swap_adapter = MagicMock(return_value=old_adapter)
     job = _job()
 
-    await _service(db_client).run_claimed_job(job)
+    await _service(w.db_client).run_claimed_job(job)
 
     # Bounded isolation: every document was attempted, not fail-fast cancelled.
     assert mcp_sync.await_count == 2
     assert a2a_sync.await_count == 1
-    db_client.swap_adapter.assert_not_called()
-    exec_module._close_adapter.assert_not_called()
-    assert job.status == EmbeddingReindexJobStatus.FAILED
+    # F: the collection was already rewritten in place, so the adapter is swapped to match rather than
+    # left on the old model (which would serve mixed/wrong results). The job still COMPLETES.
+    w.db_client.swap_adapter.assert_called_once()
+    swapped_adapter, _config = w.db_client.swap_adapter.call_args.args
+    assert swapped_adapter is new_adapter
+    exec_module._close_adapter.assert_called_once_with(old_adapter)
+    # The swap happened, so the selection is still committed even though some documents failed.
+    w.set_selection.assert_awaited_once_with("embeddingModelSourceId", w.model_source.id, updated_by="user-1")
+    assert job.status == EmbeddingReindexJobStatus.COMPLETED
+    # The failed document is recorded so the partial result is observable and repairable.
     assert "1/3" in job.error
+    assert "s2" in job.error
     assert job.leaseOwner is None
 
 
-async def test_missing_target_model_source_fails_job(monkeypatch):
-    db_client, _mcp, _a2a = _wire(
+async def test_missing_target_model_source_fails_job_without_committing_selection(monkeypatch):
+    w = _wire(
         monkeypatch,
         servers=[],
         agents=[],
@@ -124,10 +149,37 @@ async def test_missing_target_model_source_fails_job(monkeypatch):
         job_local_adapter=object(),
     )
     monkeypatch.setattr(exec_module.ModelSource, "get", AsyncMock(return_value=None))
-    db_client.swap_adapter = MagicMock()
+    w.db_client.swap_adapter = MagicMock()
     job = _job()
 
-    await _service(db_client).run_claimed_job(job)
+    await _service(w.db_client).run_claimed_job(job)
 
-    db_client.swap_adapter.assert_not_called()
+    w.db_client.swap_adapter.assert_not_called()
+    # No swap → the gateway selection must NOT be committed (deferred-commit invariant).
+    w.set_selection.assert_not_awaited()
     assert job.status == EmbeddingReindexJobStatus.FAILED
+
+
+async def test_job_local_client_closed_when_enumeration_fails(monkeypatch):
+    w = _wire(
+        monkeypatch,
+        servers=[],
+        agents=[],
+        mcp_sync=AsyncMock(),
+        a2a_sync=AsyncMock(),
+        job_local_adapter=object(),
+    )
+    # find_all() raises AFTER the job-local client has been opened, before the swap.
+    monkeypatch.setattr(
+        exec_module.ExtendedMCPServer,
+        "find_all",
+        lambda: SimpleNamespace(to_list=AsyncMock(side_effect=RuntimeError("mongo blip"))),
+    )
+    w.db_client.swap_adapter = MagicMock()
+
+    with pytest.raises(RuntimeError, match="mongo blip"):
+        await _service(w.db_client).run_claimed_job(_job())
+
+    w.db_client.swap_adapter.assert_not_called()
+    # The adapter was never promoted, so the job-local client is closed to avoid leaking connections.
+    w.job_local_client.close.assert_called_once()

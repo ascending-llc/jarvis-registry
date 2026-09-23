@@ -262,15 +262,22 @@ pod restart.
 **Endpoint**: `PUT /api/v1/model-gateway/selection/embedding-model`
 **Scope**: `models-write`
 
-Sets `embeddingModelSourceId`. Takes effect on the **next registry pod restart**, not immediately
-— the vector `DatabaseClient` is built once at startup from the resolved embedding config (this
-matches today's env-var behavior, where changing the embedding provider also needs a restart).
+Selects an embedding model and re-embeds every existing document against it — no restart. The call
+first **synchronously smoke-tests** the target model (builds only its embedding client and runs one
+`embed_query`, opening no vector-store connection); only if that passes does it start a background
+reindex job. While the job runs the registry is in maintenance mode (AS-1867): writes to
+servers/agents and semantic searches return `503`, recovering automatically once the job finishes.
+
+`embeddingModelSourceId` is **recorded only when the reindex completes** (after the live adapter has
+swapped), not at request time — so `GET /model-gateway/selection` keeps showing the previous model
+until the job finishes, and a failed or crashed reindex never leaves the selection naming a model the
+index was not rebuilt with (which a restart would otherwise resolve against the old index).
 
 **Request Body**: `{ "modelSourceId": "<id>" }`
 
-**Response**: `202 Accepted` → the updated selection (same shape as [Get Gateway Selection](#6-get-gateway-selection)).
-The `202` means the selection was accepted and the reindex has started; document re-embedding
-continues in the background. No job id or progress is exposed by this endpoint.
+**Response**: `202 Accepted` → same shape as [Get Gateway Selection](#6-get-gateway-selection), with
+`embeddingModelSourceId` set to the **requested** target (what will be in effect once the job
+completes — the persisted selection updates only on completion). No job id or progress is exposed.
 ```json
 { "defaultWorkflowModelSourceId": null, "embeddingModelSourceId": "000000000000000000000002" }
 ```

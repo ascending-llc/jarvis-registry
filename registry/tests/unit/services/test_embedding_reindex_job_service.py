@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
+from pymongo.errors import DuplicateKeyError
 
 from registry.services import embedding_reindex_job_service as svc_module
 from registry.services.embedding_reindex_job_service import (
@@ -86,47 +87,29 @@ async def test_heartbeat_returns_false_when_lease_lost(monkeypatch):
 # --- trigger orchestration ---
 
 
-async def test_trigger_reindex_smoke_persist_and_create(monkeypatch):
+async def test_trigger_reindex_defers_selection_and_creates_job(monkeypatch):
     source = SimpleNamespace(id=PydanticObjectId())
     selection = MagicMock()
     selection.resolve_embedding_model_source = AsyncMock(return_value=source)
-    selection.set_embedding_model = AsyncMock(return_value=SimpleNamespace(embeddingModelSourceId=source.id))
+    selection.set_embedding_model = AsyncMock()
+    selection.get_selection_or_none = AsyncMock(return_value=SimpleNamespace(defaultWorkflowModelSourceId=None))
     service = _service(selection)
     service.get_active_job = AsyncMock(return_value=None)
-    smoke = AsyncMock()
-    monkeypatch.setattr(svc_module, "smoke_test_embedding_model", smoke)
-    created = SimpleNamespace(id=PydanticObjectId(), insert=AsyncMock(), delete=AsyncMock())
+    monkeypatch.setattr(svc_module, "smoke_test_embedding_model", AsyncMock())
+    created = SimpleNamespace(id=PydanticObjectId(), insert=AsyncMock())
     fake_job_cls = MagicMock(return_value=created)
     monkeypatch.setattr(svc_module, "EmbeddingReindexJob", fake_job_cls)
 
     result = await service.trigger_reindex("abc", updated_by="user-1")
 
-    smoke.assert_awaited_once()
-    selection.set_embedding_model.assert_awaited_once_with("abc", updated_by="user-1")
     created.insert.assert_awaited_once()
-    # Job is created, selection persisted, and on the happy path the job is NOT rolled back.
-    created.delete.assert_not_awaited()
+    # Selection is NOT persisted at trigger time — the executor commits it after a successful swap.
+    selection.set_embedding_model.assert_not_awaited()
     assert fake_job_cls.call_args.kwargs["targetEmbeddingModelSourceId"] == source.id
+    assert fake_job_cls.call_args.kwargs["triggeredBy"] == "user-1"
+    # The 202 response reflects the requested target without having persisted it.
     assert result.embeddingModelSourceId == source.id
-
-
-async def test_trigger_reindex_rolls_back_job_when_selection_persist_fails(monkeypatch):
-    source = SimpleNamespace(id=PydanticObjectId())
-    selection = MagicMock()
-    selection.resolve_embedding_model_source = AsyncMock(return_value=source)
-    selection.set_embedding_model = AsyncMock(side_effect=RuntimeError("mongo down"))
-    service = _service(selection)
-    service.get_active_job = AsyncMock(return_value=None)
-    monkeypatch.setattr(svc_module, "smoke_test_embedding_model", AsyncMock())
-    created = SimpleNamespace(id=PydanticObjectId(), insert=AsyncMock(), delete=AsyncMock())
-    monkeypatch.setattr(svc_module, "EmbeddingReindexJob", MagicMock(return_value=created))
-
-    with pytest.raises(RuntimeError, match="mongo down"):
-        await service.trigger_reindex("abc", updated_by="user-1")
-
-    # Job was created but the selection write failed, so the job is deleted to avoid a stale RUNNING gate.
-    created.insert.assert_awaited_once()
-    created.delete.assert_awaited_once()
+    assert result.defaultWorkflowModelSourceId is None
 
 
 async def test_trigger_reindex_409_when_already_running(monkeypatch):
@@ -166,3 +149,19 @@ async def test_trigger_reindex_502_on_smoke_failure_persists_nothing(monkeypatch
 
     selection.set_embedding_model.assert_not_awaited()
     insert.assert_not_awaited()
+
+
+async def test_trigger_reindex_maps_duplicate_key_to_409(monkeypatch):
+    # Two truly simultaneous triggers both pass get_active_job(); the partial unique index rejects
+    # the loser's insert with a duplicate-key error, which must surface as "already running".
+    source = SimpleNamespace(id=PydanticObjectId())
+    selection = MagicMock()
+    selection.resolve_embedding_model_source = AsyncMock(return_value=source)
+    service = _service(selection)
+    service.get_active_job = AsyncMock(return_value=None)
+    monkeypatch.setattr(svc_module, "smoke_test_embedding_model", AsyncMock())
+    created = SimpleNamespace(insert=AsyncMock(side_effect=DuplicateKeyError("dup")))
+    monkeypatch.setattr(svc_module, "EmbeddingReindexJob", MagicMock(return_value=created))
+
+    with pytest.raises(EmbeddingReindexAlreadyRunningError):
+        await service.trigger_reindex("abc", updated_by="user-1")
