@@ -13,6 +13,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   mcpServer: 'MCP Server',
   workflow: 'Workflow',
   skill: 'Skill',
+  skill_sync_source: 'External Provider',
 };
 
 export const ShareModal: React.FC<ShareModalProps> = props => {

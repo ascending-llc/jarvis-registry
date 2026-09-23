@@ -1,3 +1,4 @@
+import type { AxiosRequestConfig } from 'axios';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import SERVICES from '@/services';
@@ -9,6 +10,8 @@ const MAX_POLL_DURATION_MS = 30 * 60 * 1000;
 
 const PHASE_LABELS: Record<JobPhase, string> = {
   queued: 'Starting sync...',
+  downloading: 'Downloading repository...',
+  extracting: 'Extracting repository...',
   discovering: 'Syncing...',
   applying: 'Applying changes...',
   syncing_vectors: 'Updating search index...',
@@ -54,6 +57,12 @@ interface UseFederationSyncPollingReturn {
   retryPolling: () => void;
   stopPolling: () => void;
 }
+
+type SyncJobFetcher = (
+  providerId: string,
+  jobId: string,
+  config?: AxiosRequestConfig,
+) => Promise<FederationSyncJobStatus>;
 
 const _isSameTarget = (left: PollingTarget | null, right: PollingTarget): boolean =>
   left?.federationId === right.federationId && left.jobId === right.jobId;
@@ -112,10 +121,10 @@ export const getFederationSyncViewState = ({
     };
   }
 
-  if (jobStatus?.status === 'success') {
+  if (jobStatus?.status === 'success' || jobStatus?.status === 'partial_success') {
     return {
       kind: 'success',
-      label: 'Sync completed',
+      label: jobStatus.status === 'partial_success' ? 'Sync partially completed' : 'Sync completed',
       detail: null,
       tone: 'success',
       isBusy: false,
@@ -161,6 +170,18 @@ export const getFederationSyncViewState = ({
     };
   }
 
+  if (serverStatus === 'partial_success') {
+    return {
+      kind: 'success',
+      label: 'Sync partially completed',
+      detail: syncMessage || null,
+      tone: 'success',
+      isBusy: false,
+      action: 'start',
+      actionLabel: 'Sync Now',
+    };
+  }
+
   if (serverStatus === 'failed') {
     return {
       kind: 'failed',
@@ -201,6 +222,7 @@ export const getFederationSyncErrorMessage = (error: unknown, fallback: string):
 
 export const useFederationSyncPolling = (
   onTerminal?: (job: FederationSyncJobStatus) => void,
+  getSyncJob: SyncJobFetcher = SERVICES.FEDERATION.getFederationSyncJob,
 ): UseFederationSyncPollingReturn => {
   const [jobStatus, setJobStatus] = useState<FederationSyncJobStatus | null>(null);
   const [isPolling, setIsPolling] = useState(false);
@@ -278,14 +300,14 @@ export const useFederationSyncPolling = (
         abortControllerRef.current = requestController;
 
         try {
-          const job = await SERVICES.FEDERATION.getFederationSyncJob(federationId, jobId, {
+          const job = await getSyncJob(federationId, jobId, {
             signal: requestController.signal,
           });
           if (abortControllerRef.current === requestController) abortControllerRef.current = null;
           if (pollingGeneration !== pollingGenerationRef.current) return;
 
           const status = String(job.status);
-          if (!['pending', 'syncing', 'success', 'failed'].includes(status)) {
+          if (!['pending', 'syncing', 'success', 'partial_success', 'failed'].includes(status)) {
             failPolling('invalid_status');
             return;
           }
@@ -293,7 +315,7 @@ export const useFederationSyncPolling = (
           errorCountRef.current = 0;
           setJobStatus(job);
 
-          if (status === 'success' || status === 'failed') {
+          if (status === 'success' || status === 'partial_success' || status === 'failed') {
             cancelActivePolling();
             retryTargetRef.current = null;
             terminalTargetRef.current = target;
@@ -325,7 +347,7 @@ export const useFederationSyncPolling = (
 
       void poll();
     },
-    [cancelActivePolling, failPolling],
+    [cancelActivePolling, failPolling, getSyncJob],
   );
 
   const retryPolling = useCallback(() => {

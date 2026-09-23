@@ -15,6 +15,8 @@ export const APP_ROUTES = {
   agentEdit: '/agent-edit',
   federationRegistry: '/federation-registry',
   federationEdit: '/federation-edit',
+  skillSyncSources: '/skill-sync-sources',
+  skillSyncSourceDetail: '/skill-sync-sources/:id',
   workflowRegistry: '/workflow-registry',
   workflowEdit: '/workflow-edit',
   skills: '/skills',
@@ -23,6 +25,7 @@ export const APP_ROUTES = {
 
 const REGISTERED_ROUTE_PATHS = new Set<string>(Object.values(APP_ROUTES));
 const PUBLIC_ROUTE_PATHS = new Set<string>([APP_ROUTES.login]);
+const SKILL_SYNC_SOURCE_DETAIL_PATTERN = /^\/skill-sync-sources\/[^/]+$/;
 
 const normalizePathname = (pathname: string): string => {
   if (!pathname || pathname === '/') return '/';
@@ -60,7 +63,10 @@ export const isProtectedBrowserPath = (pathname: string): boolean => {
   if (routePath === null) return false;
 
   const comparableRoutePath = routePath.toLowerCase();
-  return REGISTERED_ROUTE_PATHS.has(comparableRoutePath) && !PUBLIC_ROUTE_PATHS.has(comparableRoutePath);
+  return (
+    (REGISTERED_ROUTE_PATHS.has(comparableRoutePath) || SKILL_SYNC_SOURCE_DETAIL_PATTERN.test(comparableRoutePath)) &&
+    !PUBLIC_ROUTE_PATHS.has(comparableRoutePath)
+  );
 };
 
 export const isLoginBrowserPath = (pathname: string): boolean =>

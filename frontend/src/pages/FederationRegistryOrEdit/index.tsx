@@ -1,6 +1,6 @@
-import { ArrowPathIcon, CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FiServer } from 'react-icons/fi';
 import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -8,17 +8,29 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
-import {
-  getFederationSyncErrorMessage,
-  getFederationSyncViewState,
-  useFederationSyncPolling,
-} from '@/hooks/useFederationSyncPolling';
+import { getFederationSyncErrorMessage, useFederationSyncPolling } from '@/hooks/useFederationSyncPolling';
 import SERVICES from '@/services';
+import {
+  clearGithubOauthIntent,
+  consumeGithubOauthIntent,
+  type GithubOauthIntent,
+  saveGithubOauthIntent,
+} from '@/services/externalProvider/oauthIntent';
+import {
+  getSkillSyncJobAsFederation,
+  getSkillSyncSourceCallbackUrl,
+  getSkillSyncSourceOauthUrl,
+} from '@/services/externalProvider/sync';
 import type { Federation } from '@/services/federation/type';
+import type { SkillSyncSourceDetail, UpdateSkillSyncSourceRequest } from '@/services/skillSyncSource/type';
 import UTILS from '@/utils';
 
+import { getGithubFormFingerprint, normalizePaths, normalizeTags } from './formUtils';
 import MainConfigForm from './MainConfigForm';
 import type { FederationFormConfig } from './types';
+
+const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const GITHUB_REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 const INIT_DATA: FederationFormConfig = {
   providerType: 'aws_agentcore',
@@ -31,58 +43,122 @@ const INIT_DATA: FederationFormConfig = {
   tenantId: '',
   clientId: '',
   clientSecret: '',
+  tags: [],
+  owner: '',
+  repo: '',
+  ref: 'main',
+  paths: ['skills/'],
+  githubAppClientId: '',
+  githubAppClientSecret: '',
 };
+
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (!error || typeof error !== 'object') return fallback;
+  if ('detail' in error) {
+    const detail = error.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
+      return detail.message;
+    }
+  }
+  if ('message' in error && typeof error.message === 'string') return error.message;
+  return fallback;
+};
+
+const isSafeRepositoryPath = (path: string): boolean => {
+  if (path.startsWith('/') || path.includes('\\')) return false;
+  return !path.split('/').includes('..');
+};
+
+const getGithubFormData = (data: SkillSyncSourceDetail): FederationFormConfig => ({
+  ...INIT_DATA,
+  providerType: 'github',
+  displayName: data.displayName,
+  description: data.description || '',
+  tags: [...data.tags],
+  owner: data.owner,
+  repo: data.repo,
+  ref: data.ref,
+  paths: [...data.paths],
+  githubAppClientId: data.githubAppClientId,
+  githubAppClientSecret: '',
+});
 
 const FederationRegistryOrEdit: React.FC = () => {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const id = searchParams.get('id');
+  const isGithubSource = searchParams.get('provider') === 'github';
   const { showToast } = useGlobal();
   const { refreshFederationData, handleFederationUpdate } = useServer();
 
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [federation, setFederation] = useState<Federation | null>(null);
-  const [isStartingSync, setIsStartingSync] = useState(false);
+  const [skillSyncSource, setSkillSyncSource] = useState<SkillSyncSourceDetail | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
-  const currentFederationIdRef = useRef(id);
+  const currentProviderIdRef = useRef(id);
   const detailRequestGenerationRef = useRef(0);
   const syncRequestPendingRef = useRef(false);
   const syncRequestGenerationRef = useRef(0);
-  currentFederationIdRef.current = id;
+  const oauthCallbackHandledRef = useRef(false);
+  currentProviderIdRef.current = id;
 
   const [formData, setFormData] = useState<FederationFormConfig>(INIT_DATA);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
-
   const [testConnectionLoading, setTestConnectionLoading] = useState(false);
   const [testConnectionResult, setTestConnectionResult] = useState<{
     success: boolean;
     message: string;
   } | null>(null);
+  const [githubSavedFingerprint, setGithubSavedFingerprint] = useState<string | null>(null);
 
-  const isEditMode = !!id;
+  const isEditMode = Boolean(id);
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
+  const activeProvider = isGithubSource ? skillSyncSource : federation;
+  const isGithubForm = formData.providerType === 'github';
+  const githubCallbackUrl = getSkillSyncSourceCallbackUrl();
+  const githubCurrentFingerprint = useMemo(() => getGithubFormFingerprint(formData), [formData]);
+  const hasUnsavedGithubChanges =
+    isGithubSource && githubSavedFingerprint !== null && githubCurrentFingerprint !== githubSavedFingerprint;
 
-  const goBack = () => {
-    navigate(-1);
-  };
+  const goBack = () => navigate(-1);
 
-  const getDetail = async () => {
-    const federationId = id;
-    if (!federationId) return;
+  const getDetail = useCallback(async () => {
+    const providerId = id;
+    if (!providerId) return;
 
     const detailRequestGeneration = ++detailRequestGenerationRef.current;
     setLoadingDetail(true);
     try {
-      const data = await SERVICES.FEDERATION.getFederation(federationId);
+      if (isGithubSource) {
+        const data = await SERVICES.SKILL_SYNC_SOURCE.getSkillSyncSource(providerId);
+        if (
+          detailRequestGeneration !== detailRequestGenerationRef.current ||
+          currentProviderIdRef.current !== providerId
+        ) {
+          return;
+        }
+        const nextFormData = getGithubFormData(data);
+        setFederation(null);
+        setSkillSyncSource(data);
+        setFormData(nextFormData);
+        setGithubSavedFingerprint(getGithubFormFingerprint(nextFormData));
+        return;
+      }
+
+      const data = await SERVICES.FEDERATION.getFederation(providerId);
       if (
         detailRequestGeneration !== detailRequestGenerationRef.current ||
-        currentFederationIdRef.current !== federationId
+        currentProviderIdRef.current !== providerId
       ) {
         return;
       }
+      setSkillSyncSource(null);
+      setGithubSavedFingerprint(null);
       setFederation(data);
       setFormData({
+        ...INIT_DATA,
         providerType: data.providerType,
         displayName: data.displayName,
         description: data.description || '',
@@ -90,36 +166,32 @@ const FederationRegistryOrEdit: React.FC = () => {
         assumeRoleArn: data.providerConfig?.assumeRoleArn || '',
         resourceTagsFilter: data.providerConfig?.resourceTagsFilter
           ? Object.entries(data.providerConfig.resourceTagsFilter)
-              .map(([k, v]) => `${k}:${v}`)
+              .map(([key, value]) => `${key}:${value}`)
               .join(', ')
           : '',
         projectEndpoint: data.providerConfig?.projectEndpoint || '',
         tenantId: data.providerConfig?.tenantId || '',
         clientId: data.providerConfig?.clientId || '',
-        // clientSecret is stored encrypted server-side and never returned by the API;
-        // leave blank and only resubmit it when the user retypes a new value.
         clientSecret: '',
       });
-    } catch (_error: any) {
+    } catch (error: unknown) {
       if (detailRequestGeneration === detailRequestGenerationRef.current) {
-        showToast(_error?.detail?.message || 'Failed to fetch external registry details', 'error');
+        showToast(getErrorMessage(error, 'Failed to fetch external provider details'), 'error');
       }
     } finally {
-      if (detailRequestGeneration === detailRequestGenerationRef.current) {
-        setLoadingDetail(false);
-      }
+      if (detailRequestGeneration === detailRequestGenerationRef.current) setLoadingDetail(false);
     }
-  };
+  }, [id, isGithubSource, showToast]);
 
-  const { jobStatus, isPolling, pollingError, startPolling, retryPolling, stopPolling } = useFederationSyncPolling(
+  const { isPolling, startPolling, stopPolling } = useFederationSyncPolling(
     job => {
-      if (job.federationId !== currentFederationIdRef.current) return;
-      showToast(
-        job.status === 'success' ? 'Sync completed successfully' : job.error || 'Sync failed',
-        job.status === 'success' ? 'success' : 'error',
-      );
+      if (job.federationId !== currentProviderIdRef.current) return;
+      if (job.status === 'success') showToast('Sync completed successfully', 'success');
+      else if (job.status === 'partial_success') showToast('Sync completed with some errors', 'info');
+      else showToast(job.error || 'Sync failed', 'error');
       void getDetail();
     },
+    isGithubSource ? getSkillSyncJobAsFederation : undefined,
   );
 
   useEffect(() => {
@@ -127,68 +199,87 @@ const FederationRegistryOrEdit: React.FC = () => {
     detailRequestGenerationRef.current += 1;
     syncRequestGenerationRef.current += 1;
     syncRequestPendingRef.current = false;
-    setIsStartingSync(false);
     setFederation(null);
-    if (id) void getDetail();
-    return () => {
-      detailRequestGenerationRef.current += 1;
-      syncRequestGenerationRef.current += 1;
-      syncRequestPendingRef.current = false;
-    };
-  }, [id, stopPolling]);
+    setSkillSyncSource(null);
+    setGithubSavedFingerprint(null);
+    setErrors({});
+    setTestConnectionResult(null);
+    oauthCallbackHandledRef.current = false;
+
+    if (id) {
+      void getDetail();
+      return;
+    }
+    setFormData(INIT_DATA);
+    setLoadingDetail(false);
+  }, [getDetail, id, stopPolling]);
+
+  const sourceActiveJob = skillSyncSource?.recentJobs.find(job => job.status === 'pending' || job.status === 'syncing');
+  const activeJobId = isGithubSource
+    ? sourceActiveJob?.id || skillSyncSource?.lastSync?.jobId
+    : federation?.lastSync?.jobId;
+  const activeSyncStatus = activeProvider?.syncStatus;
 
   useEffect(() => {
-    const jobId = federation?.lastSync?.jobId;
-    if (
-      id &&
-      federation?.id === id &&
-      jobId &&
-      (federation.syncStatus === 'pending' || federation.syncStatus === 'syncing')
-    ) {
-      startPolling(id, jobId);
+    if (id && activeJobId && (activeSyncStatus === 'pending' || activeSyncStatus === 'syncing')) {
+      startPolling(id, activeJobId);
       return;
     }
     stopPolling();
-  }, [federation?.id, federation?.lastSync?.jobId, federation?.syncStatus, id, startPolling, stopPolling]);
+  }, [activeJobId, activeSyncStatus, id, startPolling, stopPolling]);
 
-  const syncView = getFederationSyncViewState({
-    serverStatus: federation?.syncStatus,
-    syncMessage: federation?.syncMessage,
-    hasServerJobId: Boolean(federation?.lastSync?.jobId),
-    isStarting: isStartingSync,
-    isPolling,
-    pollingError,
-    jobStatus,
-  });
-
-  const validate = () => {
+  const validate = (data: FederationFormConfig): boolean => {
     const newErrors: Record<string, string> = {};
+    const displayName = data.displayName.trim();
+    if (!displayName) newErrors.displayName = 'Display Name is required';
+    else if (displayName.length > 128) newErrors.displayName = 'Display Name must be 128 characters or fewer';
 
-    if (!formData.displayName.trim()) {
-      newErrors.displayName = 'Display Name is required';
-    }
-
-    if (formData.providerType === 'aws_agentcore') {
-      if (!formData.region.trim()) newErrors.region = 'AWS Region is required';
-      if (!formData.assumeRoleArn.trim()) newErrors.assumeRoleArn = 'Role ARN is required';
-    } else if (formData.providerType === 'azure_ai_foundry') {
-      if (!formData.projectEndpoint.trim()) newErrors.projectEndpoint = 'Project Endpoint is required';
-
-      // Service-principal auth is all-or-nothing: either leave all three blank to fall
-      // back to managed identity, or fill in all three (mirrors the backend validation
-      // in FederationCrudService.validate_provider_config).
-      const servicePrincipalFields: { key: 'tenantId' | 'clientId' | 'clientSecret'; label: string }[] = [
+    if (data.providerType === 'aws_agentcore') {
+      if (!data.region.trim()) newErrors.region = 'AWS Region is required';
+      if (!data.assumeRoleArn.trim()) newErrors.assumeRoleArn = 'Role ARN is required';
+    } else if (data.providerType === 'azure_ai_foundry') {
+      if (!data.projectEndpoint.trim()) newErrors.projectEndpoint = 'Project Endpoint is required';
+      const servicePrincipalFields: Array<{ key: 'tenantId' | 'clientId' | 'clientSecret'; label: string }> = [
         { key: 'tenantId', label: 'Tenant ID' },
         { key: 'clientId', label: 'Client ID' },
         { key: 'clientSecret', label: 'Client Secret' },
       ];
-      const filledCount = servicePrincipalFields.filter(({ key }) => formData[key].trim()).length;
+      const filledCount = servicePrincipalFields.filter(({ key }) => data[key].trim()).length;
       if (filledCount > 0 && filledCount < servicePrincipalFields.length) {
-        servicePrincipalFields.forEach(({ key, label }) => {
-          if (!formData[key].trim()) {
+        for (const { key, label } of servicePrincipalFields) {
+          if (!data[key].trim()) {
             newErrors[key] = `${label} is required when configuring service-principal authentication`;
           }
-        });
+        }
+      }
+    } else {
+      const owner = data.owner.trim();
+      const repo = data.repo.trim();
+      const ref = data.ref.trim();
+      const paths = normalizePaths(data.paths);
+      if (!owner) newErrors.owner = 'Owner is required';
+      else if (!GITHUB_OWNER_PATTERN.test(owner)) newErrors.owner = 'Enter a valid GitHub user or organization';
+      if (!repo) newErrors.repo = 'Repo is required';
+      else if (repo.length > 100 || !GITHUB_REPO_PATTERN.test(repo)) {
+        newErrors.repo = 'Enter a valid GitHub repository name';
+      }
+      if (!ref) newErrors.ref = 'Ref is required';
+      else if (
+        ref.length > 255 ||
+        ref.includes('..') ||
+        ref.includes('//') ||
+        ref.includes('@{') ||
+        ref.includes('\\')
+      ) {
+        newErrors.ref = 'Enter a safe branch, tag, or commit SHA';
+      }
+      if (paths.length === 0) newErrors.paths = 'Add at least one repository path';
+      else if (paths.some(path => !isSafeRepositoryPath(path))) {
+        newErrors.paths = 'Paths must be safe repository-relative POSIX paths';
+      }
+      if (!data.githubAppClientId.trim()) newErrors.githubAppClientId = 'GitHub App Client ID is required';
+      if (!data.githubAppClientSecret.trim() && !(isEditMode && skillSyncSource?.hasClientSecret)) {
+        newErrors.githubAppClientSecret = 'GitHub App Client Secret is required';
       }
     }
 
@@ -196,177 +287,320 @@ const FederationRegistryOrEdit: React.FC = () => {
     return Object.keys(newErrors).length === 0;
   };
 
-  const updateField = (field: keyof FederationFormConfig, value: any) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    if (errors[field]) {
-      setErrors(prev => ({ ...prev, [field]: undefined }));
-    }
+  const updateField = <Field extends keyof FederationFormConfig>(field: Field, value: FederationFormConfig[Field]) => {
+    setFormData(current => ({ ...current, [field]: value }));
+    setErrors(current => (current[field] ? { ...current, [field]: undefined } : current));
+    if (field === 'providerType' || isGithubForm) setTestConnectionResult(null);
   };
 
-  const parseTagsFilter = (input: string) => {
-    const trimmed = input.trim();
-    if (!trimmed) return undefined;
+  const parseTagsFilter = (input: string): Record<string, string> | undefined => {
     const filter: Record<string, string> = {};
-    trimmed.split(',').forEach(pair => {
-      const [key, val] = pair.split(':').map(s => s.trim());
-      if (key && val) filter[key] = val;
-    });
+    for (const pair of input.trim().split(',')) {
+      const [key, value] = pair.split(':').map(item => item.trim());
+      if (key && value) filter[key] = value;
+    }
     return Object.keys(filter).length > 0 ? filter : undefined;
   };
 
   const handleDelete = async () => {
-    if (!id) return;
-    if (!window.confirm('Are you sure you want to delete this external registry?')) return;
-
+    if (!id || !window.confirm('Are you sure you want to delete this external provider?')) return;
     setLoading(true);
     try {
-      await SERVICES.FEDERATION.deleteFederation(id);
-      showToast('External Registry deleted successfully', 'success');
-      refreshFederationData(true);
-      navigate('/', { replace: true });
-    } catch (error: any) {
-      showToast(error?.detail?.message || 'Failed to delete external registry', 'error');
+      if (isGithubSource) {
+        await SERVICES.SKILL_SYNC_SOURCE.deleteSkillSyncSource(id);
+        showToast('External Provider deletion started', 'success');
+      } else {
+        await SERVICES.FEDERATION.deleteFederation(id);
+        showToast('External Provider deleted successfully', 'success');
+      }
+      await refreshFederationData(true);
+      navigate('/?tab=external', { replace: true });
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to delete external provider'), 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleTestConnection = async () => {
-    if (!id) return;
+  const handleCopyGithubCallbackUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(githubCallbackUrl);
+      showToast('Callback URL copied', 'success');
+    } catch {
+      showToast('Failed to copy callback URL', 'error');
+    }
+  };
 
-    if (!validate()) {
-      showToast('Please fix form errors before testing', 'error');
+  const redirectToGithubOauth = useCallback(
+    (intent: GithubOauthIntent) => {
+      if (!id) return;
+      saveGithubOauthIntent(id, intent);
+      window.location.assign(getSkillSyncSourceOauthUrl(id));
+    },
+    [id],
+  );
+
+  const runGithubConnectionTest = useCallback(
+    async ({
+      redirectIntent = 'test',
+      allowAuthorizationRedirect = true,
+    }: {
+      redirectIntent?: GithubOauthIntent;
+      allowAuthorizationRedirect?: boolean;
+    } = {}): Promise<boolean> => {
+      if (!id) return false;
+
+      setTestConnectionLoading(true);
+      setTestConnectionResult(null);
+      try {
+        const result = await SERVICES.SKILL_SYNC_SOURCE.syncSkillSyncSource(id, { dryRun: true });
+        if (result.needsAuthorization) {
+          if (allowAuthorizationRedirect) {
+            redirectToGithubOauth(redirectIntent);
+          } else {
+            setTestConnectionResult({
+              success: false,
+              message: 'GitHub authorization did not provide a usable token. Please connect again.',
+            });
+          }
+          return false;
+        }
+
+        const success = result.ok;
+        setTestConnectionResult({
+          success,
+          message: success ? 'Connected successfully' : result.detail || 'Connection validation failed',
+        });
+        return success;
+      } catch (error: unknown) {
+        setTestConnectionResult({
+          success: false,
+          message: getErrorMessage(error, 'Connection failed — check your settings and try again'),
+        });
+        return false;
+      } finally {
+        setTestConnectionLoading(false);
+      }
+    },
+    [id, redirectToGithubOauth],
+  );
+
+  const triggerGithubSync = useCallback(
+    async (allowAuthorizationRedirect: boolean): Promise<boolean> => {
+      if (!id || syncRequestPendingRef.current || isPolling) return false;
+
+      syncRequestPendingRef.current = true;
+      const syncRequestGeneration = ++syncRequestGenerationRef.current;
+      try {
+        const result = await SERVICES.SKILL_SYNC_SOURCE.syncSkillSyncSource(id, { dryRun: false });
+        if (syncRequestGeneration !== syncRequestGenerationRef.current) return false;
+        if (result.needsAuthorization) {
+          if (allowAuthorizationRedirect) {
+            redirectToGithubOauth('sync');
+          } else {
+            showToast('GitHub authorization is required before syncing.', 'error');
+          }
+          return false;
+        }
+        if (!result.job) throw new Error('Failed to start sync');
+
+        showToast('Sync started in background', 'info');
+        startPolling(id, result.job.id);
+        return true;
+      } catch (error: unknown) {
+        if (syncRequestGeneration !== syncRequestGenerationRef.current) return false;
+        showToast(getFederationSyncErrorMessage(error, 'Failed to start sync'), 'error');
+        return false;
+      } finally {
+        if (syncRequestGeneration === syncRequestGenerationRef.current) {
+          syncRequestPendingRef.current = false;
+        }
+      }
+    },
+    [id, isPolling, redirectToGithubOauth, showToast, startPolling],
+  );
+
+  const handleTestConnection = async () => {
+    if (!id || !validate(formData)) return;
+
+    if (isGithubForm) {
+      if (githubSavedFingerprint === null || hasUnsavedGithubChanges) return;
+      await runGithubConnectionTest();
       return;
     }
 
     setTestConnectionLoading(true);
     setTestConnectionResult(null);
     try {
-      const isAws = formData.providerType === 'aws_agentcore';
-      const providerConfig = isAws
-        ? {
-            region: formData.region,
-            assumeRoleArn: formData.assumeRoleArn,
-            resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
-          }
-        : {
-            projectEndpoint: formData.projectEndpoint,
-            tenantId: formData.tenantId,
-            clientId: formData.clientId,
-            clientSecret: formData.clientSecret,
-          };
-
+      const providerConfig =
+        formData.providerType === 'aws_agentcore'
+          ? {
+              region: formData.region,
+              assumeRoleArn: formData.assumeRoleArn,
+              resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
+            }
+          : {
+              projectEndpoint: formData.projectEndpoint,
+              tenantId: formData.tenantId,
+              clientId: formData.clientId,
+              clientSecret: formData.clientSecret,
+            };
       const result = await SERVICES.FEDERATION.syncFederation(
         id,
-        {
-          dryRun: true,
-          providerConfig,
-        },
+        { dryRun: true, providerConfig },
         { timeout: 120000 },
       );
-
       const summary = 'summary' in result ? result.summary : null;
       const discoveredMcp = summary?.discoveredMcpServers ?? 0;
       const discoveredAgents = summary?.discoveredAgents ?? 0;
-
       setTestConnectionResult({
         success: true,
-        message: `Connected — discovered ${discoveredMcp} MCP server${discoveredMcp !== 1 ? 's' : ''}, ${discoveredAgents} agent${discoveredAgents !== 1 ? 's' : ''}`,
+        message: `Connected — discovered ${discoveredMcp} MCP server${discoveredMcp === 1 ? '' : 's'}, ${discoveredAgents} agent${discoveredAgents === 1 ? '' : 's'}`,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       setTestConnectionResult({
         success: false,
-        message: error?.detail?.message || 'Connection failed — check your settings and try again',
+        message: getErrorMessage(error, 'Connection failed — check your settings and try again'),
       });
     } finally {
       setTestConnectionLoading(false);
     }
   };
 
-  const handleSync = async () => {
-    if (!id || syncRequestPendingRef.current || isPolling) return;
+  useEffect(() => {
+    if (!isGithubSource || !id || oauthCallbackHandledRef.current) return;
 
-    if (syncView.action === 'retry') {
-      retryPolling();
+    const oauthError = searchParams.get('error');
+    const oauthStatus = searchParams.get('status');
+    if (!oauthError && !oauthStatus) return;
+
+    oauthCallbackHandledRef.current = true;
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete('error');
+    nextSearchParams.delete('status');
+    setSearchParams(nextSearchParams, { replace: true });
+
+    if (oauthError === 'auth_failed') {
+      clearGithubOauthIntent(id);
+      showToast('GitHub authorization failed. Please try connecting again.', 'error');
       return;
     }
-    if (syncView.action === 'refresh') {
+
+    if (oauthStatus === 'syncing') {
+      clearGithubOauthIntent(id);
+      showToast('GitHub connected. The first skill sync is now running.', 'info');
       void getDetail();
       return;
     }
-    if (syncView.action === 'none') return;
 
-    const federationId = id;
-    syncRequestPendingRef.current = true;
-    const syncRequestGeneration = ++syncRequestGenerationRef.current;
-    setIsStartingSync(true);
-    showToast('Sync started in background', 'info');
+    if (oauthStatus !== 'connected') return;
 
-    try {
-      const job = await SERVICES.FEDERATION.syncFederation(federationId);
-      if (
-        syncRequestGeneration !== syncRequestGenerationRef.current ||
-        currentFederationIdRef.current !== federationId
-      ) {
-        return;
-      }
-      if (!('id' in job)) throw new Error('Failed to start sync');
-      startPolling(federationId, job.id);
-    } catch (error: unknown) {
-      if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
-      showToast(getFederationSyncErrorMessage(error, 'Failed to start sync'), 'error');
-    } finally {
-      if (syncRequestGeneration === syncRequestGenerationRef.current) {
-        syncRequestPendingRef.current = false;
-        setIsStartingSync(false);
-      }
-    }
-  };
+    const intent = consumeGithubOauthIntent(id);
+    showToast('GitHub connected. Validating the connection now.', 'info');
+    void (async () => {
+      const connected = await runGithubConnectionTest({ allowAuthorizationRedirect: false });
+      if (intent === 'sync' && connected) await triggerGithubSync(false);
+    })();
+  }, [
+    getDetail,
+    id,
+    isGithubSource,
+    runGithubConnectionTest,
+    searchParams,
+    setSearchParams,
+    showToast,
+    triggerGithubSync,
+  ]);
 
   const handleSave = async () => {
-    if (!validate()) return;
+    const preparedForm = isGithubForm
+      ? {
+          ...formData,
+          tags: normalizeTags(formData.tags),
+          paths: normalizePaths(formData.paths),
+        }
+      : formData;
+    setFormData(preparedForm);
+    if (!validate(preparedForm)) return;
+
     setLoading(true);
     try {
-      const isAws = formData.providerType === 'aws_agentcore';
-      const providerConfig = isAws
-        ? {
-            region: formData.region,
-            assumeRoleArn: formData.assumeRoleArn,
-            resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
-          }
-        : {
-            projectEndpoint: formData.projectEndpoint,
-            tenantId: formData.tenantId,
-            clientId: formData.clientId,
-            clientSecret: formData.clientSecret,
+      if (preparedForm.providerType === 'github') {
+        const basePayload = {
+          displayName: preparedForm.displayName.trim(),
+          description: preparedForm.description.trim() || undefined,
+          tags: preparedForm.tags,
+          owner: preparedForm.owner.trim(),
+          repo: preparedForm.repo.trim(),
+          ref: preparedForm.ref.trim(),
+          paths: preparedForm.paths,
+          githubAppClientId: preparedForm.githubAppClientId.trim(),
+        };
+
+        if (isEditMode && id && skillSyncSource) {
+          const payload: UpdateSkillSyncSourceRequest = {
+            ...basePayload,
+            syncAfterUpdate: false,
+            ...(preparedForm.githubAppClientSecret.trim()
+              ? { githubAppClientSecret: preparedForm.githubAppClientSecret.trim() }
+              : {}),
           };
+          const result = await SERVICES.SKILL_SYNC_SOURCE.updateSkillSyncSource(id, payload);
+          const updated = 'providerType' in result ? result : await SERVICES.SKILL_SYNC_SOURCE.getSkillSyncSource(id);
+          const nextFormData = getGithubFormData(updated);
+          setSkillSyncSource(updated);
+          setFormData(nextFormData);
+          setGithubSavedFingerprint(getGithubFormFingerprint(nextFormData));
+          showToast('External Provider updated successfully', 'success');
+        } else {
+          await SERVICES.SKILL_SYNC_SOURCE.createSkillSyncSource({
+            ...basePayload,
+            githubAppClientSecret: preparedForm.githubAppClientSecret.trim(),
+          });
+          showToast('External Provider added successfully', 'success');
+        }
+        await refreshFederationData(true);
+        goBack();
+        return;
+      }
+
+      const providerConfig =
+        preparedForm.providerType === 'aws_agentcore'
+          ? {
+              region: preparedForm.region,
+              assumeRoleArn: preparedForm.assumeRoleArn,
+              resourceTagsFilter: parseTagsFilter(preparedForm.resourceTagsFilter),
+            }
+          : {
+              projectEndpoint: preparedForm.projectEndpoint,
+              tenantId: preparedForm.tenantId,
+              clientId: preparedForm.clientId,
+              clientSecret: preparedForm.clientSecret,
+            };
 
       if (isEditMode && id && federation) {
         const result = await SERVICES.FEDERATION.updateFederation(id, {
-          displayName: formData.displayName,
-          description: formData.description || undefined,
+          displayName: preparedForm.displayName,
+          description: preparedForm.description || undefined,
           providerConfig,
           version: federation.version,
           syncAfterUpdate: true,
         });
-        showToast('External Registry updated successfully', 'success');
-        handleFederationUpdate(id, {
-          displayName: result.displayName,
-          description: result.description,
-        });
+        showToast('External Provider updated successfully', 'success');
+        handleFederationUpdate(id, { displayName: result.displayName, description: result.description });
       } else {
         await SERVICES.FEDERATION.createFederation({
-          providerType: formData.providerType,
-          displayName: formData.displayName,
-          description: formData.description || undefined,
+          providerType: preparedForm.providerType,
+          displayName: preparedForm.displayName,
+          description: preparedForm.description || undefined,
           providerConfig,
         });
-        showToast('External Registry added successfully', 'success');
-        refreshFederationData(true);
+        showToast('External Provider added successfully', 'success');
+        await refreshFederationData(true);
       }
       goBack();
-    } catch (error: any) {
-      showToast(error?.detail?.message || 'Failed to save external registry', 'error');
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, 'Failed to save external provider'), 'error');
     } finally {
       setLoading(false);
     }
@@ -376,44 +610,42 @@ const FederationRegistryOrEdit: React.FC = () => {
     <>
       {shareOpen && id && (
         <ShareModal
-          itemName={formData.displayName || federation?.displayName || 'External Registry'}
+          itemName={formData.displayName || activeProvider?.displayName || 'External Provider'}
           resourceId={id}
-          resourceType='federation'
+          resourceType={isGithubSource ? 'skill_sync_source' : 'federation'}
           isOpen={shareOpen}
           onClose={() => setShareOpen(false)}
         />
       )}
-      <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
-        <div className='mx-auto flex flex-col w-3/4 min-h-full bg-[var(--jarvis-card)] rounded-lg'>
-          {/* Header */}
-          <div className='px-6 py-6 flex items-center gap-4 border-b border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)]'>
-            <div className='flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF]'>
+      <div className='custom-scrollbar -mr-4 h-full overflow-y-auto sm:-mr-6 lg:-mr-8'>
+        <div className='mx-auto flex min-h-full w-3/4 flex-col rounded-lg bg-[var(--jarvis-card)]'>
+          <div className='flex items-center gap-4 border-b border-[color:var(--jarvis-border)] px-6 py-6'>
+            <div className='flex items-center justify-center rounded-xl bg-[var(--jarvis-primary-soft)] p-3'>
               <FiServer className='h-8 w-8 text-[var(--jarvis-primary)]' />
             </div>
             <div>
               <h1 className='text-2xl font-bold text-[var(--jarvis-text-strong)]'>
                 {isReadOnly ? 'View External' : isEditMode ? 'Edit External' : 'Register External'}
               </h1>
-              <p className='text-base text-[var(--jarvis-muted)] mt-0.5'>
-                Configure remote discovery for MCP servers and agents
+              <p className='mt-0.5 text-base text-[var(--jarvis-muted)]'>
+                Configure remote discovery for MCP servers, agents, and skills
               </p>
             </div>
           </div>
 
-          {/* Content */}
-          <div className='px-6 py-4 flex-1 flex flex-col'>
+          <div className='flex flex-1 flex-col px-6 py-4'>
             {loadingDetail ? (
-              <div className='flex-1 flex items-center justify-center min-h-[200px]'>
-                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]'></div>
+              <div className='flex min-h-[200px] flex-1 items-center justify-center'>
+                <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-primary)]' />
               </div>
             ) : (
               <>
-                {isEditMode && federation && (
+                {isEditMode && activeProvider && (
                   <div className='mb-4 flex flex-wrap gap-4 text-sm text-[var(--jarvis-muted)]'>
                     <span className='flex items-center gap-1.5'>
                       <CalendarIcon className='h-3.5 w-3.5' />
                       Created:{' '}
-                      {new Date(federation.createdAt).toLocaleDateString(undefined, {
+                      {new Date(activeProvider.createdAt).toLocaleDateString(undefined, {
                         month: 'short',
                         day: 'numeric',
                         year: 'numeric',
@@ -421,10 +653,7 @@ const FederationRegistryOrEdit: React.FC = () => {
                     </span>
                     <span className='flex items-center gap-1.5'>
                       <ClockIcon className='h-3.5 w-3.5' />
-                      Last synced:{' '}
-                      {federation.lastSync?.finishedAt
-                        ? (UTILS.formatTimeSince(federation.lastSync.finishedAt) ?? 'Never')
-                        : 'Never'}
+                      Last synced: {UTILS.formatTimeSince(activeProvider.lastSync?.finishedAt) ?? 'Never'}
                     </span>
                   </div>
                 )}
@@ -434,63 +663,84 @@ const FederationRegistryOrEdit: React.FC = () => {
                   errors={errors}
                   isEditMode={isEditMode}
                   isReadOnly={isReadOnly}
-                  onTestConnection={handleTestConnection}
+                  hasGithubClientSecret={skillSyncSource?.hasClientSecret}
+                  githubCallbackUrl={githubCallbackUrl}
+                  onCopyGithubCallbackUrl={() => void handleCopyGithubCallbackUrl()}
+                  onTestConnection={() => void handleTestConnection()}
                   testConnectionLoading={testConnectionLoading}
+                  testConnectionDisabled={
+                    isGithubSource && (loadingDetail || githubSavedFingerprint === null || hasUnsavedGithubChanges)
+                  }
+                  testConnectionDisabledReason={
+                    isGithubSource && hasUnsavedGithubChanges
+                      ? 'Save changes before testing'
+                      : isGithubSource && githubSavedFingerprint === null
+                        ? 'Provider details must load before testing'
+                        : undefined
+                  }
                   testConnectionResult={testConnectionResult}
                 />
               </>
             )}
 
-            {isReadOnly && federation && (
+            {isReadOnly && activeProvider && (
               <div className='mt-8 border-t border-[color:var(--jarvis-border)] pt-6'>
-                <h3 className='text-lg font-medium text-[var(--jarvis-text-strong)] mb-4'>Discovered Resources</h3>
-                <div className='grid grid-cols-4 gap-4'>
-                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
-                    <div className='text-3xl font-bold text-[var(--jarvis-primary)]'>
-                      {federation.stats?.mcpServerCount || 0}
+                <h3 className='mb-4 text-lg font-medium text-[var(--jarvis-text-strong)]'>Discovered Resources</h3>
+                {isGithubSource && skillSyncSource ? (
+                  <div className='grid grid-cols-2 gap-4'>
+                    <div className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 text-center'>
+                      <div className='text-3xl font-bold text-[var(--jarvis-primary)]'>
+                        {skillSyncSource.stats.skillCount}
+                      </div>
+                      <div className='mt-1 text-sm text-[var(--jarvis-muted)]'>Skills</div>
                     </div>
-                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>MCP Servers</div>
-                  </div>
-                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
-                    <div className='text-3xl font-bold text-[var(--jarvis-success-text)]'>
-                      {federation.stats?.agentCount || 0}
+                    <div className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 text-center'>
+                      <div className='text-3xl font-bold text-[var(--jarvis-info-text)]'>
+                        {skillSyncSource.stats.fileCount}
+                      </div>
+                      <div className='mt-1 text-sm text-[var(--jarvis-muted)]'>Files</div>
                     </div>
-                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>AI Agents</div>
                   </div>
-                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
-                    <div className='text-3xl font-bold text-[var(--jarvis-info-text)]'>
-                      {federation.stats?.importedTotal || 0}
-                    </div>
-                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>Total Imported</div>
+                ) : federation ? (
+                  <div className='grid grid-cols-4 gap-4'>
+                    {[
+                      ['MCP Servers', federation.stats?.mcpServerCount ?? 0, 'text-[var(--jarvis-primary)]'],
+                      ['AI Agents', federation.stats?.agentCount ?? 0, 'text-[var(--jarvis-success-text)]'],
+                      ['Total Imported', federation.stats?.importedTotal ?? 0, 'text-[var(--jarvis-info-text)]'],
+                      ['Total Unimported', federation.stats?.unimportedTotal ?? 0, 'text-[var(--jarvis-danger-text)]'],
+                    ].map(([label, value, color]) => (
+                      <div
+                        key={String(label)}
+                        className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 text-center'
+                      >
+                        <div className={`text-3xl font-bold ${color}`}>{value}</div>
+                        <div className='mt-1 text-sm text-[var(--jarvis-muted)]'>{label}</div>
+                      </div>
+                    ))}
                   </div>
-                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
-                    <div className='text-3xl font-bold text-[var(--jarvis-danger-text)]'>
-                      {federation.stats?.unimportedTotal || 0}
-                    </div>
-                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>Total Unimported</div>
-                  </div>
-                </div>
+                ) : null}
               </div>
             )}
           </div>
 
-          {/* Footer */}
-          <div className='px-6 py-4 border-t border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)] flex flex-wrap items-center justify-between gap-4'>
+          <div className='flex flex-wrap items-center justify-between gap-4 border-t border-[color:var(--jarvis-border)] px-6 py-4'>
             <div className='flex items-center gap-3'>
-              {isEditMode && !isReadOnly && federation?.permissions?.DELETE && (
+              {isEditMode && !isReadOnly && activeProvider?.permissions.DELETE && (
                 <button
-                  onClick={handleDelete}
+                  type='button'
+                  onClick={() => void handleDelete()}
                   disabled={loading}
-                  className='inline-flex items-center px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-danger-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-danger-soft)] hover:bg-[var(--jarvis-danger-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-danger)] disabled:opacity-50 disabled:cursor-not-allowed'
+                  className='inline-flex items-center rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-4 py-2 text-sm font-medium text-[var(--jarvis-danger-text)] shadow-sm hover:bg-[var(--jarvis-danger-soft)] disabled:cursor-not-allowed disabled:opacity-50'
                 >
                   <TrashIcon className='h-4 w-4' />
                 </button>
               )}
-              {isEditMode && !!id && federation?.permissions?.SHARE && (
+              {isEditMode && id && activeProvider?.permissions.SHARE && (
                 <button
+                  type='button'
                   onClick={() => setShareOpen(true)}
                   disabled={loading || loadingDetail}
-                  className='inline-flex items-center px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
+                  className='inline-flex items-center rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-4 py-2 text-sm font-medium text-[var(--jarvis-primary)] shadow-sm hover:bg-[var(--jarvis-primary-soft)] disabled:cursor-not-allowed disabled:opacity-50'
                 >
                   <HiOutlineShare className='h-4 w-4' />
                 </button>
@@ -499,42 +749,22 @@ const FederationRegistryOrEdit: React.FC = () => {
 
             <div className='flex gap-3'>
               <button
+                type='button'
                 onClick={goBack}
                 disabled={loading}
-                className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
+                className='min-w-[80px] rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-4 py-2 text-sm font-medium text-[var(--jarvis-text)] shadow-sm hover:bg-[var(--jarvis-card-muted)] disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[120px] md:min-w-[160px]'
               >
                 {isReadOnly ? 'Back' : 'Cancel'}
               </button>
 
-              {isReadOnly && (
-                <>
-                  {syncView.kind !== 'idle' && (
-                    <span
-                      className='self-center text-sm text-[var(--jarvis-muted)]'
-                      aria-live='polite'
-                      title={syncView.detail ?? undefined}
-                    >
-                      {syncView.label}
-                    </span>
-                  )}
-                  <button
-                    onClick={handleSync}
-                    disabled={loading || loadingDetail || syncView.action === 'none'}
-                    className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[var(--jarvis-primary-soft)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
-                  >
-                    <ArrowPathIcon className={`h-4 w-4 ${syncView.isBusy ? 'animate-spin' : ''}`} />
-                    {syncView.actionLabel}
-                  </button>
-                </>
-              )}
-
               {!isReadOnly && (
                 <button
-                  onClick={handleSave}
+                  type='button'
+                  onClick={() => void handleSave()}
                   disabled={loading}
-                  className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-[var(--jarvis-primary-hover)] hover:bg-[var(--jarvis-primary-hover)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
+                  className='inline-flex min-w-[80px] items-center justify-center gap-2 rounded-md border border-transparent bg-[var(--jarvis-primary-hover)] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-[var(--jarvis-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[120px] md:min-w-[160px]'
                 >
-                  {loading && <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-white'></div>}
+                  {loading && <div className='h-4 w-4 animate-spin rounded-full border-b-2 border-white' />}
                   {isEditMode ? 'Update' : 'Register External'}
                 </button>
               )}

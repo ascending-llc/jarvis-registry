@@ -6,6 +6,7 @@ const AGENT_BASE_URL = `${BASE_URL}/agents`;
 const FEDERATION_BASE_URL = `${BASE_URL}/federations`;
 const WORKFLOW_BASE_URL = `${BASE_URL}/workflows`;
 const SKILL_BASE_URL = `${BASE_URL}/skills`;
+const SKILL_SYNC_SOURCE_BASE_URL = `${BASE_URL}/skill-sync-sources`;
 
 const API = {
   // auth
@@ -100,6 +101,17 @@ const API = {
   updateSkill: (id: string) => `${SKILL_BASE_URL}/${id}`,
   deleteSkill: (id: string) => `${SKILL_BASE_URL}/${id}`,
   toggleSkillState: (id: string) => `${SKILL_BASE_URL}/${id}/toggle`,
+
+  // skill sync source
+  getSkillSyncSources: SKILL_SYNC_SOURCE_BASE_URL,
+  getSkillSyncSourceDetail: (id: string) => `${SKILL_SYNC_SOURCE_BASE_URL}/${id}`,
+  createSkillSyncSource: SKILL_SYNC_SOURCE_BASE_URL,
+  updateSkillSyncSource: (id: string) => `${SKILL_SYNC_SOURCE_BASE_URL}/${id}`,
+  deleteSkillSyncSource: (id: string) => `${SKILL_SYNC_SOURCE_BASE_URL}/${id}`,
+  syncSkillSyncSource: (id: string) => `${SKILL_SYNC_SOURCE_BASE_URL}/${id}/sync`,
+  initiateSkillSyncSourceOauth: (id: string) => `${SKILL_SYNC_SOURCE_BASE_URL}/${id}/oauth/initiate`,
+  skillSyncSourceOauthCallback: `${SKILL_SYNC_SOURCE_BASE_URL}/oauth/callback`,
+  getSkillSyncJob: (sourceId: string, jobId: string) => `${SKILL_SYNC_SOURCE_BASE_URL}/${sourceId}/jobs/${jobId}`,
 
   // acl (permissions)
   searchPrincipals: `${BASE_URL}/permissions/search-principals`,
