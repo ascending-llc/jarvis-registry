@@ -9,7 +9,11 @@ from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAI
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
-from ....deps import get_model_gateway_selection_service, get_model_source_crud_service
+from ....deps import (
+    get_embedding_reindex_job_service,
+    get_model_gateway_selection_service,
+    get_model_source_crud_service,
+)
 from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.model_source_api_schemas import (
     AwsBedrockModelConfigResponse,
@@ -26,6 +30,11 @@ from ....schemas.model_source_api_schemas import (
     SetEmbeddingModelRequest,
 )
 from ....schemas.server_api_schemas import PaginationMetadata
+from ....services.embedding_reindex_job_service import (
+    EmbeddingModelSmokeTestError,
+    EmbeddingReindexAlreadyRunningError,
+    EmbeddingReindexJobService,
+)
 from ....services.model_gateway_selection_service import (
     ModelGatewaySelectionService,
     ModelSourceModeMismatchError,
@@ -301,17 +310,21 @@ async def set_default_workflow_model(
 @router.put(
     "/model-gateway/selection/embedding-model",
     response_model=ModelGatewaySelectionResponse,
-    description="Sets the ModelSource used for vector embedding. Takes effect on the next "
-    "registry pod restart, not immediately (see AS-1853).",
+    status_code=http_status.HTTP_202_ACCEPTED,
+    description="Selects the ModelSource used for vector embedding. Synchronously smoke-tests the "
+    "target model, then (on success) persists the selection and starts a background job that "
+    "re-embeds every existing document; returns 202. The model is live once that job completes, "
+    "not on the next restart. Returns 502 if the model fails its smoke test (nothing is persisted), "
+    "and 409 if a reindex is already running.",
 )
 @track_registry_operation("set_embedding_model", resource_type="model_gateway_selection")
 async def set_embedding_model(
     data: SetEmbeddingModelRequest,
     user_context: CurrentUser,
-    selection_service: ModelGatewaySelectionService = Depends(get_model_gateway_selection_service),
+    reindex_job_service: EmbeddingReindexJobService = Depends(get_embedding_reindex_job_service),
 ):
     try:
-        selection = await selection_service.set_embedding_model(
+        selection = await reindex_job_service.trigger_reindex(
             data.modelSourceId,
             updated_by=str(user_context["user_id"]),
         )
@@ -328,6 +341,15 @@ async def set_embedding_model(
     except ModelSourceModeMismatchError as exc:
         raise HTTPException(
             http_status.HTTP_409_CONFLICT, detail=create_error_detail(ErrorCode.CONFLICT, str(exc))
+        ) from exc
+    except EmbeddingReindexAlreadyRunningError as exc:
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT, detail=create_error_detail(ErrorCode.CONFLICT, str(exc))
+        ) from exc
+    except EmbeddingModelSmokeTestError as exc:
+        raise HTTPException(
+            http_status.HTTP_502_BAD_GATEWAY,
+            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, str(exc)),
         ) from exc
     except HTTPException:
         raise

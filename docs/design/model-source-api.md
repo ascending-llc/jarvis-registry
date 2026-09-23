@@ -268,14 +268,18 @@ matches today's env-var behavior, where changing the embedding provider also nee
 
 **Request Body**: `{ "modelSourceId": "<id>" }`
 
-**Response**: `200 OK` → the updated selection (same shape as [Get Gateway Selection](#6-get-gateway-selection)).
+**Response**: `202 Accepted` → the updated selection (same shape as [Get Gateway Selection](#6-get-gateway-selection)).
+The `202` means the selection was accepted and the reindex has started; document re-embedding
+continues in the background. No job id or progress is exposed by this endpoint.
 ```json
 { "defaultWorkflowModelSourceId": null, "embeddingModelSourceId": "000000000000000000000002" }
 ```
 
 **Errors**:
 - `404` — `modelSourceId` does not resolve (invalid id, not found, or soft-deleted).
-- `409` — the target ModelSource has `mode != embedding`.
+- `409` — the target ModelSource has `mode != embedding`, **or** a reindex is already running.
+- `502` — the target model failed its pre-flight smoke test (bad credentials, wrong endpoint,
+  network failure). Neither the selection nor a reindex job is created.
 
 **Startup resolution behavior** (AS-1853):
 - No embedding ModelSource selected → the process uses the legacy env-var `VectorConfig` path
