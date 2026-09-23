@@ -35,7 +35,9 @@ import {
   validateGithubForm,
 } from './formUtils';
 import GithubAuthorizationPanel from './GithubAuthorizationPanel';
+import GithubLastSyncDetails from './GithubLastSyncDetails';
 import MainConfigForm from './MainConfigForm';
+import { getLatestFinishedSyncJob } from './skillSyncJobUtils';
 import type { FederationFormConfig } from './types';
 
 const INIT_DATA: FederationFormConfig = {
@@ -173,6 +175,7 @@ const FederationRegistryOrEdit: React.FC = () => {
     ? sourceActiveJob?.id || skillSyncSource?.lastSync?.jobId
     : federation?.lastSync?.jobId;
   const canEditProvider = activeProvider?.permissions.EDIT ?? false;
+  const lastFinishedGithubJob = skillSyncSource ? getLatestFinishedSyncJob(skillSyncSource.recentJobs) : null;
 
   const { syncView, startSync, runSyncAction, stopPolling } = useExternalProviderSync({
     providerId: id,
@@ -614,6 +617,10 @@ const FederationRegistryOrEdit: React.FC = () => {
                   </div>
                 ) : null}
               </div>
+            )}
+
+            {isReadOnly && isGithubSource && lastFinishedGithubJob && (
+              <GithubLastSyncDetails job={lastFinishedGithubJob} />
             )}
           </div>
 
