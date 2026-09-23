@@ -569,9 +569,7 @@ const FederationRegistryOrEdit: React.FC = () => {
                   onCopyGithubCallbackUrl={() => void handleCopyGithubCallbackUrl()}
                   onTestConnection={() => void handleTestConnection()}
                   testConnectionLoading={testConnectionLoading}
-                  testConnectionDisabled={
-                    isGithubSource && (loadingDetail || skillSyncSource === null || hasUnsavedGithubChanges)
-                  }
+                  testConnectionDisabled={isGithubSource && (skillSyncSource === null || hasUnsavedGithubChanges)}
                   testConnectionDisabledReason={
                     isGithubSource && hasUnsavedGithubChanges
                       ? 'Save changes before testing'
