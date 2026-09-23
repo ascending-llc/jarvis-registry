@@ -6,12 +6,13 @@ import IconButton from '@/components/IconButton';
 import { type ServerToolsModalProps, useServerToolsModal } from './useServerToolsModal';
 
 const ServerToolsModal: React.FC<ServerToolsModalProps> = props => {
-  const { isOpen, onClose, serverId, serverName, canManageTools } = props;
-  const { tools, disabledTools, loading, loaded, saving, toggleTool, handleSave } = useServerToolsModal(props);
+  const { isOpen, serverId, serverName, canManageTools } = props;
+  const { tools, disabledTools, loading, loaded, saving, toggleTool, handleSave, requestClose } =
+    useServerToolsModal(props);
 
   return (
     <Transition.Root show={isOpen} as={Fragment}>
-      <Dialog as='div' className='relative z-50' onClose={onClose}>
+      <Dialog as='div' className='relative z-50' onClose={requestClose}>
         <Transition.Child
           as={Fragment}
           enter='ease-out duration-300'
@@ -45,7 +46,8 @@ const ServerToolsModal: React.FC<ServerToolsModalProps> = props => {
                 <IconButton
                   ariaLabel='Close'
                   tooltip='Close'
-                  onClick={onClose}
+                  onClick={requestClose}
+                  disabled={saving}
                   size='card'
                   className='border-none bg-transparent text-[var(--jarvis-muted)] shadow-none hover:bg-transparent hover:text-[var(--jarvis-icon-hover)]'
                 >
@@ -120,7 +122,7 @@ const ServerToolsModal: React.FC<ServerToolsModalProps> = props => {
                 <div className='mt-6 flex items-center justify-end gap-3 border-t border-[color:var(--jarvis-border)] pt-4'>
                   <button
                     type='button'
-                    onClick={onClose}
+                    onClick={requestClose}
                     disabled={saving}
                     className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-4 py-2 text-sm font-semibold text-[var(--jarvis-text)] transition-colors hover:bg-[var(--jarvis-card-muted)] disabled:cursor-not-allowed disabled:opacity-50'
                   >

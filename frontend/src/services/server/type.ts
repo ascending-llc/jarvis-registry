@@ -96,7 +96,8 @@ export type CreateServerRequest = {
 };
 
 export type Tool = {
-  mcpToolName: string;
+  // Absent on some stored tools; the backend then identifies the tool by its toolFunctions key.
+  mcpToolName?: string;
   function: {
     name: string;
     description?: string;

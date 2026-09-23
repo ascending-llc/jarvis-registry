@@ -12,15 +12,23 @@ export interface ServerToolsModalProps {
   canManageTools: boolean;
 }
 
+/** A tool whose `mcpToolName` is always set: the identity used by `disabledTools`. */
+export type ServerTool = Tool & { mcpToolName: string };
+
 interface ServerToolsModalState {
-  tools: Tool[];
+  tools: ServerTool[];
   disabledTools: ReadonlySet<string>;
   loading: boolean;
   loaded: boolean;
   saving: boolean;
   toggleTool: (mcpToolName: string) => void;
   handleSave: () => Promise<void>;
+  requestClose: () => void;
 }
+
+/** Mirror the backend's `td.get("mcpToolName", key)` so ids match what `disabledTools` stores. */
+export const toServerTools = (toolFunctions: Record<string, Tool> | undefined): ServerTool[] =>
+  Object.entries(toolFunctions ?? {}).map(([key, tool]) => ({ ...tool, mcpToolName: tool.mcpToolName || key }));
 
 export const useServerToolsModal = ({
   isOpen,
@@ -31,7 +39,7 @@ export const useServerToolsModal = ({
   const { showToast } = useGlobal();
   const requestIdRef = useRef(0);
   const wasOpenRef = useRef(false);
-  const [tools, setTools] = useState<Tool[]>([]);
+  const [tools, setTools] = useState<ServerTool[]>([]);
   const [disabledTools, setDisabledTools] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -48,7 +56,7 @@ export const useServerToolsModal = ({
       const result = await SERVICES.SERVER.getServerTools(serverId);
       if (requestId !== requestIdRef.current) return;
 
-      setTools(Object.values(result.toolFunctions || {}));
+      setTools(toServerTools(result.toolFunctions));
       setDisabledTools(new Set(result.disabledTools || []));
       setLoaded(true);
     } catch {
@@ -92,15 +100,11 @@ export const useServerToolsModal = ({
     [canManageTools, loaded, saving],
   );
 
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  // Escape, backdrop clicks and the close buttons all route here; a save in flight must finish first.
+  const requestClose = useCallback(() => {
+    if (saving) return;
+    onClose();
+  }, [onClose, saving]);
 
   const handleSave = useCallback(async () => {
     if (!canManageTools || !loaded || loading || saving) return;
@@ -117,5 +121,5 @@ export const useServerToolsModal = ({
     }
   }, [canManageTools, disabledTools, loaded, loading, onClose, saving, serverId, showToast]);
 
-  return { tools, disabledTools, loading, loaded, saving, toggleTool, handleSave };
+  return { tools, disabledTools, loading, loaded, saving, toggleTool, handleSave, requestClose };
 };
