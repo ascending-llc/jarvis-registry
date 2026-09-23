@@ -8,7 +8,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
-import { getFederationSyncErrorMessage, useFederationSyncPolling } from '@/hooks/useFederationSyncPolling';
+import { useFederationSyncPolling } from '@/hooks/useFederationSyncPolling';
 import SERVICES from '@/services';
 import {
   clearGithubOauthIntent,
@@ -24,6 +24,7 @@ import {
 import type { Federation } from '@/services/federation/type';
 import type { SkillSyncSourceDetail, UpdateSkillSyncSourceRequest } from '@/services/skillSyncSource/type';
 import UTILS from '@/utils';
+import { getErrorMessage } from '@/utils/getErrorMessage';
 
 import { getGithubFormFingerprint, normalizePaths, normalizeTags } from './formUtils';
 import MainConfigForm from './MainConfigForm';
@@ -50,19 +51,6 @@ const INIT_DATA: FederationFormConfig = {
   paths: ['skills/'],
   githubAppClientId: '',
   githubAppClientSecret: '',
-};
-
-const getErrorMessage = (error: unknown, fallback: string): string => {
-  if (!error || typeof error !== 'object') return fallback;
-  if ('detail' in error) {
-    const detail = error.detail;
-    if (typeof detail === 'string' && detail.trim()) return detail;
-    if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
-      return detail.message;
-    }
-  }
-  if ('message' in error && typeof error.message === 'string') return error.message;
-  return fallback;
 };
 
 const isSafeRepositoryPath = (path: string): boolean => {
@@ -409,7 +397,7 @@ const FederationRegistryOrEdit: React.FC = () => {
         return true;
       } catch (error: unknown) {
         if (syncRequestGeneration !== syncRequestGenerationRef.current) return false;
-        showToast(getFederationSyncErrorMessage(error, 'Failed to start sync'), 'error');
+        showToast(getErrorMessage(error, 'Failed to start sync'), 'error');
         return false;
       } finally {
         if (syncRequestGeneration === syncRequestGenerationRef.current) {

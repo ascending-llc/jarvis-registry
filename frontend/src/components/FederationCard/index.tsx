@@ -9,16 +9,13 @@ import { useNavigate } from 'react-router-dom';
 import IconButton from '@/components/IconButton';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
-import {
-  getFederationSyncErrorMessage,
-  getFederationSyncViewState,
-  useFederationSyncPolling,
-} from '@/hooks/useFederationSyncPolling';
+import { getFederationSyncViewState, useFederationSyncPolling } from '@/hooks/useFederationSyncPolling';
 import SERVICES from '@/services';
 import { saveGithubOauthIntent } from '@/services/externalProvider/oauthIntent';
 import { getSkillSyncJobAsFederation, getSkillSyncSourceOauthUrl } from '@/services/externalProvider/sync';
 import type { ExternalProviderEntity } from '@/services/externalProvider/type';
 import UTILS from '@/utils';
+import { getErrorMessage } from '@/utils/getErrorMessage';
 
 interface FederationCardProps {
   externalProvider: ExternalProviderEntity;
@@ -118,7 +115,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ externalProvider }) => 
       } catch (error: unknown) {
         if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
         console.error('Failed to sync external provider:', error);
-        showToast?.(getFederationSyncErrorMessage(error, 'Failed to start sync'), 'error');
+        showToast?.(getErrorMessage(error, 'Failed to start sync'), 'error');
       } finally {
         if (syncRequestGeneration === syncRequestGenerationRef.current) {
           syncRequestPendingRef.current = false;

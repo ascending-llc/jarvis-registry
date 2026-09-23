@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGlobal } from '@/contexts/GlobalContext';
 import SERVICES from '@/services';
 import type { Tool } from '@/services/server/type';
+import { getErrorMessage } from '@/utils/getErrorMessage';
 
 export interface ServerToolsModalProps {
   isOpen: boolean;
@@ -20,19 +21,6 @@ interface ServerToolsModalState {
   toggleTool: (mcpToolName: string) => void;
   handleSave: () => Promise<void>;
 }
-
-const getErrorMessage = (error: unknown): string => {
-  if (!error || typeof error !== 'object' || !('detail' in error)) {
-    return 'Failed to update tool settings';
-  }
-
-  const detail = error.detail;
-  if (typeof detail === 'string' && detail.trim()) return detail;
-  if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
-    return detail.message;
-  }
-  return 'Failed to update tool settings';
-};
 
 export const useServerToolsModal = ({
   isOpen,
@@ -123,7 +111,7 @@ export const useServerToolsModal = ({
       showToast?.('Tool settings updated successfully', 'success');
       onClose();
     } catch (error) {
-      showToast?.(getErrorMessage(error), 'error');
+      showToast?.(getErrorMessage(error, 'Failed to update tool settings'), 'error');
     } finally {
       setSaving(false);
     }

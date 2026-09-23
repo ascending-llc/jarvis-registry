@@ -10,6 +10,7 @@ import type { PermissionType, Server } from '@/services/server/type';
 import type { SkillMetadata } from '@/services/skill/type';
 import type { SkillSyncSource } from '@/services/skillSyncSource/type';
 import type { WorkflowItem } from '@/services/workflow/type';
+import { getErrorMessage } from '@/utils/getErrorMessage';
 
 export interface ServerInfo {
   id: string;
@@ -384,23 +385,13 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       if (federationResult.status === 'fulfilled') {
         setFederations(federationResult.value?.federations || []);
       } else {
-        const reason = federationResult.reason as { detail?: string | { message?: string } };
-        errors.push(
-          typeof reason?.detail === 'string'
-            ? reason.detail
-            : reason?.detail?.message || 'Failed to fetch AWS and Azure providers',
-        );
+        errors.push(getErrorMessage(federationResult.reason, 'Failed to fetch AWS and Azure providers'));
       }
 
       if (skillSyncSourceResult.status === 'fulfilled') {
         setSkillSyncSources(skillSyncSourceResult.value?.sources || []);
       } else {
-        const reason = skillSyncSourceResult.reason as { detail?: string | { message?: string } };
-        errors.push(
-          typeof reason?.detail === 'string'
-            ? reason.detail
-            : reason?.detail?.message || 'Failed to fetch GitHub providers',
-        );
+        errors.push(getErrorMessage(skillSyncSourceResult.reason, 'Failed to fetch GitHub providers'));
       }
 
       if (errors.length > 0) setFederationsError(errors.join(' '));

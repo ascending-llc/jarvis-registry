@@ -205,21 +205,6 @@ export const getFederationSyncViewState = ({
   };
 };
 
-export const getFederationSyncErrorMessage = (error: unknown, fallback: string): string => {
-  if (!error || typeof error !== 'object') return fallback;
-
-  if ('detail' in error) {
-    const detail = error.detail;
-    if (typeof detail === 'string') return detail;
-    if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
-      return detail.message;
-    }
-  }
-
-  if ('message' in error && typeof error.message === 'string') return error.message;
-  return fallback;
-};
-
 export const useFederationSyncPolling = (
   onTerminal?: (job: FederationSyncJobStatus) => void,
   getSyncJob: SyncJobFetcher = SERVICES.FEDERATION.getFederationSyncJob,
