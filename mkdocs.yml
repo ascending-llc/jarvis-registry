@@ -109,6 +109,8 @@ nav:
     - IDP Integration: features/auth-server.md
     - MCPServer Gateway & Registry: features/mcp-gateway-registry.md
     - A2AAgent Gateway & Registry: features/a2a-gateway-registry.md
+    - Skill Gateway: features/skill-gateway.md
+    - AI Skills CLI: features/ai-skills-cli.md
     - AWS AgentCore Federation: features/agentcore-federation.md
     - Azure AI Foundry Federation: features/foundry-ai-federation.md
     - Workflow Orchestration: features/workflow-orchestration.md
