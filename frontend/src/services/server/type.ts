@@ -96,6 +96,7 @@ export type CreateServerRequest = {
 };
 
 export type Tool = {
+  mcpToolName: string;
   function: {
     name: string;
     description?: string;
@@ -106,4 +107,9 @@ export type GetServerToolsResponse = {
   id: string;
   tools: string[];
   toolFunctions: Record<string, Tool>;
+  disabledTools: string[];
+};
+
+export type UpdateServerToolsRequest = {
+  disabledTools: string[];
 };

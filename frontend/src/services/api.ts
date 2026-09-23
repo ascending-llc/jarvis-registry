@@ -53,6 +53,7 @@ const API = {
   deleteServer: (id: string) => `${SERVER_BASE_URL}/${id}`,
   toggleServerStatus: (id: string) => `${SERVER_BASE_URL}/${id}/toggle`,
   getServerTools: (id: string) => `${SERVER_BASE_URL}/${id}/tools`,
+  updateServerTools: (id: string) => `${SERVER_BASE_URL}/${id}/tools`,
   refreshServer: (id: string) => `${SERVER_BASE_URL}/${id}/refresh`,
 
   // agent
