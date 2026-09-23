@@ -708,13 +708,18 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
    - GitHub → Settings → Developer settings → GitHub Apps → New GitHub App
    - Set Callback URL to `https://<your-domain>/api/v1/skill-sync-sources/oauth/callback`
      (one constant URL for all sources — the `source_id` is carried in the OAuth `state`, not the path)
-   - Enable "Request user authorization (OAuth) during installation"
+   - Leave "Request user authorization (OAuth) during installation" **unchecked**. With it enabled,
+     GitHub sends the installer to the Callback URL with a `code` but no `state` (and no PKCE), so
+     the callback cannot resolve the source and redirects to `?error=invalid_callback`. Users
+     authorize from Jarvis instead (Connect GitHub, or a sync / test-connect that needs it)
 
 2. **Set permissions**: Repository permissions → Contents → **Read-only**
 
 3. **Generate client secret** on the App settings page
 
-4. **Install the App** on the target org/user account, granting access to specific repositories
+4. **Install the App** on the target org/user account, granting access to specific repositories.
+   Installing only grants repository access; each user still authorizes the App through Jarvis
+   afterwards. Without an installation, authorization succeeds but GitHub API calls return 404
 
 ### Flow Sequence
 
