@@ -112,9 +112,15 @@ export interface SkillSyncSource {
   updatedAt: string;
 }
 
+/** The requesting user's GitHub authorization for one source; tokens are per user, per source. */
+export interface SkillSyncSourceAuthorization {
+  connected: boolean;
+}
+
 export interface SkillSyncSourceDetail extends SkillSyncSource {
   githubAppClientId: string;
   hasClientSecret: boolean;
+  authorization: SkillSyncSourceAuthorization;
   recentJobs: SkillSyncJob[];
   createdBy?: string | null;
   updatedBy?: string | null;
@@ -152,7 +158,9 @@ export interface CreateSkillSyncSourceRequest {
   githubAppClientSecret: string;
 }
 
-export type UpdateSkillSyncSourceRequest = Partial<CreateSkillSyncSourceRequest> & {
+export type UpdateSkillSyncSourceRequest = Partial<Omit<CreateSkillSyncSourceRequest, 'description'>> & {
+  /** `null` clears the stored description. */
+  description?: string | null;
   syncAfterUpdate?: boolean;
 };
 

@@ -1,6 +1,6 @@
 import { CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FiServer } from 'react-icons/fi';
 import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -22,16 +22,21 @@ import {
   getSkillSyncSourceOauthUrl,
 } from '@/services/externalProvider/sync';
 import type { Federation } from '@/services/federation/type';
-import type { SkillSyncSourceDetail, UpdateSkillSyncSourceRequest } from '@/services/skillSyncSource/type';
+import type { SkillSyncSourceDetail } from '@/services/skillSyncSource/type';
 import UTILS from '@/utils';
 import { getErrorMessage } from '@/utils/getErrorMessage';
 
-import { getGithubFormFingerprint, normalizePaths, normalizeTags } from './formUtils';
+import {
+  buildGithubCreatePayload,
+  buildGithubUpdatePayload,
+  DEFAULT_GITHUB_REF,
+  hasGithubFormChanges,
+  normalizePaths,
+  normalizeTags,
+  validateGithubForm,
+} from './formUtils';
 import MainConfigForm from './MainConfigForm';
 import type { FederationFormConfig } from './types';
-
-const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
-const GITHUB_REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 const INIT_DATA: FederationFormConfig = {
   providerType: 'aws_agentcore',
@@ -47,15 +52,10 @@ const INIT_DATA: FederationFormConfig = {
   tags: [],
   owner: '',
   repo: '',
-  ref: 'main',
+  ref: DEFAULT_GITHUB_REF,
   paths: ['skills/'],
   githubAppClientId: '',
   githubAppClientSecret: '',
-};
-
-const isSafeRepositoryPath = (path: string): boolean => {
-  if (path.startsWith('/') || path.includes('\\')) return false;
-  return !path.split('/').includes('..');
 };
 
 const getGithubFormData = (data: SkillSyncSourceDetail): FederationFormConfig => ({
@@ -99,16 +99,14 @@ const FederationRegistryOrEdit: React.FC = () => {
     success: boolean;
     message: string;
   } | null>(null);
-  const [githubSavedFingerprint, setGithubSavedFingerprint] = useState<string | null>(null);
 
   const isEditMode = Boolean(id);
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
   const activeProvider = isGithubSource ? skillSyncSource : federation;
   const isGithubForm = formData.providerType === 'github';
   const githubCallbackUrl = getSkillSyncSourceCallbackUrl();
-  const githubCurrentFingerprint = useMemo(() => getGithubFormFingerprint(formData), [formData]);
   const hasUnsavedGithubChanges =
-    isGithubSource && githubSavedFingerprint !== null && githubCurrentFingerprint !== githubSavedFingerprint;
+    isGithubSource && skillSyncSource !== null && hasGithubFormChanges(skillSyncSource, formData);
 
   const goBack = () => navigate(-1);
 
@@ -127,11 +125,9 @@ const FederationRegistryOrEdit: React.FC = () => {
         ) {
           return;
         }
-        const nextFormData = getGithubFormData(data);
         setFederation(null);
         setSkillSyncSource(data);
-        setFormData(nextFormData);
-        setGithubSavedFingerprint(getGithubFormFingerprint(nextFormData));
+        setFormData(getGithubFormData(data));
         return;
       }
 
@@ -143,7 +139,6 @@ const FederationRegistryOrEdit: React.FC = () => {
         return;
       }
       setSkillSyncSource(null);
-      setGithubSavedFingerprint(null);
       setFederation(data);
       setFormData({
         ...INIT_DATA,
@@ -189,7 +184,6 @@ const FederationRegistryOrEdit: React.FC = () => {
     syncRequestPendingRef.current = false;
     setFederation(null);
     setSkillSyncSource(null);
-    setGithubSavedFingerprint(null);
     setErrors({});
     setTestConnectionResult(null);
     oauthCallbackHandledRef.current = false;
@@ -217,6 +211,14 @@ const FederationRegistryOrEdit: React.FC = () => {
   }, [activeJobId, activeSyncStatus, id, startPolling, stopPolling]);
 
   const validate = (data: FederationFormConfig): boolean => {
+    if (data.providerType === 'github') {
+      const githubErrors = validateGithubForm(data, {
+        requireSecret: !(isEditMode && skillSyncSource?.hasClientSecret),
+      });
+      setErrors(githubErrors);
+      return Object.keys(githubErrors).length === 0;
+    }
+
     const newErrors: Record<string, string> = {};
     const displayName = data.displayName.trim();
     if (!displayName) newErrors.displayName = 'Display Name is required';
@@ -225,7 +227,7 @@ const FederationRegistryOrEdit: React.FC = () => {
     if (data.providerType === 'aws_agentcore') {
       if (!data.region.trim()) newErrors.region = 'AWS Region is required';
       if (!data.assumeRoleArn.trim()) newErrors.assumeRoleArn = 'Role ARN is required';
-    } else if (data.providerType === 'azure_ai_foundry') {
+    } else {
       if (!data.projectEndpoint.trim()) newErrors.projectEndpoint = 'Project Endpoint is required';
       const servicePrincipalFields: Array<{ key: 'tenantId' | 'clientId' | 'clientSecret'; label: string }> = [
         { key: 'tenantId', label: 'Tenant ID' },
@@ -239,35 +241,6 @@ const FederationRegistryOrEdit: React.FC = () => {
             newErrors[key] = `${label} is required when configuring service-principal authentication`;
           }
         }
-      }
-    } else {
-      const owner = data.owner.trim();
-      const repo = data.repo.trim();
-      const ref = data.ref.trim();
-      const paths = normalizePaths(data.paths);
-      if (!owner) newErrors.owner = 'Owner is required';
-      else if (!GITHUB_OWNER_PATTERN.test(owner)) newErrors.owner = 'Enter a valid GitHub user or organization';
-      if (!repo) newErrors.repo = 'Repo is required';
-      else if (repo.length > 100 || !GITHUB_REPO_PATTERN.test(repo)) {
-        newErrors.repo = 'Enter a valid GitHub repository name';
-      }
-      if (!ref) newErrors.ref = 'Ref is required';
-      else if (
-        ref.length > 255 ||
-        ref.includes('..') ||
-        ref.includes('//') ||
-        ref.includes('@{') ||
-        ref.includes('\\')
-      ) {
-        newErrors.ref = 'Enter a safe branch, tag, or commit SHA';
-      }
-      if (paths.length === 0) newErrors.paths = 'Add at least one repository path';
-      else if (paths.some(path => !isSafeRepositoryPath(path))) {
-        newErrors.paths = 'Paths must be safe repository-relative POSIX paths';
-      }
-      if (!data.githubAppClientId.trim()) newErrors.githubAppClientId = 'GitHub App Client ID is required';
-      if (!data.githubAppClientSecret.trim() && !(isEditMode && skillSyncSource?.hasClientSecret)) {
-        newErrors.githubAppClientSecret = 'GitHub App Client Secret is required';
       }
     }
 
@@ -412,7 +385,7 @@ const FederationRegistryOrEdit: React.FC = () => {
     if (!id || !validate(formData)) return;
 
     if (isGithubForm) {
-      if (githubSavedFingerprint === null || hasUnsavedGithubChanges) return;
+      if (skillSyncSource === null || hasUnsavedGithubChanges) return;
       await runGithubConnectionTest();
       return;
     }
@@ -474,13 +447,6 @@ const FederationRegistryOrEdit: React.FC = () => {
       return;
     }
 
-    if (oauthStatus === 'syncing') {
-      clearGithubOauthIntent(id);
-      showToast('GitHub connected. The first skill sync is now running.', 'info');
-      void getDetail();
-      return;
-    }
-
     if (oauthStatus !== 'connected') return;
 
     const intent = consumeGithubOauthIntent(id);
@@ -514,37 +480,20 @@ const FederationRegistryOrEdit: React.FC = () => {
     setLoading(true);
     try {
       if (preparedForm.providerType === 'github') {
-        const basePayload = {
-          displayName: preparedForm.displayName.trim(),
-          description: preparedForm.description.trim() || undefined,
-          tags: preparedForm.tags,
-          owner: preparedForm.owner.trim(),
-          repo: preparedForm.repo.trim(),
-          ref: preparedForm.ref.trim(),
-          paths: preparedForm.paths,
-          githubAppClientId: preparedForm.githubAppClientId.trim(),
-        };
-
         if (isEditMode && id && skillSyncSource) {
-          const payload: UpdateSkillSyncSourceRequest = {
-            ...basePayload,
-            syncAfterUpdate: false,
-            ...(preparedForm.githubAppClientSecret.trim()
-              ? { githubAppClientSecret: preparedForm.githubAppClientSecret.trim() }
-              : {}),
-          };
+          const payload = buildGithubUpdatePayload(skillSyncSource, preparedForm);
+          if (Object.keys(payload).length === 0) {
+            showToast('No changes to save', 'info');
+            goBack();
+            return;
+          }
           const result = await SERVICES.SKILL_SYNC_SOURCE.updateSkillSyncSource(id, payload);
           const updated = 'providerType' in result ? result : await SERVICES.SKILL_SYNC_SOURCE.getSkillSyncSource(id);
-          const nextFormData = getGithubFormData(updated);
           setSkillSyncSource(updated);
-          setFormData(nextFormData);
-          setGithubSavedFingerprint(getGithubFormFingerprint(nextFormData));
+          setFormData(getGithubFormData(updated));
           showToast('External Provider updated successfully', 'success');
         } else {
-          await SERVICES.SKILL_SYNC_SOURCE.createSkillSyncSource({
-            ...basePayload,
-            githubAppClientSecret: preparedForm.githubAppClientSecret.trim(),
-          });
+          await SERVICES.SKILL_SYNC_SOURCE.createSkillSyncSource(buildGithubCreatePayload(preparedForm));
           showToast('External Provider added successfully', 'success');
         }
         await refreshFederationData(true);
@@ -657,12 +606,12 @@ const FederationRegistryOrEdit: React.FC = () => {
                   onTestConnection={() => void handleTestConnection()}
                   testConnectionLoading={testConnectionLoading}
                   testConnectionDisabled={
-                    isGithubSource && (loadingDetail || githubSavedFingerprint === null || hasUnsavedGithubChanges)
+                    isGithubSource && (loadingDetail || skillSyncSource === null || hasUnsavedGithubChanges)
                   }
                   testConnectionDisabledReason={
                     isGithubSource && hasUnsavedGithubChanges
                       ? 'Save changes before testing'
-                      : isGithubSource && githubSavedFingerprint === null
+                      : isGithubSource && skillSyncSource === null
                         ? 'Provider details must load before testing'
                         : undefined
                   }

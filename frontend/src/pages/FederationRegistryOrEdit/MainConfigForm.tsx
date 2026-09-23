@@ -5,7 +5,7 @@ import { FaAws, FaGithub, FaMicrosoft } from 'react-icons/fa';
 
 import { InputField } from '@/components/FormFields';
 
-import { normalizePaths, normalizeTags } from './formUtils';
+import { DEFAULT_GITHUB_REF, normalizePaths, normalizeTags } from './formUtils';
 import type { FederationFormConfig, FederationFormStringField } from './types';
 
 interface MainConfigFormProps {
@@ -300,7 +300,14 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
             {renderInput('Owner', 'owner', 'e.g., my-org', 'text', true)}
             {renderInput('Repo', 'repo', 'e.g., skills-repo', 'text', true)}
           </div>
-          {renderInput('Ref', 'ref', 'main', 'text', false, 'Branch, tag, or commit SHA to sync from.')}
+          {renderInput(
+            'Ref',
+            'ref',
+            DEFAULT_GITHUB_REF,
+            'text',
+            false,
+            `Branch, tag, or commit SHA to sync from. Defaults to ${DEFAULT_GITHUB_REF} when left blank.`,
+          )}
 
           <div className='mb-6'>
             <label className='mb-2 block text-sm font-medium text-[var(--jarvis-text)]'>
