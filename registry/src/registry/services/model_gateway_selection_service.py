@@ -43,6 +43,18 @@ class ModelGatewaySelectionService:
             updated_by=updated_by,
         )
 
+    async def resolve_embedding_model_source(self, model_source_id: str) -> ModelSource:
+        """Validate the id points at a live EMBEDDING ModelSource and return it.
+
+        Lets the reindex trigger smoke-test the model before persisting the selection, reusing the
+        same not-found/mode-mismatch guards ``set_embedding_model`` applies.
+        """
+        object_id = await self._require_model_source(model_source_id, ModelSourceMode.EMBEDDING)
+        source = await ModelSource.get(object_id)
+        if source is None:  # pragma: no cover - _require_model_source already fetched it successfully
+            raise ModelSourceNotFoundError(f"Model source '{model_source_id}' not found")
+        return source
+
     async def set_embedding_model(
         self,
         model_source_id: str,

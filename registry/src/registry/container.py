@@ -37,6 +37,9 @@ from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
+from .services.embedding_reindex_execution_service import EmbeddingReindexExecutionService
+from .services.embedding_reindex_job_runner import EmbeddingReindexJobRunner
+from .services.embedding_reindex_job_service import EmbeddingReindexJobService
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
@@ -499,6 +502,24 @@ class RegistryContainer:
         )
 
     @cached_property
+    def embedding_reindex_job_service(self) -> EmbeddingReindexJobService:
+        return EmbeddingReindexJobService(
+            settings=self.settings,
+            selection_service=self.model_gateway_selection_service,
+        )
+
+    @cached_property
+    def embedding_reindex_execution_service(self) -> EmbeddingReindexExecutionService:
+        return EmbeddingReindexExecutionService(db_client=self.db_client, settings=self.settings)
+
+    @cached_property
+    def embedding_reindex_job_runner(self) -> EmbeddingReindexJobRunner:
+        return EmbeddingReindexJobRunner(
+            job_service=self.embedding_reindex_job_service,
+            execution_service=self.embedding_reindex_execution_service,
+        )
+
+    @cached_property
     def skill_sync_token_service(self) -> SkillSyncTokenService:
         return SkillSyncTokenService(self.mcp_proxy_client)
 
@@ -572,9 +593,13 @@ class RegistryContainer:
         logger.info("Starting embedding maintenance watcher...")
         await self.embedding_maintenance_watcher.start()
 
+        logger.info("Starting embedding reindex job runner...")
+        await self.embedding_reindex_job_runner.start()
+
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
         await self.skill_sync_job_runner.shutdown()
+        await self.embedding_reindex_job_runner.shutdown()
         await self.embedding_maintenance_watcher.shutdown()
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
