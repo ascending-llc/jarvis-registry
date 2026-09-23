@@ -192,7 +192,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ externalProvider }) => 
             <div className='text-xl font-bold text-[var(--jarvis-info-text)]'>
               {externalProvider.data.status === 'active' ? externalProvider.data.stats.fileCount : '—'}
             </div>
-            <div className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>Files</div>
+            <div className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>Supporting Files</div>
           </div>
         </div>
       ) : (

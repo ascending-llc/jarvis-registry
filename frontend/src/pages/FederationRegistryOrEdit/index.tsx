@@ -512,7 +512,11 @@ const FederationRegistryOrEdit: React.FC = () => {
             </div>
             <div>
               <h1 className='text-2xl font-bold text-[var(--jarvis-text-strong)]'>
-                {isReadOnly ? 'View External' : isEditMode ? 'Edit External' : 'Register External'}
+                {isReadOnly
+                  ? 'View External Provider'
+                  : isEditMode
+                    ? 'Edit External Provider'
+                    : 'Register External Provider'}
               </h1>
               <p className='mt-0.5 text-base text-[var(--jarvis-muted)]'>
                 Configure remote discovery for MCP servers, agents, and skills
@@ -595,7 +599,7 @@ const FederationRegistryOrEdit: React.FC = () => {
                       <div className='text-3xl font-bold text-[var(--jarvis-info-text)]'>
                         {skillSyncSource.stats.fileCount}
                       </div>
-                      <div className='mt-1 text-sm text-[var(--jarvis-muted)]'>Files</div>
+                      <div className='mt-1 text-sm text-[var(--jarvis-muted)]'>Supporting Files</div>
                     </div>
                   </div>
                 ) : federation ? (
