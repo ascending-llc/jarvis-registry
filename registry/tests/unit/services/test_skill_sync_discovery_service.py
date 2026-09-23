@@ -225,7 +225,7 @@ def test_duplicate_name(tmp_path):
 
 
 def test_too_many_files(tmp_path, monkeypatch):
-    monkeypatch.setattr("registry.services.skill_sync_discovery_service.MAX_FILES_PER_SKILL", 2)
+    monkeypatch.setattr("registry.services.skill_sync_discovery_service.MAX_SKILL_FILE_COUNT", 2)
     folder = _skill_folder(
         tmp_path,
         "skills/deploy",
@@ -236,6 +236,76 @@ def test_too_many_files(tmp_path, monkeypatch):
     assert len(result.skills) == 0
     assert len(result.errors) == 1
     assert result.errors[0].errorCode == SkillSyncSkillErrorCode.TOO_MANY_FILES
+    assert result.errors[0].errorMessage == "Skill has 3 auxiliary files, max 2"
+
+
+def test_file_count_at_limit_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_discovery_service.MAX_SKILL_FILE_COUNT", 2)
+    folder = _skill_folder(
+        tmp_path,
+        "skills/deploy",
+        _md("deploy", "Deploy"),
+        aux_files={"a.py": b"a", "b.py": b"b"},
+    )
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+    assert [skill.name for skill in result.skills] == ["deploy"]
+    assert result.errors == []
+
+
+def test_sync_uses_registry_skill_file_limits():
+    from registry import constants
+    from registry.services import skill_sync_discovery_service, skill_sync_github_service
+
+    assert skill_sync_discovery_service.MAX_SKILL_FILE_COUNT is constants.MAX_SKILL_FILE_COUNT
+    assert skill_sync_discovery_service.MAX_SKILL_FILES_TOTAL_SIZE is constants.MAX_SKILL_FILES_TOTAL_SIZE
+    assert skill_sync_github_service.MAX_SKILL_FILE_SIZE is constants.MAX_SKILL_FILE_SIZE
+
+
+def test_skill_too_large(tmp_path, monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_discovery_service.MAX_SKILL_FILES_TOTAL_SIZE", 5)
+    folder = _skill_folder(
+        tmp_path,
+        "skills/deploy",
+        _md("deploy", "Deploy"),
+        aux_files={"a.bin": b"aaa", "b.bin": b"bbb"},
+    )
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+    assert result.skills == []
+    assert len(result.errors) == 1
+    error = result.errors[0]
+    assert error.errorCode == SkillSyncSkillErrorCode.SKILL_TOO_LARGE
+    assert error.errorMessage == "Skill's auxiliary files total 6 bytes, max 5"
+    assert error.upstreamId == "skills/deploy"
+    assert error.phase == "discovery"
+
+
+def test_total_size_at_limit_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_discovery_service.MAX_SKILL_FILES_TOTAL_SIZE", 6)
+    folder = _skill_folder(
+        tmp_path,
+        "skills/deploy",
+        _md("deploy", "Deploy"),
+        aux_files={"a.bin": b"aaa", "b.bin": b"bbb"},
+    )
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+    assert [skill.name for skill in result.skills] == ["deploy"]
+    assert result.errors == []
+
+
+def test_skill_md_does_not_count_toward_total_size(tmp_path, monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_discovery_service.MAX_SKILL_FILES_TOTAL_SIZE", 1)
+    folder = _skill_folder(tmp_path, "skills/deploy", _md("deploy", "Deploy", body="x" * 100))
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+    assert [skill.name for skill in result.skills] == ["deploy"]
+
+
+def test_skill_too_large_does_not_block_sibling_skills(tmp_path, monkeypatch):
+    monkeypatch.setattr("registry.services.skill_sync_discovery_service.MAX_SKILL_FILES_TOTAL_SIZE", 5)
+    big = _skill_folder(tmp_path, "skills/big", _md("big", "Big"), aux_files={"a.bin": b"x" * 6})
+    small = _skill_folder(tmp_path, "skills/small", _md("small", "Small"), aux_files={"a.bin": b"x"})
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([big, small]))
+    assert [skill.name for skill in result.skills] == ["small"]
+    assert [error.upstreamId for error in result.errors] == ["skills/big"]
 
 
 def test_no_frontmatter_error(tmp_path):

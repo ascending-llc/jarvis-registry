@@ -1,3 +1,13 @@
+/** ACL resource types the backend accepts in /permissions/{resourceType}/... (RegistryResourceType). */
+export type AclResourceType =
+  | 'mcpServer'
+  | 'remoteAgent'
+  | 'federation'
+  | 'workflow'
+  | 'workflowSchedule'
+  | 'skill'
+  | 'skillSyncSource';
+
 export interface PrincipalSearchResult {
   principalType: 'user' | 'group' | 'role';
   principalId: string;

@@ -17,29 +17,41 @@ from registry_pkgs.models.skill_sync_job import (
 )
 
 
-class _FakeTransaction:
-    async def __aenter__(self):
-        return None
-
-    async def __aexit__(self, *args):
-        return None
-
-
 class _FakeSession:
-    async def start_transaction(self):
-        return _FakeTransaction()
+    """Runs a with_transaction callback `attempts` times, as pymongo does after transient aborts."""
+
+    def __init__(self, attempts: int = 1):
+        self.attempts = attempts
+        self.with_transaction_calls = 0
+
+    async def with_transaction(self, callback):
+        self.with_transaction_calls += 1
+        result = None
+        for _ in range(self.attempts):
+            result = await callback(self)
+        return result
 
 
 class _FakeSessionContext:
+    def __init__(self, session: _FakeSession | None = None):
+        self.session = session or _FakeSession()
+
     async def __aenter__(self):
-        return _FakeSession()
+        return self.session
 
     async def __aexit__(self, *args):
         return None
 
 
-def _service(acl_service=None) -> SkillSyncApplyService:
-    return SkillSyncApplyService(acl_service=acl_service or MagicMock())
+def _user_service(user=None) -> MagicMock:
+    return MagicMock(get_user_by_user_id=AsyncMock(return_value=user))
+
+
+def _service(acl_service=None, user_service=None) -> SkillSyncApplyService:
+    return SkillSyncApplyService(
+        acl_service=acl_service or MagicMock(),
+        user_service=user_service or _user_service(SimpleNamespace(name="Jane Doe", username="jane")),
+    )
 
 
 def _snapshot() -> SkillSyncFullRequestSnapshot:
@@ -222,6 +234,18 @@ async def test_apply_records_error_when_stale_skill_delete_fails():
     assert "delete failed" in job.skillErrors[0].errorMessage
 
 
+def _capture_inserts(skill_file_model) -> list[SimpleNamespace]:
+    inserted_files: list[SimpleNamespace] = []
+
+    def _new_file(**kwargs):
+        value = SimpleNamespace(**kwargs, insert=AsyncMock())
+        inserted_files.append(value)
+        return value
+
+    skill_file_model.side_effect = _new_file
+    return inserted_files
+
+
 @pytest.mark.asyncio
 async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tmp_path):
     text_path = tmp_path / "README.md"
@@ -230,8 +254,9 @@ async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tm
     binary_path.write_bytes(b"\x00\x01")
     existing_text = SimpleNamespace(
         relativePath="README.md",
-        content="old",
-        body=None,
+        source="registry-inline",
+        content=None,
+        body=b"old",
         mimeType="text/markdown",
         bytes=3,
         isBinary=False,
@@ -239,14 +264,8 @@ async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tm
         save=AsyncMock(),
         delete=AsyncMock(),
     )
-    stale = SimpleNamespace(relativePath="stale.txt", delete=AsyncMock())
+    stale = SimpleNamespace(relativePath="stale.txt", source="registry-inline", delete=AsyncMock())
     finder = MagicMock(to_list=AsyncMock(return_value=[existing_text, stale]))
-    inserted_files = []
-
-    def _new_file(**kwargs):
-        value = SimpleNamespace(**kwargs, insert=AsyncMock())
-        inserted_files.append(value)
-        return value
 
     discovered = _discovered(
         files=[
@@ -256,7 +275,7 @@ async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tm
     )
     with patch("registry.services.skill_sync_apply_service.SkillFile") as skill_file:
         skill_file.find.return_value = finder
-        skill_file.side_effect = _new_file
+        inserted_files = _capture_inserts(skill_file)
         counts = await SkillSyncApplyService._sync_skill_files(
             PydanticObjectId(),
             discovered,
@@ -265,13 +284,142 @@ async def test_sync_skill_files_updates_text_creates_binary_and_deletes_stale(tm
         )
 
     assert counts == (1, 1, 1)
-    assert existing_text.content == "new text"
-    assert existing_text.body is None
+    # Text is stored the same way as a file created in Registry: raw bytes in `body`, no `content`.
+    assert existing_text.body == b"new text"
+    assert existing_text.content is None
+    assert existing_text.source == "registry-inline"
     assert existing_text.isExecutable is True
+    existing_text.save.assert_awaited_once()
+    existing_text.delete.assert_not_awaited()
+    assert len(inserted_files) == 1
+    assert inserted_files[0].relativePath == "image.bin"
+    assert inserted_files[0].source == "registry-inline"
     assert inserted_files[0].isExecutable is False
     assert inserted_files[0].isBinary is True
     assert inserted_files[0].body == b"\x00\x01"
+    assert inserted_files[0].content is None
     stale.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_skill_files_stores_new_text_file_inline_in_body(tmp_path):
+    script_path = tmp_path / "run.sh"
+    script_path.write_text("#!/usr/bin/env bash\necho hi\n")
+    finder = MagicMock(to_list=AsyncMock(return_value=[]))
+    discovered = _discovered(
+        files=[ExtractedAuxFile("scripts/run.sh", script_path, script_path.stat().st_size, is_executable=True)]
+    )
+
+    with patch("registry.services.skill_sync_apply_service.SkillFile") as skill_file:
+        skill_file.find.return_value = finder
+        inserted_files = _capture_inserts(skill_file)
+        counts = await SkillSyncApplyService._sync_skill_files(
+            PydanticObjectId(), discovered, datetime.now(UTC), session=MagicMock()
+        )
+
+    assert counts == (0, 1, 0)
+    inserted = inserted_files[0]
+    assert inserted.relativePath == "scripts/run.sh"
+    assert inserted.source == "registry-inline"
+    assert inserted.body == b"#!/usr/bin/env bash\necho hi\n"
+    assert inserted.content is None
+    assert inserted.isBinary is False
+    assert inserted.isExecutable is True
+    inserted.insert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_skill_files_replaces_a_legacy_github_sync_file_at_the_same_path(tmp_path):
+    script_path = tmp_path / "run.sh"
+    script_path.write_text("echo new")
+    legacy = SimpleNamespace(
+        relativePath="scripts/run.sh",
+        source="github-sync",
+        content="echo old",
+        body=None,
+        save=AsyncMock(),
+        delete=AsyncMock(),
+    )
+    finder = MagicMock(to_list=AsyncMock(return_value=[legacy]))
+    discovered = _discovered(
+        files=[ExtractedAuxFile("scripts/run.sh", script_path, script_path.stat().st_size, is_executable=False)]
+    )
+
+    with patch("registry.services.skill_sync_apply_service.SkillFile") as skill_file:
+        skill_file.find.return_value = finder
+        inserted_files = _capture_inserts(skill_file)
+        counts = await SkillSyncApplyService._sync_skill_files(
+            PydanticObjectId(), discovered, datetime.now(UTC), session=MagicMock()
+        )
+
+    assert counts == (1, 0, 0)
+    legacy.delete.assert_awaited_once()
+    legacy.save.assert_not_awaited()
+    assert len(inserted_files) == 1
+    assert inserted_files[0].source == "registry-inline"
+    assert inserted_files[0].body == b"echo new"
+    assert inserted_files[0].content is None
+
+
+@pytest.mark.asyncio
+async def test_sync_skill_files_removes_legacy_files_stored_under_repository_paths(tmp_path):
+    """Files synced before the relativePath fix used repository paths; the next sync replaces them."""
+    script_path = tmp_path / "run.sh"
+    script_path.write_text("echo hi")
+    legacy = SimpleNamespace(relativePath="skills/demo/scripts/run.sh", source="github-sync", delete=AsyncMock())
+    finder = MagicMock(to_list=AsyncMock(return_value=[legacy]))
+    discovered = _discovered(
+        files=[ExtractedAuxFile("scripts/run.sh", script_path, script_path.stat().st_size, is_executable=False)]
+    )
+
+    with patch("registry.services.skill_sync_apply_service.SkillFile") as skill_file:
+        skill_file.find.return_value = finder
+        inserted_files = _capture_inserts(skill_file)
+        counts = await SkillSyncApplyService._sync_skill_files(
+            PydanticObjectId(), discovered, datetime.now(UTC), session=MagicMock()
+        )
+
+    assert counts == (0, 1, 1)
+    legacy.delete.assert_awaited_once()
+    assert inserted_files[0].relativePath == "scripts/run.sh"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user", "expected"),
+    [
+        (SimpleNamespace(name="Jane Doe", username="jane"), "Jane Doe"),
+        (SimpleNamespace(name=None, username="jane"), "jane"),
+        (SimpleNamespace(name="  ", username="jane"), "jane"),
+        (SimpleNamespace(name=None, username=""), "GitHub Sync"),
+        (None, "GitHub Sync"),
+    ],
+)
+async def test_resolve_author_name_prefers_name_then_username_then_fallback(user, expected):
+    user_id = str(PydanticObjectId())
+    user_service = _user_service(user)
+
+    assert await _service(user_service=user_service)._resolve_author_name(user_id) == expected
+    user_service.get_user_by_user_id.assert_awaited_once_with(user_id)
+
+
+@pytest.mark.asyncio
+async def test_apply_passes_the_syncing_users_name_to_new_skills():
+    source = SimpleNamespace(id=PydanticObjectId())
+    service = _service(user_service=_user_service(SimpleNamespace(name="Jane Doe", username="jane")))
+    service.list_live_skills = AsyncMock(return_value=[])
+    service._apply_discovered_skill = AsyncMock(return_value=(True, (0, 0, 0)))
+
+    await service.apply_discovered_skills(
+        source=source,
+        job=SimpleNamespace(skillErrors=[]),
+        discovery=DiscoveryResult(skills=[_discovered()], errors=[], summary=SkillSyncDiscoverySummary()),
+        user_id=str(PydanticObjectId()),
+        commit_sha="a" * 40,
+        request_snapshot=_snapshot(),
+    )
+
+    assert service._apply_discovered_skill.await_args.kwargs["author_name"] == "Jane Doe"
 
 
 @pytest.mark.asyncio
@@ -288,11 +436,14 @@ async def test_create_skill_uses_snapshot_metadata_and_grants_owner():
             "a" * 40,
             _snapshot(),
             author_id,
+            "Jane Doe",
             datetime.now(UTC),
             session=MagicMock(),
         )
 
     metadata = skill_model.call_args.kwargs["sourceMetadata"]
+    assert skill_model.call_args.kwargs["author"] == author_id
+    assert skill_model.call_args.kwargs["authorName"] == "Jane Doe"
     assert result is created
     assert metadata["upstreamId"] == f"{source.id}:skills/demo"
     assert (metadata["owner"], metadata["repo"], metadata["ref"]) == ("octocat", "skills", "main")
@@ -336,6 +487,7 @@ async def test_update_skill_replaces_synced_fields_and_preserves_registry_bookke
         "a" * 40,
         _snapshot(),
         now,
+        version=5,
         session=MagicMock(),
     )
 
@@ -397,7 +549,7 @@ async def test_apply_one_skill_shares_transaction_across_skill_files_and_acl(mon
     client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext()))
     monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
     service = _service()
-    existing = SimpleNamespace(id=PydanticObjectId())
+    existing = SimpleNamespace(id=PydanticObjectId(), version=1)
     service._update_skill = AsyncMock()
     service._sync_skill_files = AsyncMock(return_value=(1, 2, 3))
 
@@ -408,11 +560,106 @@ async def test_apply_one_skill_shares_transaction_across_skill_files_and_acl(mon
         commit_sha="a" * 40,
         request_snapshot=_snapshot(),
         author_id=PydanticObjectId(),
+        author_name="Jane Doe",
         now=datetime.now(UTC),
     )
 
     assert counts == (1, 2, 3)
     assert service._update_skill.await_args.kwargs["session"] is service._sync_skill_files.await_args.kwargs["session"]
+
+
+@pytest.mark.asyncio
+async def test_retried_update_bumps_the_version_only_once(monkeypatch):
+    session = _FakeSession(attempts=2)
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext(session)))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+    service = _service()
+    existing = SimpleNamespace(id=PydanticObjectId(), version=4, sourceMetadata={}, save=AsyncMock())
+    service._sync_skill_files = AsyncMock(return_value=(1, 0, 0))
+
+    created, counts = await service._apply_discovered_skill(
+        existing=existing,
+        discovered=_discovered(),
+        source=SimpleNamespace(id=PydanticObjectId()),
+        commit_sha="a" * 40,
+        request_snapshot=_snapshot(),
+        author_id=PydanticObjectId(),
+        author_name="Jane Doe",
+        now=datetime.now(UTC),
+    )
+
+    assert session.with_transaction_calls == 1
+    assert existing.save.await_count == 2
+    assert existing.version == 5
+    assert (created, counts) == (False, (1, 0, 0))
+
+
+@pytest.mark.asyncio
+async def test_retried_create_builds_a_new_skill_each_attempt(monkeypatch):
+    session = _FakeSession(attempts=2)
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext(session)))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+    service = _service()
+    built = [SimpleNamespace(id=PydanticObjectId()), SimpleNamespace(id=PydanticObjectId())]
+    service._create_skill = AsyncMock(side_effect=built)
+    service._sync_skill_files = AsyncMock(return_value=(0, 2, 0))
+
+    created, counts = await service._apply_discovered_skill(
+        existing=None,
+        discovered=_discovered(),
+        source=SimpleNamespace(id=PydanticObjectId()),
+        commit_sha="a" * 40,
+        request_snapshot=_snapshot(),
+        author_id=PydanticObjectId(),
+        author_name="Jane Doe",
+        now=datetime.now(UTC),
+    )
+
+    assert service._create_skill.await_count == 2
+    assert [call.args[0] for call in service._sync_skill_files.await_args_list] == [skill.id for skill in built]
+    assert (created, counts) == (True, (0, 2, 0))
+
+
+@pytest.mark.asyncio
+async def test_transaction_error_that_outlasts_retries_propagates(monkeypatch):
+    from pymongo.errors import OperationFailure
+
+    conflict = OperationFailure("WriteConflict", code=112)
+    session = MagicMock(with_transaction=AsyncMock(side_effect=conflict))
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext(session)))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+
+    with pytest.raises(OperationFailure):
+        await _service()._apply_discovered_skill(
+            existing=None,
+            discovered=_discovered(),
+            source=SimpleNamespace(id=PydanticObjectId()),
+            commit_sha="a" * 40,
+            request_snapshot=_snapshot(),
+            author_id=PydanticObjectId(),
+            author_name="Jane Doe",
+            now=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+async def test_retried_delete_reports_the_last_attempts_count(monkeypatch):
+    session = _FakeSession(attempts=2)
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext(session)))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+    acl_service = MagicMock(delete_acl_entries_for_resource=AsyncMock())
+    skill = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock())
+    finder = MagicMock(
+        delete=AsyncMock(side_effect=[SimpleNamespace(deleted_count=3), SimpleNamespace(deleted_count=3)])
+    )
+
+    with patch("registry.services.skill_sync_apply_service.SkillFile") as skill_file:
+        skill_file.find.return_value = finder
+        deleted = await _service(acl_service)._delete_skill(skill)
+
+    assert deleted == 3
+    assert skill.delete.await_count == 2
+    assert acl_service.delete_acl_entries_for_resource.await_count == 2
 
 
 def test_text_detection_rejects_nul_and_invalid_utf8():

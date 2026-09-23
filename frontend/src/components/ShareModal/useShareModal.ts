@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGlobal } from '@/contexts/GlobalContext';
 import SERVICES from '@/services';
-import type { Principal, PrincipalSearchResult, Role, UpdatePrincipal } from '@/services/acl/type';
+import type { AclResourceType, Principal, PrincipalSearchResult, Role, UpdatePrincipal } from '@/services/acl/type';
 import { type PrincipalSearchState, usePrincipalSearch } from './usePrincipalSearch';
 
 // ── Types ──
@@ -22,7 +22,7 @@ export interface ShareModalProps {
   onClose: () => void;
   itemName: string;
   resourceId: string;
-  resourceType?: string;
+  resourceType?: AclResourceType;
 }
 
 export interface PermissionsState {

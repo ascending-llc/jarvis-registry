@@ -22,16 +22,20 @@ from registry_pkgs.models.skill_sync_job import (
     SkillSyncSkillError,
 )
 from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSourceStats
+from registry_pkgs.oauth.user_service import UserService
 
+from ..constants import REGISTRY_SKILL_FILE_SOURCE
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
 from ..utils.skill_files import guess_mime_type, is_text_content
 from .access_control_service import ACLService
 from .skill_sync_discovery_service import DiscoveredSkill, DiscoveryResult
+from .skill_sync_github_service import ExtractedAuxFile
 
 logger = logging.getLogger(__name__)
 
-_GITHUB_SYNC_FILE_SOURCE = "github-sync"
+# Author name for a new skill when the syncing user has neither a name nor a username.
+_FALLBACK_AUTHOR_NAME = "GitHub Sync"
 _ACL_INHERIT_BATCH_SIZE = 500
 
 
@@ -42,10 +46,25 @@ class SkillSyncApplyService:
     applies each Skill and its files in an isolated transaction, manages Skill ACL changes,
     and returns an apply summary while allowing sibling items to continue after failure.
     It does not own job leases, execution phases, credentials, or GitHub I/O.
+
+    Transactions run through ``with_transaction``, which retries transient errors (e.g. a
+    WriteConflict with a concurrent writer) for up to 120 seconds. Each transaction body
+    must therefore be safe to rerun: it re-reads files, writes whole documents with values
+    fixed before the first attempt, and builds new documents on every attempt.
     """
 
-    def __init__(self, acl_service: ACLService) -> None:
+    def __init__(self, acl_service: ACLService, user_service: UserService) -> None:
         self._acl_service = acl_service
+        self._user_service = user_service
+
+    async def _resolve_author_name(self, user_id: str) -> str:
+        """Display name of the syncing user: name, else username, the same preference a manual skill create uses."""
+        user = await self._user_service.get_user_by_user_id(user_id)
+        author_name = ((user.name or "").strip() or (user.username or "").strip()) if user else ""
+        if author_name:
+            return author_name
+        logger.warning("User %s has no name or username; new synced skills use a fallback author name", user_id)
+        return _FALLBACK_AUTHOR_NAME
 
     async def apply_discovered_skills(
         self,
@@ -65,6 +84,7 @@ class SkillSyncApplyService:
         """
         source_id_str = str(source.id)
         author_id = PydanticObjectId(user_id)
+        author_name = await self._resolve_author_name(user_id)
         summary = SkillSyncApplySummary()
         existing_skills = await self.list_live_skills(source.id)
         existing_by_upstream: dict[str, Skill] = {}
@@ -96,6 +116,7 @@ class SkillSyncApplyService:
             commit_sha=commit_sha,
             request_snapshot=request_snapshot,
             author_id=author_id,
+            author_name=author_name,
             now=now,
             summary=summary,
             job=job,
@@ -171,6 +192,7 @@ class SkillSyncApplyService:
         commit_sha: str,
         request_snapshot: SkillSyncFullRequestSnapshot,
         author_id: PydanticObjectId,
+        author_name: str,
         now: datetime,
         summary: SkillSyncApplySummary,
         job: SkillSyncJob,
@@ -184,6 +206,7 @@ class SkillSyncApplyService:
                 commit_sha=commit_sha,
                 request_snapshot=request_snapshot,
                 author_id=author_id,
+                author_name=author_name,
                 now=now,
             )
 
@@ -288,16 +311,19 @@ class SkillSyncApplyService:
         because an empty discovery never reaches apply and a skill this run failed to parse
         is never treated as stale.
         """
+
+        async def _delete(session: AsyncClientSession) -> int:
+            result = await SkillFile.find({"skillId": skill.id}).delete(session=session)
+            await skill.delete(session=session)
+            await self._acl_service.delete_acl_entries_for_resource(
+                resource_type=RegistryResourceType.SKILL.value,
+                resource_id=skill.id,
+                session=session,
+            )
+            return result.deleted_count if result else 0
+
         async with MongoDB.get_client().start_session() as session:
-            async with await session.start_transaction():
-                result = await SkillFile.find({"skillId": skill.id}).delete(session=session)
-                await skill.delete(session=session)
-                await self._acl_service.delete_acl_entries_for_resource(
-                    resource_type=RegistryResourceType.SKILL.value,
-                    resource_id=skill.id,
-                    session=session,
-                )
-        return result.deleted_count if result else 0
+            return await session.with_transaction(_delete)
 
     async def _apply_discovered_skill(
         self,
@@ -308,22 +334,41 @@ class SkillSyncApplyService:
         commit_sha: str,
         request_snapshot: SkillSyncFullRequestSnapshot,
         author_id: PydanticObjectId,
+        author_name: str,
         now: datetime,
     ) -> tuple[bool, tuple[int, int, int]]:
         """Create or update one skill and synchronize all auxiliary files atomically."""
+        # Computed once: a retried attempt must not bump the version again.
+        next_version = (existing.version or 0) + 1 if existing is not None else 1
+
+        async def _write(session: AsyncClientSession) -> tuple[bool, tuple[int, int, int]]:
+            if existing is None:
+                skill = await self._create_skill(
+                    discovered,
+                    source,
+                    commit_sha,
+                    request_snapshot,
+                    author_id,
+                    author_name,
+                    now,
+                    session=session,
+                )
+            else:
+                await self._update_skill(
+                    existing,
+                    discovered,
+                    commit_sha,
+                    request_snapshot,
+                    now,
+                    version=next_version,
+                    session=session,
+                )
+                skill = existing
+            file_counts = await self._sync_skill_files(skill.id, discovered, now, session=session)
+            return existing is None, file_counts
+
         async with MongoDB.get_client().start_session() as session:
-            async with await session.start_transaction():
-                if existing is None:
-                    skill = await self._create_skill(
-                        discovered, source, commit_sha, request_snapshot, author_id, now, session=session
-                    )
-                    created = True
-                else:
-                    await self._update_skill(existing, discovered, commit_sha, request_snapshot, now, session=session)
-                    skill = existing
-                    created = False
-                file_counts = await self._sync_skill_files(skill.id, discovered, now, session=session)
-        return created, file_counts
+            return await session.with_transaction(_write)
 
     async def _create_skill(
         self,
@@ -332,6 +377,7 @@ class SkillSyncApplyService:
         commit_sha: str,
         request_snapshot: SkillSyncFullRequestSnapshot,
         author_id: PydanticObjectId,
+        author_name: str,
         now: datetime,
         *,
         session: AsyncClientSession,
@@ -345,7 +391,7 @@ class SkillSyncApplyService:
             disableModelInvocation=discovered.disable_model_invocation,
             allowedTools=discovered.allowed_tools,
             author=author_id,
-            authorName="GitHub Sync",
+            authorName=author_name,
             source=SkillSource.GITHUB,
             sourceMetadata={
                 "provider": "github",
@@ -386,6 +432,7 @@ class SkillSyncApplyService:
         request_snapshot: SkillSyncFullRequestSnapshot,
         now: datetime,
         *,
+        version: int,
         session: AsyncClientSession,
     ) -> None:
         existing.description = discovered.description
@@ -405,9 +452,31 @@ class SkillSyncApplyService:
             "syncedAt": now.isoformat(),
             "syncStatus": "synced",
         }
-        existing.version = (existing.version or 0) + 1
+        existing.version = version
         existing.updatedAt = now
         await existing.save(session=session)
+
+    @staticmethod
+    def _new_skill_file(
+        skill_id: PydanticObjectId,
+        auxiliary_file: ExtractedAuxFile,
+        raw: bytes,
+        now: datetime,
+    ) -> SkillFile:
+        """Build a SkillFile stored the way Registry stores its own files: raw bytes inline in `body`."""
+        return SkillFile(
+            skillId=skill_id,
+            relativePath=auxiliary_file.relative_path,
+            source=REGISTRY_SKILL_FILE_SOURCE,
+            mimeType=guess_mime_type(auxiliary_file.relative_path),
+            bytes=auxiliary_file.size,
+            content=None,
+            body=raw,
+            isBinary=not is_text_content(raw),
+            isExecutable=auxiliary_file.is_executable,
+            createdAt=now,
+            updatedAt=now,
+        )
 
     @staticmethod
     async def _sync_skill_files(
@@ -424,36 +493,27 @@ class SkillSyncApplyService:
         for auxiliary_file in discovered.files:
             relative_path = auxiliary_file.relative_path
             discovered_paths.add(relative_path)
-            content = auxiliary_file.absolute_path.read_bytes()
-            mime_type = guess_mime_type(relative_path)
-            is_binary = not is_text_content(content)
-            text_content = content.decode("utf-8", errors="replace") if not is_binary else None
-            if relative_path in existing_by_path:
-                existing_file = existing_by_path[relative_path]
-                existing_file.content = text_content
-                existing_file.body = content if is_binary else None
-                existing_file.mimeType = mime_type
-                existing_file.bytes = auxiliary_file.size
-                existing_file.isBinary = is_binary
-                existing_file.isExecutable = auxiliary_file.is_executable
-                existing_file.updatedAt = now
-                await existing_file.save(session=session)
+            raw = auxiliary_file.absolute_path.read_bytes()
+            existing_file = existing_by_path.get(relative_path)
+            if existing_file is None:
+                await SkillSyncApplyService._new_skill_file(skill_id, auxiliary_file, raw, now).insert(session=session)
+                created += 1
+                continue
+            if existing_file.source != REGISTRY_SKILL_FILE_SOURCE:
+                # Written by an earlier build (source "github-sync", text in `content`). Replace it rather
+                # than update in place: save() skips None fields, so the old `content` would stay behind.
+                await existing_file.delete(session=session)
+                await SkillSyncApplyService._new_skill_file(skill_id, auxiliary_file, raw, now).insert(session=session)
                 updated += 1
                 continue
-            await SkillFile(
-                skillId=skill_id,
-                relativePath=relative_path,
-                source=_GITHUB_SYNC_FILE_SOURCE,
-                mimeType=mime_type,
-                bytes=auxiliary_file.size,
-                content=text_content,
-                body=content if is_binary else None,
-                isBinary=is_binary,
-                isExecutable=auxiliary_file.is_executable,
-                createdAt=now,
-                updatedAt=now,
-            ).insert(session=session)
-            created += 1
+            existing_file.body = raw
+            existing_file.mimeType = guess_mime_type(relative_path)
+            existing_file.bytes = auxiliary_file.size
+            existing_file.isBinary = not is_text_content(raw)
+            existing_file.isExecutable = auxiliary_file.is_executable
+            existing_file.updatedAt = now
+            await existing_file.save(session=session)
+            updated += 1
         for path, existing_file in existing_by_path.items():
             if path not in discovered_paths:
                 await existing_file.delete(session=session)

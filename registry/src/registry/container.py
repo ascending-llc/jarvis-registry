@@ -474,7 +474,7 @@ class RegistryContainer:
 
     @cached_property
     def skill_sync_apply_service(self) -> SkillSyncApplyService:
-        return SkillSyncApplyService(acl_service=self.acl_service)
+        return SkillSyncApplyService(acl_service=self.acl_service, user_service=self.user_service)
 
     @cached_property
     def skill_sync_execution_service(self) -> SkillSyncExecutionService:

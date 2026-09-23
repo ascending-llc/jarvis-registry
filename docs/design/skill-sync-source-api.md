@@ -93,6 +93,7 @@
   "updatedAt": "2026-08-19T10:30:00Z",
   "githubAppClientId": "github-app-client-id",
   "hasClientSecret": true,
+  "authorization": { "connected": false },
   "recentJobs": [],
   "createdBy": "user-id-1",
   "updatedBy": "user-id-1"
@@ -205,6 +206,7 @@
   "updatedAt": "2026-08-19T15:45:00Z",
   "githubAppClientId": "github-app-client-id",
   "hasClientSecret": true,
+  "authorization": { "connected": false },
   "recentJobs": [
     {
       "id": "job-id-1",
@@ -237,7 +239,10 @@
 ```
 
 **Important Notes**:
-- Detail response extends the list response with `githubAppClientId`, `hasClientSecret`, `recentJobs`, `createdBy`, `updatedBy`
+- Detail response extends the list response with `githubAppClientId`, `hasClientSecret`, `authorization`, `recentJobs`, `createdBy`, `updatedBy`
+- `authorization.connected` is per requesting user: `true` when that user holds an unexpired access or refresh
+  token for this source. It is a database lookup only (GitHub is not called), so a token revoked on GitHub still
+  reads `true` until a sync or test-connect returns `needsAuthorization`
 - `recentJobs` returns the last 10 jobs sorted by `createdAt` descending
 
 **Error**:
@@ -273,7 +278,12 @@
 
 **Behavior**:
 - Only `ACTIVE` sources can be updated (state machine guard)
-- Changing `githubAppClientId` or `githubAppClientSecret` automatically **deletes all stored OAuth tokens** for this source, forcing re-authorization on next sync
+- Fields are compared by value against the stored source; a field sent with its current value is not a change.
+  The secret is compared against the decrypted stored secret (constant-time); if decryption fails it counts as changed
+- A request with no real changes is a no-op: nothing is saved, and `configRevision` / `updatedBy` stay the same
+- `configRevision` increments only when an execution-affecting field (`owner`, `repo`, `ref`, `paths`,
+  `githubAppClientId`, `githubAppClientSecret`) really changes
+- Really changing `githubAppClientId` or `githubAppClientSecret` automatically **deletes all stored OAuth tokens** for this source, forcing re-authorization on next sync
 
 **Response**: `200 OK` — when `syncAfterUpdate` is omitted or `false`, returns the updated `SkillSyncSourceDetailResponse`
 
@@ -646,7 +656,7 @@ from the updated source configuration.
 
 **SkillSyncJobErrorCode**: `github_auth_failed` | `github_rate_limited` | `github_not_found` | `download_failed` | `download_too_large` | `extraction_failed` | `decompression_bomb` | `no_skills_found` | `sync_not_implemented` | `internal_error`
 
-**SkillSyncSkillErrorCode**: `skill_parse_failed` | `skill_name_missing` | `duplicate_skill_name` | `file_too_large` | `too_many_files` | `write_failed`
+**SkillSyncSkillErrorCode**: `skill_parse_failed` | `skill_name_missing` | `duplicate_skill_name` | `file_too_large` | `too_many_files` | `skill_too_large` | `write_failed`
 
 ---
 
@@ -698,13 +708,18 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
    - GitHub → Settings → Developer settings → GitHub Apps → New GitHub App
    - Set Callback URL to `https://<your-domain>/api/v1/skill-sync-sources/oauth/callback`
      (one constant URL for all sources — the `source_id` is carried in the OAuth `state`, not the path)
-   - Enable "Request user authorization (OAuth) during installation"
+   - Leave "Request user authorization (OAuth) during installation" **unchecked**. With it enabled,
+     GitHub sends the installer to the Callback URL with a `code` but no `state` (and no PKCE), so
+     the callback cannot resolve the source and redirects to `?error=invalid_callback`. Users
+     authorize from Jarvis instead (Connect GitHub, or a sync / test-connect that needs it)
 
 2. **Set permissions**: Repository permissions → Contents → **Read-only**
 
 3. **Generate client secret** on the App settings page
 
-4. **Install the App** on the target org/user account, granting access to specific repositories
+4. **Install the App** on the target org/user account, granting access to specific repositories.
+   Installing only grants repository access; each user still authorizes the App through Jarvis
+   afterwards. Without an installation, authorization succeeds but GitHub API calls return 404
 
 ### Flow Sequence
 
@@ -819,7 +834,7 @@ resolve_access_token(user_id, source_id, client_id, client_secret):
 
 ### Token Cleanup
 
-- When `githubAppClientId` or `githubAppClientSecret` is changed via `PUT`, all stored tokens for the source are deleted
+- When `githubAppClientId` or `githubAppClientSecret` is changed via `PUT` (by value, not merely sent), all stored tokens for the source are deleted
 - When a source is deleted, all associated tokens are removed
 
 ---

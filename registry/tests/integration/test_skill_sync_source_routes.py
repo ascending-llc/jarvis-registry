@@ -19,6 +19,7 @@ from registry.deps import (
 )
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.services.skill_sync_service import ConnectionCheckResult, SyncTriggerResult
+from registry.services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from registry_pkgs.models.enums import (
     SkillSyncJobPhase,
     SkillSyncJobStatus,
@@ -118,7 +119,7 @@ def skill_sync_route_context():
     source_service.get_source = AsyncMock(return_value=source)
     source_service.get_recent_jobs = AsyncMock(return_value=[])
     source_service.list_sources = AsyncMock(return_value=([source], 1))
-    source_service.update_source = AsyncMock(return_value=source)
+    source_service.update_source = AsyncMock(return_value=(source, {"displayName"}))
     source_service.mark_sync_pending = AsyncMock(return_value=source)
     source_service.mark_sync_failed = AsyncMock(return_value=source)
     source_service.mark_deleting = AsyncMock(return_value=source)
@@ -131,6 +132,7 @@ def skill_sync_route_context():
     token_service = MagicMock()
     token_service.resolve_access_token = AsyncMock(return_value=None)
     token_service.delete_source_tokens = AsyncMock()
+    token_service.is_connected = AsyncMock(return_value=False)
     oauth_service = MagicMock()
     oauth_service.create_authorization_url.return_value = "https://github.com/login/oauth/authorize?state=test"
     oauth_service.resolve_source_id.return_value = str(source.id)
@@ -276,6 +278,16 @@ def test_get_source_returns_detail(skill_sync_route_context) -> None:
     assert body["displayName"] == "Skills"
     assert body["githubAppClientId"] == "client"
     assert body["hasClientSecret"] is True
+    assert body["authorization"] == {"connected": False}
+    ctx.token_service.is_connected.assert_awaited_once_with(user_id=USER_ID, source_id=ctx.source.id)
+
+
+def test_get_source_reports_connected_user(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.token_service.is_connected = AsyncMock(return_value=True)
+    response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}")
+    assert response.status_code == 200
+    assert response.json()["authorization"] == {"connected": True}
 
 
 def test_get_source_not_found(skill_sync_route_context) -> None:
@@ -440,3 +452,45 @@ def test_acl_forbidden_returns_403(skill_sync_route_context) -> None:
     ctx.acl_service.check_user_permission = AsyncMock(side_effect=HTTPException(status_code=403, detail="Forbidden"))
     response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}")
     assert response.status_code == 403
+
+
+def test_update_display_name_only_keeps_tokens(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    response = ctx.client.put(f"/skill-sync-sources/{ctx.source.id}", json={"displayName": "Renamed"})
+    assert response.status_code == 200
+    ctx.token_service.delete_source_tokens.assert_not_awaited()
+
+
+@pytest.mark.parametrize("field", ["githubAppClientId", "githubAppClientSecret"])
+def test_update_real_credential_change_deletes_tokens(skill_sync_route_context, field) -> None:
+    ctx = skill_sync_route_context
+    ctx.source_service.update_source = AsyncMock(return_value=(ctx.source, {field}))
+    response = ctx.client.put(f"/skill-sync-sources/{ctx.source.id}", json={field: "new-value"})
+    assert response.status_code == 200
+    ctx.token_service.delete_source_tokens.assert_awaited_once_with(ctx.source.id)
+
+
+def test_update_full_unchanged_payload_keeps_tokens_and_revision(skill_sync_route_context, monkeypatch) -> None:
+    """Regression for C1: resending every current value (as the old edit form did) must not wipe tokens."""
+    ctx = skill_sync_route_context
+    monkeypatch.setattr(
+        "registry.services.skill_sync_source_crud_service.decrypt_value",
+        lambda _value: "secret",
+    )
+    ctx.source.save = AsyncMock()
+    ctx.source_service.update_source = SkillSyncSourceCrudService().update_source
+    payload = {
+        "displayName": "Skills",
+        "tags": [],
+        "owner": "octocat",
+        "repo": "skills",
+        "ref": "main",
+        "paths": ["skills"],
+        "githubAppClientId": "client",
+        "githubAppClientSecret": "secret",
+    }
+    response = ctx.client.put(f"/skill-sync-sources/{ctx.source.id}", json=payload)
+    assert response.status_code == 200
+    ctx.token_service.delete_source_tokens.assert_not_awaited()
+    ctx.source.save.assert_not_awaited()
+    assert ctx.source.configRevision == 1

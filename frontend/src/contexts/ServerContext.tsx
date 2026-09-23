@@ -3,11 +3,15 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { getBasePath } from '@/config';
 import SERVICES from '@/services';
 import type { AgentItem } from '@/services/agent/type';
+import type { ExternalProviderEntity } from '@/services/externalProvider/type';
 import type { Federation } from '@/services/federation/type';
 import { ServerConnection } from '@/services/mcp/type';
 import type { PermissionType, Server } from '@/services/server/type';
 import type { SkillMetadata } from '@/services/skill/type';
+import type { SkillSyncSource } from '@/services/skillSyncSource/type';
 import type { WorkflowItem } from '@/services/workflow/type';
+
+import { collectExternalProviderResults } from './externalProviderResults';
 
 export interface ServerInfo {
   id: string;
@@ -85,6 +89,7 @@ interface ServerContextType {
   // Federation state
   federations: Federation[];
   setFederations: React.Dispatch<React.SetStateAction<Federation[]>>;
+  externalProviders: ExternalProviderEntity[];
   federationStats: FederationListStats;
   federationsLoading: boolean;
   federationsError: string | null;
@@ -139,6 +144,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [skills, setSkills] = useState<SkillMetadata[]>([]);
   const [federations, setFederations] = useState<Federation[]>([]);
+  const [skillSyncSources, setSkillSyncSources] = useState<SkillSyncSource[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
   const [viewMode, setViewMode] = useState<'servers' | 'agents' | 'workflow' | 'external'>('servers');
   const [activeFilter, setActiveFilter] = useState<string>('all');
@@ -195,14 +201,27 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     [workflows],
   );
 
-  // Calculate federation stats
+  const externalProviders = useMemo<ExternalProviderEntity[]>(
+    () =>
+      [
+        ...federations.map(data => ({ backendKind: 'federation' as const, data })),
+        ...skillSyncSources.map(data => ({ backendKind: 'skill-sync-source' as const, data })),
+      ].sort((left, right) => {
+        const leftTimestamp = new Date(left.data.updatedAt).getTime();
+        const rightTimestamp = new Date(right.data.updatedAt).getTime();
+        return (Number.isNaN(rightTimestamp) ? 0 : rightTimestamp) - (Number.isNaN(leftTimestamp) ? 0 : leftTimestamp);
+      }),
+    [federations, skillSyncSources],
+  );
+
+  // Calculate combined External Providers stats.
   const federationStats = useMemo<FederationListStats>(
     () => ({
-      total: federations.length,
-      enabled: federations.filter(f => f.status === 'active').length,
-      disabled: federations.filter(f => f.status !== 'active').length,
+      total: externalProviders.length,
+      enabled: externalProviders.filter(provider => provider.data.status === 'active').length,
+      disabled: externalProviders.filter(provider => provider.data.status !== 'active').length,
     }),
-    [federations],
+    [externalProviders],
   );
 
   const handleServerUpdate = (id: string, updates: Partial<ServerInfo>) => {
@@ -358,10 +377,17 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     try {
       if (!notLoading) setFederationsLoading(true);
       setFederationsError(null);
-      const result = await SERVICES.FEDERATION.getFederations();
-      setFederations(result?.federations || []);
-    } catch (error: any) {
-      setFederationsError(error?.detail?.message || 'Failed to fetch federations');
+      const [federationResult, skillSyncSourceResult] = await Promise.allSettled([
+        SERVICES.FEDERATION.getFederations(),
+        SERVICES.SKILL_SYNC_SOURCE.getSkillSyncSources(),
+      ]);
+
+      const results = collectExternalProviderResults(federationResult, skillSyncSourceResult);
+      if (results.federations) setFederations(results.federations);
+      if (results.skillSyncSources) setSkillSyncSources(results.skillSyncSources);
+      if (results.error) setFederationsError(results.error);
+    } catch {
+      setFederationsError('Failed to fetch external providers');
     } finally {
       setFederationsLoading(false);
     }
@@ -479,6 +505,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
     federations,
     setFederations,
+    externalProviders,
     federationStats,
     federationsLoading,
     federationsError,

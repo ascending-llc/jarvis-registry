@@ -149,9 +149,16 @@ class SkillSyncSourceListItemResponse(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
 
+class SkillSyncAuthorizationResponse(BaseModel):
+    """GitHub authorization state of the requesting user for one source (tokens are per user)."""
+
+    connected: bool
+
+
 class SkillSyncSourceDetailResponse(SkillSyncSourceListItemResponse):
     githubAppClientId: str
     hasClientSecret: bool
+    authorization: SkillSyncAuthorizationResponse
     recentJobs: list[SkillSyncJobResponse] = Field(default_factory=list)
     createdBy: str | None = None
     updatedBy: str | None = None

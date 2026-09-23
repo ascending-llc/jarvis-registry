@@ -8,11 +8,12 @@ import httpx
 
 from registry_pkgs.models.enums import SkillSyncJobErrorCode
 
+from ..constants import MAX_SKILL_FILE_SIZE
+
 logger = logging.getLogger(__name__)
 
 MAX_TARBALL_SIZE = 100 * 1024 * 1024
 MAX_EXTRACTED_SIZE = 500 * 1024 * 1024
-MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024
 
 _GITHUB_API_BASE = "https://api.github.com"
 _SKILL_ENTRY_FILENAME = "SKILL.md"
@@ -26,6 +27,7 @@ class GitHubDownloadError(Exception):
 
 @dataclass
 class ExtractedAuxFile:
+    # Path inside the skill folder (e.g. "scripts/run.sh"), the same shape SkillFile.relativePath uses.
     relative_path: str
     absolute_path: Path
     size: int
@@ -243,10 +245,10 @@ def _two_pass_extract(
     total_extracted = 0
 
     for folder_key, folder_members in confirmed_folders.items():
-        # Check if any member exceeds MAX_SINGLE_FILE_SIZE
+        # Check if any member exceeds MAX_SKILL_FILE_SIZE
         oversized = False
         for member, _rel_path in folder_members:
-            if member.size > MAX_SINGLE_FILE_SIZE:
+            if member.size > MAX_SKILL_FILE_SIZE:
                 result.oversized_skill_paths.append(folder_key)
                 oversized = True
                 break
@@ -277,7 +279,7 @@ def _two_pass_extract(
             else:
                 aux_files.append(
                     ExtractedAuxFile(
-                        relative_path=relative_path,
+                        relative_path=suffix_in_folder,
                         absolute_path=on_disk,
                         size=member.size,
                         is_executable=bool(member.mode & 0o100),
