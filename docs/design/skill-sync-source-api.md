@@ -705,21 +705,37 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
 ### Prerequisites
 
 1. **Create a GitHub App** (not an OAuth App):
-   - GitHub → Settings → Developer settings → GitHub Apps → New GitHub App
-   - Set Callback URL to `https://<your-domain>/api/v1/skill-sync-sources/oauth/callback`
+   - For an org's repositories, register the App under the org: org → Settings → Developer settings →
+     GitHub Apps → New GitHub App. "Where can this GitHub App be installed?" → **Only on this account**
+   - Set Callback URL to `{REGISTRY_URL}/api/v1/skill-sync-sources/oauth/callback`, e.g.
+     `https://jarvis.example.com/gateway/api/v1/skill-sync-sources/oauth/callback`. The registry builds
+     `redirect_uri` from `REGISTRY_URL`, so the scheme, host, and base path must match it exactly
      (one constant URL for all sources — the `source_id` is carried in the OAuth `state`, not the path)
    - Leave "Request user authorization (OAuth) during installation" **unchecked**. With it enabled,
      GitHub sends the installer to the Callback URL with a `code` but no `state` (and no PKCE), so
      the callback cannot resolve the source and redirects to `?error=invalid_callback`. Users
      authorize from Jarvis instead (Connect GitHub, or a sync / test-connect that needs it)
 
-2. **Set permissions**: Repository permissions → Contents → **Read-only**
+2. **Set permissions**: Repository permissions → Contents → **Read-only** (Metadata → Read-only is
+   added automatically). Contents is what lets the App read a private repository's commits and tarball
 
 3. **Generate client secret** on the App settings page
 
-4. **Install the App** on the target org/user account, granting access to specific repositories.
-   Installing only grants repository access; each user still authorizes the App through Jarvis
-   afterwards. Without an installation, authorization succeeds but GitHub API calls return 404
+4. **Install the App on the org and grant repository access** (an org owner must do or approve this):
+   - org → Settings → GitHub Apps → the App → **Configure** (or the App's public page → Install → the org)
+   - Repository access → **Only select repositories**, and add every repository a skill sync source
+     points at (or **All repositories**). Repositories added later take effect without re-authorizing
+     in Jarvis
+   - If the App's permissions change after installation (e.g. Contents added later), the new
+     permissions apply only after an org owner accepts the permission update on the installation
+   - Installing only grants repository access; each user still authorizes the App through Jarvis
+     afterwards. A user's token reaches only repositories that the installation covers **and** that
+     user can read, so every user who connects needs read access to the repository
+
+   Without a matching installation, authorization succeeds but GitHub API calls return 404 — GitHub
+   answers 404, not 403, for a private repository the token cannot see. The sync then fails with
+   `github_not_found` ("Repository {owner}/{repo} ref {ref} not found") even though the repository and
+   ref exist
 
 ### Flow Sequence
 
