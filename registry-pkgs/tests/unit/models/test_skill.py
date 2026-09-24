@@ -1,4 +1,7 @@
+from unittest.mock import patch
+
 import pytest
+from beanie.odm.settings.document import DocumentSettings
 from pydantic import ValidationError
 
 from registry_pkgs.models import ExtendedSkill, ExtendedSkillFile, SkillSource
@@ -16,8 +19,23 @@ class TestExtendedSkill:
         # Removed: it duplicated `name` (API-created skills) or `sourceMetadata.skillPath` (synced skills).
         assert "path" not in ExtendedSkill.model_fields
 
-    def test_unknown_fields_are_ignored_so_legacy_documents_with_path_still_load(self):
-        assert ExtendedSkill.model_config.get("extra", "ignore") == "ignore"
+    def test_legacy_document_with_path_still_loads(self):
+        legacy_document = {
+            "_id": "65f000000000000000000001",
+            "name": "demo",
+            "description": "Demo skill",
+            "author": "65f000000000000000000002",
+            "authorName": "Test User",
+            "path": "skills/demo",
+        }
+
+        # Beanie validation needs collection settings; supply defaults instead of initializing a database.
+        with patch.object(ExtendedSkill, "get_settings", return_value=DocumentSettings()):
+            skill = ExtendedSkill.model_validate(legacy_document)
+
+        assert skill.name == "demo"
+        assert not hasattr(skill, "path")
+        assert "path" not in skill.model_dump()
 
     def test_shared_skill_fields_are_inherited_from_generated_model(self):
         skill = ExtendedSkill.model_construct(
