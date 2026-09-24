@@ -298,6 +298,35 @@ def test_job_response_serializes_skill_errors(skill_sync_route_context) -> None:
     ]
 
 
+def test_job_response_serializes_summaries(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.job.discoverySummary = SkillSyncDiscoverySummary(
+        discoveredSkillCount=2,
+        discoveredFileCount=5,
+        skippedPaths=["skills/README.md"],
+    )
+    ctx.job.applySummary = SkillSyncApplySummary(skillsCreated=1, skillsUpdated=1, filesCreated=3)
+
+    response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}/jobs/{ctx.job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["discoverySummary"] == {
+        "discoveredSkillCount": 2,
+        "discoveredFileCount": 5,
+        "skippedPaths": ["skills/README.md"],
+    }
+    assert body["applySummary"] == {
+        "skillsCreated": 1,
+        "skillsUpdated": 1,
+        "skillsDeleted": 0,
+        "skillsFailed": 0,
+        "filesCreated": 3,
+        "filesUpdated": 0,
+        "filesDeleted": 0,
+    }
+
+
 def test_get_source_returns_detail(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
     response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}")
