@@ -656,7 +656,7 @@ from the updated source configuration.
 
 **SkillSyncJobErrorCode**: `github_auth_failed` | `github_rate_limited` | `github_not_found` | `download_failed` | `download_too_large` | `extraction_failed` | `decompression_bomb` | `no_skills_found` | `sync_not_implemented` | `internal_error`
 
-**SkillSyncSkillErrorCode**: `skill_parse_failed` | `skill_name_missing` | `skill_name_mismatch` | `duplicate_skill_name` | `file_too_large` | `too_many_files` | `skill_too_large` | `write_failed`
+**SkillSyncSkillErrorCode**: `skill_parse_failed` | `skill_name_missing` | `skill_name_mismatch` | `duplicate_skill_name` | `file_too_large` | `too_many_files` | `skill_too_large` | `write_failed` | `delete_failed`
 
 ---
 
