@@ -3,8 +3,6 @@ import type React from 'react';
 import type { SkillSyncJob } from '@/services/skillSyncSource/type';
 import UTILS from '@/utils';
 
-import { getSkillErrorLabel } from './skillSyncJobUtils';
-
 interface GithubLastSyncDetailsProps {
   job: SkillSyncJob;
 }
@@ -45,17 +43,14 @@ const GithubLastSyncDetails: React.FC<GithubLastSyncDetailsProps> = ({ job }) =>
           <ul className='space-y-2'>
             {skillErrors.map((skillError, index) => (
               <li
-                key={`${skillError.path ?? skillError.skillName ?? 'skill'}-${index}`}
+                key={`${skillError.skillPath}-${index}`}
                 className='rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-3 text-sm'
               >
                 <div className='flex flex-wrap items-center gap-2'>
-                  <span className='font-medium text-[var(--jarvis-text-strong)]'>{getSkillErrorLabel(skillError)}</span>
-                  {skillError.skillName && skillError.path && (
-                    <span className='font-mono text-xs text-[var(--jarvis-subtle)]'>{skillError.path}</span>
-                  )}
+                  <span className='font-mono font-medium text-[var(--jarvis-text-strong)]'>{skillError.skillPath}</span>
                   <span className='font-mono text-xs text-[var(--jarvis-danger-text)]'>{skillError.errorCode}</span>
                 </div>
-                <p className='mt-1 text-[var(--jarvis-muted)]'>{skillError.error}</p>
+                <p className='mt-1 break-words text-[var(--jarvis-muted)]'>{skillError.errorMessage}</p>
               </li>
             ))}
           </ul>

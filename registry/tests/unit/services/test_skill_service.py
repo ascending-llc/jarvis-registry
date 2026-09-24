@@ -38,7 +38,6 @@ def _make_skill(*, created_by_registry: bool = True) -> MagicMock:
     skill.disableModelInvocation = False
     skill.userInvocable = True
     skill.allowedTools = None
-    skill.path = "test-skill"
     skill.version = 1
     skill.author = PydanticObjectId(_USER_ID)
     skill.source = SkillSource.INLINE
@@ -392,7 +391,6 @@ async def test_update_name_and_frontmatter_uses_new_identity_and_preserves_uniqu
     await service.update_skill(skill.id, data, _USER_ID)
 
     assert skill.name == "renamed-skill"
-    assert skill.path == "renamed-skill"
     assert skill.description == "Renamed description"
     assert skill.frontmatter == {
         "license": "MIT",

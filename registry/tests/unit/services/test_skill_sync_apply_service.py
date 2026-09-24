@@ -124,7 +124,11 @@ async def test_inherit_source_acl_inserts_only_missing_principal_skill_pairs():
 
 
 @pytest.mark.asyncio
-async def test_discovery_error_preserves_matching_existing_skill():
+@pytest.mark.parametrize(
+    "error_code",
+    [SkillSyncSkillErrorCode.SKILL_PARSE_FAILED, SkillSyncSkillErrorCode.SKILL_NAME_MISMATCH],
+)
+async def test_discovery_error_preserves_matching_existing_skill(error_code):
     source = SimpleNamespace(id=PydanticObjectId())
     existing = SimpleNamespace(
         id=PydanticObjectId(),
@@ -133,8 +137,8 @@ async def test_discovery_error_preserves_matching_existing_skill():
     error = SkillSyncSkillError(
         skillPath="skills/broken",
         upstreamId="skills/broken",
-        errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
-        errorMessage="invalid YAML",
+        errorCode=error_code,
+        errorMessage="discovery failed",
         phase="discovery",
     )
     service = _service()
@@ -468,7 +472,6 @@ async def test_update_skill_replaces_synced_fields_and_preserves_registry_bookke
         allowedTools=None,
         tags=["manual"],
         fileCount=0,
-        path="old",
         sourceMetadata={"sourceId": "source-1"},
         version=4,
         updatedAt=None,
@@ -494,7 +497,7 @@ async def test_update_skill_replaces_synced_fields_and_preserves_registry_bookke
     assert existing.description == "Demo skill"
     assert existing.frontmatter == {"license": "MIT"}
     assert existing.allowedTools == ["read"]
-    assert existing.path == "skills/demo"
+    assert not hasattr(existing, "path")
     assert existing.version == 5
     assert existing.displayTitle == "Manual title"
     assert existing.category == "old"

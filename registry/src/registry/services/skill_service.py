@@ -479,7 +479,6 @@ class SkillService:
             disableModelInvocation=validated_frontmatter.disableModelInvocation,
             userInvocable=validated_frontmatter.userInvocable,
             allowedTools=validated_frontmatter.allowedTools,
-            path=data.name,
             source=SkillSource.INLINE,
             enabled=True,
             createdByRegistry=True,
@@ -710,8 +709,6 @@ class SkillService:
                             ) from e
                     for field_name, value in updates.items():
                         setattr(skill, field_name, value)
-                    if "name" in updates:
-                        skill.path = updates["name"]
                     if validated_frontmatter is not None:
                         skill.frontmatter = dump_claude_code_frontmatter(validated_frontmatter)
                         skill.disableModelInvocation = validated_frontmatter.disableModelInvocation

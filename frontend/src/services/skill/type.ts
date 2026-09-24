@@ -39,7 +39,6 @@ export type SkillMetadata = {
   description: string;
   category: string;
   tags: string[];
-  path: string;
   version: number;
   fileCount: number;
   alwaysApply: boolean;

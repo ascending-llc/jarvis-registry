@@ -61,7 +61,7 @@
 - `owner` (required, string): GitHub owner (user or org), 1–39 characters, alphanumeric + hyphens, regex: `^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`
 - `repo` (required, string): GitHub repository name, 1–100 characters, regex: `^[A-Za-z0-9._-]+$`
 - `ref` (optional, string): Git ref to sync from (default: `"main"`), 1–255 characters, validated against path traversal
-- `paths` (required, array of strings, min 1): Repository-relative POSIX paths to scan for skills. Must be safe relative paths (no leading `/`, no `..`, no `\`). Each path is a **container**: only its direct child folders holding a `SKILL.md` become skills — the path itself is never a skill, so a `SKILL.md` at the path root is skipped. Use `["."]` to scan the repository root.
+- `paths` (required, array of strings, min 1): Repository-relative POSIX paths to scan for skills. Must be safe relative paths (no leading `/`, no `..`, no `\`). Each path is a **container**: only its direct child folders holding a `SKILL.md` become skills — the path itself is never a skill, so a `SKILL.md` at the path root is skipped. Use `["."]` to scan the repository root. Per the [Agent Skills spec](https://agentskills.io/specification), each skill's frontmatter `name` must exactly match its folder name; a mismatched skill fails discovery with `skill_name_mismatch`.
 - `githubAppClientId` (required, string): GitHub App OAuth client ID
 - `githubAppClientSecret` (required, string): GitHub App client secret (encrypted at rest via AES-CBC)
 
@@ -621,7 +621,7 @@ MongoDB collection: `skill_sync_jobs`
 | `requestSnapshot` | SkillSyncFullRequestSnapshot \| SkillSyncDeleteRequestSnapshot | Typed, immutable execution input; full sync stores owner/repo/ref/paths/configRevision and delete stores action/configRevision |
 | `discoverySummary` | SkillSyncDiscoverySummary | `{ discoveredSkillCount, discoveredFileCount, skippedPaths }` |
 | `applySummary` | SkillSyncApplySummary | `{ skillsCreated/Updated/Deleted/Failed, filesCreated/Updated/Deleted }` |
-| `skillErrors` | SkillSyncSkillError[] | Per-skill error details |
+| `skillErrors` | SkillSyncSkillError[] | Per-skill error details: `{ skillPath, upstreamId, errorCode, errorMessage, phase }`, where `skillPath` is the skill folder's repository-relative path and `phase` is `extraction`, `discovery`, `apply`, or `delete` |
 | `errorCode` | string \| null | Machine-readable error code |
 | `error` | string \| null | Human-readable error message |
 | `startedAt` | datetime \| null | When execution started |
@@ -656,7 +656,7 @@ from the updated source configuration.
 
 **SkillSyncJobErrorCode**: `github_auth_failed` | `github_rate_limited` | `github_not_found` | `download_failed` | `download_too_large` | `extraction_failed` | `decompression_bomb` | `no_skills_found` | `sync_not_implemented` | `internal_error`
 
-**SkillSyncSkillErrorCode**: `skill_parse_failed` | `skill_name_missing` | `duplicate_skill_name` | `file_too_large` | `too_many_files` | `skill_too_large` | `write_failed`
+**SkillSyncSkillErrorCode**: `skill_parse_failed` | `skill_name_missing` | `skill_name_mismatch` | `duplicate_skill_name` | `file_too_large` | `too_many_files` | `skill_too_large` | `write_failed` | `delete_failed`
 
 ---
 
@@ -705,21 +705,37 @@ QUEUED → DOWNLOADING → EXTRACTING → DISCOVERING → APPLYING → COMPLETED
 ### Prerequisites
 
 1. **Create a GitHub App** (not an OAuth App):
-   - GitHub → Settings → Developer settings → GitHub Apps → New GitHub App
-   - Set Callback URL to `https://<your-domain>/api/v1/skill-sync-sources/oauth/callback`
+   - For an org's repositories, register the App under the org: org → Settings → Developer settings →
+     GitHub Apps → New GitHub App. "Where can this GitHub App be installed?" → **Only on this account**
+   - Set Callback URL to `{REGISTRY_URL}/api/v1/skill-sync-sources/oauth/callback`, e.g.
+     `https://jarvis.example.com/gateway/api/v1/skill-sync-sources/oauth/callback`. The registry builds
+     `redirect_uri` from `REGISTRY_URL`, so the scheme, host, and base path must match it exactly
      (one constant URL for all sources — the `source_id` is carried in the OAuth `state`, not the path)
    - Leave "Request user authorization (OAuth) during installation" **unchecked**. With it enabled,
      GitHub sends the installer to the Callback URL with a `code` but no `state` (and no PKCE), so
      the callback cannot resolve the source and redirects to `?error=invalid_callback`. Users
      authorize from Jarvis instead (Connect GitHub, or a sync / test-connect that needs it)
 
-2. **Set permissions**: Repository permissions → Contents → **Read-only**
+2. **Set permissions**: Repository permissions → Contents → **Read-only** (Metadata → Read-only is
+   added automatically). Contents is what lets the App read a private repository's commits and tarball
 
 3. **Generate client secret** on the App settings page
 
-4. **Install the App** on the target org/user account, granting access to specific repositories.
-   Installing only grants repository access; each user still authorizes the App through Jarvis
-   afterwards. Without an installation, authorization succeeds but GitHub API calls return 404
+4. **Install the App on the org and grant repository access** (an org owner must do or approve this):
+   - org → Settings → GitHub Apps → the App → **Configure** (or the App's public page → Install → the org)
+   - Repository access → **Only select repositories**, and add every repository a skill sync source
+     points at (or **All repositories**). Repositories added later take effect without re-authorizing
+     in Jarvis
+   - If the App's permissions change after installation (e.g. Contents added later), the new
+     permissions apply only after an org owner accepts the permission update on the installation
+   - Installing only grants repository access; each user still authorizes the App through Jarvis
+     afterwards. A user's token reaches only repositories that the installation covers **and** that
+     user can read, so every user who connects needs read access to the repository
+
+   Without a matching installation, authorization succeeds but GitHub API calls return 404 — GitHub
+   answers 404, not 403, for a private repository the token cannot see. The sync then fails with
+   `github_not_found` ("Repository {owner}/{repo} ref {ref} not found") even though the repository and
+   ref exist
 
 ### Flow Sequence
 

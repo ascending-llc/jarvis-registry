@@ -66,11 +66,25 @@ export interface SkillSyncApplySummary {
   filesDeleted: number;
 }
 
+export type SkillSyncSkillErrorCode =
+  | 'skill_parse_failed'
+  | 'skill_name_missing'
+  | 'skill_name_mismatch'
+  | 'duplicate_skill_name'
+  | 'file_too_large'
+  | 'too_many_files'
+  | 'skill_too_large'
+  | 'write_failed'
+  | 'delete_failed';
+
+export type SkillSyncSkillErrorPhase = 'extraction' | 'discovery' | 'apply' | 'delete';
+
 export interface SkillSyncSkillError {
-  path?: string;
-  skillName?: string | null;
-  errorCode: string;
-  error: string;
+  skillPath: string;
+  upstreamId: string;
+  errorCode: SkillSyncSkillErrorCode;
+  errorMessage: string;
+  phase: SkillSyncSkillErrorPhase;
 }
 
 export interface SkillSyncJob {

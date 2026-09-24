@@ -152,12 +152,20 @@ class SkillSyncJobErrorCode(StrEnum):
 class SkillSyncSkillErrorCode(StrEnum):
     SKILL_PARSE_FAILED = "skill_parse_failed"
     SKILL_NAME_MISSING = "skill_name_missing"
+    SKILL_NAME_MISMATCH = "skill_name_mismatch"
     DUPLICATE_SKILL_NAME = "duplicate_skill_name"
     FILE_TOO_LARGE = "file_too_large"
     TOO_MANY_FILES = "too_many_files"
     SKILL_TOO_LARGE = "skill_too_large"
     WRITE_FAILED = "write_failed"
     DELETE_FAILED = "delete_failed"
+
+
+class SkillSyncSkillErrorPhase(StrEnum):
+    EXTRACTION = "extraction"
+    DISCOVERY = "discovery"
+    APPLY = "apply"
+    DELETE = "delete"
 
 
 class SkillSyncStateMachine:
