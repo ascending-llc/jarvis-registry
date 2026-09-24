@@ -72,7 +72,6 @@ def _metadata_response(skill, permissions: ResourcePermissions) -> SkillMetadata
         description=skill.description,
         category=skill.category,
         tags=skill.tags,
-        path=skill.path or skill.name,
         version=skill.version,
         fileCount=skill.fileCount,
         alwaysApply=skill.alwaysApply,

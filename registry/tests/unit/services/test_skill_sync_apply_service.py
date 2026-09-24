@@ -472,7 +472,6 @@ async def test_update_skill_replaces_synced_fields_and_preserves_registry_bookke
         allowedTools=None,
         tags=["manual"],
         fileCount=0,
-        path="old",
         sourceMetadata={"sourceId": "source-1"},
         version=4,
         updatedAt=None,
@@ -498,7 +497,7 @@ async def test_update_skill_replaces_synced_fields_and_preserves_registry_bookke
     assert existing.description == "Demo skill"
     assert existing.frontmatter == {"license": "MIT"}
     assert existing.allowedTools == ["read"]
-    assert existing.path == "skills/demo"
+    assert not hasattr(existing, "path")
     assert existing.version == 5
     assert existing.displayTitle == "Manual title"
     assert existing.category == "old"

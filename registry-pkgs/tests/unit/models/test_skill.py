@@ -12,6 +12,13 @@ class TestExtendedSkill:
         assert skill.enabled is True
         assert skill.createdByRegistry is False
 
+    def test_path_field_is_not_defined(self):
+        # Removed: it duplicated `name` (API-created skills) or `sourceMetadata.skillPath` (synced skills).
+        assert "path" not in ExtendedSkill.model_fields
+
+    def test_unknown_fields_are_ignored_so_legacy_documents_with_path_still_load(self):
+        assert ExtendedSkill.model_config.get("extra", "ignore") == "ignore"
+
     def test_shared_skill_fields_are_inherited_from_generated_model(self):
         skill = ExtendedSkill.model_construct(
             displayTitle="Test Skill",

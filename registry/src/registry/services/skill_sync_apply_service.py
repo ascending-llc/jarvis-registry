@@ -405,7 +405,6 @@ class SkillSyncApplyService:
                 "syncedAt": now.isoformat(),
                 "syncStatus": "synced",
             },
-            path=discovered.upstream_id,
             enabled=True,
             createdByRegistry=True,
             fileCount=len(discovered.files),
@@ -442,7 +441,6 @@ class SkillSyncApplyService:
         existing.disableModelInvocation = discovered.disable_model_invocation
         existing.allowedTools = discovered.allowed_tools
         existing.fileCount = len(discovered.files)
-        existing.path = discovered.upstream_id
         existing.sourceMetadata = {
             **(existing.sourceMetadata or {}),
             "commitSha": commit_sha,

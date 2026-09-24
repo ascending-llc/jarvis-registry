@@ -96,7 +96,6 @@ Accept: application/json
       "description": "Convert Mongoose schemas to Beanie models",
       "category": "development",
       "tags": ["python", "mongodb"],
-      "path": "mongoose-to-beanie",
       "version": 3,
       "fileCount": 0,
       "alwaysApply": false,
@@ -130,7 +129,6 @@ Accept: application/json
 | `skills[].description` | string | Skill description |
 | `skills[].category` | string | Skill category |
 | `skills[].tags` | string[] | Tags |
-| `skills[].path` | string | Local directory name; falls back to `name` |
 | `skills[].version` | integer | Increments on each update |
 | `skills[].fileCount` | integer | Number of supporting files |
 | `skills[].alwaysApply` | boolean | Whether the skill is always applied |
