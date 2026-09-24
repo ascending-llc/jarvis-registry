@@ -136,7 +136,7 @@ def _process_skill_folder(
                 if name_missing
                 else SkillSyncSkillErrorCode.SKILL_PARSE_FAILED
             ),
-            errorMessage=f"SKILL.md frontmatter validation failed: {exc.errors(include_url=False)}",
+            errorMessage=f"SKILL.md frontmatter validation failed: {exc.errors(include_url=False, include_input=False)}",
             phase="discovery",
         )
 

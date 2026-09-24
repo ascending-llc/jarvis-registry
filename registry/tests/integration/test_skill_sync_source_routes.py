@@ -26,6 +26,7 @@ from registry_pkgs.models.enums import (
     SkillSyncJobStatus,
     SkillSyncJobType,
     SkillSyncProviderType,
+    SkillSyncSkillErrorCode,
     SkillSyncSourceStatus,
     SkillSyncStatus,
     SkillSyncTriggerType,
@@ -35,6 +36,7 @@ from registry_pkgs.models.skill_sync_job import (
     SkillSyncApplySummary,
     SkillSyncDiscoverySummary,
     SkillSyncFullRequestSnapshot,
+    SkillSyncSkillError,
 )
 from registry_pkgs.models.skill_sync_source import SkillSyncSourceStats
 
@@ -268,6 +270,32 @@ def test_job_polling_is_scoped_to_source(skill_sync_route_context) -> None:
     assert response.status_code == 200
     assert response.json()["sourceId"] == str(ctx.source.id)
     assert response.json()["status"] == "pending"
+
+
+def test_job_response_serializes_skill_errors(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.job.skillErrors = [
+        SkillSyncSkillError(
+            skillPath="skills/claude-api",
+            upstreamId="skills/claude-api",
+            errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
+            errorMessage="SKILL.md frontmatter validation failed",
+            phase="discovery",
+        )
+    ]
+
+    response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}/jobs/{ctx.job.id}")
+
+    assert response.status_code == 200
+    assert response.json()["skillErrors"] == [
+        {
+            "skillPath": "skills/claude-api",
+            "upstreamId": "skills/claude-api",
+            "errorCode": "skill_parse_failed",
+            "errorMessage": "SKILL.md frontmatter validation failed",
+            "phase": "discovery",
+        }
+    ]
 
 
 def test_get_source_returns_detail(skill_sync_route_context) -> None:

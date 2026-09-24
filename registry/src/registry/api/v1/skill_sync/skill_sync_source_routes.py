@@ -69,7 +69,7 @@ def _to_job_response(job: SkillSyncJob) -> SkillSyncJobResponse:
         requestSnapshot=job.requestSnapshot,
         discoverySummary=job.discoverySummary.model_dump(mode="json"),
         applySummary=job.applySummary.model_dump(mode="json"),
-        skillErrors=[item.model_dump(mode="json") for item in job.skillErrors],
+        skillErrors=job.skillErrors,
         errorCode=job.errorCode,
         error=job.error,
         startedAt=job.startedAt,

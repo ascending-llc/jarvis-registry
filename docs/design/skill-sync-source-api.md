@@ -621,7 +621,7 @@ MongoDB collection: `skill_sync_jobs`
 | `requestSnapshot` | SkillSyncFullRequestSnapshot \| SkillSyncDeleteRequestSnapshot | Typed, immutable execution input; full sync stores owner/repo/ref/paths/configRevision and delete stores action/configRevision |
 | `discoverySummary` | SkillSyncDiscoverySummary | `{ discoveredSkillCount, discoveredFileCount, skippedPaths }` |
 | `applySummary` | SkillSyncApplySummary | `{ skillsCreated/Updated/Deleted/Failed, filesCreated/Updated/Deleted }` |
-| `skillErrors` | SkillSyncSkillError[] | Per-skill error details |
+| `skillErrors` | SkillSyncSkillError[] | Per-skill error details: `{ skillPath, upstreamId, errorCode, errorMessage, phase }`, where `skillPath` is the skill folder's repository-relative path and `phase` is `extraction`, `discovery`, `apply`, or `delete` |
 | `errorCode` | string \| null | Machine-readable error code |
 | `error` | string \| null | Human-readable error message |
 | `startedAt` | datetime \| null | When execution started |

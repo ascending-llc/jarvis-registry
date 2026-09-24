@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 
 import type { SkillSyncJob } from '@/services/skillSyncSource/type';
 
-import { getLatestFinishedSyncJob, getSkillErrorLabel } from './skillSyncJobUtils';
+import { getLatestFinishedSyncJob } from './skillSyncJobUtils';
 
 const makeJob = (id: string, overrides: Partial<SkillSyncJob> = {}): SkillSyncJob => ({
   id,
@@ -55,17 +55,5 @@ describe('getLatestFinishedSyncJob', () => {
   test('returns null when nothing has finished', () => {
     expect(getLatestFinishedSyncJob([])).toBeNull();
     expect(getLatestFinishedSyncJob([makeJob('running', { status: 'syncing' })])).toBeNull();
-  });
-});
-
-describe('getSkillErrorLabel', () => {
-  test('prefers the skill name, then the path', () => {
-    expect(getSkillErrorLabel({ skillName: 'review', path: 'skills/review', errorCode: 'E', error: 'x' })).toBe(
-      'review',
-    );
-    expect(getSkillErrorLabel({ skillName: null, path: 'skills/review', errorCode: 'E', error: 'x' })).toBe(
-      'skills/review',
-    );
-    expect(getSkillErrorLabel({ errorCode: 'E', error: 'x' })).toBe('Unknown skill');
   });
 });

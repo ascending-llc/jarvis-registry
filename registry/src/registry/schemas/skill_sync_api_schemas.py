@@ -12,7 +12,7 @@ from registry_pkgs.models.enums import (
     SkillSyncStatus,
     SkillSyncTriggerType,
 )
-from registry_pkgs.models.skill_sync_job import SkillSyncRequestSnapshot
+from registry_pkgs.models.skill_sync_job import SkillSyncRequestSnapshot, SkillSyncSkillError
 
 from .acl_schema import ResourcePermissions
 from .server_api_schemas import PaginationMetadata
@@ -118,7 +118,7 @@ class SkillSyncJobResponse(BaseModel):
     requestSnapshot: SkillSyncRequestSnapshot
     discoverySummary: dict = Field(default_factory=dict)
     applySummary: dict = Field(default_factory=dict)
-    skillErrors: list[dict] = Field(default_factory=list)
+    skillErrors: list[SkillSyncSkillError] = Field(default_factory=list)
     errorCode: str | None = None
     error: str | None = None
     startedAt: datetime | None = None

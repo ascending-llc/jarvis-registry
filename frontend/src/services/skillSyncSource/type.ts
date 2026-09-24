@@ -67,10 +67,11 @@ export interface SkillSyncApplySummary {
 }
 
 export interface SkillSyncSkillError {
-  path?: string;
-  skillName?: string | null;
+  skillPath: string;
+  upstreamId: string;
   errorCode: string;
-  error: string;
+  errorMessage: string;
+  phase: string;
 }
 
 export interface SkillSyncJob {

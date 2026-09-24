@@ -205,6 +205,21 @@ def test_missing_name(tmp_path):
     assert result.errors[0].errorCode == SkillSyncSkillErrorCode.SKILL_NAME_MISSING
 
 
+def test_frontmatter_validation_message_omits_rejected_input(tmp_path):
+    long_description = "x" * 1025
+    folder = _skill_folder(tmp_path, "skills/verbose", _md("verbose", long_description))
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+
+    error = result.errors[0]
+    assert error.errorCode == SkillSyncSkillErrorCode.SKILL_PARSE_FAILED
+    assert "string_too_long" in error.errorMessage
+    assert "description" in error.errorMessage
+    assert "'max_length': 1024" in error.errorMessage
+    assert long_description not in error.errorMessage
+    assert "'input'" not in error.errorMessage
+
+
 def test_missing_description(tmp_path):
     folder = _skill_folder(tmp_path, "skills/bad", "---\nname: no-desc\n---\nbody")
     result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
