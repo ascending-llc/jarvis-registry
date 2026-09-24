@@ -3,6 +3,8 @@ from pydantic import ValidationError
 
 from registry_pkgs.models.enums import (
     SkillSyncJobStatus,
+    SkillSyncSkillErrorCode,
+    SkillSyncSkillErrorPhase,
     SkillSyncSourceStatus,
     SkillSyncStateMachine,
     SkillSyncStatus,
@@ -12,6 +14,7 @@ from registry_pkgs.models.skill_sync_job import (
     SkillSyncDiscoverySummary,
     SkillSyncFullRequestSnapshot,
     SkillSyncJob,
+    SkillSyncSkillError,
 )
 from registry_pkgs.models.skill_sync_source import SkillSyncSource
 
@@ -47,6 +50,31 @@ def test_full_request_snapshot_is_typed_and_immutable() -> None:
 
     with pytest.raises(ValidationError):
         snapshot.ref = "release"
+
+
+@pytest.mark.parametrize("phase", ["extraction", "discovery", "apply", "delete"])
+def test_skill_error_phase_accepts_stored_string_values(phase: str) -> None:
+    error = SkillSyncSkillError(
+        skillPath="skills/demo",
+        upstreamId="skills/demo",
+        errorCode=SkillSyncSkillErrorCode.WRITE_FAILED,
+        errorMessage="failed",
+        phase=phase,
+    )
+
+    assert error.phase == SkillSyncSkillErrorPhase(phase)
+    assert error.model_dump(mode="json")["phase"] == phase
+
+
+def test_skill_error_phase_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        SkillSyncSkillError(
+            skillPath="skills/demo",
+            upstreamId="skills/demo",
+            errorCode=SkillSyncSkillErrorCode.WRITE_FAILED,
+            errorMessage="failed",
+            phase="applying",
+        )
 
 
 def test_state_machine_rejects_concurrent_sync() -> None:

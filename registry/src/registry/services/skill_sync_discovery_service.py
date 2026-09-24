@@ -6,7 +6,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from registry_pkgs.models.enums import SkillSyncSkillErrorCode
+from registry_pkgs.models.enums import SkillSyncSkillErrorCode, SkillSyncSkillErrorPhase
 from registry_pkgs.models.skill_sync_job import SkillSyncDiscoverySummary, SkillSyncSkillError
 
 from ..constants import MAX_SKILL_FILE_COUNT, MAX_SKILL_FILES_TOTAL_SIZE
@@ -66,7 +66,7 @@ class SkillSyncDiscoveryService:
                     upstreamId=folder_path,
                     errorCode=SkillSyncSkillErrorCode.FILE_TOO_LARGE,
                     errorMessage=f"Skill folder '{folder_path}' contains a file exceeding the size limit",
-                    phase="extraction",
+                    phase=SkillSyncSkillErrorPhase.EXTRACTION,
                 )
             )
 
@@ -99,7 +99,7 @@ def _process_skill_folder(
             upstreamId=path,
             errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
             errorMessage=f"Failed to read SKILL.md: {exc}",
-            phase="discovery",
+            phase=SkillSyncSkillErrorPhase.DISCOVERY,
         )
 
     try:
@@ -110,7 +110,7 @@ def _process_skill_folder(
             upstreamId=path,
             errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
             errorMessage="SKILL.md contains non-UTF-8 content",
-            phase="discovery",
+            phase=SkillSyncSkillErrorPhase.DISCOVERY,
         )
 
     parsed = _parse_frontmatter(content)
@@ -120,7 +120,7 @@ def _process_skill_folder(
             upstreamId=path,
             errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
             errorMessage="SKILL.md has no valid YAML frontmatter",
-            phase="discovery",
+            phase=SkillSyncSkillErrorPhase.DISCOVERY,
         )
 
     raw_frontmatter, body = parsed
@@ -137,7 +137,7 @@ def _process_skill_folder(
                 else SkillSyncSkillErrorCode.SKILL_PARSE_FAILED
             ),
             errorMessage=f"SKILL.md frontmatter validation failed: {exc.errors(include_url=False, include_input=False)}",
-            phase="discovery",
+            phase=SkillSyncSkillErrorPhase.DISCOVERY,
         )
 
     # The Agent Skills spec requires `name` to match the skill's parent directory name.
@@ -148,7 +148,7 @@ def _process_skill_folder(
             upstreamId=path,
             errorCode=SkillSyncSkillErrorCode.SKILL_NAME_MISMATCH,
             errorMessage=f"Skill name '{frontmatter.name}' does not match its folder name '{folder_name}'",
-            phase="discovery",
+            phase=SkillSyncSkillErrorPhase.DISCOVERY,
         )
 
     if frontmatter.name in seen_names:
@@ -157,7 +157,7 @@ def _process_skill_folder(
             upstreamId=path,
             errorCode=SkillSyncSkillErrorCode.DUPLICATE_SKILL_NAME,
             errorMessage=f"Duplicate skill name '{frontmatter.name}', first seen at {seen_names[frontmatter.name]}",
-            phase="discovery",
+            phase=SkillSyncSkillErrorPhase.DISCOVERY,
         )
 
     seen_names[frontmatter.name] = path
@@ -168,7 +168,7 @@ def _process_skill_folder(
             upstreamId=path,
             errorCode=SkillSyncSkillErrorCode.TOO_MANY_FILES,
             errorMessage=f"Skill has {len(folder.aux_files)} auxiliary files, max {MAX_SKILL_FILE_COUNT}",
-            phase="discovery",
+            phase=SkillSyncSkillErrorPhase.DISCOVERY,
         )
 
     # The same cap Registry's skill API applies, so a synced skill stays editable there.
@@ -179,7 +179,7 @@ def _process_skill_folder(
             upstreamId=path,
             errorCode=SkillSyncSkillErrorCode.SKILL_TOO_LARGE,
             errorMessage=f"Skill's auxiliary files total {total_size} bytes, max {MAX_SKILL_FILES_TOTAL_SIZE}",
-            phase="discovery",
+            phase=SkillSyncSkillErrorPhase.DISCOVERY,
         )
 
     return DiscoveredSkill(

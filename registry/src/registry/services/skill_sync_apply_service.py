@@ -12,7 +12,7 @@ from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedSkill as Skill
 from registry_pkgs.models import ExtendedSkillFile as SkillFile
 from registry_pkgs.models import PrincipalType, SkillSource
-from registry_pkgs.models.enums import RoleBits, SkillSyncSkillErrorCode
+from registry_pkgs.models.enums import RoleBits, SkillSyncSkillErrorCode, SkillSyncSkillErrorPhase
 from registry_pkgs.models.extended_access_role import RegistryAccessRole, RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.skill_sync_job import (
@@ -178,7 +178,7 @@ class SkillSyncApplyService:
                     upstreamId=metadata.get("upstreamId", upstream_id),
                     errorCode=SkillSyncSkillErrorCode.DELETE_FAILED,
                     errorMessage=str(outcome.error),
-                    phase="delete",
+                    phase=SkillSyncSkillErrorPhase.DELETE,
                 )
             )
 
@@ -231,7 +231,7 @@ class SkillSyncApplyService:
                         upstreamId=discovered.upstream_id,
                         errorCode=SkillSyncSkillErrorCode.WRITE_FAILED,
                         errorMessage=str(outcome.error),
-                        phase="apply",
+                        phase=SkillSyncSkillErrorPhase.APPLY,
                     )
                 )
                 continue

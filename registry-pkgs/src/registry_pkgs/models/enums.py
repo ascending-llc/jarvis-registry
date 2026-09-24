@@ -161,6 +161,13 @@ class SkillSyncSkillErrorCode(StrEnum):
     DELETE_FAILED = "delete_failed"
 
 
+class SkillSyncSkillErrorPhase(StrEnum):
+    EXTRACTION = "extraction"
+    DISCOVERY = "discovery"
+    APPLY = "apply"
+    DELETE = "delete"
+
+
 class SkillSyncStateMachine:
     """State transition guards for skill sync sources and jobs."""
 
