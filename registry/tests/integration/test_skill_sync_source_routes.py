@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from registry.api.v1.skill_sync.skill_sync_source_routes import router
 from registry.auth.dependencies import get_current_user
+from registry.core.config import settings
 from registry.deps import (
     get_acl_service,
     get_skill_sync_job_service,
@@ -334,6 +335,66 @@ def test_oauth_initiate_redirects_to_github(skill_sync_route_context) -> None:
     assert response.status_code == 307
     assert "github.com/login/oauth/authorize" in response.headers["location"]
     _assert_permission_checked(ctx, "EDIT")
+
+
+_PUBLIC_REGISTRY_URL = "https://jarvis.example.com/gateway"
+_EXPECTED_CALLBACK_URL = f"{_PUBLIC_REGISTRY_URL}/skill-sync-sources/oauth/callback"
+
+
+@pytest.fixture
+def proxied_client(skill_sync_route_context, monkeypatch):
+    """Client that mimics the deployed hop: plain http from a TLS-terminating proxy, under a root path."""
+    monkeypatch.setattr(settings, "registry_url", _PUBLIC_REGISTRY_URL)
+    with TestClient(
+        skill_sync_route_context.client.app,
+        base_url="http://registry-internal:7860",
+        root_path="/gateway",
+    ) as client:
+        yield client
+
+
+def test_oauth_initiate_uses_public_registry_url_for_redirect_uri(skill_sync_route_context, proxied_client) -> None:
+    ctx = skill_sync_route_context
+    response = proxied_client.get(
+        f"/gateway/skill-sync-sources/{ctx.source.id}/oauth/initiate",
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    assert ctx.oauth_service.create_authorization_url.call_args.kwargs["redirect_uri"] == _EXPECTED_CALLBACK_URL
+
+
+def test_oauth_callback_uses_public_registry_url_for_redirect_uri(skill_sync_route_context, proxied_client) -> None:
+    ctx = skill_sync_route_context
+    ctx.oauth_service.exchange_callback = AsyncMock(return_value=USER_ID)
+    response = proxied_client.get(
+        "/gateway/skill-sync-sources/oauth/callback?code=code&state=state",
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    assert "status=connected" in response.headers["location"]
+    assert ctx.oauth_service.exchange_callback.call_args.kwargs["redirect_uri"] == _EXPECTED_CALLBACK_URL
+
+
+def test_oauth_initiate_and_callback_send_identical_redirect_uri(skill_sync_route_context, proxied_client) -> None:
+    # GitHub rejects the token exchange unless redirect_uri matches the one sent to /authorize exactly.
+    ctx = skill_sync_route_context
+    ctx.oauth_service.exchange_callback = AsyncMock(return_value=USER_ID)
+    proxied_client.get(f"/gateway/skill-sync-sources/{ctx.source.id}/oauth/initiate", follow_redirects=False)
+    proxied_client.get("/gateway/skill-sync-sources/oauth/callback?code=code&state=state", follow_redirects=False)
+    initiate_uri = ctx.oauth_service.create_authorization_url.call_args.kwargs["redirect_uri"]
+    callback_uri = ctx.oauth_service.exchange_callback.call_args.kwargs["redirect_uri"]
+    assert initiate_uri == callback_uri
+
+
+def test_oauth_callback_path_on_registered_app() -> None:
+    # Guards the helper's reliance on url_path_for returning the full public path under the real router wiring.
+    from registry.routers import register_routers
+
+    app = FastAPI()
+    register_routers(app)
+    assert app.url_path_for("skill_sync_oauth_callback") == (
+        f"/api/{settings.api_version}/skill-sync-sources/oauth/callback"
+    )
 
 
 def test_create_source_delegates_transaction_to_service(skill_sync_route_context) -> None:

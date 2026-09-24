@@ -55,6 +55,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/skill-sync-sources", tags=["skill-sync-sources"])
 
+_OAUTH_CALLBACK_ROUTE_NAME = "skill_sync_oauth_callback"
+
 
 def _to_job_response(job: SkillSyncJob) -> SkillSyncJobResponse:
     return SkillSyncJobResponse(
@@ -134,6 +136,16 @@ async def _to_detail_response(
         createdBy=source.createdBy,
         updatedBy=source.updatedBy,
     )
+
+
+def _skill_sync_oauth_callback_url(request: Request) -> str:
+    """Build the public GitHub OAuth callback URL for skill sync.
+
+    Uses ``settings.registry_url`` (public scheme, host and root path) instead of ``request.url_for``,
+    which reflects the proxy-internal request and yields ``http://`` behind a TLS-terminating proxy.
+    """
+    callback_path = request.app.url_path_for(_OAUTH_CALLBACK_ROUTE_NAME)
+    return f"{settings.registry_url}{callback_path}"
 
 
 async def _required_source(source_id: str, source_service: SkillSyncSourceCrudService) -> SkillSyncSource:
@@ -466,7 +478,7 @@ async def initiate_skill_sync_oauth(
             resource_id=source.id,
             required_permission="EDIT",
         )
-        redirect_uri = str(request.url_for("skill_sync_oauth_callback"))
+        redirect_uri = _skill_sync_oauth_callback_url(request)
         authorization_url = oauth_service.create_authorization_url(
             source=source,
             user_id=str(user_context["user_id"]),
@@ -483,7 +495,7 @@ async def initiate_skill_sync_oauth(
         ) from exc
 
 
-@router.get("/oauth/callback", name="skill_sync_oauth_callback")
+@router.get("/oauth/callback", name=_OAUTH_CALLBACK_ROUTE_NAME)
 async def skill_sync_oauth_callback(
     request: Request,
     code: str | None = Query(default=None),
@@ -512,7 +524,7 @@ async def skill_sync_oauth_callback(
         return RedirectResponse(error_redirect)
     try:
         source = await _required_source(resolved_source_id, source_service)
-        redirect_uri = str(request.url_for("skill_sync_oauth_callback"))
+        redirect_uri = _skill_sync_oauth_callback_url(request)
         # Store the token only; the frontend then drives dryRun (test-connect) and sync explicitly.
         await oauth_service.exchange_callback(
             source=source,
