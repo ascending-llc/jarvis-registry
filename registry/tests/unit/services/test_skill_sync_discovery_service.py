@@ -91,8 +91,8 @@ def test_discover_single_skill(tmp_path):
 
 def test_discover_multiple_skills(tmp_path):
     folders = [
-        _skill_folder(tmp_path, "skills/a", _md("alpha", "Skill A")),
-        _skill_folder(tmp_path, "skills/b", _md("beta", "Skill B")),
+        _skill_folder(tmp_path, "skills/alpha", _md("alpha", "Skill A")),
+        _skill_folder(tmp_path, "skills/beta", _md("beta", "Skill B")),
     ]
     result = SkillSyncDiscoveryService().discover_skills(_extraction(folders))
     assert len(result.skills) == 2
@@ -125,7 +125,7 @@ disable-model-invocation: true
 license: MIT
 ---
 Body here"""
-    folder = _skill_folder(tmp_path, "skills/test", content)
+    folder = _skill_folder(tmp_path, "skills/test-skill", content)
     result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
     skill = result.skills[0]
     assert skill.user_invocable is False
@@ -214,14 +214,88 @@ def test_missing_description(tmp_path):
 
 
 def test_duplicate_name(tmp_path):
+    # Same folder name under two different `paths` containers.
     folders = [
-        _skill_folder(tmp_path, "skills/a", _md("dup", "First")),
-        _skill_folder(tmp_path, "skills/b", _md("dup", "Second")),
+        _skill_folder(tmp_path, "team-a/dup", _md("dup", "First")),
+        _skill_folder(tmp_path, "team-b/dup", _md("dup", "Second")),
     ]
     result = SkillSyncDiscoveryService().discover_skills(_extraction(folders))
     assert len(result.skills) == 1
     assert len(result.errors) == 1
     assert result.errors[0].errorCode == SkillSyncSkillErrorCode.DUPLICATE_SKILL_NAME
+    assert result.errors[0].skillPath == "team-b/dup"
+
+
+def test_name_mismatching_folder_name_is_rejected(tmp_path):
+    folder = _skill_folder(tmp_path, "ascending-branded-artifacts", _md("ascending-branding-artifacts"))
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+
+    assert result.skills == []
+    assert len(result.errors) == 1
+    error = result.errors[0]
+    assert error.errorCode == SkillSyncSkillErrorCode.SKILL_NAME_MISMATCH
+    assert error.skillPath == "ascending-branded-artifacts"
+    assert error.upstreamId == "ascending-branded-artifacts"
+    assert error.phase == "discovery"
+    assert "ascending-branding-artifacts" in error.errorMessage
+    assert "ascending-branded-artifacts" in error.errorMessage
+    assert result.summary.discoveredSkillCount == 0
+
+
+def test_name_mismatch_is_case_sensitive(tmp_path):
+    folder = _skill_folder(tmp_path, "skills/Hello", _md("hello"))
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+
+    assert result.skills == []
+    assert result.errors[0].errorCode == SkillSyncSkillErrorCode.SKILL_NAME_MISMATCH
+
+
+def test_name_is_matched_against_last_segment_of_nested_path(tmp_path):
+    folder = _skill_folder(tmp_path, "org/team/skills/hello", _md("hello"))
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+
+    assert result.errors == []
+    assert [skill.name for skill in result.skills] == ["hello"]
+    assert result.skills[0].upstream_id == "org/team/skills/hello"
+
+
+def test_name_matching_a_non_final_path_segment_is_rejected(tmp_path):
+    folder = _skill_folder(tmp_path, "hello/other", _md("hello"))
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction([folder]))
+
+    assert result.skills == []
+    assert result.errors[0].errorCode == SkillSyncSkillErrorCode.SKILL_NAME_MISMATCH
+
+
+def test_name_mismatch_does_not_block_sibling_skills(tmp_path):
+    folders = [
+        _skill_folder(tmp_path, "skills/wrong-folder", _md("right-name")),
+        _skill_folder(tmp_path, "skills/good", _md("good")),
+    ]
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction(folders))
+
+    assert [skill.name for skill in result.skills] == ["good"]
+    assert [error.skillPath for error in result.errors] == ["skills/wrong-folder"]
+    assert result.summary.discoveredSkillCount == 1
+
+
+def test_mismatched_skill_does_not_claim_its_name_for_duplicate_detection(tmp_path):
+    # A folder whose name mismatches must not reserve the name, or a later correctly
+    # named folder would be wrongly reported as a duplicate.
+    folders = [
+        _skill_folder(tmp_path, "team-a/other", _md("shared")),
+        _skill_folder(tmp_path, "team-b/shared", _md("shared")),
+    ]
+
+    result = SkillSyncDiscoveryService().discover_skills(_extraction(folders))
+
+    assert [skill.upstream_id for skill in result.skills] == ["team-b/shared"]
+    assert [error.errorCode for error in result.errors] == [SkillSyncSkillErrorCode.SKILL_NAME_MISMATCH]
 
 
 def test_too_many_files(tmp_path, monkeypatch):
@@ -487,8 +561,8 @@ def test_index_closing_fence_accepts_supported_terminators(suffix: str) -> None:
 
 def test_discovery_summary_file_count(tmp_path):
     folders = [
-        _skill_folder(tmp_path, "a", _md("alpha", "A"), aux_files={"helper.py": b"x"}),
-        _skill_folder(tmp_path, "b", _md("beta", "B")),
+        _skill_folder(tmp_path, "alpha", _md("alpha", "A"), aux_files={"helper.py": b"x"}),
+        _skill_folder(tmp_path, "beta", _md("beta", "B")),
     ]
     result = SkillSyncDiscoveryService().discover_skills(_extraction(folders))
     assert result.summary.discoveredSkillCount == 2

@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 import yaml
@@ -136,6 +137,17 @@ def _process_skill_folder(
                 else SkillSyncSkillErrorCode.SKILL_PARSE_FAILED
             ),
             errorMessage=f"SKILL.md frontmatter validation failed: {exc.errors(include_url=False)}",
+            phase="discovery",
+        )
+
+    # The Agent Skills spec requires `name` to match the skill's parent directory name.
+    folder_name = PurePosixPath(path).name
+    if frontmatter.name != folder_name:
+        return SkillSyncSkillError(
+            skillPath=path,
+            upstreamId=path,
+            errorCode=SkillSyncSkillErrorCode.SKILL_NAME_MISMATCH,
+            errorMessage=f"Skill name '{frontmatter.name}' does not match its folder name '{folder_name}'",
             phase="discovery",
         )
 
