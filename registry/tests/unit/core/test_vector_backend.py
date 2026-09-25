@@ -30,12 +30,13 @@ async def test_no_selection_falls_back_to_vector_config(monkeypatch):
     assert result is sentinel
 
 
-async def test_selection_with_missing_source_falls_back(monkeypatch):
+async def test_selection_with_missing_source_at_generation_0_falls_back(monkeypatch):
+    # No generation committed yet -> a missing source falls back to the legacy vector_config.
     sentinel = object()
     monkeypatch.setattr(
         vector_backend,
         "get_model_gateway_selection",
-        AsyncMock(return_value=SimpleNamespace(embeddingModelSourceId="abc")),
+        AsyncMock(return_value=SimpleNamespace(embeddingModelSourceId="abc", embeddingCollectionGeneration=None)),
     )
     monkeypatch.setattr(vector_backend.ModelSource, "get", AsyncMock(return_value=None))
     monkeypatch.setattr(vector_backend.BackendConfig, "from_vector_config", classmethod(lambda cls, cfg: sentinel))
@@ -45,12 +46,26 @@ async def test_selection_with_missing_source_falls_back(monkeypatch):
     assert result is sentinel
 
 
-async def test_selection_with_bedrock_source_builds_backend_from_source(monkeypatch):
+async def test_missing_source_with_committed_generation_raises(monkeypatch):
+    # Fail-hard: a committed generation whose source is gone must not be paired with the legacy
+    # model — refuse to start rather than serve a mismatched vector space.
+    monkeypatch.setattr(
+        vector_backend,
+        "get_model_gateway_selection",
+        AsyncMock(return_value=SimpleNamespace(embeddingModelSourceId="abc", embeddingCollectionGeneration="gen9")),
+    )
+    monkeypatch.setattr(vector_backend.ModelSource, "get", AsyncMock(return_value=None))
+
+    with pytest.raises(RuntimeError, match="gen9"):
+        await vector_backend.resolve_vector_backend_config(_settings())
+
+
+async def test_selection_builds_backend_and_passes_generation_through(monkeypatch):
     model_source = SimpleNamespace(deletedAt=None)
     monkeypatch.setattr(
         vector_backend,
         "get_model_gateway_selection",
-        AsyncMock(return_value=SimpleNamespace(embeddingModelSourceId="abc")),
+        AsyncMock(return_value=SimpleNamespace(embeddingModelSourceId="abc", embeddingCollectionGeneration="gen7")),
     )
     monkeypatch.setattr(vector_backend.ModelSource, "get", AsyncMock(return_value=model_source))
 
@@ -65,6 +80,8 @@ async def test_selection_with_bedrock_source_builds_backend_from_source(monkeypa
     assert isinstance(result, BackendConfig)
     assert result.embedding_model_config is bedrock
     assert result.vector_store_config is weaviate
+    # The active generation flows into the backend config so the pod comes up on the right collections.
+    assert result.collection_generation == "gen7"
 
 
 def test_build_backend_config_from_model_source_assembles_all_three_parts(monkeypatch):
