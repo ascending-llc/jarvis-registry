@@ -56,7 +56,7 @@ const INIT_DATA: FederationFormConfig = {
   owner: '',
   repo: '',
   ref: DEFAULT_GITHUB_REF,
-  paths: ['skills/'],
+  paths: ['.'],
   githubAppClientId: '',
   githubAppClientSecret: '',
 };
