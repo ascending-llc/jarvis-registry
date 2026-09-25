@@ -38,6 +38,10 @@ class DatabaseClient:
         """Initialize database client with optional configuration."""
         self._config = config
         self._adapter: VectorStoreAdapter | None = None
+        # The (adapter, config) pair as ONE field, swapped atomically. A single-field load/store is
+        # atomic under the GIL, so a reader that snapshots this can never pair an old adapter with a
+        # new generation's collection name (repository ops run in to_thread workers, off the loop).
+        self._live: tuple[VectorStoreAdapter, BackendConfig] | None = None
         self._initialized = False
         self._repositories = {}
         self._reindex_active_check: Callable[[], bool] | None = None
@@ -89,6 +93,7 @@ class DatabaseClient:
             # Create adapter through factory
             self._adapter = VectorStoreFactory.create_adapter(config)
             self._config = config
+            self._live = (self._adapter, config)
             self._initialized = True
 
             logger.info(f"Database client initialized with {type(self._adapter).__name__}")
@@ -111,6 +116,7 @@ class DatabaseClient:
                 self._adapter.__exit__(None, None, None)
 
             self._adapter = None
+            self._live = None
             self._initialized = False
             self._repositories.clear()
 
@@ -120,16 +126,25 @@ class DatabaseClient:
             logger.error(f"Error closing database client: {e}")
 
     def swap_adapter(self, new_adapter: VectorStoreAdapter, new_config: BackendConfig) -> VectorStoreAdapter:
-        """Replace the live adapter in place; return the old one for the caller to close.
+        """Replace the live adapter+config in place; return the old adapter for the caller to close.
 
-        Repositories resolve ``db_client.adapter`` freshly per call, so this mutation is visible
-        everywhere at once. The bare assignment is atomic under the asyncio loop (no ``await`` in
-        between), so no lock is needed.
+        The ``(adapter, config)`` pair is published as one field (``_live``) in a single store, so an
+        embedding search that reads it via :meth:`snapshot` always gets a consistent pair — it can
+        never embed with the old model against the new generation's collection. The separate
+        ``_adapter`` / ``_config`` fields are kept in sync for the other, generation-insensitive
+        accessors (filter/get, lifecycle).
         """
         old_adapter = self._adapter
+        self._live = (new_adapter, new_config)  # atomic publish of the consistent pair
         self._adapter = new_adapter
         self._config = new_config
         return old_adapter
+
+    def snapshot(self) -> tuple[VectorStoreAdapter, BackendConfig]:
+        """Atomically read the live ``(adapter, config)`` pair. Use this wherever the adapter's
+        embedding model and the collection name must agree (near-text / hybrid search)."""
+        self._ensure_initialized()
+        return self._live
 
     def is_initialized(self) -> bool:
         """Check if the client is initialized."""

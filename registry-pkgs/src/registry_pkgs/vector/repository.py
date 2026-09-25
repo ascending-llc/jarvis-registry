@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 from langchain_core.documents import Document
 
 from .batch_result import BatchResult
-from .client import DatabaseClient
+from .client import DatabaseClient, collection_name_for
 from .enum.enums import RerankerProvider, SearchType
 from .exceptions import RepositoryError
 from .protocols import VectorStorable
@@ -90,6 +90,16 @@ class Repository[T: VectorStorable]:
     def _write_adapter(self):
         """Resolve the write adapter; raises while an embedding reindex is active."""
         return self.db_client.write_adapter
+
+    def _search_target(self) -> tuple[Any, str]:
+        """Return a consistent (adapter, collection_name) pair from one atomic snapshot.
+
+        Use this for embedding (near-text / hybrid) search, where the adapter's model and the
+        collection generation must agree — reading ``self.adapter`` and ``self.collection`` separately
+        could straddle a ``swap_adapter`` and pair an old model with a new generation's collection.
+        """
+        adapter, config = self.db_client.snapshot()
+        return adapter, collection_name_for(self.model_class.COLLECTION_NAME, config.collection_generation)
 
     def _collection_has_property(self, property_name: str) -> bool:
         """Check whether the backing collection exposes a given metadata property."""
@@ -381,8 +391,9 @@ class Repository[T: VectorStorable]:
             List of model instances ranked by relevance
         """
         try:
-            results = self.adapter.search(
-                query=query, search_type=search_type, k=k, filters=filters, collection_name=self.collection
+            adapter, collection = self._search_target()
+            results = adapter.search(
+                query=query, search_type=search_type, k=k, filters=filters, collection_name=collection
             )
 
             instances = []
@@ -460,7 +471,8 @@ class Repository[T: VectorStorable]:
             if candidate_k is None:
                 candidate_k = min(k * 3, 100)
 
-            results = self.adapter.search_with_rerank(
+            adapter, collection = self._search_target()
+            results = adapter.search_with_rerank(
                 query=query,
                 k=k,
                 candidate_k=candidate_k,
@@ -468,7 +480,7 @@ class Repository[T: VectorStorable]:
                 filters=filters,
                 reranker_type=reranker_type,
                 reranker_kwargs=reranker_kwargs or {},
-                collection_name=self.collection,
+                collection_name=collection,
             )
 
             instances = []

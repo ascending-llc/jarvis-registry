@@ -92,3 +92,18 @@ def test_swap_adapter_replaces_adapter_and_returns_old() -> None:
     # The gate is inactive here, so .adapter resolves to the new one for every repository.
     assert client.adapter is new_adapter
     assert client._config is new_config
+
+
+def test_snapshot_returns_a_consistent_adapter_config_pair() -> None:
+    from registry_pkgs.vector.config.config import BackendConfig
+
+    client = _initialized_client()
+    a0, cfg0 = object(), BackendConfig.model_construct(collection_generation="gen0")
+    client._adapter, client._live = a0, (a0, cfg0)
+    assert client.snapshot() == (a0, cfg0)
+
+    # A swap publishes the new (adapter, config) as one field, so a snapshot never tears.
+    a1, cfg1 = object(), BackendConfig.model_construct(collection_generation="gen1")
+    client.swap_adapter(a1, cfg1)
+    adapter, cfg = client.snapshot()
+    assert adapter is a1 and cfg.collection_generation == "gen1"
