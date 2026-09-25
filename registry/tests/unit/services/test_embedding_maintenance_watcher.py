@@ -72,7 +72,7 @@ async def test_poll_swaps_adapter_when_generation_differs(monkeypatch) -> None:
     assert db_client.swap_adapter.call_args.args[0] is new_adapter
     assert db_client.swap_adapter.call_args.args[1] is target_config
     assert watcher.is_active() is False  # swapped -> no longer stale
-    assert watcher._retired_adapter is old_adapter  # deferred close
+    assert [a for a, _ in watcher._retired] == [old_adapter]  # retired for deferred close
 
 
 async def test_poll_stays_stale_and_retries_when_resolve_fails(monkeypatch) -> None:
@@ -125,6 +125,37 @@ async def test_poll_error_does_not_crash_watcher(monkeypatch) -> None:
 
 async def test_shutdown_is_safe_without_start() -> None:
     await EmbeddingMaintenanceWatcher().shutdown()
+
+
+async def test_retired_adapter_closed_only_after_grace(monkeypatch) -> None:
+    closed: list[object] = []
+    monkeypatch.setattr(watcher_mod, "_close_adapter", lambda a: closed.append(a))
+    monkeypatch.setattr(watcher_mod, "_RETIRED_ADAPTER_GRACE_SECONDS", 100.0)
+    watcher = EmbeddingMaintenanceWatcher()
+    fresh, stale = object(), object()
+    # fresh retired just now (kept); stale retired long ago (due to close).
+    watcher._retired = [(fresh, time.monotonic()), (stale, time.monotonic() - 1000.0)]
+
+    await watcher._close_expired_adapters()
+
+    assert closed == [stale]
+    assert [a for a, _ in watcher._retired] == [fresh]  # in-flight-safe one is kept
+
+
+async def test_shutdown_closes_all_retired_adapters(monkeypatch) -> None:
+    closed: list[object] = []
+    monkeypatch.setattr(watcher_mod, "_close_adapter", lambda a: closed.append(a))
+    monkeypatch.setattr(watcher_mod, "_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(watcher_mod, "get_active_embedding_reindex_job", AsyncMock(return_value=None))
+    watcher = EmbeddingMaintenanceWatcher()
+    a, b = object(), object()
+    watcher._retired = [(a, time.monotonic()), (b, time.monotonic())]
+    await watcher.start()
+
+    await watcher.shutdown()
+
+    assert set(closed) == {a, b}
+    assert watcher._retired == []
 
 
 async def test_maybe_gc_runs_only_after_the_interval(monkeypatch) -> None:
@@ -187,6 +218,27 @@ async def test_gc_skips_on_a_stale_pod(monkeypatch) -> None:
         drop_collection=lambda name: dropped.append(name),
     )
     db_client = SimpleNamespace(adapter=adapter, collection_generation="genA")  # behind
+
+    await gc_stale_embedding_generations(db_client)
+
+    assert dropped == []
+
+
+async def test_gc_rechecks_active_job_right_before_dropping(monkeypatch) -> None:
+    # No job at the first check, but a reindex commits before the drop (second check finds it):
+    # nothing is dropped, so a still-in-grace previous generation is not deleted under a lagging pod.
+    monkeypatch.setattr(watcher_mod, "get_active_embedding_reindex_job", AsyncMock(side_effect=[None, object()]))
+    monkeypatch.setattr(
+        watcher_mod,
+        "get_model_gateway_selection",
+        AsyncMock(return_value=SimpleNamespace(embeddingCollectionGeneration="genB")),
+    )
+    dropped: list[str] = []
+    adapter = SimpleNamespace(
+        list_collections=lambda: ["MCP_Servers_genA", "MCP_Servers_genB"],
+        drop_collection=lambda name: dropped.append(name),
+    )
+    db_client = SimpleNamespace(adapter=adapter, collection_generation="genB")
 
     await gc_stale_embedding_generations(db_client)
 

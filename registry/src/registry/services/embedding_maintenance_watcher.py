@@ -20,6 +20,10 @@ _POLL_INTERVAL_SECONDS = 1.0
 # Startup GC already runs once at boot; this reclaims generations that pile up between restarts when
 # the model is switched repeatedly on a long-lived cluster. It no-ops while a reindex is active.
 _GC_INTERVAL_SECONDS = 1800.0
+# A swapped-out adapter is closed only after this long, so a slow search still running on it in a
+# to_thread worker is never cut off. It is comfortably above Weaviate's own query timeout, so no
+# in-flight read can outlive it; the cost is holding a few idle connections briefly after a rare swap.
+_RETIRED_ADAPTER_GRACE_SECONDS = 300.0
 
 
 def _close_adapter(adapter) -> None:
@@ -54,7 +58,9 @@ class EmbeddingMaintenanceWatcher:
         # generation, so a pod that starts mid-reindex cannot accept writes in that startup window.
         # An unwired watcher (no db_client, e.g. a unit test) only tracks job-active, never stale.
         self._stale = db_client is not None
-        self._retired_adapter = None
+        # Adapters retired by a swap, each with the time it was retired; closed once past the grace
+        # window (a list, not one slot, so rapid back-to-back swaps never leak the middle adapter).
+        self._retired: list[tuple[object, float]] = []
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._last_gc = 0.0
@@ -75,10 +81,11 @@ class EmbeddingMaintenanceWatcher:
         with suppress(asyncio.CancelledError):
             await task
         self._task = None
-        # The deferred close normally happens on the next poll; on shutdown there is no next poll.
-        if self._retired_adapter is not None:
-            await asyncio.to_thread(_close_adapter, self._retired_adapter)
-            self._retired_adapter = None
+        # Runtime close waits out the grace window; on shutdown there is no next poll, so close the
+        # rest now. In-flight reads are ending with the process anyway.
+        while self._retired:
+            adapter, _ = self._retired.pop()
+            await asyncio.to_thread(_close_adapter, adapter)
 
     def is_active(self) -> bool:
         """True while a reindex job is active OR this pod has not yet swapped to the active generation."""
@@ -95,6 +102,19 @@ class EmbeddingMaintenanceWatcher:
                 logger.exception("Embedding maintenance watcher poll failed")
             await self._wait_for_next_poll()
 
+    async def _close_expired_adapters(self) -> None:
+        """Close adapters retired more than the grace window ago; keep the rest for in-flight reads."""
+        if not self._retired:
+            return
+        now = time.monotonic()
+        keep: list[tuple[object, float]] = []
+        for adapter, retired_at in self._retired:
+            if now - retired_at >= _RETIRED_ADAPTER_GRACE_SECONDS:
+                await asyncio.to_thread(_close_adapter, adapter)
+            else:
+                keep.append((adapter, retired_at))
+        self._retired = keep
+
     async def _maybe_gc(self) -> None:
         """Periodically reclaim superseded generations so they do not pile up between restarts."""
         if self._db_client is None:
@@ -106,10 +126,7 @@ class EmbeddingMaintenanceWatcher:
         await gc_stale_embedding_generations(self._db_client)
 
     async def _poll(self) -> None:
-        # Deferred close: retire last poll's old adapter now, giving in-flight reads one interval.
-        if self._retired_adapter is not None:
-            await asyncio.to_thread(_close_adapter, self._retired_adapter)
-            self._retired_adapter = None
+        await self._close_expired_adapters()
 
         self._job_active = (await get_active_embedding_reindex_job()) is not None
 
@@ -138,7 +155,8 @@ class EmbeddingMaintenanceWatcher:
             logger.exception("Watcher failed to build adapter for generation %s; retrying next poll", target_generation)
             return
         old_adapter = self._db_client.swap_adapter(new_adapter, target_config)
-        self._retired_adapter = old_adapter  # closed on the next poll
+        if old_adapter is not None:
+            self._retired.append((old_adapter, time.monotonic()))  # closed after the grace window
         self._stale = False
         logger.info("Watcher swapped this pod to embedding generation %s", target_generation)
 
@@ -171,6 +189,12 @@ async def gc_stale_embedding_generations(db_client: DatabaseClient) -> None:
             return
         bases = (ExtendedMCPServer.COLLECTION_NAME, A2AAgent.COLLECTION_NAME)
         active_names = {collection_name_for(base, active_generation) for base in bases}
+        # Re-check right before the drops: a reindex may have started AND committed since the first
+        # check, leaving a still-in-grace previous generation looking stale. A job is RUNNING for the
+        # whole sweep+grace, so this catches it. The drop loop below has no ``await``, so this check
+        # and the drops are one atomic step on the event loop — nothing can commit in between.
+        if await get_active_embedding_reindex_job() is not None:
+            return
         for name in adapter.list_collections() or []:
             if name in active_names:
                 continue

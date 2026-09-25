@@ -256,6 +256,26 @@ async def test_update_azure_config_with_new_key_reencrypts(service) -> None:
     assert is_encrypted(enc)
 
 
+async def test_update_rejects_provider_config_change_during_reindex(service, monkeypatch) -> None:
+    src_id = PydanticObjectId()
+    monkeypatch.setattr(
+        crud_module,
+        "get_active_embedding_reindex_job",
+        AsyncMock(return_value=SimpleNamespace(targetEmbeddingModelSourceId=src_id)),
+    )
+    source = SimpleNamespace(
+        id=src_id,
+        providerConfig=AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn="m", baseModelId="m"),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+    new_config = AwsBedrockModelConfigInput(awsRegion="us-west-2", modelIdOrArn="m2", baseModelId="m2")
+
+    with pytest.raises(ValueError, match="being reindexed"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()  # nothing persisted
+
+
 async def test_update_rejects_mode_change_when_in_use(service, selection_service) -> None:
     sid = PydanticObjectId(VALID_ID)
     source = SimpleNamespace(id=sid, mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())

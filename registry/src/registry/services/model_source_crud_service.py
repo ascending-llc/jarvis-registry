@@ -136,6 +136,14 @@ class ModelSourceCrudService:
             source.mode = changes["mode"]
         provider_config = changes.get("providerConfig")
         if provider_config is not None:
+            # The reindex executor reloads this source at sweep time, so changing its provider config
+            # mid-reindex would embed the whole corpus with credentials/model settings that were never
+            # smoke-tested. Refuse the change while this source is the active reindex target.
+            active_job = await get_active_embedding_reindex_job()
+            if active_job is not None and source.id == active_job.targetEmbeddingModelSourceId:
+                raise ValueError(
+                    "Cannot change the provider configuration of a model source while it is being reindexed"
+                )
             new_config = self._to_stored_config(provider_config)
             source.providerConfig = self._preserve_existing_secret(new_config, source.providerConfig)
         source.updatedBy = updated_by
