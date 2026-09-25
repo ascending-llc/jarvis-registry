@@ -43,13 +43,26 @@ class DatabaseClient:
         self._reindex_active_check: Callable[[], bool] | None = None
 
     def set_reindex_active_check(self, check: Callable[[], bool] | None) -> None:
-        """Wire the embedding-reindex gate so every adapter access can honor it.
+        """Wire the reindex gate that blocks WRITES during a reindex.
 
-        Accepts a plain callable (typically ``EmbeddingMaintenanceWatcher.is_active``)
-        rather than the watcher itself, keeping registry-pkgs free of a dependency
-        on the registry workspace.
+        A plain callable (typically ``EmbeddingMaintenanceWatcher.is_active``) keeps registry-pkgs off
+        the registry workspace. Gates ``write_adapter`` only — reads (``adapter``) are always allowed.
         """
         self._reindex_active_check = check
+
+    @property
+    def collection_generation(self) -> str | None:
+        """The collection generation this client is currently built for (None == legacy generation 0).
+
+        The watcher compares this against the selection's active generation to decide when to swap.
+        """
+        return self._config.collection_generation if self._config else None
+
+    def collection_name_for(self, base_name: str) -> str:
+        """Resolve a base name to this client's current generation, re-read on every call so a
+        ``swap_adapter`` onto a new generation takes effect immediately for every repository."""
+        generation = self._config.collection_generation if self._config else None
+        return collection_name_for(base_name, generation)
 
     def initialize(self, config: BackendConfig | None = None) -> None:
         """
@@ -107,13 +120,11 @@ class DatabaseClient:
             logger.error(f"Error closing database client: {e}")
 
     def swap_adapter(self, new_adapter: VectorStoreAdapter, new_config: BackendConfig) -> VectorStoreAdapter:
-        """Atomically replace the live adapter in place; return the old one for the caller to close.
+        """Replace the live adapter in place; return the old one for the caller to close.
 
-        Every repository resolves ``db_client.adapter`` freshly on each call, so mutating
-        ``_adapter`` on this one shared instance is visible everywhere immediately — including
-        repositories cached elsewhere that hold a reference to this ``DatabaseClient``. A single
-        attribute assignment is atomic under asyncio's single-threaded loop (no ``await`` between
-        the read and the write), so no lock is needed. The caller owns closing the returned adapter.
+        Repositories resolve ``db_client.adapter`` freshly per call, so this mutation is visible
+        everywhere at once. The bare assignment is atomic under the asyncio loop (no ``await`` in
+        between), so no lock is needed.
         """
         old_adapter = self._adapter
         self._adapter = new_adapter
@@ -126,13 +137,18 @@ class DatabaseClient:
 
     @property
     def adapter(self) -> VectorStoreAdapter:
-        """
-        Get direct access to the underlying adapter.
-
-        For advanced users who need low-level Document operations.
-
-        """
+        """Read adapter — NOT reindex-gated, so searches stay available during a reindex.
+        Mutating ops must go through ``write_adapter``."""
         self._ensure_initialized()
+        return self._adapter
+
+    @property
+    def write_adapter(self) -> VectorStoreAdapter:
+        """Write adapter — the single chokepoint that raises while a reindex is active, so no write
+        lands in a generation about to be superseded."""
+        self._ensure_initialized()
+        if self._reindex_active_check is not None and self._reindex_active_check():
+            raise EmbeddingReindexInProgressException("An embedding-model reindex is in progress")
         return self._adapter
 
     def get_info(self) -> dict[str, Any]:
@@ -155,17 +171,19 @@ class DatabaseClient:
         return info
 
     def _ensure_initialized(self) -> None:
-        """Ensure client is initialized and no embedding reindex is in progress.
-
-        This is the single chokepoint every repository write and search passes
-        through (``Repository.adapter`` resolves ``db_client.adapter`` freshly on
-        every call), so gating here also covers any caller that reaches a
-        repository directly rather than through a gated service method.
-        """
+        """Ensure the client is initialized. Reindex gating lives in ``write_adapter``, not here."""
         if not self._initialized:
             raise RuntimeError("Database client not initialized. Call initialize() first.")
-        if self._reindex_active_check is not None and self._reindex_active_check():
-            raise EmbeddingReindexInProgressException("An embedding-model reindex is in progress")
+
+
+def collection_name_for(base_name: str, generation: str | None) -> str:
+    """Return the physical collection name for a base name and generation.
+
+    ``generation is None`` -> the legacy base name (generation 0); otherwise ``f"{base}_{generation}"``.
+    A free function so the reindex executor can name collections of a generation no live client is
+    using yet (e.g. building the target generation before it becomes active).
+    """
+    return base_name if generation is None else f"{base_name}_{generation}"
 
 
 def create_database_client(config: BackendConfig) -> DatabaseClient:

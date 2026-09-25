@@ -72,14 +72,24 @@ class Repository[T: VectorStorable]:
 
         self.db_client = db_client
         self.model_class = model_class
-        self.collection = model_class.COLLECTION_NAME
 
-        logger.debug(f"Repository initialized for {model_class.__name__} -> {self.collection}")
+        logger.debug(f"Repository initialized for {model_class.__name__} -> {model_class.COLLECTION_NAME}")
+
+    @property
+    def collection(self) -> str:
+        """Physical collection name for the client's current generation, resolved on every call so a
+        ``swap_adapter`` is picked up without reconstructing the repository."""
+        return self.db_client.collection_name_for(self.model_class.COLLECTION_NAME)
 
     @property
     def adapter(self):
-        """Lazily resolve the underlying adapter when a vector operation runs."""
+        """Lazily resolve the read adapter when a vector read runs (never reindex-gated)."""
         return self.db_client.adapter
+
+    @property
+    def _write_adapter(self):
+        """Resolve the write adapter; raises while an embedding reindex is active."""
+        return self.db_client.write_adapter
 
     def _collection_has_property(self, property_name: str) -> bool:
         """Check whether the backing collection exposes a given metadata property."""
@@ -93,7 +103,7 @@ class Repository[T: VectorStorable]:
                 return True
 
             logger.info("Creating collection '%s'...", self.collection)
-            store = self.adapter.get_vector_store(self.collection)
+            store = self._write_adapter.get_vector_store(self.collection)
             if store:
                 logger.info("Collection '%s' created successfully", self.collection)
                 return True
@@ -152,7 +162,7 @@ class Repository[T: VectorStorable]:
             docs = instance.to_documents()
             logger.debug(f"Generated {len(docs)} documents for saving")
 
-            doc_ids = self.adapter.add_documents(documents=docs, collection_name=self.collection)
+            doc_ids = self._write_adapter.add_documents(documents=docs, collection_name=self.collection)
 
             if doc_ids and len(doc_ids) > 0:
                 logger.info(
@@ -215,12 +225,12 @@ class Repository[T: VectorStorable]:
                     return False
 
                 doc_ids = [doc.id for doc in docs]
-                self.adapter.delete(ids=doc_ids, collection_name=self.collection)
+                self._write_adapter.delete(ids=doc_ids, collection_name=self.collection)
                 logger.info(f"Deleted {len(doc_ids)} documents for server {doc_id}")
                 return True
             else:
                 # Delete single document by Weaviate UUID
-                self.adapter.delete(ids=[doc_id], collection_name=self.collection)
+                self._write_adapter.delete(ids=[doc_id], collection_name=self.collection)
                 logger.debug(f"Deleted single document: {doc_id}")
                 return True
 
@@ -251,7 +261,7 @@ class Repository[T: VectorStorable]:
             for inst in instances:
                 docs.extend(inst.to_documents())
 
-            doc_ids = self.adapter.add_documents(documents=docs, collection_name=self.collection)
+            doc_ids = self._write_adapter.add_documents(documents=docs, collection_name=self.collection)
 
             successful = len(doc_ids) if doc_ids else 0
             total = len(instances)
@@ -282,7 +292,7 @@ class Repository[T: VectorStorable]:
         """
         try:
             if hasattr(self.adapter, "delete_by_filter"):
-                deleted = self.adapter.delete_by_filter(filters=filters, collection_name=self.collection)
+                deleted = self._write_adapter.delete_by_filter(filters=filters, collection_name=self.collection)
                 logger.info(f"Deleted {deleted} {self.model_class.__name__} instances by filter")
                 return deleted
             else:
@@ -326,7 +336,7 @@ class Repository[T: VectorStorable]:
 
                     doc_ids = [str(inst.id) for inst in instances]
 
-                    return self.adapter.batch_update_properties(
+                    return self._write_adapter.batch_update_properties(
                         doc_ids=doc_ids, properties=update_data, collection_name=self.collection
                     )
 
