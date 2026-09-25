@@ -262,20 +262,42 @@ pod restart.
 **Endpoint**: `PUT /api/v1/model-gateway/selection/embedding-model`
 **Scope**: `models-write`
 
-Sets `embeddingModelSourceId`. Takes effect on the **next registry pod restart**, not immediately
-— the vector `DatabaseClient` is built once at startup from the resolved embedding config (this
-matches today's env-var behavior, where changing the embedding provider also needs a restart).
+Selects an embedding model and re-embeds every existing document against it — no restart, using
+**collection generations**. The call first **synchronously smoke-tests** the target model (builds
+only its embedding client and runs one `embed_query`, opening no vector-store connection); only if
+that passes does it start a background reindex job.
+
+The job re-embeds every document into a **brand-new collection generation** (`<Base>_<jobId>`) and
+then switches the active `(embeddingModelSourceId, embeddingCollectionGeneration)` pair with a single
+compare-and-set. Every pod follows that pair and swaps its own embedding client + collections. This
+means:
+
+- **Search is never blocked.** Each pod keeps serving its current generation consistently; there is
+  no maintenance window for reads.
+- **Writes to servers/agents return `503`** during the sweep and a short grace period after the
+  switch (so a write can't land in a generation about to be superseded), recovering automatically.
+- The switch is atomic and all-or-nothing: on any failure nothing is committed, the live collections
+  and selection are untouched, and the abandoned generation is reclaimed by a background GC.
+- The **previous** generation's collections are dropped later by that GC (not inside the job), so a
+  pod that is briefly behind never reads a dropped collection.
+
+`embeddingModelSourceId` (and the generation) change **only when the reindex completes** — so
+`GET /model-gateway/selection` keeps showing the previous model until the job finishes.
 
 **Request Body**: `{ "modelSourceId": "<id>" }`
 
-**Response**: `200 OK` → the updated selection (same shape as [Get Gateway Selection](#6-get-gateway-selection)).
+**Response**: `202 Accepted` → same shape as [Get Gateway Selection](#6-get-gateway-selection). The
+body echoes the **current** selection (unchanged; it switches only on completion), so it is `null`
+on a deployment that has never selected an embedding model. No job id or progress is exposed.
 ```json
-{ "defaultWorkflowModelSourceId": null, "embeddingModelSourceId": "000000000000000000000002" }
+{ "defaultWorkflowModelSourceId": null, "embeddingModelSourceId": null }
 ```
 
 **Errors**:
 - `404` — `modelSourceId` does not resolve (invalid id, not found, or soft-deleted).
-- `409` — the target ModelSource has `mode != embedding`.
+- `409` — the target ModelSource has `mode != embedding`, **or** a reindex is already running.
+- `502` — the target model failed its pre-flight smoke test (bad credentials, wrong endpoint,
+  network failure). Neither the selection nor a reindex job is created.
 
 **Startup resolution behavior** (AS-1853):
 - No embedding ModelSource selected → the process uses the legacy env-var `VectorConfig` path

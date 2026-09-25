@@ -36,28 +36,23 @@ class ModelGatewaySelectionService:
         *,
         updated_by: str | None,
     ) -> ModelGatewaySelection:
-        object_id = await self._require_model_source(model_source_id, ModelSourceMode.CHAT)
+        source = await self._require_model_source(model_source_id, ModelSourceMode.CHAT)
         return await set_model_gateway_selection(
             "defaultWorkflowModelSourceId",
-            object_id,
+            source.id,
             updated_by=updated_by,
         )
 
-    async def set_embedding_model(
-        self,
-        model_source_id: str,
-        *,
-        updated_by: str | None,
-    ) -> ModelGatewaySelection:
-        object_id = await self._require_model_source(model_source_id, ModelSourceMode.EMBEDDING)
-        return await set_model_gateway_selection(
-            "embeddingModelSourceId",
-            object_id,
-            updated_by=updated_by,
-        )
+    async def resolve_embedding_model_source(self, model_source_id: str) -> ModelSource:
+        """Validate the id points at a live EMBEDDING ModelSource and return it.
+
+        Lets the reindex trigger smoke-test the model before persisting the selection, reusing the
+        same not-found/mode-mismatch guards ``set_default_workflow_model`` applies.
+        """
+        return await self._require_model_source(model_source_id, ModelSourceMode.EMBEDDING)
 
     @staticmethod
-    async def _require_model_source(model_source_id: str, expected_mode: ModelSourceMode) -> PydanticObjectId:
+    async def _require_model_source(model_source_id: str, expected_mode: ModelSourceMode) -> ModelSource:
         try:
             object_id = PydanticObjectId(model_source_id)
         except (InvalidId, TypeError, ValueError) as exc:
@@ -69,4 +64,4 @@ class ModelGatewaySelectionService:
             raise ModelSourceModeMismatchError(
                 f"Model source '{model_source_id}' has mode '{source.mode}', expected '{expected_mode}'"
             )
-        return object_id
+        return source

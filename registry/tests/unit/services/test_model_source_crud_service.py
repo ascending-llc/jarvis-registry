@@ -70,6 +70,8 @@ def selection_service() -> MagicMock:
 @pytest.fixture
 def service(selection_service: MagicMock, monkeypatch: pytest.MonkeyPatch) -> ModelSourceCrudService:
     monkeypatch.setattr(crud_module.WorkflowDefinition, "find", lambda *_a, **_kw: _FakeFinder([]))
+    # is_in_use consults the active reindex job; default to none unless a test overrides.
+    monkeypatch.setattr(crud_module, "get_active_embedding_reindex_job", AsyncMock(return_value=None))
     return ModelSourceCrudService(model_gateway_selection_service=selection_service)
 
 
@@ -288,6 +290,19 @@ async def test_is_in_use_false_when_unreferenced(service, selection_service) -> 
         defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
     )
     assert await service.is_in_use(VALID_ID) is False
+
+
+async def test_is_in_use_true_for_active_reindex_target(service, selection_service, monkeypatch) -> None:
+    # A pending reindex's target can't be deleted mid-sweep, even before it commits.
+    selection_service.get_selection_or_none.return_value = SimpleNamespace(
+        defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
+    )
+    monkeypatch.setattr(
+        crud_module,
+        "get_active_embedding_reindex_job",
+        AsyncMock(return_value=SimpleNamespace(targetEmbeddingModelSourceId=PydanticObjectId(VALID_ID))),
+    )
+    assert await service.is_in_use(VALID_ID) is True
 
 
 async def test_is_in_use_true_when_workflow_node_references_source(service, selection_service, monkeypatch) -> None:
