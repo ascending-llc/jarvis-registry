@@ -50,7 +50,10 @@ class EmbeddingMaintenanceWatcher:
         self._db_client = db_client
         self._settings = settings
         self._job_active = False
-        self._stale = False
+        # Fail safe: a wired pod blocks writes until its first poll confirms it is on the active
+        # generation, so a pod that starts mid-reindex cannot accept writes in that startup window.
+        # An unwired watcher (no db_client, e.g. a unit test) only tracks job-active, never stale.
+        self._stale = db_client is not None
         self._retired_adapter = None
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -159,6 +162,10 @@ async def gc_stale_embedding_generations(db_client: DatabaseClient) -> None:
             return
         selection = await get_model_gateway_selection(create_if_missing=False)
         active_generation = selection.embeddingCollectionGeneration if selection else None
+        # Only a pod that has itself swapped to the active generation may GC. A stale pod (its watcher
+        # never built the new adapter) still reads the previous generation, and must not drop it.
+        if db_client.collection_generation != active_generation:
+            return
         adapter = db_client.adapter  # ungated read adapter; drop_collection lives on the same object
         if not hasattr(adapter, "list_collections") or not hasattr(adapter, "drop_collection"):
             return

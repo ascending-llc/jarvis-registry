@@ -36,14 +36,17 @@ _DEFAULT_GRACE_PERIOD_SECONDS = 60.0
 
 
 def _drop_collection(client: DatabaseClient, name: str) -> None:
-    """Drop a Weaviate collection by name via the (ungated) job-local client; tolerate 'not found'."""
+    """Drop a generation collection if it exists, so the sweep starts clean.
+
+    A real drop failure must propagate (not be swallowed): otherwise a resumed job would append to a
+    partially-populated collection and commit a dirty generation. A missing collection is a no-op.
+    """
     adapter = client.write_adapter  # job-local client has no reindex gate wired
     if not hasattr(adapter, "drop_collection"):
         return
-    try:
-        adapter.drop_collection(name)
-    except Exception:  # noqa: BLE001 - a resumed job may have already dropped it
-        logger.warning("Could not drop collection '%s' (may not exist)", name)
+    if hasattr(adapter, "collection_exists") and not adapter.collection_exists(name):
+        return
+    adapter.drop_collection(name)
 
 
 async def _reindex_server(repo: MCPServerRepository, server: ExtendedMCPServer) -> None:

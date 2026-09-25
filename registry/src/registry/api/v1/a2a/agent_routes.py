@@ -717,6 +717,8 @@ async def sync_wellknown(
             changes=result["changes"],
         )
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except A2AAgentCardNotFoundException as e:
         error_msg = str(e)
         raise HTTPException(

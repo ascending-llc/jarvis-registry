@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -133,7 +134,8 @@ async def test_maybe_gc_runs_only_after_the_interval(monkeypatch) -> None:
     db_client = SimpleNamespace()
     watcher = EmbeddingMaintenanceWatcher(db_client=db_client, settings=SimpleNamespace())
 
-    watcher._last_gc = 0.0  # far in the past -> due now
+    # Anchor relative to now (not 0.0): on a freshly-booted host time.monotonic() can be < interval.
+    watcher._last_gc = time.monotonic() - 1000.0  # older than the interval -> due now
     await watcher._maybe_gc()
     assert calls == [db_client]
 
@@ -162,11 +164,33 @@ async def test_gc_drops_only_stale_generation_collections(monkeypatch) -> None:
         ],
         drop_collection=lambda name: dropped.append(name),
     )
-    db_client = SimpleNamespace(adapter=adapter)
+    # This pod is on the active generation (genB), so it is allowed to GC.
+    db_client = SimpleNamespace(adapter=adapter, collection_generation="genB")
 
     await gc_stale_embedding_generations(db_client)
 
     assert set(dropped) == {"MCP_Servers_genA", "A2a_agents_genA"}
+
+
+async def test_gc_skips_on_a_stale_pod(monkeypatch) -> None:
+    # This pod never swapped to the active generation (still on genA); it must not drop the
+    # collection it is reading, even with no active job.
+    monkeypatch.setattr(watcher_mod, "get_active_embedding_reindex_job", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        watcher_mod,
+        "get_model_gateway_selection",
+        AsyncMock(return_value=SimpleNamespace(embeddingCollectionGeneration="genB")),
+    )
+    dropped: list[str] = []
+    adapter = SimpleNamespace(
+        list_collections=lambda: ["MCP_Servers_genA", "MCP_Servers_genB"],
+        drop_collection=lambda name: dropped.append(name),
+    )
+    db_client = SimpleNamespace(adapter=adapter, collection_generation="genA")  # behind
+
+    await gc_stale_embedding_generations(db_client)
+
+    assert dropped == []
 
 
 async def test_gc_skips_entirely_while_a_reindex_is_active(monkeypatch) -> None:

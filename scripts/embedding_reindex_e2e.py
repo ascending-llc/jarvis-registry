@@ -63,7 +63,7 @@ import httpx
 from beanie import PydanticObjectId
 from dotenv import load_dotenv
 
-REPO = Path("/Users/dyl/ascending/code/jarvis-registry")
+REPO = Path(__file__).resolve().parents[1]
 load_dotenv(REPO / ".env")
 sys.path.insert(0, str(REPO))
 

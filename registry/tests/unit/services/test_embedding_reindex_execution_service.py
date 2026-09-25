@@ -250,3 +250,33 @@ async def test_job_local_client_closed_when_enumeration_fails(monkeypatch):
 
     w.job_local_client.close.assert_called_once()
     w.commit.assert_not_awaited()
+
+
+def test_drop_collection_skips_when_missing():
+    dropped = []
+    adapter = SimpleNamespace(
+        collection_exists=lambda name: False,
+        drop_collection=lambda name: dropped.append(name),
+    )
+    exec_module._drop_collection(SimpleNamespace(write_adapter=adapter), "MCP_Servers_gen")
+    assert dropped == []  # nothing to drop -> no-op
+
+
+def test_drop_collection_drops_when_present():
+    dropped = []
+    adapter = SimpleNamespace(
+        collection_exists=lambda name: True,
+        drop_collection=lambda name: dropped.append(name),
+    )
+    exec_module._drop_collection(SimpleNamespace(write_adapter=adapter), "MCP_Servers_gen")
+    assert dropped == ["MCP_Servers_gen"]
+
+
+def test_drop_collection_propagates_real_failure():
+    # A resumed job must not proceed to sweep on an uncleaned collection: a real drop error bubbles up.
+    def _boom(name):
+        raise RuntimeError("weaviate refused")
+
+    adapter = SimpleNamespace(collection_exists=lambda name: True, drop_collection=_boom)
+    with pytest.raises(RuntimeError, match="weaviate refused"):
+        exec_module._drop_collection(SimpleNamespace(write_adapter=adapter), "MCP_Servers_gen")

@@ -872,10 +872,8 @@ class A2AAgentService:
             A2AAgentCardUpstreamException: If upstream returns non-404 errors
             A2AAgentCardParseException: If agent card cannot be parsed/validated
         """
-        # Guard before refetch/save: refresh rewrites the agent + its vectors, so block it (503)
-        # during a reindex to keep the sweep's source of truth stable.
-        raise_if_reindex_active(self._embedding_maintenance_watcher)
         # Reuse the sync_wellknown implementation - it now returns the updated agent
+        # (the reindex guard lives in sync_wellknown, which the direct /wellknown route also uses).
         result = await self.sync_wellknown(agent_id, session=session)
 
         # Return the updated agent document from sync result (avoids redundant DB query)
@@ -898,6 +896,9 @@ class A2AAgentService:
         Raises:
             ValueError: If agent not found, well-known not enabled, or sync fails
         """
+        # Guard before refetch/save: a well-known sync rewrites the agent + its vectors. This is the
+        # shared chokepoint for both refresh_agent_capabilities and the direct /wellknown route.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         agent: A2AAgent | None = None
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)

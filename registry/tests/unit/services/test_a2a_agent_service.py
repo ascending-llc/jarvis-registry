@@ -871,3 +871,11 @@ class TestA2AReindexGate:
 
         with pytest.raises(EmbeddingReindexInProgressException):
             await service.refresh_agent_capabilities(agent_id="agent-gated")
+
+    async def test_sync_wellknown_raises_when_reindex_active(self):
+        # The direct POST /agents/{id}/wellknown route calls this; the guard lives here so both it
+        # and refresh_agent_capabilities are covered.
+        service = self._service(reindex_active=True)
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.sync_wellknown(agent_id="agent-gated")
