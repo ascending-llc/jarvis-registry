@@ -60,3 +60,44 @@ async def test_set_selection_updates_only_requested_slot(monkeypatch: pytest.Mon
     update = collection.find_one_and_update.await_args.args[1]
     assert update["$set"]["defaultWorkflowModelSourceId"] == source_id
     assert "embeddingModelSourceId" not in update["$set"]
+
+
+@pytest.mark.asyncio
+async def test_commit_embedding_generation_cas_matches_expected_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+    source_id = PydanticObjectId()
+    document = {
+        "_id": repository.MODEL_GATEWAY_SELECTION_ID,
+        "embeddingModelSourceId": source_id,
+        "embeddingCollectionGeneration": "genNEW",
+        "updatedBy": "admin",
+        "updatedAt": datetime.now().astimezone(),
+    }
+    collection = AsyncMock()
+    collection.find_one_and_update.return_value = document
+    monkeypatch.setattr(repository.ModelGatewaySelection, "get_pymongo_collection", lambda *_args: collection)
+
+    result = await repository.commit_embedding_generation(
+        expected_generation="genOLD", model_source_id=source_id, generation="genNEW", updated_by="admin"
+    )
+
+    assert result is not None and result.embeddingCollectionGeneration == "genNEW"
+    # Compare-and-set: the filter pins the expected current generation; upsert must be off.
+    args, kwargs = collection.find_one_and_update.await_args
+    assert args[0] == {"_id": repository.MODEL_GATEWAY_SELECTION_ID, "embeddingCollectionGeneration": "genOLD"}
+    assert args[1]["$set"]["embeddingModelSourceId"] == source_id
+    assert args[1]["$set"]["embeddingCollectionGeneration"] == "genNEW"
+    assert kwargs["upsert"] is False
+
+
+@pytest.mark.asyncio
+async def test_commit_embedding_generation_returns_none_on_lost_race(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Another reindex already moved the generation, so the CAS filter no longer matches → no document.
+    collection = AsyncMock()
+    collection.find_one_and_update.return_value = None
+    monkeypatch.setattr(repository.ModelGatewaySelection, "get_pymongo_collection", lambda *_args: collection)
+
+    result = await repository.commit_embedding_generation(
+        expected_generation="genOLD", model_source_id=PydanticObjectId(), generation="genNEW", updated_by=None
+    )
+
+    assert result is None

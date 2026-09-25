@@ -16,10 +16,14 @@ class EmbeddingReindexJob(Document):
     stuck in maintenance mode forever.
     """
 
-    # The ModelSource the sweep re-embeds every document against; the executor
-    # resolves it to build the job-local vector client and, on success, the new
-    # live adapter.
+    # Sweep target; the new generation's collections are named ``<Base>_<str(job.id)>``.
     targetEmbeddingModelSourceId: PydanticObjectId
+    # The (model, generation) being replaced, captured at trigger. The commit is a compare-and-set on
+    # previousCollectionGeneration; the executor uses these to resume (committed / superseded / sweep).
+    previousEmbeddingModelSourceId: PydanticObjectId | None = None
+    previousCollectionGeneration: str | None = None
+    requestedBy: str | None = None  # audit for the deferred commit
+    switchedAt: datetime | None = None  # set on commit; grace is measured from here
     status: EmbeddingReindexJobStatus = EmbeddingReindexJobStatus.RUNNING
     leaseOwner: str | None = None
     leaseExpiresAt: datetime | None = None
