@@ -97,9 +97,10 @@ class EmbeddingReindexJobRunner:
                 {execution_task, heartbeat_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if heartbeat_task in done:
-                await heartbeat_task
-            await execution_task
+            # Re-raise the first completed task's exception: the heartbeat only ever completes by
+            # losing the lease, and execution completing first surfaces its own result/failure. The
+            # finally block then cancels whichever task is still running.
+            next(iter(done)).result()
         finally:
             for task in (execution_task, heartbeat_task):
                 if task.done():
