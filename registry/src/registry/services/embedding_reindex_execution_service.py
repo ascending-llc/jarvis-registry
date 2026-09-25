@@ -30,6 +30,8 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 logger = logging.getLogger(__name__)
 
 _REINDEX_CONCURRENCY = 5
+# Documents pulled from Mongo (and re-embedded) per batch, so peak memory is O(batch) not O(corpus).
+_REINDEX_BATCH_SIZE = 200
 # Keep writes blocked (job stays RUNNING) after the commit long enough for every pod's watcher to
 # swap to the new generation. Configurable via settings; falls back to 60s.
 _DEFAULT_GRACE_PERIOD_SECONDS = 60.0
@@ -61,6 +63,31 @@ async def _reindex_agent(repo: A2AAgentRepository, agent: A2AAgent) -> None:
     result = await repo.sync_to_vector_db(agent, is_delete=False)
     if not result or result.get("failed"):
         raise RuntimeError(result.get("error") if result else "vector sync returned no result")
+
+
+async def _sweep(cursor, handler) -> tuple[int, int]:
+    """Re-embed a whole collection in bounded batches (never materialize it all), returning
+    ``(failed, total)``. Streaming the Mongo cursor keeps peak memory O(batch), which matters for the
+    one operation whose job is to process the entire corpus."""
+    failed = total = 0
+    batch: list = []
+    async for doc in cursor:
+        batch.append(doc)
+        if len(batch) >= _REINDEX_BATCH_SIZE:
+            failed, total = await _run_batch(batch, handler, failed, total)
+            batch = []
+    if batch:
+        failed, total = await _run_batch(batch, handler, failed, total)
+    return failed, total
+
+
+async def _run_batch(batch: list, handler, failed: int, total: int) -> tuple[int, int]:
+    for result in await run_bounded(batch, handler, limit=_REINDEX_CONCURRENCY):
+        total += 1
+        if not result.ok:
+            failed += 1
+            logger.error("Reindex failed for %s", getattr(result.item, "id", result.item), exc_info=result.exc_info)
+    return failed, total
 
 
 class EmbeddingReindexExecutionService:
@@ -117,24 +144,14 @@ class EmbeddingReindexExecutionService:
             await mcp_repo.ensure_collection()
             await a2a_repo.ensure_collection()
 
-            # ponytail: whole corpus in memory; batch with a cursor if the registry ever holds
-            # enough servers/agents for this to matter.
-            servers = await ExtendedMCPServer.find_all().to_list()
-            agents = await A2AAgent.find_all().to_list()
-            server_results = await run_bounded(
-                servers, lambda s: _reindex_server(mcp_repo, s), limit=_REINDEX_CONCURRENCY
-            )
-            agent_results = await run_bounded(agents, lambda a: _reindex_agent(a2a_repo, a), limit=_REINDEX_CONCURRENCY)
-            failures = [r for r in (*server_results, *agent_results) if not r.ok]
-            if failures:
-                for failure in failures:
-                    logger.error(
-                        "Reindex failed for %s", getattr(failure.item, "id", failure.item), exc_info=failure.exc_info
-                    )
+            # Stream both collections in bounded batches so peak memory is O(batch), not O(corpus).
+            mcp_failed, mcp_total = await _sweep(ExtendedMCPServer.find_all(), lambda s: _reindex_server(mcp_repo, s))
+            a2a_failed, a2a_total = await _sweep(A2AAgent.find_all(), lambda a: _reindex_agent(a2a_repo, a))
+            failed = mcp_failed + a2a_failed
+            if failed:
                 await self._fail_job(
                     job,
-                    f"{len(failures)}/{len(servers) + len(agents)} documents failed to re-embed; "
-                    "embedding model NOT switched",
+                    f"{failed}/{mcp_total + a2a_total} documents failed to re-embed; embedding model NOT switched",
                 )
                 return
 

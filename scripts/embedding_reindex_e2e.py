@@ -376,8 +376,10 @@ async def _multi_switch_part(
 
 async def _restore_and_cleanup(baseline_embedding, baseline_generation, ids: list[str]) -> None:
     db = MongoDB.get_database()
-    await db.get_collection("model_gateway_selection").update_many(
-        {},
+    # Restore only the singleton the app uses (matching the fixed-id reads above); never touch a
+    # stray/legacy selection document.
+    await db.get_collection("model_gateway_selection").update_one(
+        {"_id": MODEL_GATEWAY_SELECTION_ID},
         {"$set": {"embeddingModelSourceId": baseline_embedding, "embeddingCollectionGeneration": baseline_generation}},
     )
     for sid in ids:

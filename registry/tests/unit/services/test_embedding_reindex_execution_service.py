@@ -12,6 +12,23 @@ from registry_pkgs.models.enums import EmbeddingReindexJobStatus
 pytestmark = pytest.mark.asyncio
 
 
+class _AsyncIter:
+    """Async-iterable stand-in for a Beanie find_all() cursor; ``raises`` fails during iteration."""
+
+    def __init__(self, items, raises: Exception | None = None):
+        self._items = items
+        self._raises = raises
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        if self._raises is not None:
+            raise self._raises
+        for item in self._items:
+            yield item
+
+
 def _job(previous_generation=None):
     return SimpleNamespace(
         id=PydanticObjectId(),
@@ -51,12 +68,8 @@ def _wire(monkeypatch, *, servers, agents, mcp_sync, a2a_sync, current_generatio
     monkeypatch.setattr(exec_module, "MCPServerRepository", lambda client: mcp_repo)
     monkeypatch.setattr(exec_module, "A2AAgentRepository", lambda client: a2a_repo)
 
-    monkeypatch.setattr(
-        exec_module.ExtendedMCPServer, "find_all", lambda: SimpleNamespace(to_list=AsyncMock(return_value=servers))
-    )
-    monkeypatch.setattr(
-        exec_module.A2AAgent, "find_all", lambda: SimpleNamespace(to_list=AsyncMock(return_value=agents))
-    )
+    monkeypatch.setattr(exec_module.ExtendedMCPServer, "find_all", lambda: _AsyncIter(servers))
+    monkeypatch.setattr(exec_module.A2AAgent, "find_all", lambda: _AsyncIter(agents))
     monkeypatch.setattr(exec_module, "_drop_collection", MagicMock())
 
     commit = AsyncMock(return_value=(selection if commit_result == "__ok__" else commit_result))
@@ -111,6 +124,22 @@ async def test_happy_path_sweeps_new_generation_commits_and_completes(monkeypatc
     assert job.switchedAt is not None
     assert job.status == EmbeddingReindexJobStatus.COMPLETED
     assert job.leaseOwner is None
+
+
+async def test_sweep_processes_the_whole_corpus_across_batches(monkeypatch):
+    # A small batch size forces several batches; every document must still be re-embedded exactly once.
+    monkeypatch.setattr(exec_module, "_REINDEX_BATCH_SIZE", 2)
+    servers = [SimpleNamespace(id=f"s{i}") for i in range(5)]
+    mcp_sync = AsyncMock(return_value={"indexed_tools": 1, "failed_tools": 0, "error": None})
+    a2a_sync = AsyncMock(return_value={"indexed": 1, "failed": 0, "error": None})
+    w = _wire(monkeypatch, servers=servers, agents=[], mcp_sync=mcp_sync, a2a_sync=a2a_sync, current_generation=None)
+    job = _job(previous_generation=None)
+
+    await _service(w.db_client).run_claimed_job(job)
+
+    assert mcp_sync.await_count == 5  # 2 + 2 + 1 across three batches
+    w.commit.assert_awaited_once()
+    assert job.status == EmbeddingReindexJobStatus.COMPLETED
 
 
 async def test_partial_failure_drops_nothing_committed_and_fails(monkeypatch):
@@ -239,9 +268,7 @@ async def test_missing_target_model_source_fails(monkeypatch):
 async def test_job_local_client_closed_when_enumeration_fails(monkeypatch):
     w = _wire(monkeypatch, servers=[], agents=[], mcp_sync=AsyncMock(), a2a_sync=AsyncMock(), current_generation=None)
     monkeypatch.setattr(
-        exec_module.ExtendedMCPServer,
-        "find_all",
-        lambda: SimpleNamespace(to_list=AsyncMock(side_effect=RuntimeError("mongo blip"))),
+        exec_module.ExtendedMCPServer, "find_all", lambda: _AsyncIter([], raises=RuntimeError("mongo blip"))
     )
     job = _job(previous_generation=None)
 
