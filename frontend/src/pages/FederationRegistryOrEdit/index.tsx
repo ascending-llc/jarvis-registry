@@ -5,10 +5,11 @@ import { FiServer } from 'react-icons/fi';
 import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
+import GithubAuthorizationDialog from '@/components/FederationCard/GithubAuthorizationDialog';
 import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
-import { useExternalProviderSync } from '@/hooks/useExternalProviderSync';
+import { GITHUB_SYNC_NEEDS_AUTHORIZATION_MESSAGE, useExternalProviderSync } from '@/hooks/useExternalProviderSync';
 import SERVICES from '@/services';
 import {
   confirmGithubAuthorizationRedirect,
@@ -87,6 +88,7 @@ const FederationRegistryOrEdit: React.FC = () => {
   const [federation, setFederation] = useState<Federation | null>(null);
   const [skillSyncSource, setSkillSyncSource] = useState<SkillSyncSourceDetail | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  const [isGithubAuthorizationOpen, setIsGithubAuthorizationOpen] = useState(false);
   const currentProviderIdRef = useRef(id);
   const detailRequestGenerationRef = useRef(0);
   const oauthCallbackHandledRef = useRef(false);
@@ -170,6 +172,20 @@ const FederationRegistryOrEdit: React.FC = () => {
     void getDetail();
   }, [getDetail]);
 
+  const openGithubAuthorization = useCallback(() => {
+    setIsGithubAuthorizationOpen(true);
+  }, []);
+
+  const cancelGithubAuthorization = useCallback(() => {
+    setIsGithubAuthorizationOpen(false);
+    showToast(GITHUB_SYNC_NEEDS_AUTHORIZATION_MESSAGE, 'error');
+  }, [showToast]);
+
+  const confirmGithubAuthorization = useCallback(() => {
+    setIsGithubAuthorizationOpen(false);
+    if (id) redirectToGithubAuthorization(id, 'sync');
+  }, [id]);
+
   const sourceActiveJob = skillSyncSource?.recentJobs.find(job => job.status === 'pending' || job.status === 'syncing');
   const activeJobId = isGithubSource
     ? sourceActiveJob?.id || skillSyncSource?.lastSync?.jobId
@@ -185,6 +201,7 @@ const FederationRegistryOrEdit: React.FC = () => {
     syncMessage: activeProvider?.syncMessage,
     serverJobId: activeJobId,
     onSettled: refreshDetail,
+    onGithubAuthorizationRequired: openGithubAuthorization,
   });
 
   useEffect(() => {
@@ -194,6 +211,7 @@ const FederationRegistryOrEdit: React.FC = () => {
     setSkillSyncSource(null);
     setErrors({});
     setTestConnectionResult(null);
+    setIsGithubAuthorizationOpen(false);
     oauthCallbackHandledRef.current = false;
 
     if (id) {
@@ -700,6 +718,11 @@ const FederationRegistryOrEdit: React.FC = () => {
           </div>
         </div>
       </div>
+      <GithubAuthorizationDialog
+        isOpen={isGithubAuthorizationOpen}
+        onCancel={cancelGithubAuthorization}
+        onConfirm={confirmGithubAuthorization}
+      />
     </>
   );
 };

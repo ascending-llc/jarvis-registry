@@ -1,16 +1,20 @@
 import { ArrowPathIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { CgBrowser } from 'react-icons/cg';
 import { FaAws, FaGithub, FaMicrosoft } from 'react-icons/fa';
 import { FiClock, FiTag } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
 
 import IconButton from '@/components/IconButton';
+import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
-import { useExternalProviderSync } from '@/hooks/useExternalProviderSync';
+import { GITHUB_SYNC_NEEDS_AUTHORIZATION_MESSAGE, useExternalProviderSync } from '@/hooks/useExternalProviderSync';
+import { redirectToGithubAuthorization } from '@/services/externalProvider/githubAuthorization';
 import type { ExternalProviderEntity } from '@/services/externalProvider/type';
 import UTILS from '@/utils';
+
+import GithubAuthorizationDialog from './GithubAuthorizationDialog';
 
 interface FederationCardProps {
   externalProvider: ExternalProviderEntity;
@@ -18,7 +22,9 @@ interface FederationCardProps {
 
 const FederationCard: React.FC<FederationCardProps> = ({ externalProvider }) => {
   const navigate = useNavigate();
+  const { showToast } = useGlobal();
   const { refreshFederationData } = useServer();
+  const [isGithubAuthorizationOpen, setIsGithubAuthorizationOpen] = useState(false);
 
   const isGithub = externalProvider.backendKind === 'skill-sync-source';
   const provider = externalProvider.data;
@@ -31,6 +37,10 @@ const FederationCard: React.FC<FederationCardProps> = ({ externalProvider }) => 
     void refreshFederationData();
   }, [refreshFederationData]);
 
+  const openGithubAuthorization = useCallback(() => {
+    setIsGithubAuthorizationOpen(true);
+  }, []);
+
   const { syncView, runSyncAction } = useExternalProviderSync({
     providerId: provider.id,
     isGithub,
@@ -39,7 +49,18 @@ const FederationCard: React.FC<FederationCardProps> = ({ externalProvider }) => 
     syncMessage: provider.syncMessage,
     serverJobId: lastSync?.jobId,
     onSettled: refreshProviders,
+    onGithubAuthorizationRequired: openGithubAuthorization,
   });
+
+  const cancelGithubAuthorization = useCallback(() => {
+    setIsGithubAuthorizationOpen(false);
+    showToast(GITHUB_SYNC_NEEDS_AUTHORIZATION_MESSAGE, 'error');
+  }, [showToast]);
+
+  const confirmGithubAuthorization = useCallback(() => {
+    setIsGithubAuthorizationOpen(false);
+    redirectToGithubAuthorization(provider.id, 'sync');
+  }, [provider.id]);
 
   const handleSyncClick = useCallback(
     (event: React.MouseEvent) => {
@@ -231,6 +252,11 @@ const FederationCard: React.FC<FederationCardProps> = ({ externalProvider }) => 
           </div>
         </div>
       )}
+      <GithubAuthorizationDialog
+        isOpen={isGithubAuthorizationOpen}
+        onCancel={cancelGithubAuthorization}
+        onConfirm={confirmGithubAuthorization}
+      />
     </div>
   );
 };

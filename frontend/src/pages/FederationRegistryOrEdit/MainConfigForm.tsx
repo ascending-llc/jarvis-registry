@@ -353,7 +353,8 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
               </button>
             )}
             <p className='mt-1 text-xs text-[var(--jarvis-muted)]'>
-              Paths are repository-relative containers. Duplicate values are removed automatically.
+              Paths are repository-relative containers e.g. <code>.</code> represent root folder. Duplicate values are
+              removed automatically
             </p>
             {errors.paths && <p className='mt-1 text-sm text-[var(--jarvis-danger-text)]'>{errors.paths}</p>}
           </div>
