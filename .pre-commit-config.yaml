@@ -48,7 +48,7 @@ repos:
         always_run: true
 
   # If uv.lock changes after a git pull, run `uv sync`.
-  - repo: https://github.com/kxue43/shell-cmd-on-change
+  - repo: https://github.com/satoseino/shell-cmd-on-change
     rev: "2.1.0"
     hooks:
       - id: shell-cmd-on-change
@@ -56,6 +56,19 @@ repos:
         args:
           - "-Puv.lock"
           - "uv sync"
+        stages: [post-merge]
+        always_run: true
+        verbose: true
+
+  # If frontend/package-lock.json changes after a git pull, run `npm --prefix ./frontend/ ci`
+  - repo: https://github.com/satoseino/shell-cmd-on-change
+    rev: "2.1.0"
+    hooks:
+      - id: shell-cmd-on-change
+        name: npm-ci
+        args:
+          - "-Pfrontend/package-lock.json"
+          - "npm --prefix ./frontend/ ci"
         stages: [post-merge]
         always_run: true
         verbose: true
