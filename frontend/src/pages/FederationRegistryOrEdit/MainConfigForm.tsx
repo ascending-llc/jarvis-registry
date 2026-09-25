@@ -323,7 +323,7 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
                     onChange={event => updatePath(index, event.target.value)}
                     onBlur={() => updateField('paths', normalizePaths(formData.paths))}
                     disabled={isReadOnly}
-                    placeholder={index === 0 ? 'skills/' : 'prompts/mcp'}
+                    placeholder={index === 0 ? '.' : 'prompts/mcp'}
                     className='min-w-0 flex-1 rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-4 py-2 font-mono text-sm text-[var(--jarvis-text-strong)] shadow-sm focus:border-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)] disabled:cursor-not-allowed disabled:bg-[var(--jarvis-card-muted)] disabled:opacity-50'
                   />
                   {!isReadOnly && (
@@ -339,6 +339,10 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
                 </div>
               ))}
             </div>
+            <p className='mt-1 text-xs text-[var(--jarvis-muted)]'>
+              Paths are repository-relative containers e.g. <code>&quot;.&quot;</code> represent root folder. Duplicate
+              values are removed automatically
+            </p>
             {!isReadOnly && (
               <button
                 type='button'
@@ -352,9 +356,6 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
                 Add path
               </button>
             )}
-            <p className='mt-1 text-xs text-[var(--jarvis-muted)]'>
-              Paths are repository-relative containers. Duplicate values are removed automatically.
-            </p>
             {errors.paths && <p className='mt-1 text-sm text-[var(--jarvis-danger-text)]'>{errors.paths}</p>}
           </div>
 
