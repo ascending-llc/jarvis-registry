@@ -6,6 +6,7 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
 
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import FederationProviderType, FederationStateMachine, FederationStatus, RoleBits
@@ -23,7 +24,7 @@ from ....deps import (
     get_federation_sync_service,
 )
 from ....schemas.acl_schema import ResourcePermissions
-from ....schemas.errors import ErrorCode, create_error_detail
+from ....schemas.errors import ErrorCode, create_error_detail, reindex_in_progress_error
 from ....schemas.federation_api_schemas import (
     FederationCreateRequest,
     FederationDeleteResponse,
@@ -523,6 +524,8 @@ async def update_federation(
             logger.info(f"Updated federation {federation_id}: {federation},job: {job}")
         if federation.providerType == FederationProviderType.AZURE_AI_FOUNDRY:
             await a2a_client_registry.invalidate_azure_federation(federation.id)
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as exc:
         logger.error(f"Failed to update federation {federation_id}: {exc}")
         _raise_federation_value_error(exc)
@@ -685,6 +688,8 @@ async def delete_federation(
             triggered_by=user_context.get("user_id"),
         )
         return _to_delete_response(federation, job)
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as exc:
         _raise_federation_value_error(exc)
     except Exception as exc:

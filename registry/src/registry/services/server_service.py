@@ -776,6 +776,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found
         """
+        # Guard before the Mongo delete: the reindex sweep rebuilds from Mongo, so a delete mid-sweep
+        # could leave the deleted server in the new generation. Block it (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             obj_id = PydanticObjectId(server_id)
         except Exception:
@@ -871,6 +874,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found or user_id missing for OAuth server
         """
+        # Guard before the Mongo write: the vector sync would fail during a reindex while Mongo
+        # already changed, so block the toggle (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         server = await self.get_server_by_id(server_id, user_id)
 
         if not server:
@@ -944,6 +950,9 @@ class ServerServiceV1:
         Weaviate only for tools whose status actually flipped — batched by new state, at most two
         round-trips, not the server's entire tool set.
         """
+        # Guard before the Mongo write: the scheduled tool_enabled push would fail during a reindex
+        # while Mongo already changed, so block it (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         server = await self.get_server_by_id(server_id, user_id)
         if not server:
             raise ValueError("Server not found")
@@ -1189,6 +1198,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found
         """
+        # Guard before refetch/save: refresh rewrites the server + its vectors, so block it (503)
+        # during a reindex to keep the sweep's source of truth stable.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         server = await self.get_server_by_id(server_id, user_id)
 
         if not server:

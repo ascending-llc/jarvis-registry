@@ -449,6 +449,8 @@ async def delete_agent(
                     return None  # 204 No Content
                 raise ValueError(f"Failed to delete agent {agent_id}. Skipping ACL cleanup")
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 
@@ -507,6 +509,8 @@ async def toggle_agent(
 
         return convert_to_detail(agent, acl_permission=permissions)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 
@@ -623,6 +627,8 @@ async def refresh_agent_capabilities(
 
         return convert_to_detail(agent, acl_permission=permissions)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except A2AAgentCardNotFoundException as e:
         error_msg = str(e)
         raise HTTPException(

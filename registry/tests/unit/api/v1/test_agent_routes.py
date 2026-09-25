@@ -659,6 +659,27 @@ async def test_create_agent_returns_503_during_reindex(sample_user_context):
 
 
 @pytest.mark.asyncio
+async def test_delete_agent_returns_503_during_reindex(sample_user_context):
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=15)
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.delete_agent = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
+        _agent_route_mongo(mock_get_client)
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_agent(
+                agent_id=str(PydanticObjectId()),
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["error"] == "reindex_in_progress"
+
+
+@pytest.mark.asyncio
 async def test_update_agent_returns_503_during_reindex(sample_user_context):
 
     acl_service = MagicMock()

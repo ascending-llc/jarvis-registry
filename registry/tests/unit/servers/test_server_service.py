@@ -533,6 +533,38 @@ class TestReindexGate:
             await service.update_server(server_id="srv-gated", data=ServerUpdateRequest())
         service.get_server_by_id.assert_not_called()
 
+    async def test_delete_server_raises_before_lookup(self):
+        service = self._make_service(reindex_active=True)
+
+        with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+            with pytest.raises(EmbeddingReindexInProgressException):
+                await service.delete_server(server_id="srv-gated")
+            MockServer.get.assert_not_called()
+
+    async def test_toggle_server_raises_before_lookup(self):
+        service = self._make_service(reindex_active=True)
+        service.get_server_by_id = AsyncMock()
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.toggle_server_status(server_id="srv-gated", enabled=False)
+        service.get_server_by_id.assert_not_called()
+
+    async def test_refresh_server_raises_before_lookup(self):
+        service = self._make_service(reindex_active=True)
+        service.get_server_by_id = AsyncMock()
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.refresh_server_capabilities(server_id="srv-gated")
+        service.get_server_by_id.assert_not_called()
+
+    async def test_update_disabled_tools_raises_before_lookup(self):
+        service = self._make_service(reindex_active=True)
+        service.get_server_by_id = AsyncMock()
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.update_disabled_tools(server_id="srv-gated", disabled_tools=["t1"])
+        service.get_server_by_id.assert_not_called()
+
     async def test_inactive_gate_does_not_block(self):
 
         service = self._make_service(reindex_active=False)

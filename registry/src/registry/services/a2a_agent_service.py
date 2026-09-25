@@ -778,6 +778,9 @@ class A2AAgentService:
         Raises:
             ValueError: If agent not found
         """
+        # Guard before the Mongo delete: the reindex sweep rebuilds from Mongo, so a delete mid-sweep
+        # could leave the deleted agent in the new generation. Block it (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
@@ -815,6 +818,9 @@ class A2AAgentService:
         Raises:
             ValueError: If agent not found
         """
+        # Guard before the Mongo write: the scheduled vector sync would fail during a reindex while
+        # Mongo already changed, so block the toggle (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
@@ -866,6 +872,9 @@ class A2AAgentService:
             A2AAgentCardUpstreamException: If upstream returns non-404 errors
             A2AAgentCardParseException: If agent card cannot be parsed/validated
         """
+        # Guard before refetch/save: refresh rewrites the agent + its vectors, so block it (503)
+        # during a reindex to keep the sweep's source of truth stable.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         # Reuse the sync_wellknown implementation - it now returns the updated agent
         result = await self.sync_wellknown(agent_id, session=session)
 

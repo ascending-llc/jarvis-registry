@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
 from pydantic import Field
 
-from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException, InternalServerException
+from registry_pkgs.core.exceptions import InternalServerException
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
 
 from ...auth.dependencies import UserContextDict
@@ -44,11 +44,6 @@ async def _run_search(
         logger.info("✅ Found %d result(s) for query='%s'", len(entities), query)
         return entities
 
-    except EmbeddingReindexInProgressException:
-        raise InternalServerException(
-            "Search is temporarily unavailable while the registry updates its embedding model. "
-            "Please try again shortly."
-        )
     except Exception:
         logger.exception("Vector search failed (type_list=%s, query='%s')", type_list, query)
         raise InternalServerException("entity discovery failed")
