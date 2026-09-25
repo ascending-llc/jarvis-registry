@@ -16,6 +16,7 @@ from registry.services.federation_sync_service import (
     VectorSyncOutcome,
     run_federation_sync_background,
 )
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationProviderType,
@@ -28,6 +29,7 @@ from tests.unit.services.federation_sync_test_helpers import (
     _DEFAULT_USER_OBJECT_ID,
     _FakeQuery,
     _make_federation,
+    _make_federation_sync_service,
     _patch_mongo_session,
 )
 
@@ -1137,3 +1139,48 @@ async def test_bookkeeping_failure_aborts_whole_run(
         await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
     federation_sync_service._apply_sync_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestFederationReindexGate:
+    """run_sync/run_delete and their entry points must refuse to write while a reindex is active."""
+
+    def _federation(self):
+        return _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+
+    async def test_run_sync_raises_when_reindex_active(self):
+        service = _make_federation_sync_service(reindex_active=True)
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.run_sync(federation=self._federation(), job=MagicMock(), author_id=_DEFAULT_USER_OBJECT_ID)
+
+    async def test_run_delete_raises_before_marking_syncing(self):
+        service = _make_federation_sync_service(reindex_active=True)
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.run_delete(federation=self._federation(), job=MagicMock())
+        service.federation_job_service.mark_syncing.assert_not_called()
+
+    async def test_start_manual_sync_raises_before_creating_job(self):
+        service = _make_federation_sync_service(reindex_active=True)
+        service.create_manual_sync_job = AsyncMock()
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.start_manual_sync(federation=self._federation(), reason=None, triggered_by="user-1")
+        service.create_manual_sync_job.assert_not_called()
+
+    async def test_start_delete_raises_before_any_bookkeeping(self):
+        service = _make_federation_sync_service(reindex_active=True)
+        service.federation_job_service.get_active_job = AsyncMock()
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.start_delete(federation=self._federation(), triggered_by="user-1")
+        service.federation_job_service.get_active_job.assert_not_called()
+
+    async def test_inactive_gate_does_not_block_run_sync(self):
+        # Gate off -> proceeds past the guard (fails later on the mocked handler, not the gate).
+        service = _make_federation_sync_service(reindex_active=False)
+
+        with pytest.raises(Exception) as exc_info:
+            await service.run_sync(federation=self._federation(), job=MagicMock(), author_id=_DEFAULT_USER_OBJECT_ID)
+        assert not isinstance(exc_info.value, EmbeddingReindexInProgressException)

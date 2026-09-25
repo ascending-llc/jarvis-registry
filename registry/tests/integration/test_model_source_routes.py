@@ -11,8 +11,16 @@ from registry.api.v1.model_source import model_source_routes
 from registry.api.v1.model_source.model_source_routes import router
 from registry.auth.dependencies import get_current_user
 from registry.core.config import settings
-from registry.deps import get_model_gateway_selection_service, get_model_source_crud_service
+from registry.deps import (
+    get_embedding_reindex_job_service,
+    get_model_gateway_selection_service,
+    get_model_source_crud_service,
+)
 from registry.schemas.model_source_api_schemas import ModelSourceMetadataResponse
+from registry.services.embedding_reindex_job_service import (
+    EmbeddingModelSmokeTestError,
+    EmbeddingReindexAlreadyRunningError,
+)
 from registry.services.model_gateway_selection_service import (
     ModelSourceModeMismatchError,
     ModelSourceNotFoundError,
@@ -81,7 +89,9 @@ def ctx():
             embeddingModelSourceId=None,
         )
     )
-    selection.set_embedding_model = AsyncMock(
+
+    reindex = MagicMock()
+    reindex.trigger_reindex = AsyncMock(
         return_value=SimpleNamespace(
             defaultWorkflowModelSourceId=None,
             embeddingModelSourceId=source.id,
@@ -91,9 +101,10 @@ def ctx():
     app.dependency_overrides[get_current_user] = lambda: {"user_id": USER_ID}
     app.dependency_overrides[get_model_source_crud_service] = lambda: crud
     app.dependency_overrides[get_model_gateway_selection_service] = lambda: selection
+    app.dependency_overrides[get_embedding_reindex_job_service] = lambda: reindex
 
     with TestClient(app) as client:
-        yield SimpleNamespace(client=client, source=source, crud=crud, selection=selection)
+        yield SimpleNamespace(client=client, source=source, crud=crud, selection=selection, reindex=reindex)
 
 
 def test_create_returns_detail(ctx) -> None:
@@ -241,21 +252,21 @@ def test_set_default_workflow_model_maps_mode_mismatch_to_409(ctx) -> None:
     assert response.status_code == 409
 
 
-def test_set_embedding_model(ctx) -> None:
+def test_set_embedding_model_returns_202_and_triggers_reindex(ctx) -> None:
     response = ctx.client.put(
         "/model-gateway/selection/embedding-model",
         json={"modelSourceId": str(ctx.source.id)},
     )
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json()["embeddingModelSourceId"] == str(ctx.source.id)
-    ctx.selection.set_embedding_model.assert_awaited_once_with(
+    ctx.reindex.trigger_reindex.assert_awaited_once_with(
         str(ctx.source.id),
         updated_by=USER_ID,
     )
 
 
 def test_set_embedding_model_maps_missing_to_404(ctx) -> None:
-    ctx.selection.set_embedding_model.side_effect = ModelSourceNotFoundError("Model source 'missing' not found")
+    ctx.reindex.trigger_reindex.side_effect = ModelSourceNotFoundError("Model source 'missing' not found")
     response = ctx.client.put(
         "/model-gateway/selection/embedding-model",
         json={"modelSourceId": "missing"},
@@ -264,12 +275,31 @@ def test_set_embedding_model_maps_missing_to_404(ctx) -> None:
 
 
 def test_set_embedding_model_maps_mode_mismatch_to_409(ctx) -> None:
-    ctx.selection.set_embedding_model.side_effect = ModelSourceModeMismatchError("expected 'embedding'")
+    ctx.reindex.trigger_reindex.side_effect = ModelSourceModeMismatchError("expected 'embedding'")
     response = ctx.client.put(
         "/model-gateway/selection/embedding-model",
         json={"modelSourceId": str(ctx.source.id)},
     )
     assert response.status_code == 409
+
+
+def test_set_embedding_model_maps_already_running_to_409(ctx) -> None:
+    ctx.reindex.trigger_reindex.side_effect = EmbeddingReindexAlreadyRunningError("already running")
+    response = ctx.client.put(
+        "/model-gateway/selection/embedding-model",
+        json={"modelSourceId": str(ctx.source.id)},
+    )
+    assert response.status_code == 409
+
+
+def test_set_embedding_model_maps_smoke_test_failure_to_502(ctx) -> None:
+    ctx.reindex.trigger_reindex.side_effect = EmbeddingModelSmokeTestError("bad credentials")
+    response = ctx.client.put(
+        "/model-gateway/selection/embedding-model",
+        json={"modelSourceId": str(ctx.source.id)},
+    )
+    assert response.status_code == 502
+    assert "bad credentials" in response.json()["detail"]["message"]
 
 
 def test_scopes_config_grants_are_correct() -> None:

@@ -70,6 +70,8 @@ def selection_service() -> MagicMock:
 @pytest.fixture
 def service(selection_service: MagicMock, monkeypatch: pytest.MonkeyPatch) -> ModelSourceCrudService:
     monkeypatch.setattr(crud_module.WorkflowDefinition, "find", lambda *_a, **_kw: _FakeFinder([]))
+    # is_in_use consults the active reindex job; default to none unless a test overrides.
+    monkeypatch.setattr(crud_module, "get_active_embedding_reindex_job", AsyncMock(return_value=None))
     return ModelSourceCrudService(model_gateway_selection_service=selection_service)
 
 
@@ -254,6 +256,26 @@ async def test_update_azure_config_with_new_key_reencrypts(service) -> None:
     assert is_encrypted(enc)
 
 
+async def test_update_rejects_provider_config_change_during_reindex(service, monkeypatch) -> None:
+    src_id = PydanticObjectId()
+    monkeypatch.setattr(
+        crud_module,
+        "get_active_embedding_reindex_job",
+        AsyncMock(return_value=SimpleNamespace(targetEmbeddingModelSourceId=src_id)),
+    )
+    source = SimpleNamespace(
+        id=src_id,
+        providerConfig=AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn="m", baseModelId="m"),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+    new_config = AwsBedrockModelConfigInput(awsRegion="us-west-2", modelIdOrArn="m2", baseModelId="m2")
+
+    with pytest.raises(ValueError, match="being reindexed"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()  # nothing persisted
+
+
 async def test_update_rejects_mode_change_when_in_use(service, selection_service) -> None:
     sid = PydanticObjectId(VALID_ID)
     source = SimpleNamespace(id=sid, mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())
@@ -288,6 +310,19 @@ async def test_is_in_use_false_when_unreferenced(service, selection_service) -> 
         defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
     )
     assert await service.is_in_use(VALID_ID) is False
+
+
+async def test_is_in_use_true_for_active_reindex_target(service, selection_service, monkeypatch) -> None:
+    # A pending reindex's target can't be deleted mid-sweep, even before it commits.
+    selection_service.get_selection_or_none.return_value = SimpleNamespace(
+        defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
+    )
+    monkeypatch.setattr(
+        crud_module,
+        "get_active_embedding_reindex_job",
+        AsyncMock(return_value=SimpleNamespace(targetEmbeddingModelSourceId=PydanticObjectId(VALID_ID))),
+    )
+    assert await service.is_in_use(VALID_ID) is True
 
 
 async def test_is_in_use_true_when_workflow_node_references_source(service, selection_service, monkeypatch) -> None:

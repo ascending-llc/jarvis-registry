@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from registry.utils.crypto_utils import encrypt_value
 from registry_pkgs.core.crypto_utils import is_encrypted
+from registry_pkgs.database.embedding_reindex_job_repository import get_active_embedding_reindex_job
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
@@ -135,6 +136,14 @@ class ModelSourceCrudService:
             source.mode = changes["mode"]
         provider_config = changes.get("providerConfig")
         if provider_config is not None:
+            # The reindex executor reloads this source at sweep time, so changing its provider config
+            # mid-reindex would embed the whole corpus with credentials/model settings that were never
+            # smoke-tested. Refuse the change while this source is the active reindex target.
+            active_job = await get_active_embedding_reindex_job()
+            if active_job is not None and source.id == active_job.targetEmbeddingModelSourceId:
+                raise ValueError(
+                    "Cannot change the provider configuration of a model source while it is being reindexed"
+                )
             new_config = self._to_stored_config(provider_config)
             source.providerConfig = self._preserve_existing_secret(new_config, source.providerConfig)
         source.updatedBy = updated_by
@@ -168,6 +177,11 @@ class ModelSourceCrudService:
             selection.defaultWorkflowModelSourceId,
             selection.embeddingModelSourceId,
         ):
+            return True
+        # The selection changes only at commit, so also protect a pending reindex's target from
+        # deletion mid-sweep.
+        active_job = await get_active_embedding_reindex_job()
+        if active_job is not None and object_id == active_job.targetEmbeddingModelSourceId:
             return True
         return await self._referenced_by_workflow(object_id)
 

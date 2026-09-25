@@ -778,6 +778,9 @@ class A2AAgentService:
         Raises:
             ValueError: If agent not found
         """
+        # Guard before the Mongo delete: the reindex sweep rebuilds from Mongo, so a delete mid-sweep
+        # could leave the deleted agent in the new generation. Block it (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
@@ -815,6 +818,9 @@ class A2AAgentService:
         Raises:
             ValueError: If agent not found
         """
+        # Guard before the Mongo write: the scheduled vector sync would fail during a reindex while
+        # Mongo already changed, so block the toggle (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
@@ -867,6 +873,7 @@ class A2AAgentService:
             A2AAgentCardParseException: If agent card cannot be parsed/validated
         """
         # Reuse the sync_wellknown implementation - it now returns the updated agent
+        # (the reindex guard lives in sync_wellknown, which the direct /wellknown route also uses).
         result = await self.sync_wellknown(agent_id, session=session)
 
         # Return the updated agent document from sync result (avoids redundant DB query)
@@ -889,6 +896,9 @@ class A2AAgentService:
         Raises:
             ValueError: If agent not found, well-known not enabled, or sync fails
         """
+        # Guard before refetch/save: a well-known sync rewrites the agent + its vectors. This is the
+        # shared chokepoint for both refresh_agent_capabilities and the direct /wellknown route.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         agent: A2AAgent | None = None
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)

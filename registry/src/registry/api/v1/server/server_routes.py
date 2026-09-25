@@ -567,6 +567,8 @@ async def delete_server(
                     return None  # 204 No Content
                 raise ValueError(f"Failed to delete server {server_id}. Skipping ACL cleanup")
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 
@@ -624,6 +626,8 @@ async def toggle_server(
 
         return convert_to_detail(server, acl_permission=permissions)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 
@@ -744,6 +748,8 @@ async def update_server_tools(
 
         return convert_to_detail(server, acl_permission=permissions)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
         if "not found" in error_msg.lower():
@@ -806,6 +812,8 @@ async def refresh_server_capabilities(
 
         return convert_to_detail(server, acl_permission=permissions)
 
+    except EmbeddingReindexInProgressException as exc:
+        raise reindex_in_progress_error() from exc
     except ValueError as e:
         error_msg = str(e)
 

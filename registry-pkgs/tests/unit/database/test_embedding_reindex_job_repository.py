@@ -23,6 +23,7 @@ async def test_active_job_is_returned(monkeypatch: pytest.MonkeyPatch) -> None:
     lease = datetime.now(UTC) + timedelta(minutes=2)
     document = {
         "_id": PydanticObjectId(),
+        "targetEmbeddingModelSourceId": PydanticObjectId(),
         "status": "running",
         "leaseExpiresAt": lease,
         "startedAt": datetime.now(UTC),

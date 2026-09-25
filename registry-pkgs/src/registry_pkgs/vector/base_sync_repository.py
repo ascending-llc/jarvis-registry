@@ -28,22 +28,19 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         result = await self._ensure_collection()
         filterable = getattr(self, "FILTERABLE_PROPERTIES", [])
         if filterable:
-            self.adapter.ensure_filterable_properties(self.collection, filterable)
+            self._write_adapter.ensure_filterable_properties(self.collection, filterable)
         return result
 
     async def reset_collection(self) -> None:
         """Drop the backing collection and recreate it with all required filterable properties."""
         if not hasattr(self.adapter, "drop_collection"):
             raise RuntimeError(f"Adapter {type(self.adapter).__name__} does not support drop_collection")
-        self.adapter.drop_collection(self.collection)
+        self._write_adapter.drop_collection(self.collection)
         await self.ensure_collection()
         logger.info("Reset collection '%s'", self.collection)
 
     async def delete_by_runtime_identity(self, federation_id: str, runtime_arn: str) -> int:
-        """Delete all Weaviate docs that match a federation identity.
-
-        Called by federation_sync_service before reinserting updated docs.
-        """
+        """Delete all docs matching a federation identity (used before reinserting updated docs)."""
         if not self._collection_has_property("federation_id") or not self._collection_has_property("runtimeArn"):
             logger.info(
                 "Collection '%s' missing federation_id/runtimeArn property, skipping delete.",
@@ -69,11 +66,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         entity_id: str,
         metadata: dict[str, Any],
     ) -> VectorSyncResult:
-        """Patch metadata fields on all docs for an entity — no re-embedding.
-
-        Used for toggle/status-only changes where page_content is unchanged.
-        Falls back silently when the adapter does not support update_metadata.
-        """
+        """Patch metadata on all docs for an entity — no re-embedding (toggle/status-only changes)."""
         return await self._update_metadata_by_filters({entity_id_field: entity_id}, metadata)
 
     async def _update_metadata_by_filters(
@@ -107,7 +100,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
 
             doc_ids = [doc.id for doc in existing_docs]
             if hasattr(self.adapter, "batch_update_properties"):
-                success = self.adapter.batch_update_properties(
+                success = self._write_adapter.batch_update_properties(
                     doc_ids=doc_ids,
                     update_data=metadata,
                     collection_name=self.collection,
@@ -116,7 +109,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
                 success = sum(
                     1
                     for doc_id in doc_ids
-                    if self.adapter.update_metadata(
+                    if self._write_adapter.update_metadata(
                         doc_id=doc_id,
                         metadata=metadata,
                         collection_name=self.collection,
@@ -142,12 +135,10 @@ class BaseVectorSyncRepository(Repository[T], ABC):
 
     @abstractmethod
     async def sync_to_vector_db(self, entity: Any, *, is_delete: bool = True) -> dict:
-        """Full rebuild — call only when content has changed.
+        """Re-embed and rebuild an entity's docs — call only when content changed.
 
-        Args:
-            entity: The A2AAgent or ExtendedMCPServer instance.
-            is_delete: True (CRUD path) — delete existing docs before reinserting.
-                       False (federation path) — external caller already deleted; insert only.
+        ``is_delete``: True (CRUD) deletes existing docs before reinserting; False (federation) inserts
+        only, since the caller already deleted.
         """
         raise NotImplementedError
 

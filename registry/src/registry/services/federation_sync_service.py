@@ -43,7 +43,7 @@ from registry_pkgs.models.federation_sync_job import (
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
-from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
+from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
     AzureAiFoundrySyncHandler,
@@ -268,6 +268,7 @@ class FederationSyncService:
         acl_service,
         user_service,
         azure_client_cache: AzureFoundryClientCache,
+        embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
     ):
         self.federation_crud_service = federation_crud_service
         self.federation_job_service = federation_job_service
@@ -275,6 +276,7 @@ class FederationSyncService:
         self.a2a_agent_repo = a2a_agent_repo
         self.acl_service = acl_service
         self.user_service = user_service
+        self._embedding_maintenance_watcher = embedding_maintenance_watcher
 
         self.sync_handlers: dict[FederationProviderType, BaseFederationSyncHandler] = {
             FederationProviderType.AWS_AGENTCORE: AwsAgentCoreSyncHandler(),
@@ -385,6 +387,10 @@ class FederationSyncService:
         ``VectorSyncOutcome``.  The job is reported as successful as long as at
         least one resource fully completes the pipeline (or nothing was discovered).
         """
+        # Guard before any Mongo/vector write: a federation sync mid-reindex would re-embed with the
+        # old model / leave orphan vectors the sweep won't clean up. Direct callers (update/manual
+        # sync) get a 503; run_federation_sync_background already skips earlier, so this is a backstop.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             discovered = await self._discover_entities(federation, author_id=author_id)
 
@@ -547,6 +553,10 @@ class FederationSyncService:
                 updated_by=updated_by,
             )
             return updated, None
+
+        # Config resync writes vectors — block it (503) during a reindex before creating the job,
+        # so no resync job is left stuck. (A metadata-only update above is not gated.)
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
 
         # Resolve the author up front so an unknown user fails before we create a
         # job; otherwise a phantom resync job would be left behind.
@@ -715,6 +725,8 @@ class FederationSyncService:
         triggered_by: str | None,
     ) -> FederationSyncJob:
         """Run a manual sync inline for compatibility with non-HTTP callers."""
+        # Block (503) before creating the job so a reindex leaves no stuck sync job behind.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         job, author_id = await self.create_manual_sync_job(
             federation=federation,
             reason=reason,
@@ -734,6 +746,8 @@ class FederationSyncService:
         triggered_by: str | None,
     ) -> FederationSyncJob:
         """Register the delete job and then execute the delete apply phase."""
+        # Block (503) before marking-deleting/creating the job so a reindex leaves no wedged state.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
             raise ValueError("Federation already has an active job")
@@ -1806,6 +1820,8 @@ class FederationSyncService:
         federation: Federation,
         job: FederationSyncJob,
     ) -> FederationSyncJob:
+        # Guard before any write: a delete mid-reindex leaves orphan vectors the sweep won't clean up.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         await self.federation_job_service.mark_syncing(job, FederationJobPhase.APPLYING)
 
         try:
