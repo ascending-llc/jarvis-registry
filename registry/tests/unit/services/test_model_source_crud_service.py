@@ -276,6 +276,155 @@ async def test_update_rejects_provider_config_change_during_reindex(service, mon
     source.save.assert_not_awaited()  # nothing persisted
 
 
+def _bedrock_source(sid, *, region="us-east-1", model="m"):
+    return SimpleNamespace(
+        id=sid,
+        providerConfig=AwsBedrockModelConfig(awsRegion=region, modelIdOrArn=model, baseModelId=model),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+
+
+def _azure_source(sid, *, endpoint="https://acme.openai.azure.com", deployment="d"):
+    return SimpleNamespace(
+        id=sid,
+        providerConfig=AzureOpenAIModelConfig(
+            endpoint=endpoint,
+            deploymentName=deployment,
+            baseModelId="gpt-4o",
+            apiVersion="2024-10-21",
+            apiKeyEncrypted="iv:existing-cipher",
+        ),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+
+
+def _mark_active(selection_service, sid) -> None:
+    selection_service.get_selection_or_none.return_value = SimpleNamespace(
+        defaultWorkflowModelSourceId=None, embeddingModelSourceId=sid
+    )
+
+
+async def test_update_active_source_rejects_bedrock_model_change(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _bedrock_source(sid, model="old-model")
+    new_config = AwsBedrockModelConfigInput(awsRegion="us-east-1", modelIdOrArn="new-model", baseModelId="new-model")
+
+    with pytest.raises(ValueError, match="active embedding selection"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_active_source_rejects_azure_deployment_change(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _azure_source(sid, deployment="old-deploy")
+    new_config = AzureOpenAIModelConfigInput(
+        endpoint="https://acme.openai.azure.com",
+        deploymentName="new-deploy",
+        baseModelId="gpt-4o",
+        apiVersion="2024-10-21",
+        apiKey=None,
+    )
+
+    with pytest.raises(ValueError, match="active embedding selection"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_active_source_rejects_azure_endpoint_change(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _azure_source(sid, endpoint="https://old.openai.azure.com")
+    new_config = AzureOpenAIModelConfigInput(
+        endpoint="https://new.openai.azure.com",
+        deploymentName="d",
+        baseModelId="gpt-4o",
+        apiVersion="2024-10-21",
+        apiKey=None,
+    )
+
+    with pytest.raises(ValueError, match="active embedding selection"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_active_source_rejects_provider_type_switch(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _bedrock_source(sid)
+    new_config = AzureOpenAIModelConfigInput(
+        endpoint="https://acme.openai.azure.com",
+        deploymentName="d",
+        baseModelId="gpt-4o",
+        apiVersion="2024-10-21",
+        apiKey="k",
+    )
+
+    with pytest.raises(ValueError, match="active embedding selection"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_active_source_allows_bedrock_region_change_same_model(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _bedrock_source(sid, region="us-east-1", model="m")
+    new_config = AwsBedrockModelConfigInput(awsRegion="us-west-2", modelIdOrArn="m", baseModelId="m")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+
+    assert source.providerConfig.awsRegion == "us-west-2"
+    source.save.assert_awaited_once()
+
+
+async def test_update_active_source_allows_azure_key_and_api_version(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _azure_source(sid)
+    new_config = AzureOpenAIModelConfigInput(
+        endpoint="https://acme.openai.azure.com",
+        deploymentName="d",
+        baseModelId="gpt-4o",
+        apiVersion="2025-01-01",  # bumped
+        apiKey="rotated-secret",  # rotated
+    )
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+
+    assert source.providerConfig.apiVersion == "2025-01-01"
+    assert is_encrypted(source.providerConfig.apiKeyEncrypted)
+    assert source.providerConfig.apiKeyEncrypted != "iv:existing-cipher"
+    source.save.assert_awaited_once()
+
+
+async def test_update_non_active_source_allows_model_change(service, selection_service) -> None:
+    # A different source is active, so this one's vector space is unconstrained.
+    _mark_active(selection_service, PydanticObjectId())
+    source = _bedrock_source(PydanticObjectId(), model="old-model")
+    new_config = AwsBedrockModelConfigInput(awsRegion="us-east-1", modelIdOrArn="new-model", baseModelId="new-model")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+
+    assert source.providerConfig.modelIdOrArn == "new-model"
+    source.save.assert_awaited_once()
+
+
+async def test_update_active_source_allows_base_model_id_only_change(service, selection_service) -> None:
+    # baseModelId is metadata-only (litellm lookups), not the embedding model — not vector-space.
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _bedrock_source(sid, model="m")
+    new_config = AwsBedrockModelConfigInput(awsRegion="us-east-1", modelIdOrArn="m", baseModelId="corrected-canonical")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+
+    assert source.providerConfig.baseModelId == "corrected-canonical"
+    source.save.assert_awaited_once()
+
+
 async def test_update_rejects_mode_change_when_in_use(service, selection_service) -> None:
     sid = PydanticObjectId(VALID_ID)
     source = SimpleNamespace(id=sid, mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())
