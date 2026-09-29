@@ -92,6 +92,15 @@ def _patch_no_job(monkeypatch, active=False):
     )
 
 
+def _patch_selection(monkeypatch, generation):
+    """Stub the cheap per-tick read: the active selection's committed generation."""
+    monkeypatch.setattr(
+        watcher_mod,
+        "get_model_gateway_selection",
+        AsyncMock(return_value=SimpleNamespace(embeddingCollectionGeneration=generation)),
+    )
+
+
 async def test_unwired_watcher_tracks_only_job_active(monkeypatch) -> None:
     _patch_no_job(monkeypatch, active=True)
     watcher = EmbeddingMaintenanceWatcher()  # no db_client -> no swap, job tracking only
@@ -101,8 +110,10 @@ async def test_unwired_watcher_tracks_only_job_active(monkeypatch) -> None:
 
 async def test_poll_swaps_adapter_when_generation_differs(monkeypatch) -> None:
     _patch_no_job(monkeypatch, active=False)
+    _patch_selection(monkeypatch, "genB")  # active generation this pod is behind
     target_config = SimpleNamespace(collection_generation="genB")
-    monkeypatch.setattr(watcher_mod, "resolve_vector_backend_config", AsyncMock(return_value=target_config))
+    resolve = AsyncMock(return_value=target_config)
+    monkeypatch.setattr(watcher_mod, "resolve_vector_backend_config", resolve)
     new_adapter = object()
     monkeypatch.setattr(watcher_mod.VectorStoreFactory, "create_adapter", classmethod(lambda cls, cfg: new_adapter))
 
@@ -114,6 +125,7 @@ async def test_poll_swaps_adapter_when_generation_differs(monkeypatch) -> None:
 
     await watcher._poll()
 
+    resolve.assert_awaited_once()  # resolved exactly once, only because a swap was needed
     db_client.swap_adapter.assert_called_once()
     assert db_client.swap_adapter.call_args.args[0] is new_adapter
     assert db_client.swap_adapter.call_args.args[1] is target_config
@@ -125,6 +137,7 @@ async def test_poll_stays_stale_and_retries_when_resolve_fails(monkeypatch) -> N
     # A committed generation whose source is gone makes resolve fail-hard; the pod stays stale and
     # keeps blocking writes until the next poll rather than swapping onto a wrong config.
     _patch_no_job(monkeypatch, active=False)
+    _patch_selection(monkeypatch, "genB")  # mismatch -> resolver runs, then fails
     monkeypatch.setattr(
         watcher_mod, "resolve_vector_backend_config", AsyncMock(side_effect=RuntimeError("source gone"))
     )
@@ -138,21 +151,21 @@ async def test_poll_stays_stale_and_retries_when_resolve_fails(monkeypatch) -> N
     assert watcher.is_active() is True  # still stale -> writes stay blocked, retried next poll
 
 
-async def test_poll_no_swap_when_generation_matches(monkeypatch) -> None:
-    # Legacy generation 0: no source committed -> resolve returns a config with generation None, which
-    # matches this pod, so nothing swaps (and it does NOT error on the missing source).
+async def test_poll_no_swap_or_resolve_when_generation_matches(monkeypatch) -> None:
+    # Steady state: the selection's generation matches this pod, so the expensive resolver (ModelSource
+    # fetch + credential decrypt) is skipped entirely and nothing swaps.
     _patch_no_job(monkeypatch, active=False)
-    monkeypatch.setattr(
-        watcher_mod,
-        "resolve_vector_backend_config",
-        AsyncMock(return_value=SimpleNamespace(collection_generation=None)),
-    )
+    _patch_selection(monkeypatch, None)  # legacy generation 0
+    resolve = AsyncMock()
+    monkeypatch.setattr(watcher_mod, "resolve_vector_backend_config", resolve)
     db_client = MagicMock()
-    db_client.collection_generation = None  # matches target
+    db_client.collection_generation = None  # matches selection
+
     watcher = EmbeddingMaintenanceWatcher(db_client=db_client, settings=SimpleNamespace())
 
     await watcher._poll()
 
+    resolve.assert_not_awaited()  # m5: no resolve on a steady-state tick
     db_client.swap_adapter.assert_not_called()
     assert watcher.is_active() is False
 

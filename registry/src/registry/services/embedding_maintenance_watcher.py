@@ -142,22 +142,23 @@ class EmbeddingMaintenanceWatcher:
         if self._db_client is None or self._settings is None:
             return  # unwired (e.g. a unit test): job-active tracking only, no swap.
 
-        # Reuse the startup resolver so the target config (incl. legacy fallback and fail-hard) is
-        # derived identically everywhere. A failure keeps this pod stale and retries next poll.
-        try:
-            target_config = await resolve_vector_backend_config(self._settings)
-        except Exception:
-            self._stale = True
-            logger.exception("Watcher could not resolve the target backend config; retrying next poll")
-            return
-
-        target_generation = target_config.collection_generation
+        # Cheap steady-state path: just read the selection and compare generations. Only when this pod
+        # is behind do we run the resolver (which fetches the ModelSource and decrypts its credentials).
+        selection = await get_model_gateway_selection(create_if_missing=False)
+        target_generation = selection.embeddingCollectionGeneration if selection else None
         if target_generation == self._db_client.collection_generation:
             self._stale = False
             return
 
-        # This pod is behind the active generation: keep writes blocked until it swaps.
+        # This pod is behind the active generation: keep writes blocked until it swaps. Reuse the startup
+        # resolver so the target config (incl. legacy fallback and fail-hard) is derived identically
+        # everywhere. A failure keeps this pod stale and retries next poll.
         self._stale = True
+        try:
+            target_config = await resolve_vector_backend_config(self._settings)
+        except Exception:
+            logger.exception("Watcher could not resolve the target backend config; retrying next poll")
+            return
         try:
             new_adapter = await asyncio.to_thread(VectorStoreFactory.create_adapter, target_config)
         except Exception:
