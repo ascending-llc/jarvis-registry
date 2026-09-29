@@ -290,7 +290,7 @@ These files are involved in the automatic setup:
 ## Related Documentation
 
 - [Authentication Guide](auth.md) - General authentication and authorization
-- [CLI Reference](cli.md) - Command-line interface documentation
+- [Internal MCP Client CLI Guide](development/mcp-client-cli.md) - Internal scripts for MCP testing and A2A agent management
 - [Keycloak Integration](keycloak-integration.md) - Keycloak configuration details
 
 ## Environment Variables

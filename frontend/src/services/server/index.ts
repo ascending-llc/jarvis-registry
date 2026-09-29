@@ -32,6 +32,9 @@ const toggleServerStatus: (id: string, data: { enabled: boolean }, config?: Axio
 const getServerTools: (id: string) => Promise<TYPE.GetServerToolsResponse> = async id =>
   await Request.get(API.getServerTools(id));
 
+const updateServerTools: (id: string, data: TYPE.UpdateServerToolsRequest) => Promise<TYPE.GetServerToolsResponse> =
+  async (id, data) => await Request.patch(API.updateServerTools(id), data);
+
 const refreshServer: (id: string) => Promise<TYPE.GetServersDetailResponse> = async id =>
   await Request.post(API.refreshServer(id));
 
@@ -45,5 +48,6 @@ export default {
   deleteServer,
   toggleServerStatus,
   getServerTools,
+  updateServerTools,
   refreshServer,
 };

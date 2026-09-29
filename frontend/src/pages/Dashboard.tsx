@@ -8,6 +8,7 @@ import IconButton from '@/components/IconButton';
 import SemanticSearchResults from '@/components/SemanticSearchResults';
 import ServerCard from '@/components/ServerCard';
 import WorkflowCard from '@/components/WorkflowCard';
+import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import { useSemanticSearch } from '@/hooks/useSemanticSearch';
 
@@ -20,7 +21,8 @@ const RefreshGlyph: React.FC<{ className?: string }> = ({ className = '' }) => (
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { showToast } = useGlobal();
   const {
     viewMode,
     setViewMode,
@@ -34,8 +36,9 @@ const Dashboard: React.FC = () => {
     agentLoading,
     refreshAgentData,
 
-    federations,
+    externalProviders,
     federationsLoading,
+    federationsError,
     refreshFederationData,
 
     workflows,
@@ -61,6 +64,15 @@ const Dashboard: React.FC = () => {
     setSearchTerm('');
     setCommittedQuery('');
   }, [urlTab, setViewMode, setSearchTerm, setCommittedQuery]);
+
+  useEffect(() => {
+    if (searchParams.get('error') !== 'invalid_callback') return;
+
+    showToast('GitHub authorization callback is invalid or expired. Please connect GitHub again.', 'error');
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete('error');
+    setSearchParams(nextSearchParams, { replace: true });
+  }, [searchParams, setSearchParams, showToast]);
 
   // Semantic search
   const semanticEnabled = committedQuery.trim().length >= 1;
@@ -136,25 +148,25 @@ const Dashboard: React.FC = () => {
   }, [agents, activeFilter, searchTerm]);
 
   // Filter federations based on activeFilter and searchTerm
-  const filteredFederations = useMemo(() => {
-    let filtered = federations;
+  const filteredExternalProviders = useMemo(() => {
+    let filtered = externalProviders;
 
     // Apply filter first
-    if (activeFilter === 'enabled') filtered = filtered.filter(f => f.status === 'active');
-    else if (activeFilter === 'disabled') filtered = filtered.filter(f => f.status !== 'active');
+    if (activeFilter === 'enabled') filtered = filtered.filter(provider => provider.data.status === 'active');
+    else if (activeFilter === 'disabled') filtered = filtered.filter(provider => provider.data.status !== 'active');
 
     // Then apply search
     if (searchTerm) {
       const query = searchTerm.toLowerCase();
       filtered = filtered.filter(
-        f =>
-          f.displayName.toLowerCase().includes(query) ||
-          (f.description || '').toLowerCase().includes(query) ||
-          (f.tags || []).some(tag => tag.toLowerCase().includes(query)),
+        provider =>
+          provider.data.displayName.toLowerCase().includes(query) ||
+          (provider.data.description || '').toLowerCase().includes(query) ||
+          (provider.data.tags || []).some(tag => tag.toLowerCase().includes(query)),
       );
     }
     return filtered;
-  }, [federations, activeFilter, searchTerm]);
+  }, [externalProviders, activeFilter, searchTerm]);
 
   // Filter workflows based on activeFilter and searchTerm
   const filteredWorkflows = useMemo(() => {
@@ -337,6 +349,11 @@ const Dashboard: React.FC = () => {
       {/* External Providers Section */}
       {viewMode === 'external' && (
         <div className='mb-8'>
+          {federationsError && (
+            <div className='mb-4 rounded-lg border border-[color:var(--jarvis-warning-text)]/30 bg-[var(--jarvis-warning-soft)] px-4 py-3 text-sm text-[var(--jarvis-warning-text)]'>
+              Some external providers could not be loaded. {federationsError}
+            </div>
+          )}
           <div className='relative'>
             {federationsLoading && (
               <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
@@ -344,17 +361,17 @@ const Dashboard: React.FC = () => {
               </div>
             )}
 
-            {filteredFederations.length === 0 ? (
+            {filteredExternalProviders.length === 0 ? (
               <div className='rounded-2xl border border-dashed border-[color:var(--jarvis-border-strong)] bg-[var(--jarvis-card)] py-12 text-center'>
                 <div className='mb-2 text-lg text-[var(--jarvis-faint)]'>
-                  {federations.length === 0 ? 'No External Providers Available' : 'No Results Found'}
+                  {externalProviders.length === 0 ? 'No External Providers Available' : 'No Results Found'}
                 </div>
                 <p className='mx-auto max-w-md text-sm text-[var(--jarvis-muted)]'>
-                  {federations.length === 0
-                    ? 'Connect an external provider like AWS AgentCore to automatically sync MCP servers and agents.'
+                  {externalProviders.length === 0
+                    ? 'Connect AWS AgentCore, Azure AI Foundry, or GitHub to automatically sync resources.'
                     : 'Try adjusting your search terms.'}
                 </p>
-                {federations.length === 0 && (
+                {externalProviders.length === 0 && (
                   <button
                     onClick={handleRegister}
                     className='mt-4 inline-flex items-center space-x-2 rounded-lg bg-[var(--jarvis-primary)] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)]'
@@ -366,8 +383,8 @@ const Dashboard: React.FC = () => {
               </div>
             ) : (
               <div className='grid grid-cols-1 xl:grid-cols-2 gap-4'>
-                {filteredFederations.map(federation => (
-                  <FederationCard key={federation.id} federation={federation} />
+                {filteredExternalProviders.map(provider => (
+                  <FederationCard key={`${provider.backendKind}:${provider.data.id}`} externalProvider={provider} />
                 ))}
               </div>
             )}
@@ -395,7 +412,8 @@ const Dashboard: React.FC = () => {
               'Model Context Protocol servers federated and discoverable through your Jarvis registry.'}
             {viewMode === 'agents' &&
               'Agent-to-Agent protocol endpoints with auto-discovered .well-known capabilities.'}
-            {viewMode === 'external' && 'Federated MCP servers and agents from AWS AgentCore and Azure AI Foundry.'}
+            {viewMode === 'external' &&
+              'Federated MCP servers, agents, and skills from AWS AgentCore, Azure AI Foundry, and GitHub.'}
             {viewMode === 'workflow' &&
               'Agentic pipelines spanning your MCP servers and A2A agents. Autonomous workflows let the LLM decide; Supervised workflows follow a predefined sequence.'}
           </p>

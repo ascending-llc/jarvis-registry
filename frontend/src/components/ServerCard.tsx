@@ -9,7 +9,7 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import agentcoreIcon from '@/assets/agentcore.svg';
 import azureAiIcon from '@/assets/azureai-color.svg';
@@ -20,10 +20,10 @@ import type { ServerInfo } from '@/contexts/ServerContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import { ServerConnection } from '@/services/mcp/type';
-import type { Tool } from '@/services/server/type';
 import UTILS from '@/utils';
 import ServerAuthorizationModal from './ServerAuthorizationModal';
 import ServerConfigModal from './ServerConfigModal';
+import ServerToolsModal from './ServerToolsModal';
 
 interface ServerCardProps {
   server: ServerInfo;
@@ -34,26 +34,11 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const { showToast } = useGlobal();
   const { cancelPolling, refreshServerData, handleServerUpdate } = useServer();
   const [loading, setLoading] = useState(false);
-  const [tools, setTools] = useState<Tool[]>([]);
-  const [loadingTools, setLoadingTools] = useState(false);
   const [showTools, setShowTools] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [loadingRefresh, setLoadingRefresh] = useState(false);
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && showTools) {
-        setShowTools(false);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [showTools]);
 
   const { connectionState, requiresOauth } = server || {};
   const canEdit = !!server?.permissions?.EDIT;
@@ -105,30 +90,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       onOpenAuthDialog();
     }
   };
-
-  const handleViewTools = useCallback(async () => {
-    if (loadingTools) return;
-
-    setLoadingTools(true);
-    try {
-      const result = await SERVICES.SERVER.getServerTools(server.id);
-      if (result.toolFunctions) {
-        const list: any = [];
-        Object.keys(result.toolFunctions).forEach(key => {
-          list.push(result.toolFunctions[key]);
-        });
-        setTools(list);
-        setShowTools(true);
-      }
-    } catch (error) {
-      console.error('Failed to fetch tools:', error);
-      if (showToast) {
-        showToast('Failed to fetch tools', 'error');
-      }
-    } finally {
-      setLoadingTools(false);
-    }
-  }, [server.id, loadingTools, showToast]);
 
   const handleRefresh = useCallback(async () => {
     if (loadingRefresh) return;
@@ -325,9 +286,8 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
             <div className='flex items-center gap-1.5'>
               {(server.numTools || 0) > 0 ? (
                 <button
-                  onClick={handleViewTools}
-                  disabled={loadingTools}
-                  className='-mx-1.5 -my-0.5 flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-[var(--jarvis-info-text)] transition-all hover:bg-[var(--jarvis-info-soft)] hover:text-[var(--jarvis-icon-hover)] disabled:opacity-50'
+                  onClick={() => setShowTools(true)}
+                  className='-mx-1.5 -my-0.5 flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-[var(--jarvis-info-text)] transition-all hover:bg-[var(--jarvis-info-soft)] hover:text-[var(--jarvis-icon-hover)]'
                   title='View tools'
                 >
                   <div className='rounded bg-[var(--jarvis-card-muted)] p-1'>
@@ -442,51 +402,13 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
         )}
       </div>
 
-      {/* Tools Modal */}
-      {showTools && (
-        <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm'>
-          <div className='max-h-[80vh] w-full max-w-2xl overflow-auto rounded-xl bg-[var(--jarvis-card)] p-6 pt-0 text-[var(--jarvis-text)] shadow-xl'>
-            <div className='sticky top-0 z-10 -mx-6 -mt-6 mb-4 flex items-center justify-between border-b border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-6 pb-2 pt-6'>
-              <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>Tools for {server.name}</h3>
-              <IconButton
-                ariaLabel='Close'
-                tooltip='Close'
-                onClick={() => setShowTools(false)}
-                size='card'
-                className='text-[var(--jarvis-icon)] transition-colors hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none'
-              >
-                <XMarkIcon className='h-6 w-6' />
-              </IconButton>
-            </div>
-
-            <div className='space-y-4 mt-[2.8rem]'>
-              {tools?.length > 0 ? (
-                tools.map((tool: Tool, index: number) => (
-                  <div
-                    key={index}
-                    className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-4'
-                  >
-                    <h4 className='mb-2 font-medium text-[var(--jarvis-text-strong)]'>{tool?.function?.name}</h4>
-                    {tool?.function?.description && (
-                      <p className='mb-2 text-sm text-[var(--jarvis-muted)]'>{tool?.function?.description}</p>
-                    )}
-                    {tool?.function?.parameters && (
-                      <details className='text-xs'>
-                        <summary className='cursor-pointer text-[var(--jarvis-muted)]'>View Schema</summary>
-                        <pre className='mt-2 overflow-x-auto rounded border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] p-3 text-[var(--jarvis-text)]'>
-                          {JSON.stringify(tool?.function?.parameters, null, 2)}
-                        </pre>
-                      </details>
-                    )}
-                  </div>
-                ))
-              ) : (
-                <p className='text-[var(--jarvis-muted)]'>No tools available for this server.</p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <ServerToolsModal
+        isOpen={showTools}
+        onClose={() => setShowTools(false)}
+        serverId={server.id}
+        serverName={server.name}
+        canManageTools={!!server.permissions?.SHARE}
+      />
 
       {showConfig && <ServerConfigModal server={server} isOpen={showConfig} onClose={() => setShowConfig(false)} />}
 

@@ -1,7 +1,7 @@
-import type { ProviderType } from '@/services/federation/type';
+import type { ExternalProviderType } from '@/services/externalProvider/type';
 
 export interface FederationFormConfig {
-  providerType: ProviderType;
+  providerType: ExternalProviderType;
   displayName: string;
   description: string;
   region: string;
@@ -11,4 +11,13 @@ export interface FederationFormConfig {
   tenantId: string;
   clientId: string;
   clientSecret: string;
+  tags: string[];
+  owner: string;
+  repo: string;
+  ref: string;
+  paths: string[];
+  githubAppClientId: string;
+  githubAppClientSecret: string;
 }
+
+export type FederationFormStringField = Exclude<keyof FederationFormConfig, 'providerType' | 'tags' | 'paths'>;

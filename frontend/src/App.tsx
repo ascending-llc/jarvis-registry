@@ -1,6 +1,7 @@
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
+import SkillSyncSourceRouteBridge from './components/SkillSyncSourceRouteBridge';
 import { getBasePath } from './config';
 import { AuthProvider } from './contexts/AuthContext';
 import { GlobalProvider } from './contexts/GlobalContext';
@@ -141,6 +142,22 @@ const router = createBrowserRouter(
           <Layout>
             <FederationRegistryOrEdit />
           </Layout>
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: APP_ROUTES.skillSyncSources,
+      element: (
+        <ProtectedRoute>
+          <SkillSyncSourceRouteBridge list />
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: APP_ROUTES.skillSyncSourceDetail,
+      element: (
+        <ProtectedRoute>
+          <SkillSyncSourceRouteBridge />
         </ProtectedRoute>
       ),
     },

@@ -63,7 +63,7 @@ jobs:
           base-ref: ${{ steps.resolve_prev.outputs.prev_tag }}
           head-ref: ${{ inputs.new_tag }}
         env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_COPILOT_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_KEY_PERSONAL }}
 
       - name: Create GitHub Release
         env:

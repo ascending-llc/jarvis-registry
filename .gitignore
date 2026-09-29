@@ -340,6 +340,9 @@ image-manifest.json
 # This folder cannot exist in the .dockerignore file.
 /build-artifacts
 
+# Security scanning logs
+/security_scans
+
 # Playground for quick code experimentation
 /adhoc*.py
 

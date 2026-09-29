@@ -1057,3 +1057,53 @@ class TestRealScopesConfigSkills:
 
         assert middleware._has_permission(["skills-write"], path, method) is True
         assert middleware._has_permission(["skills-read"], path, method) is False
+
+
+@pytest.mark.unit
+class TestRealScopesConfigServerTools:
+    """Validate the real scopes.yml covers both verbs on the per-server tools endpoint."""
+
+    _PATH = "/servers/507f1f77bcf86cd799439011/tools"
+
+    def test_get_tools_granted_with_servers_read(self) -> None:
+        middleware = ScopePermissionMiddleware(FastAPI())
+
+        assert middleware._has_permission(["servers-read"], self._PATH, "GET") is True
+
+    def test_update_tools_granted_with_servers_write(self) -> None:
+        middleware = ScopePermissionMiddleware(FastAPI())
+
+        assert middleware._has_permission(["servers-write"], self._PATH, "PATCH") is True
+
+    @pytest.mark.parametrize("scopes", [["servers-read"], ["servers-share"]])
+    def test_update_tools_denied_without_servers_write(self, scopes: list[str]) -> None:
+        middleware = ScopePermissionMiddleware(FastAPI())
+
+        assert middleware._has_permission(scopes, self._PATH, "PATCH") is False
+
+    def test_update_tools_request_reaches_route_with_servers_write(self) -> None:
+        """A PATCH through the real middleware and real rules reaches the route handler."""
+        app = FastAPI()
+
+        @app.patch("/api/v1/servers/{server_id}/tools")
+        def update_server_tools(server_id: str) -> dict[str, str]:
+            return {"id": server_id}
+
+        class _AuthMiddleware:
+            def __init__(self, inner_app: Any) -> None:
+                self.app = inner_app
+
+            async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+                scope.setdefault("state", {})
+                scope["state"]["user"] = {"scopes": ["servers-write"]}
+                scope["state"]["is_authenticated"] = True
+                await self.app(scope, receive, send)
+
+        # Middleware added last runs first, so auth sets the user before the scope check.
+        app.add_middleware(ScopePermissionMiddleware)
+        app.add_middleware(_AuthMiddleware)
+
+        response = TestClient(app).patch(f"/api/v1{self._PATH}", json={"disabledTools": []})
+
+        assert response.status_code == 200
+        assert response.json() == {"id": "507f1f77bcf86cd799439011"}

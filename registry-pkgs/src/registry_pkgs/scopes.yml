@@ -121,6 +121,9 @@ servers-write:
   - action: refresh_server_capabilities
     method: POST
     endpoint: /servers/{server_id}/refresh
+  - action: update_server_tools
+    method: PATCH
+    endpoint: /servers/{server_id}/tools
 
 agents-read:
   description: "View registered A2A agents, their skills, health, and ratings, and discover agents by capability."

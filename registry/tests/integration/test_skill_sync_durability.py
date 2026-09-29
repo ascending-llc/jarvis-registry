@@ -3,7 +3,7 @@
 import asyncio
 import os
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -155,7 +155,7 @@ async def test_apply_delete_rolls_back_skill_and_files_when_acl_delete_fails(mon
 
     try:
         with pytest.raises(RuntimeError, match="ACL delete failed"):
-            await SkillSyncApplyService(acl_service)._delete_skill(skill)
+            await SkillSyncApplyService(acl_service, MagicMock())._delete_skill(skill)
 
         assert await database.skills.find_one({"_id": skill_id}) is not None
         assert await database.skillfiles.count_documents({"skillId": skill_id}) == 2

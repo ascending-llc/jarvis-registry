@@ -64,6 +64,7 @@ class _FakeFinder:
 def crypto_stub(monkeypatch):
     monkeypatch.setattr(f"{MODULE}.is_encrypted", lambda value: value.startswith("encrypted:"))
     monkeypatch.setattr(f"{MODULE}.encrypt_value", lambda value: f"encrypted:{value}")
+    monkeypatch.setattr(f"{MODULE}.decrypt_value", lambda value: value.removeprefix("encrypted:"))
 
 
 class _StubSource:
@@ -242,12 +243,13 @@ async def test_update_source_maps_fields_and_saves():
     source = _make_source()
     service = SkillSyncSourceCrudService()
 
-    result = await service.update_source(
+    result, changed = await service.update_source(
         source,
         {"displayName": "New Name", "tags": ["x", "y"]},
         updated_by="user-2",
     )
 
+    assert changed == {"displayName", "tags"}
     assert result.displayName == "New Name"
     assert result.tags == ["x", "y"]
     assert result.updatedBy == "user-2"
@@ -256,17 +258,122 @@ async def test_update_source_maps_fields_and_saves():
 
 
 @pytest.mark.asyncio
-async def test_update_source_encrypts_changed_secret():
+async def test_update_source_noop_when_values_match_stored():
+    source = _make_source()
+    source.githubAppClientSecretEncrypted = "encrypted:same-secret"
+    service = SkillSyncSourceCrudService()
+
+    result, changed = await service.update_source(
+        source,
+        {
+            "displayName": "Demo",
+            "description": None,
+            "tags": [],
+            "owner": "acme",
+            "repo": "skills",
+            "ref": "main",
+            "paths": [],
+            "githubAppClientId": "client-id",
+            "githubAppClientSecret": "same-secret",
+        },
+        updated_by="user-2",
+    )
+
+    assert changed == set()
+    assert result.configRevision == 1
+    assert result.updatedBy is None
+    source.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_source_display_name_only_does_not_bump_revision():
     source = _make_source()
     service = SkillSyncSourceCrudService()
 
-    result = await service.update_source(
+    result, changed = await service.update_source(
+        source,
+        {"displayName": "Renamed", "owner": "acme", "ref": "main"},
+        updated_by=None,
+    )
+
+    assert changed == {"displayName"}
+    assert result.configRevision == 1
+    source.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_source_clears_description_with_none():
+    source = _make_source()
+    source.description = "old"
+    service = SkillSyncSourceCrudService()
+
+    result, changed = await service.update_source(source, {"description": None}, updated_by=None)
+
+    assert changed == {"description"}
+    assert result.description is None
+    assert result.configRevision == 1
+
+
+@pytest.mark.asyncio
+async def test_update_source_encrypts_changed_secret():
+    source = _make_source()
+    source.githubAppClientSecretEncrypted = "encrypted:old-secret"
+    service = SkillSyncSourceCrudService()
+
+    result, changed = await service.update_source(
         source,
         {"githubAppClientSecret": "new-plaintext"},
         updated_by=None,
     )
 
+    assert changed == {"githubAppClientSecret"}
     assert result.githubAppClientSecretEncrypted == "encrypted:new-plaintext"
+    assert result.configRevision == 2
+
+
+@pytest.mark.asyncio
+async def test_update_source_same_plaintext_secret_is_unchanged():
+    source = _make_source()
+    source.githubAppClientSecretEncrypted = "encrypted:same-secret"
+    service = SkillSyncSourceCrudService()
+
+    result, changed = await service.update_source(source, {"githubAppClientSecret": "same-secret"}, updated_by=None)
+
+    assert changed == set()
+    assert result.githubAppClientSecretEncrypted == "encrypted:same-secret"
+    assert result.configRevision == 1
+    source.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_source_same_encrypted_secret_is_unchanged():
+    source = _make_source()
+    source.githubAppClientSecretEncrypted = "encrypted:same-secret"
+    service = SkillSyncSourceCrudService()
+
+    _, changed = await service.update_source(
+        source,
+        {"githubAppClientSecret": "encrypted:same-secret"},
+        updated_by=None,
+    )
+
+    assert changed == set()
+
+
+@pytest.mark.asyncio
+async def test_update_source_secret_counts_as_changed_when_decrypt_fails(monkeypatch):
+    def _fail(_value):
+        raise Exception("Failed to decrypt value: bad key")
+
+    monkeypatch.setattr(f"{MODULE}.decrypt_value", _fail)
+    source = _make_source()
+    source.githubAppClientSecretEncrypted = "encrypted:unreadable"
+    service = SkillSyncSourceCrudService()
+
+    result, changed = await service.update_source(source, {"githubAppClientSecret": "whatever"}, updated_by=None)
+
+    assert changed == {"githubAppClientSecret"}
+    assert result.githubAppClientSecretEncrypted == "encrypted:whatever"
     assert result.configRevision == 2
 
 
@@ -275,8 +382,25 @@ async def test_update_source_increments_config_revision_for_repository_change():
     source = _make_source()
     service = SkillSyncSourceCrudService()
 
-    result = await service.update_source(source, {"ref": "release"}, updated_by=None)
+    result, changed = await service.update_source(source, {"ref": "release"}, updated_by=None)
 
+    assert changed == {"ref"}
+    assert result.configRevision == 2
+
+
+@pytest.mark.asyncio
+async def test_update_source_bumps_revision_once_for_several_config_changes():
+    source = _make_source()
+    service = SkillSyncSourceCrudService()
+
+    result, changed = await service.update_source(
+        source,
+        {"ref": "release", "paths": ["skills"], "githubAppClientId": "other-client"},
+        updated_by=None,
+    )
+
+    assert changed == {"ref", "paths", "githubAppClientId"}
+    assert result.githubAppClientId == "other-client"
     assert result.configRevision == 2
 
 

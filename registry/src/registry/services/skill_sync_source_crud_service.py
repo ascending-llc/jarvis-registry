@@ -1,3 +1,5 @@
+import hmac
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -5,7 +7,7 @@ from beanie import PydanticObjectId
 from bson.errors import InvalidId
 from pymongo.asynchronous.client_session import AsyncClientSession
 
-from registry.utils.crypto_utils import encrypt_value
+from registry.utils.crypto_utils import decrypt_value, encrypt_value
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import (
     SkillSyncProviderType,
@@ -16,6 +18,21 @@ from registry_pkgs.models.enums import (
 from registry_pkgs.models.skill_sync_job import SkillSyncJob
 from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSourceStats
 
+logger = logging.getLogger(__name__)
+
+_SECRET_FIELD = "githubAppClientSecret"  # nosec B105 - request field name, not a secret
+# Request field name -> SkillSyncSource attribute, for fields stored as-is.
+_PLAIN_FIELD_MAP = {
+    "displayName": "displayName",
+    "description": "description",
+    "tags": "tags",
+    "owner": "owner",
+    "repo": "repo",
+    "ref": "ref",
+    "paths": "paths",
+    "githubAppClientId": "githubAppClientId",
+}
+
 
 class SkillSyncSourceCrudService:
     _SYNC_CONFIG_FIELDS = {
@@ -24,12 +41,40 @@ class SkillSyncSourceCrudService:
         "ref",
         "paths",
         "githubAppClientId",
-        "githubAppClientSecret",
+        _SECRET_FIELD,
     }
+    CREDENTIAL_FIELDS = frozenset({"githubAppClientId", _SECRET_FIELD})
 
     @staticmethod
     def _encrypt_secret(secret: str) -> str:
         return secret if is_encrypted(secret) else encrypt_value(secret)
+
+    @staticmethod
+    def _secret_differs(stored_encrypted: str | None, incoming: str) -> bool:
+        """Compare an incoming secret with the stored one; any doubt counts as "changed"."""
+        if not stored_encrypted:
+            return True
+        if is_encrypted(incoming):
+            return not hmac.compare_digest(stored_encrypted, incoming)
+        try:
+            stored_plaintext = decrypt_value(stored_encrypted)
+        # decrypt_value raises a bare Exception on any failure, so nothing narrower can be caught.
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not decrypt the stored skill sync client secret; treating it as changed")
+            return True
+        return not hmac.compare_digest(stored_plaintext.encode(), incoming.encode())
+
+    def _changed_fields(self, source: SkillSyncSource, changes: dict[str, Any]) -> set[str]:
+        changed = {
+            name
+            for name, attribute in _PLAIN_FIELD_MAP.items()
+            if name in changes and changes[name] != getattr(source, attribute)
+        }
+        if _SECRET_FIELD in changes and self._secret_differs(
+            source.githubAppClientSecretEncrypted, changes[_SECRET_FIELD]
+        ):
+            changed.add(_SECRET_FIELD)
+        return changed
 
     async def create_source(
         self,
@@ -117,29 +162,26 @@ class SkillSyncSourceCrudService:
         *,
         updated_by: str | None,
         session: AsyncClientSession | None = None,
-    ) -> SkillSyncSource:
+    ) -> tuple[SkillSyncSource, set[str]]:
+        """Apply only the fields whose values really differ from what is stored.
+
+        Returns the source and the set of changed request field names. When nothing changed the
+        source is not saved, so ``configRevision`` and ``updatedBy`` stay untouched.
+        """
         if not SkillSyncStateMachine.can_update(source.status):
             raise ValueError(f"Skill sync source in status '{source.status}' cannot be updated")
-        field_map = {
-            "displayName": "displayName",
-            "description": "description",
-            "tags": "tags",
-            "owner": "owner",
-            "repo": "repo",
-            "ref": "ref",
-            "paths": "paths",
-            "githubAppClientId": "githubAppClientId",
-        }
-        for input_name, model_name in field_map.items():
-            if input_name in changes:
-                setattr(source, model_name, changes[input_name])
-        if "githubAppClientSecret" in changes:
-            source.githubAppClientSecretEncrypted = self._encrypt_secret(changes["githubAppClientSecret"])
-        if self._SYNC_CONFIG_FIELDS.intersection(changes):
+        changed = self._changed_fields(source, changes)
+        if not changed:
+            return source, changed
+        for name in changed & _PLAIN_FIELD_MAP.keys():
+            setattr(source, _PLAIN_FIELD_MAP[name], changes[name])
+        if _SECRET_FIELD in changed:
+            source.githubAppClientSecretEncrypted = self._encrypt_secret(changes[_SECRET_FIELD])
+        if self._SYNC_CONFIG_FIELDS & changed:
             source.configRevision += 1
         source.updatedBy = updated_by
         await source.save(session=session)
-        return source
+        return source, changed
 
     async def mark_sync_pending(
         self,

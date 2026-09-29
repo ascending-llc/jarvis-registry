@@ -58,12 +58,12 @@ Single authenticated entry point for A2A agents — handling skill discovery and
 
 ## 4. Skill Gateway
 
-The Skill Gateway is the organization-wide control plane for AI skills — managing how skills are defined, organized, discovered, and kept in sync with your source of truth. Callers never need to know where a skill lives, which transport it speaks, or which team owns it.
+The Skill Gateway is the private control plane for organization-curated AI skills — managing how approved skills are authored, organized, governed, imported, and distributed without publishing private content publicly.
 
-- **Organization Skill Management**: Define and organize skills across teams, domains, and environments from a central control plane — skills are versioned, tagged by capability and owner, and grouped into namespaces so large organizations can manage hundreds of skills without collision or sprawl
-- **Skill Discovery**: Semantic vector search matches natural language queries to skills by description, tags, and declared capabilities — ACL-filtered so callers only see skills they are authorized to invoke; see [Enterprise RAG architecture](https://exploreagentic.ai/enterprise-rag/) for the retrieval patterns that underpin this feature
-- **Skill Lifecycle Management**: Skills have explicit lifecycle states (draft, active, deprecated) — deprecated skills surface warnings to callers before they are removed, and active skills can be promoted or rolled back without gateway redeployment
-- **Git Provider Sync**: Skills are synced bidirectionally with your Git provider (GitHub, GitLab, Bitbucket) — skill definitions live in version-controlled repositories and changes are reflected in the gateway automatically; pull requests, branch-based staging, and audit history flow from your existing Git workflow into the Skill Gateway without manual import steps
+- **Organization Skill Management**: Create and edit skills in the Registry UI or API, organize them with categories and tags, track versions, attach supporting text or binary files, and enable or disable skills as their availability changes
+- **Skill Access & Governance**: Keep skills private by default and use resource-level ACL permissions to control who can view, edit, delete, or share each skill; access is filtered for the authenticated user before content is delivered
+- **Git Provider Sync**: Import skills one-way from GitHub into the Registry — discover `SKILL.md` files, safely extract an immutable repository snapshot, apply valid changes atomically, and report errors per skill; the [AI Skills CLI](features/ai-skills-cli.md) then delivers accessible approved skills to Claude Code, Codex, and GitHub Copilot
+- **Private Developer Distribution**: Deliver approved Registry skills consistently to personal or project environments through the [AI Skills CLI](features/ai-skills-cli.md), with the [Skill Gateway](features/skill-gateway.md) serving as the authoring and governance source of truth
 
 ---
 

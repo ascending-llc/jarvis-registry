@@ -9,6 +9,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from registry_pkgs.models import ExtendedSkill as Skill
 from registry_pkgs.models.enums import (
     SkillSyncJobErrorCode,
     SkillSyncJobPhase,
@@ -185,21 +186,17 @@ class SkillSyncExecutionService:
             )
             job.applySummary = apply_summary
             live_skills = await self._apply_service.list_live_skills(source.id)
-            try:
-                await self._apply_service.inherit_source_acl_to_skills(source, [skill.id for skill in live_skills])
-            except Exception:
-                # Skill content is already committed; ACL inheritance remains retryable and must not rewrite job truth.
-                logger.exception("ACL inheritance failed for source %s, continuing", source.id)
+            acl_error = await self._inherit_source_acl(source, live_skills)
 
             has_errors = bool(job.skillErrors) or apply_summary.skillsFailed > 0
             final_status = SkillSyncJobStatus.PARTIAL_SUCCESS if has_errors else SkillSyncJobStatus.SUCCESS
-            await self._finalize_job(job, final_status, SkillSyncJobPhase.COMPLETED)
+            await self._finalize_job(job, final_status, SkillSyncJobPhase.COMPLETED, error=acl_error)
             source.syncStatus = (
                 SkillSyncStateMachine.transition_to_sync_partial_success(source.syncStatus)
                 if has_errors
                 else SkillSyncStateMachine.transition_to_sync_success(source.syncStatus)
             )
-            source.syncMessage = None
+            source.syncMessage = acl_error
             source.lastSync = SkillSyncSourceLastSync(
                 jobId=str(job.id),
                 status=final_status,
@@ -219,6 +216,19 @@ class SkillSyncExecutionService:
             await self._fail_job(source, job, f"Internal error: {exc}")
         finally:
             shutil.rmtree(extraction_dir, ignore_errors=True)
+
+    async def _inherit_source_acl(self, source: SkillSyncSource, live_skills: list[Skill]) -> str | None:
+        """Copy the source's ACL grants to its skills; return an error message instead of raising.
+
+        Skill content is already committed, so a failure must not change the job's status. Like federation
+        sync, the message is recorded on the job and the source, and the next sync retries (insert-only).
+        """
+        try:
+            await self._apply_service.inherit_source_acl_to_skills(source, [skill.id for skill in live_skills])
+        except Exception as exc:
+            logger.exception("ACL inheritance failed for source %s, continuing", source.id)
+            return f"ACL inheritance failed for {len(live_skills)} skills: {exc}"
+        return None
 
     async def _run_delete(self, source: SkillSyncSource, job: SkillSyncJob) -> None:
         """Delete child resources first, then finalize the source only after cleanup succeeds."""

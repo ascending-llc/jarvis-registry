@@ -4,8 +4,14 @@ Seed AccessRole data for Registry-owned ACL resource types (Standalone version)
 This script directly operates on MongoDB collections without using Beanie ORM
 to completely avoid any model imports that might trigger A2AAgent initialization.
 
-Jarvis Chat initializes base roles (agent, mcpServer, promptGroup, etc).
-Jarvis Registry seeds federation, workflow, and skill roles.
+Registry seeds federation, workflow, skill, skillSyncSource, mcpServer, and
+remoteAgent roles.
+
+Jarvis Chat predates Registry and owns seeding mcpServer roles in deployments
+where it shares a MongoDB with Registry. This script also seeds mcpServer here,
+using the same accessRoleId/name/description/permBits values Chat already
+creates there, so the upsert below is a no-op in a shared deployment — it only
+fills the gap for a Registry-only deployment with no Chat present.
 
 Usage:
     python scripts/seed_access_roles_standalone.py
@@ -26,9 +32,12 @@ async def seed_access_roles(collection, session):
     Uses direct MongoDB operations instead of Beanie ORM to avoid
     triggering A2AAgent model initialization.
     """
-    print("=== Seeding Federation, Workflow, Skill & Skill Sync Source AccessRoles ===\n")
+    print("=== Seeding Federation, Workflow, Skill, Skill Sync Source, MCP Server & Remote Agent AccessRoles ===\n")
 
-    # Chat handles its own resource types. Registry owns these additional role catalogs.
+    # Chat owns its own resource types (agent, promptGroup) plus mcpServer (see module
+    # docstring). Registry owns federation, workflow, skill, skillSyncSource, and
+    # remoteAgent, and also seeds mcpServer here so a Registry-only deployment (no
+    # Chat) still gets it.
     roles_data = [
         {
             "accessRoleId": "federation_viewer",
@@ -175,6 +184,66 @@ async def seed_access_roles(collection, session):
             "resourceType": "skillSyncSource",
             "name": "com_ui_skill_sync_source_role_owner",
             "description": "com_ui_skill_sync_source_owner_desc",
+            "permBits": 15,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "mcpServer_viewer",
+            "resourceType": "mcpServer",
+            "name": "com_ui_mcp_server_role_viewer",
+            "description": "com_ui_mcp_server_role_viewer_desc",
+            "permBits": 1,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "mcpServer_editor",
+            "resourceType": "mcpServer",
+            "name": "com_ui_mcp_server_role_editor",
+            "description": "com_ui_mcp_server_role_editor_desc",
+            "permBits": 3,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "mcpServer_owner",
+            "resourceType": "mcpServer",
+            "name": "com_ui_mcp_server_role_owner",
+            "description": "com_ui_mcp_server_role_owner_desc",
+            "permBits": 15,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "remoteAgent_viewer",
+            "resourceType": "remoteAgent",
+            "name": "com_ui_remote_agent_role_viewer",
+            "description": "com_ui_remote_agent_role_viewer_desc",
+            "permBits": 1,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "remoteAgent_editor",
+            "resourceType": "remoteAgent",
+            "name": "com_ui_remote_agent_role_editor",
+            "description": "com_ui_remote_agent_role_editor_desc",
+            "permBits": 3,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "remoteAgent_owner",
+            "resourceType": "remoteAgent",
+            "name": "com_ui_remote_agent_role_owner",
+            "description": "com_ui_remote_agent_role_owner_desc",
             "permBits": 15,
             "createdAt": datetime.now(UTC),
             "updatedAt": datetime.now(UTC),

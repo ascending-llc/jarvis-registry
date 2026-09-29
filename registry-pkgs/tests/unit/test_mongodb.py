@@ -3,9 +3,10 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pymongo.errors import OperationFailure
 
 from registry_pkgs.core.config import MongoConfig
-from registry_pkgs.database.mongodb import MongoDB, close_mongodb, init_mongodb
+from registry_pkgs.database.mongodb import MongoDB, close_mongodb, ensure_collections, init_mongodb
 
 
 class TestMongoDBConnection:
@@ -19,6 +20,12 @@ class TestMongoDBConnection:
         yield
         MongoDB.client = None
         MongoDB.database_name = None
+
+    @pytest.fixture(autouse=True)
+    def mock_ensure_collections(self):
+        """connect_db creates missing collections; the database here is a MagicMock, so stub that step."""
+        with patch("registry_pkgs.database.mongodb.ensure_collections", new_callable=AsyncMock) as mock:
+            yield mock
 
     @pytest.mark.asyncio
     async def test_connect_db_creates_client(self):
@@ -87,7 +94,7 @@ class TestMongoDBConnection:
             assert MongoDB.database_name == "extracted_db"
 
     @pytest.mark.asyncio
-    async def test_connect_db_initializes_beanie(self):
+    async def test_connect_db_initializes_beanie(self, mock_ensure_collections):
         """Test connect_db initializes Beanie with all document models."""
         with (
             patch("registry_pkgs.database.mongodb.AsyncMongoClient") as MockClient,
@@ -125,6 +132,9 @@ class TestMongoDBConnection:
             assert "FederationSyncJob" in model_names
             assert "SkillSyncSource" in model_names
             assert "SkillSyncJob" in model_names
+
+            # Every model's collection is ensured after Beanie is initialized
+            mock_ensure_collections.assert_awaited_once_with(mock_db, document_models)
 
     @pytest.mark.asyncio
     async def test_connect_db_only_once(self):
@@ -232,3 +242,65 @@ class TestConvenienceFunctions:
         with patch.object(MongoDB, "close_db", new_callable=AsyncMock) as mock_close:
             await close_mongodb()
             mock_close.assert_called_once()
+
+
+def _model(collection_name: str) -> MagicMock:
+    return MagicMock(get_collection_name=MagicMock(return_value=collection_name))
+
+
+class TestEnsureCollections:
+    """Test idempotent creation of Beanie model collections."""
+
+    @pytest.mark.asyncio
+    async def test_creates_only_missing_collections(self):
+        database = MagicMock(
+            list_collection_names=AsyncMock(return_value=["users"]),
+            create_collection=AsyncMock(),
+        )
+
+        await ensure_collections(database, [_model("users"), _model("skills"), _model("skillfiles")])
+
+        assert [call.args[0] for call in database.create_collection.await_args_list] == ["skills", "skillfiles"]
+        assert all(call.kwargs == {"check_exists": False} for call in database.create_collection.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_does_nothing_when_all_collections_exist(self):
+        database = MagicMock(
+            list_collection_names=AsyncMock(return_value=["users", "skills"]),
+            create_collection=AsyncMock(),
+        )
+
+        await ensure_collections(database, [_model("users"), _model("skills")])
+
+        database.create_collection.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_creates_a_collection_shared_by_two_models_once(self):
+        database = MagicMock(list_collection_names=AsyncMock(return_value=[]), create_collection=AsyncMock())
+
+        await ensure_collections(database, [_model("skills"), _model("skills")])
+
+        database.create_collection.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_tolerates_a_collection_created_concurrently(self):
+        namespace_exists = OperationFailure("Collection already exists", code=48)
+        database = MagicMock(
+            list_collection_names=AsyncMock(return_value=[]),
+            create_collection=AsyncMock(side_effect=[namespace_exists, None]),
+        )
+
+        await ensure_collections(database, [_model("skills"), _model("skillfiles")])
+
+        assert database.create_collection.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_raises_other_create_failures(self):
+        unauthorized = OperationFailure("not authorized", code=13)
+        database = MagicMock(
+            list_collection_names=AsyncMock(return_value=[]),
+            create_collection=AsyncMock(side_effect=unauthorized),
+        )
+
+        with pytest.raises(OperationFailure, match="not authorized"):
+            await ensure_collections(database, [_model("skills")])

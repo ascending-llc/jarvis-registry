@@ -360,7 +360,6 @@ export const metadataFromDetail = (detail: SkillDetail): SkillMetadata => ({
   description: detail.description,
   category: normalizeSkillCategory(detail.category),
   tags: detail.tags,
-  path: detail.name,
   version: detail.version,
   fileCount: detail.fileCount,
   alwaysApply: detail.alwaysApply,

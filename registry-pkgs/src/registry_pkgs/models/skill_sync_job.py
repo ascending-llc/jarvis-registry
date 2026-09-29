@@ -10,6 +10,7 @@ from .enums import (
     SkillSyncJobStatus,
     SkillSyncJobType,
     SkillSyncSkillErrorCode,
+    SkillSyncSkillErrorPhase,
     SkillSyncTriggerType,
 )
 
@@ -19,7 +20,7 @@ class SkillSyncSkillError(BaseModel):
     upstreamId: str
     errorCode: SkillSyncSkillErrorCode
     errorMessage: str
-    phase: str
+    phase: SkillSyncSkillErrorPhase
 
 
 class SkillSyncDiscoverySummary(BaseModel):

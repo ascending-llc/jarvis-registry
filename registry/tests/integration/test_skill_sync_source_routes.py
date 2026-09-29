@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from registry.api.v1.skill_sync.skill_sync_source_routes import router
 from registry.auth.dependencies import get_current_user
+from registry.core.config import settings
 from registry.deps import (
     get_acl_service,
     get_skill_sync_job_service,
@@ -19,11 +20,13 @@ from registry.deps import (
 )
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.services.skill_sync_service import ConnectionCheckResult, SyncTriggerResult
+from registry.services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from registry_pkgs.models.enums import (
     SkillSyncJobPhase,
     SkillSyncJobStatus,
     SkillSyncJobType,
     SkillSyncProviderType,
+    SkillSyncSkillErrorCode,
     SkillSyncSourceStatus,
     SkillSyncStatus,
     SkillSyncTriggerType,
@@ -33,6 +36,7 @@ from registry_pkgs.models.skill_sync_job import (
     SkillSyncApplySummary,
     SkillSyncDiscoverySummary,
     SkillSyncFullRequestSnapshot,
+    SkillSyncSkillError,
 )
 from registry_pkgs.models.skill_sync_source import SkillSyncSourceStats
 
@@ -118,7 +122,7 @@ def skill_sync_route_context():
     source_service.get_source = AsyncMock(return_value=source)
     source_service.get_recent_jobs = AsyncMock(return_value=[])
     source_service.list_sources = AsyncMock(return_value=([source], 1))
-    source_service.update_source = AsyncMock(return_value=source)
+    source_service.update_source = AsyncMock(return_value=(source, {"displayName"}))
     source_service.mark_sync_pending = AsyncMock(return_value=source)
     source_service.mark_sync_failed = AsyncMock(return_value=source)
     source_service.mark_deleting = AsyncMock(return_value=source)
@@ -131,6 +135,7 @@ def skill_sync_route_context():
     token_service = MagicMock()
     token_service.resolve_access_token = AsyncMock(return_value=None)
     token_service.delete_source_tokens = AsyncMock()
+    token_service.is_connected = AsyncMock(return_value=False)
     oauth_service = MagicMock()
     oauth_service.create_authorization_url.return_value = "https://github.com/login/oauth/authorize?state=test"
     oauth_service.resolve_source_id.return_value = str(source.id)
@@ -267,6 +272,61 @@ def test_job_polling_is_scoped_to_source(skill_sync_route_context) -> None:
     assert response.json()["status"] == "pending"
 
 
+def test_job_response_serializes_skill_errors(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.job.skillErrors = [
+        SkillSyncSkillError(
+            skillPath="skills/claude-api",
+            upstreamId="skills/claude-api",
+            errorCode=SkillSyncSkillErrorCode.SKILL_PARSE_FAILED,
+            errorMessage="SKILL.md frontmatter validation failed",
+            phase="discovery",
+        )
+    ]
+
+    response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}/jobs/{ctx.job.id}")
+
+    assert response.status_code == 200
+    assert response.json()["skillErrors"] == [
+        {
+            "skillPath": "skills/claude-api",
+            "upstreamId": "skills/claude-api",
+            "errorCode": "skill_parse_failed",
+            "errorMessage": "SKILL.md frontmatter validation failed",
+            "phase": "discovery",
+        }
+    ]
+
+
+def test_job_response_serializes_summaries(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.job.discoverySummary = SkillSyncDiscoverySummary(
+        discoveredSkillCount=2,
+        discoveredFileCount=5,
+        skippedPaths=["skills/README.md"],
+    )
+    ctx.job.applySummary = SkillSyncApplySummary(skillsCreated=1, skillsUpdated=1, filesCreated=3)
+
+    response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}/jobs/{ctx.job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["discoverySummary"] == {
+        "discoveredSkillCount": 2,
+        "discoveredFileCount": 5,
+        "skippedPaths": ["skills/README.md"],
+    }
+    assert body["applySummary"] == {
+        "skillsCreated": 1,
+        "skillsUpdated": 1,
+        "skillsDeleted": 0,
+        "skillsFailed": 0,
+        "filesCreated": 3,
+        "filesUpdated": 0,
+        "filesDeleted": 0,
+    }
+
+
 def test_get_source_returns_detail(skill_sync_route_context) -> None:
     ctx = skill_sync_route_context
     response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}")
@@ -276,6 +336,16 @@ def test_get_source_returns_detail(skill_sync_route_context) -> None:
     assert body["displayName"] == "Skills"
     assert body["githubAppClientId"] == "client"
     assert body["hasClientSecret"] is True
+    assert body["authorization"] == {"connected": False}
+    ctx.token_service.is_connected.assert_awaited_once_with(user_id=USER_ID, source_id=ctx.source.id)
+
+
+def test_get_source_reports_connected_user(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.token_service.is_connected = AsyncMock(return_value=True)
+    response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}")
+    assert response.status_code == 200
+    assert response.json()["authorization"] == {"connected": True}
 
 
 def test_get_source_not_found(skill_sync_route_context) -> None:
@@ -322,6 +392,66 @@ def test_oauth_initiate_redirects_to_github(skill_sync_route_context) -> None:
     assert response.status_code == 307
     assert "github.com/login/oauth/authorize" in response.headers["location"]
     _assert_permission_checked(ctx, "EDIT")
+
+
+_PUBLIC_REGISTRY_URL = "https://jarvis.example.com/gateway"
+_EXPECTED_CALLBACK_URL = f"{_PUBLIC_REGISTRY_URL}/skill-sync-sources/oauth/callback"
+
+
+@pytest.fixture
+def proxied_client(skill_sync_route_context, monkeypatch):
+    """Client that mimics the deployed hop: plain http from a TLS-terminating proxy, under a root path."""
+    monkeypatch.setattr(settings, "registry_url", _PUBLIC_REGISTRY_URL)
+    with TestClient(
+        skill_sync_route_context.client.app,
+        base_url="http://registry-internal:7860",
+        root_path="/gateway",
+    ) as client:
+        yield client
+
+
+def test_oauth_initiate_uses_public_registry_url_for_redirect_uri(skill_sync_route_context, proxied_client) -> None:
+    ctx = skill_sync_route_context
+    response = proxied_client.get(
+        f"/gateway/skill-sync-sources/{ctx.source.id}/oauth/initiate",
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    assert ctx.oauth_service.create_authorization_url.call_args.kwargs["redirect_uri"] == _EXPECTED_CALLBACK_URL
+
+
+def test_oauth_callback_uses_public_registry_url_for_redirect_uri(skill_sync_route_context, proxied_client) -> None:
+    ctx = skill_sync_route_context
+    ctx.oauth_service.exchange_callback = AsyncMock(return_value=USER_ID)
+    response = proxied_client.get(
+        "/gateway/skill-sync-sources/oauth/callback?code=code&state=state",
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    assert "status=connected" in response.headers["location"]
+    assert ctx.oauth_service.exchange_callback.call_args.kwargs["redirect_uri"] == _EXPECTED_CALLBACK_URL
+
+
+def test_oauth_initiate_and_callback_send_identical_redirect_uri(skill_sync_route_context, proxied_client) -> None:
+    # GitHub rejects the token exchange unless redirect_uri matches the one sent to /authorize exactly.
+    ctx = skill_sync_route_context
+    ctx.oauth_service.exchange_callback = AsyncMock(return_value=USER_ID)
+    proxied_client.get(f"/gateway/skill-sync-sources/{ctx.source.id}/oauth/initiate", follow_redirects=False)
+    proxied_client.get("/gateway/skill-sync-sources/oauth/callback?code=code&state=state", follow_redirects=False)
+    initiate_uri = ctx.oauth_service.create_authorization_url.call_args.kwargs["redirect_uri"]
+    callback_uri = ctx.oauth_service.exchange_callback.call_args.kwargs["redirect_uri"]
+    assert initiate_uri == callback_uri
+
+
+def test_oauth_callback_path_on_registered_app() -> None:
+    # Guards the helper's reliance on url_path_for returning the full public path under the real router wiring.
+    from registry.routers import register_routers
+
+    app = FastAPI()
+    register_routers(app)
+    assert app.url_path_for("skill_sync_oauth_callback") == (
+        f"/api/{settings.api_version}/skill-sync-sources/oauth/callback"
+    )
 
 
 def test_create_source_delegates_transaction_to_service(skill_sync_route_context) -> None:
@@ -440,3 +570,45 @@ def test_acl_forbidden_returns_403(skill_sync_route_context) -> None:
     ctx.acl_service.check_user_permission = AsyncMock(side_effect=HTTPException(status_code=403, detail="Forbidden"))
     response = ctx.client.get(f"/skill-sync-sources/{ctx.source.id}")
     assert response.status_code == 403
+
+
+def test_update_display_name_only_keeps_tokens(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    response = ctx.client.put(f"/skill-sync-sources/{ctx.source.id}", json={"displayName": "Renamed"})
+    assert response.status_code == 200
+    ctx.token_service.delete_source_tokens.assert_not_awaited()
+
+
+@pytest.mark.parametrize("field", ["githubAppClientId", "githubAppClientSecret"])
+def test_update_real_credential_change_deletes_tokens(skill_sync_route_context, field) -> None:
+    ctx = skill_sync_route_context
+    ctx.source_service.update_source = AsyncMock(return_value=(ctx.source, {field}))
+    response = ctx.client.put(f"/skill-sync-sources/{ctx.source.id}", json={field: "new-value"})
+    assert response.status_code == 200
+    ctx.token_service.delete_source_tokens.assert_awaited_once_with(ctx.source.id)
+
+
+def test_update_full_unchanged_payload_keeps_tokens_and_revision(skill_sync_route_context, monkeypatch) -> None:
+    """Regression for C1: resending every current value (as the old edit form did) must not wipe tokens."""
+    ctx = skill_sync_route_context
+    monkeypatch.setattr(
+        "registry.services.skill_sync_source_crud_service.decrypt_value",
+        lambda _value: "secret",
+    )
+    ctx.source.save = AsyncMock()
+    ctx.source_service.update_source = SkillSyncSourceCrudService().update_source
+    payload = {
+        "displayName": "Skills",
+        "tags": [],
+        "owner": "octocat",
+        "repo": "skills",
+        "ref": "main",
+        "paths": ["skills"],
+        "githubAppClientId": "client",
+        "githubAppClientSecret": "secret",
+    }
+    response = ctx.client.put(f"/skill-sync-sources/{ctx.source.id}", json=payload)
+    assert response.status_code == 200
+    ctx.token_service.delete_source_tokens.assert_not_awaited()
+    ctx.source.save.assert_not_awaited()
+    assert ctx.source.configRevision == 1

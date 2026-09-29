@@ -99,10 +99,13 @@ Full-replaces the disabled-tools list.
 
 ## Access Control
 
-| Endpoint | Required permission | Roles |
-|---|---|---|
-| `GET /servers/{server_id}/tools` | `VIEW` | VIEWER, EDITOR, OWNER |
-| `PATCH /servers/{server_id}/tools` | `SHARE` | OWNER only |
+| Endpoint | Required scope | Required permission | Roles |
+|---|---|---|---|
+| `GET /servers/{server_id}/tools` | `servers-read` | `VIEW` | VIEWER, EDITOR, OWNER |
+| `PATCH /servers/{server_id}/tools` | `servers-write` | `SHARE` | OWNER only |
+
+The scope is checked first, by `ScopePermissionMiddleware` against `scopes.yml`; the ACL permission
+is then checked by the route against the caller's role on that server.
 
 `SHARE` is the bit exclusive to `RoleBits.OWNER`. A VIEWER or EDITOR calling `PATCH` receives
 `403 Forbidden`.

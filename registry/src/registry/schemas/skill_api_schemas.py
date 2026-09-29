@@ -95,7 +95,6 @@ class SkillMetadataResponse(BaseModel):
     description: str
     category: str = ""
     tags: list[str] = Field(default_factory=list)
-    path: str
     version: int = 1
     fileCount: int = 0
     alwaysApply: bool = False

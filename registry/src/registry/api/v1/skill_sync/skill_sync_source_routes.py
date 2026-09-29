@@ -30,6 +30,7 @@ from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....schemas.skill_sync_api_schemas import (
+    SkillSyncAuthorizationResponse,
     SkillSyncDeleteResponse,
     SkillSyncDryRunResponse,
     SkillSyncJobResponse,
@@ -54,6 +55,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/skill-sync-sources", tags=["skill-sync-sources"])
 
+_OAUTH_CALLBACK_ROUTE_NAME = "skill_sync_oauth_callback"
+
 
 def _to_job_response(job: SkillSyncJob) -> SkillSyncJobResponse:
     return SkillSyncJobResponse(
@@ -64,9 +67,9 @@ def _to_job_response(job: SkillSyncJob) -> SkillSyncJobResponse:
         status=job.status,
         phase=job.phase,
         requestSnapshot=job.requestSnapshot,
-        discoverySummary=job.discoverySummary.model_dump(mode="json"),
-        applySummary=job.applySummary.model_dump(mode="json"),
-        skillErrors=[item.model_dump(mode="json") for item in job.skillErrors],
+        discoverySummary=job.discoverySummary,
+        applySummary=job.applySummary,
+        skillErrors=job.skillErrors,
         errorCode=job.errorCode,
         error=job.error,
         startedAt=job.startedAt,
@@ -116,18 +119,33 @@ def _to_list_response(
 async def _to_detail_response(
     source: SkillSyncSource,
     source_service: SkillSyncSourceCrudService,
+    token_service: SkillSyncTokenService,
+    *,
+    user_id: str,
     permissions: ResourcePermissions | None = None,
 ) -> SkillSyncSourceDetailResponse:
     recent_jobs = await source_service.get_recent_jobs(source.id)
+    connected = await token_service.is_connected(user_id=user_id, source_id=source.id)
     base = _to_list_response(source, permissions)
     return SkillSyncSourceDetailResponse(
         **base.model_dump(),
         githubAppClientId=source.githubAppClientId,
         hasClientSecret=bool(source.githubAppClientSecretEncrypted),
+        authorization=SkillSyncAuthorizationResponse(connected=connected),
         recentJobs=[_to_job_response(job) for job in recent_jobs],
         createdBy=source.createdBy,
         updatedBy=source.updatedBy,
     )
+
+
+def _skill_sync_oauth_callback_url(request: Request) -> str:
+    """Build the public GitHub OAuth callback URL for skill sync.
+
+    Uses ``settings.registry_url`` (public scheme, host and root path) instead of ``request.url_for``,
+    which reflects the proxy-internal request and yields ``http://`` behind a TLS-terminating proxy.
+    """
+    callback_path = request.app.url_path_for(_OAUTH_CALLBACK_ROUTE_NAME)
+    return f"{settings.registry_url}{callback_path}"
 
 
 async def _required_source(source_id: str, source_service: SkillSyncSourceCrudService) -> SkillSyncSource:
@@ -147,6 +165,7 @@ async def create_source(
     user_context: CurrentUser,
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
     skill_sync_service: SkillSyncService = Depends(get_skill_sync_service),
+    token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     user_str_id = str(user_context["user_id"])
@@ -169,7 +188,9 @@ async def create_source(
         return await _to_detail_response(
             source,
             source_service,
-            ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True),
+            token_service,
+            user_id=user_str_id,
+            permissions=ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True),
         )
     except HTTPException:
         raise
@@ -238,6 +259,7 @@ async def get_source(
     source_id: str,
     user_context: CurrentUser,
     source_service: SkillSyncSourceCrudService = Depends(get_skill_sync_source_crud_service),
+    token_service: SkillSyncTokenService = Depends(get_skill_sync_token_service),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     try:
@@ -249,7 +271,13 @@ async def get_source(
             resource_id=source.id,
             required_permission="VIEW",
         )
-        return await _to_detail_response(source, source_service, permissions)
+        return await _to_detail_response(
+            source,
+            source_service,
+            token_service,
+            user_id=str(user_context["user_id"]),
+            permissions=permissions,
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -287,9 +315,8 @@ async def update_source(
                 detail=create_error_detail(ErrorCode.CONFLICT, "Skill sync source cannot be updated"),
             )
         changes = data.model_dump(exclude_unset=True, exclude={"syncAfterUpdate"})
-        credentials_changed = "githubAppClientId" in changes or "githubAppClientSecret" in changes
-        source = await source_service.update_source(source, changes, updated_by=user_str_id)
-        if credentials_changed:
+        source, changed_fields = await source_service.update_source(source, changes, updated_by=user_str_id)
+        if changed_fields & SkillSyncSourceCrudService.CREDENTIAL_FIELDS:
             await token_service.delete_source_tokens(source.id)
         if data.syncAfterUpdate:
             result = await sync_service.trigger_sync(
@@ -300,7 +327,13 @@ async def update_source(
             if result.job is None:
                 return SkillSyncTriggerResponse(needsAuthorization=True)
             return SkillSyncTriggerResponse(job=_to_job_response(result.job))
-        return await _to_detail_response(source, source_service, permissions)
+        return await _to_detail_response(
+            source,
+            source_service,
+            token_service,
+            user_id=user_str_id,
+            permissions=permissions,
+        )
     except HTTPException:
         raise
     except ValueError as exc:
@@ -445,7 +478,7 @@ async def initiate_skill_sync_oauth(
             resource_id=source.id,
             required_permission="EDIT",
         )
-        redirect_uri = str(request.url_for("skill_sync_oauth_callback"))
+        redirect_uri = _skill_sync_oauth_callback_url(request)
         authorization_url = oauth_service.create_authorization_url(
             source=source,
             user_id=str(user_context["user_id"]),
@@ -462,7 +495,7 @@ async def initiate_skill_sync_oauth(
         ) from exc
 
 
-@router.get("/oauth/callback", name="skill_sync_oauth_callback")
+@router.get("/oauth/callback", name=_OAUTH_CALLBACK_ROUTE_NAME)
 async def skill_sync_oauth_callback(
     request: Request,
     code: str | None = Query(default=None),
@@ -491,7 +524,7 @@ async def skill_sync_oauth_callback(
         return RedirectResponse(error_redirect)
     try:
         source = await _required_source(resolved_source_id, source_service)
-        redirect_uri = str(request.url_for("skill_sync_oauth_callback"))
+        redirect_uri = _skill_sync_oauth_callback_url(request)
         # Store the token only; the frontend then drives dryRun (test-connect) and sync explicitly.
         await oauth_service.exchange_callback(
             source=source,

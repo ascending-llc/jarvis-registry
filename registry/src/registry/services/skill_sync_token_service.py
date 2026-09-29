@@ -86,6 +86,28 @@ class SkillSyncTokenService:
         await self.store_tokens(user_id=user_id, source_id=source_id, tokens=tokens)
         return tokens.access_token
 
+    async def is_connected(self, *, user_id: str, source_id: str | PydanticObjectId) -> bool:
+        """Whether this user holds an unexpired access or refresh token for the source.
+
+        A local lookup only: GitHub is not called, so a token revoked on GitHub still reads as connected
+        until a sync or test-connect reports ``needsAuthorization``.
+        """
+        now = _utc_now()
+        token = await Token.find_one(
+            {
+                "userId": PydanticObjectId(user_id),
+                "identifier": build_skill_sync_token_identifier(source_id),
+                "type": {
+                    "$in": [
+                        TokenType.SKILL_SYNC_GITHUB_ACCESS.value,
+                        TokenType.SKILL_SYNC_GITHUB_REFRESH.value,
+                    ]
+                },
+                "expiresAt": {"$gt": now},
+            }
+        )
+        return token is not None
+
     async def refresh_tokens(
         self,
         *,

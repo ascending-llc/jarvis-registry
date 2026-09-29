@@ -269,3 +269,32 @@ async def test_delete_user_access_token_scopes_to_user_and_access_type(monkeypat
         }
     )
     delete_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_is_connected_true_when_unexpired_token_exists(monkeypatch, service):
+    user_id = str(PydanticObjectId())
+    source_id = PydanticObjectId()
+    find_one = AsyncMock(return_value=_make_token())
+    monkeypatch.setattr("registry.services.skill_sync_token_service.Token.find_one", find_one)
+
+    assert await service.is_connected(user_id=user_id, source_id=source_id) is True
+
+    query = find_one.await_args.args[0]
+    assert query["userId"] == PydanticObjectId(user_id)
+    assert query["identifier"] == build_skill_sync_token_identifier(source_id)
+    assert set(query["type"]["$in"]) == {
+        TokenType.SKILL_SYNC_GITHUB_ACCESS.value,
+        TokenType.SKILL_SYNC_GITHUB_REFRESH.value,
+    }
+    assert "$gt" in query["expiresAt"]
+
+
+@pytest.mark.asyncio
+async def test_is_connected_false_when_no_unexpired_token(monkeypatch, service):
+    monkeypatch.setattr(
+        "registry.services.skill_sync_token_service.Token.find_one",
+        AsyncMock(return_value=None),
+    )
+
+    assert await service.is_connected(user_id=str(PydanticObjectId()), source_id=PydanticObjectId()) is False

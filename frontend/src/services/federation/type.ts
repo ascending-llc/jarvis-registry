@@ -2,13 +2,21 @@ export type ProviderType = 'aws_agentcore' | 'azure_ai_foundry';
 
 export type FederationStatus = 'active' | 'deleting' | 'deleted';
 
-export type SyncStatus = 'idle' | 'pending' | 'syncing' | 'success' | 'failed';
+export type SyncStatus = 'idle' | 'pending' | 'syncing' | 'success' | 'partial_success' | 'failed';
 
 export type JobType = 'full_sync' | 'config_resync' | 'force_sync' | 'delete_sync';
 
-export type JobStatus = 'pending' | 'syncing' | 'success' | 'failed';
+export type JobStatus = 'pending' | 'syncing' | 'success' | 'partial_success' | 'failed';
 
-export type JobPhase = 'queued' | 'discovering' | 'applying' | 'syncing_vectors' | 'completed' | 'failed';
+export type JobPhase =
+  | 'queued'
+  | 'downloading'
+  | 'extracting'
+  | 'discovering'
+  | 'applying'
+  | 'syncing_vectors'
+  | 'completed'
+  | 'failed';
 
 export interface ProviderConfig {
   region?: string;

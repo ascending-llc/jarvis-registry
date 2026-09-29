@@ -206,13 +206,38 @@ async def test_full_sync_tolerates_acl_inheritance_failure():
         errors=[],
         summary=SkillSyncDiscoverySummary(discoveredSkillCount=1),
     )
+    ctx.apply_service.list_live_skills.return_value = [SimpleNamespace(id=PydanticObjectId())]
     ctx.apply_service.inherit_source_acl_to_skills.side_effect = RuntimeError("ACL unavailable")
     job = _job(source)
 
     await ctx.service.run_claimed_job(job)
 
+    # The status stays as the skill writes decided; the failure is recorded like federation sync does.
     assert job.status == SkillSyncJobStatus.SUCCESS
     assert source.syncStatus == SkillSyncStatus.SUCCESS
+    assert job.error == "ACL inheritance failed for 1 skills: ACL unavailable"
+    assert job.errorCode is None
+    assert source.syncMessage == job.error
+    assert source.lastSync is not None
+
+
+@pytest.mark.asyncio
+async def test_full_sync_clears_a_previous_sync_message_when_acl_inheritance_succeeds():
+    source = _source()
+    source.syncMessage = "ACL inheritance failed for 1 skills: ACL unavailable"
+    ctx = _service(source)
+    ctx.discovery_service.discover_skills.return_value = DiscoveryResult(
+        skills=[SimpleNamespace(upstream_id="skills/demo")],
+        errors=[],
+        summary=SkillSyncDiscoverySummary(discoveredSkillCount=1),
+    )
+    job = _job(source)
+
+    await ctx.service.run_claimed_job(job)
+
+    assert job.status == SkillSyncJobStatus.SUCCESS
+    assert job.error is None
+    assert source.syncMessage is None
 
 
 @pytest.mark.asyncio

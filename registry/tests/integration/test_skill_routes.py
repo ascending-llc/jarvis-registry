@@ -36,7 +36,6 @@ def _make_skill(skill_id: PydanticObjectId | None = None) -> MagicMock:
     skill.frontmatter = {"name": "test-skill"}
     skill.category = "testing"
     skill.tags = ["python"]
-    skill.path = "test-skill"
     skill.version = 1
     skill.fileCount = 0
     skill.enabled = True
@@ -108,6 +107,7 @@ def test_list_skills_returns_acl_metadata_and_forwards_filters(skill_app):
     assert item["name"] == "test-skill"
     assert item["enabled"] is True
     assert item["permissions"]["EDIT"] is True
+    assert "path" not in item
     skill_app.service.list_skills.assert_awaited_once_with(user_id=_USER_ID, enabled=True, file_count=0)
 
 
