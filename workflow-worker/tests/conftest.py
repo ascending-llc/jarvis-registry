@@ -2,6 +2,9 @@
 
 import os
 
+from registry_pkgs.testing.fixtures import disable_dotenv_loading
+
+disable_dotenv_loading()
 os.environ.setdefault("X_JARVIS_REGISTRY_IMPORT_CHECKS", "disabled")
 os.environ.setdefault("CREDS_KEY", "00" * 16)
 

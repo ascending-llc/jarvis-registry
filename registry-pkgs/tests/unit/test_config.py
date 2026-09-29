@@ -5,7 +5,8 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from registry_pkgs.core.config import JarvisBaseSettings
+from registry_pkgs.core.config import DISABLE_DOTENV_ENV_VAR, JarvisBaseSettings
+from registry_pkgs.testing.fixtures import disable_dotenv_loading
 
 
 @pytest.mark.unit
@@ -110,3 +111,41 @@ def test_registry_client_origin_keeps_port() -> None:
         x_jarvis_registry_import_checks="disabled",
     )
     assert settings.registry_client_origin == "http://localhost:5173"
+
+
+def test_dotenv_in_current_directory_is_ignored_when_disabled(tmp_path, monkeypatch) -> None:
+    # conftest's bootstrap set JARVIS_DISABLE_DOTENV=1; a `.env` right in the working directory must not load.
+    (tmp_path / ".env").write_text("DEPLOYMENT_ENVIRONMENT=from-dotenv\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DEPLOYMENT_ENVIRONMENT", raising=False)
+    assert os.environ[DISABLE_DOTENV_ENV_VAR] == "1"
+
+    assert JarvisBaseSettings(x_jarvis_registry_import_checks="disabled").deployment_environment is None
+
+
+def test_dotenv_in_current_directory_loads_when_not_disabled(tmp_path, monkeypatch) -> None:
+    # Control for the test above: without the switch, the same `.env` is read (local dev behavior).
+    (tmp_path / ".env").write_text("DEPLOYMENT_ENVIRONMENT=from-dotenv\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DEPLOYMENT_ENVIRONMENT", raising=False)
+    monkeypatch.delenv(DISABLE_DOTENV_ENV_VAR)
+
+    assert JarvisBaseSettings(x_jarvis_registry_import_checks="disabled").deployment_environment == "from-dotenv"
+
+
+def test_real_environment_still_wins_when_dotenv_disabled(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text("DEPLOYMENT_ENVIRONMENT=from-dotenv\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEPLOYMENT_ENVIRONMENT", "from-env")
+
+    assert JarvisBaseSettings(x_jarvis_registry_import_checks="disabled").deployment_environment == "from-env"
+
+
+def test_disable_dotenv_loading_sets_both_guards(monkeypatch) -> None:
+    monkeypatch.delenv(DISABLE_DOTENV_ENV_VAR, raising=False)
+    monkeypatch.delenv("LITELLM_MODE", raising=False)
+
+    disable_dotenv_loading()
+
+    assert os.environ[DISABLE_DOTENV_ENV_VAR] == "1"
+    assert os.environ["LITELLM_MODE"] == "PRODUCTION"
