@@ -155,6 +155,9 @@ class EmbeddingReindexExecutionService:
         self._settings = settings
         self._federation_job_service = federation_job_service
         self._grace_seconds = settings.embedding_reindex_grace_period_seconds
+        # None → derive from the MCP client timeouts (the default); an override lets ops/tests shorten it.
+        override = settings.embedding_reindex_catch_up_min_delay_seconds
+        self._catch_up_min_delay = timedelta(seconds=override) if override is not None else _CATCH_UP_MIN_DELAY
 
     async def _transition_or_lost(self, job: EmbeddingReindexJob, *, lease_owner: str, set_fields: dict) -> None:
         """Apply a lease-checked write, or raise if this pod no longer owns the job."""
@@ -343,7 +346,7 @@ class EmbeddingReindexExecutionService:
         than wedging writes forever. ``ensure_lease`` runs on every tick so a lost lease stops the wait.
         """
         started = _as_utc(job.startedAt)
-        min_delay_deadline = started + _CATCH_UP_MIN_DELAY
+        min_delay_deadline = started + self._catch_up_min_delay
         drain_deadline = started + _FEDERATION_DRAIN_TIMEOUT
         while True:
             await ensure_lease()

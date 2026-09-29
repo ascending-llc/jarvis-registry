@@ -131,6 +131,10 @@ class Settings(JarvisBaseSettings):
     # pod's watcher can swap to the new generation. Must exceed the watcher poll interval (1s) or a pod
     # could miss the swap window.
     embedding_reindex_grace_period_seconds: float = Field(default=60.0, gt=1.0)
+    # Catch-up waits at least this long, measured from the job's start, before reading the
+    # post-sweep watermark — it covers the longest gated write still in flight. None → derive from the
+    # MCP client timeouts (~175s). Tests and ops can shorten it; must be >= 0.
+    embedding_reindex_catch_up_min_delay_seconds: float | None = Field(default=None, ge=0)
 
     # ==================== Azure OpenAI ====================
     azure_openai_api_key: str | None = None

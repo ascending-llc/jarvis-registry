@@ -172,7 +172,10 @@ def _wire(
 def _service(db_client, federation_job_service=None):
     # grace_period 0 so _grace_then_complete never sleeps.
     settings = SimpleNamespace(
-        vector_config=SimpleNamespace(), encryption_key=b"key", embedding_reindex_grace_period_seconds=0
+        vector_config=SimpleNamespace(),
+        encryption_key=b"key",
+        embedding_reindex_grace_period_seconds=0,
+        embedding_reindex_catch_up_min_delay_seconds=None,  # None → derived _CATCH_UP_MIN_DELAY
     )
     return EmbeddingReindexExecutionService(
         db_client=db_client,
