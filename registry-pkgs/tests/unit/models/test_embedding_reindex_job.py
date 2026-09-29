@@ -53,3 +53,9 @@ def test_collection_name_and_index() -> None:
     # Only the active-job query index; no single-flight unique index (CAS handles it).
     assert len(EmbeddingReindexJob.Settings.indexes) == 1
     assert not any(i.document.get("unique") for i in EmbeddingReindexJob.Settings.indexes)
+
+
+def test_attempts_and_last_error_default() -> None:
+    job = EmbeddingReindexJob.model_construct()
+    assert job.attempts == 0
+    assert job.lastError is None

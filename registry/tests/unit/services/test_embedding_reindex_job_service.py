@@ -44,6 +44,10 @@ async def test_claim_job_uses_atomic_lease_update(monkeypatch):
     assert {"leaseOwner": None} in query["$or"]
     assert any("leaseExpiresAt" in clause for clause in query["$or"])
     assert update["$set"]["leaseOwner"] == "worker-1"
+    # Every claim counts as an attempt, in the same atomic update (drives the retry cap).
+    assert update["$inc"] == {"attempts": 1}
+    # NOT filtered on attempts: a used-up job must stay claimable to be finalized FAILED.
+    assert "attempts" not in query
 
 
 async def test_claim_job_returns_none_when_nothing_claimable(monkeypatch):

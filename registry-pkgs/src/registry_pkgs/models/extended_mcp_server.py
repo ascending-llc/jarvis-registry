@@ -62,6 +62,7 @@ from ..core.config import ChunkingConfig
 from ..models.enums import McpAuthMode, MCPEntityType
 from ._generated import MCPServer
 from .federation_metadata import AgentCoreMcpFederationMetadata, extract_runtime_arn, extract_runtime_version
+from .vector_doc_ids import assign_deterministic_doc_ids
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +321,8 @@ class ExtendedMCPServer(MCPServer):
             f"(tools:{len(tool_functions)}, resources:{len(resources)}, prompts:{len(prompts)})"
         )
 
-        return docs
+        # Deterministic ids so a re-insert of the same server upserts instead of duplicating.
+        return assign_deterministic_doc_ids(docs, self.COLLECTION_NAME, self.id)
 
     def _create_tool_docs(
         self, tool_name: str, tool_data: dict, chunking_config: ChunkingConfig

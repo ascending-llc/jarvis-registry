@@ -8,8 +8,13 @@ from contextlib import suppress
 from datetime import timedelta
 from uuid import uuid4
 
-from registry.services.embedding_reindex_execution_service import EmbeddingReindexExecutionService
+from registry.services.embedding_reindex_execution_service import (
+    _MAX_ATTEMPTS,
+    EmbeddingReindexExecutionService,
+    EmbeddingReindexLeaseLostError,
+)
 from registry.services.embedding_reindex_job_service import EmbeddingReindexJobService
+from registry_pkgs.database.embedding_reindex_job_repository import transition_embedding_reindex_job
 from registry_pkgs.models.embedding_reindex_job import EmbeddingReindexJob
 
 logger = logging.getLogger(__name__)
@@ -19,10 +24,6 @@ _POLL_INTERVAL_SECONDS = 1.0
 # can reasonably take several minutes before the lease would otherwise need renewing.
 _LEASE_DURATION = timedelta(minutes=5)
 _HEARTBEAT_INTERVAL_SECONDS = 30.0
-
-
-class _EmbeddingReindexLeaseLostError(RuntimeError):
-    pass
 
 
 class EmbeddingReindexJobRunner:
@@ -75,6 +76,11 @@ class EmbeddingReindexJobRunner:
                 if job is None:
                     await self._wait_for_next_poll()
                     continue
+                if job.attempts > _MAX_ATTEMPTS:
+                    # Retries exhausted: finalize (COMPLETED if the switch already happened, else
+                    # FAILED) instead of sweeping again.
+                    await self._execution_service.finish_exhausted_job(job, lease_owner=self._lease_owner)
+                    continue
                 await self._execute(job)
             except asyncio.CancelledError:
                 raise
@@ -85,7 +91,7 @@ class EmbeddingReindexJobRunner:
     async def _execute(self, job: EmbeddingReindexJob) -> None:
         """Run execution and lease renewal as a coupled lifetime; lease loss cancels execution."""
         execution_task = asyncio.create_task(
-            self._execution_service.run_claimed_job(job),
+            self._execution_service.run_claimed_job(job, lease_owner=self._lease_owner),
             name=f"embedding-reindex-execution-{job.id}",
         )
         heartbeat_task = asyncio.create_task(
@@ -101,6 +107,14 @@ class EmbeddingReindexJobRunner:
             # losing the lease, and execution completing first surfaces its own result/failure. The
             # finally block then cancels whichever task is still running.
             next(iter(done)).result()
+        except (asyncio.CancelledError, EmbeddingReindexLeaseLostError):
+            # A lost lease belongs to another pod now — record nothing.
+            raise
+        except Exception as exc:
+            # An unexpected execution failure leaves the job RUNNING for a retry; record why, so the
+            # eventual give-up message carries the last error.
+            await self._record_last_error(job, exc)
+            raise
         finally:
             for task in (execution_task, heartbeat_task):
                 if task.done():
@@ -108,6 +122,12 @@ class EmbeddingReindexJobRunner:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+
+    async def _record_last_error(self, job: EmbeddingReindexJob, exc: Exception) -> None:
+        """Best-effort: stamp the last error while we still own the lease (ignored if we don't)."""
+        await transition_embedding_reindex_job(
+            job_id=job.id, lease_owner=self._lease_owner, set_fields={"lastError": str(exc)}
+        )
 
     async def _heartbeat(self, job: EmbeddingReindexJob) -> None:
         """Renew ownership periodically and fail fast when MongoDB rejects the owner."""
@@ -119,7 +139,7 @@ class EmbeddingReindexJobRunner:
                 lease_duration=_LEASE_DURATION,
             )
             if not renewed:
-                raise _EmbeddingReindexLeaseLostError(f"Lost lease for embedding reindex job {job.id}")
+                raise EmbeddingReindexLeaseLostError(f"Lost lease for embedding reindex job {job.id}")
 
     async def _wait_for_next_poll(self) -> None:
         try:

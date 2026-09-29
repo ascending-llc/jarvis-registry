@@ -4,6 +4,10 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
+
+from beanie import PydanticObjectId
+from bson.errors import InvalidId
 
 from registry.core.config import Settings
 from registry.core.vector_backend import resolve_vector_backend_config
@@ -11,8 +15,10 @@ from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.database.embedding_reindex_job_repository import get_active_embedding_reindex_job
 from registry_pkgs.database.model_gateway_selection_repository import get_model_gateway_selection
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+from registry_pkgs.models.embedding_reindex_job import EmbeddingReindexJob
+from registry_pkgs.models.enums import EmbeddingReindexJobStatus
 from registry_pkgs.vector.adapters.factory import VectorStoreFactory
-from registry_pkgs.vector.client import DatabaseClient, collection_name_for
+from registry_pkgs.vector.client import DatabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +30,9 @@ _GC_INTERVAL_SECONDS = 1800.0
 # to_thread worker is never cut off. It is comfortably above Weaviate's own query timeout, so no
 # in-flight read can outlive it; the cost is holding a few idle connections briefly after a rare swap.
 _RETIRED_ADAPTER_GRACE_SECONDS = 300.0
+# A just-superseded generation is kept this long after its switch COMPLETED, so a pod that has not
+# swapped yet can still read it during the grace period. Far longer than the real swap window.
+_PREVIOUS_GENERATION_RETENTION = timedelta(minutes=10)
 
 
 def _close_adapter(adapter) -> None:
@@ -167,43 +176,71 @@ class EmbeddingMaintenanceWatcher:
             return
 
 
-async def gc_stale_embedding_generations(db_client: DatabaseClient) -> None:
-    """Drop ``<base>_<generation>`` collections other than the active generation. Best-effort.
+def _generation_suffix(name: str, bases: tuple[str, ...]) -> str | None:
+    """Return ``<g>`` for a ``<base>_<g>`` collection, or None for a base name / a name that is not
+    one of ours (so the base collections are never touched)."""
+    for base in bases:
+        prefix = f"{base}_"
+        if name.startswith(prefix):
+            return name[len(prefix) :]
+    return None
 
-    Reclaims generations left by failed/superseded reindexes and by past switches. Base/legacy
-    collections are never dropped. Skips entirely while a reindex is active — another pod may be
-    sweeping into a new generation or still lagging on the previous one, and dropping either would
-    corrupt it; the orphans are harmless until the next idle GC.
+
+async def gc_stale_embedding_generations(db_client: DatabaseClient) -> None:
+    """Drop per-generation collections that are provably safe to remove. Best-effort; never blocks.
+
+    A ``<base>_<g>`` collection is dropped only when ALL hold:
+      (a) ``g`` is a valid job id whose job is COMPLETED/FAILED — a finished job never writes again;
+      (b) ``g`` is not the active generation;
+      (c) ``g`` is not the previous generation of any RUNNING job (read with NO lease filter, so an
+          expired-lease job still protects it);
+      (d) ``g`` is not the previous generation of a job that COMPLETED within the retention window
+          (a lagging pod may still be reading it during that job's grace).
+    The base names and any suffix without a job document are never dropped. Only a pod already on the
+    active generation runs GC (a stale pod still reads the previous one and must not drop it).
     """
     try:
-        if await get_active_embedding_reindex_job() is not None:
-            return
         selection = await get_model_gateway_selection(create_if_missing=False)
-        active_generation = selection.embeddingCollectionGeneration if selection else None
-        # Only a pod that has itself swapped to the active generation may GC. A stale pod (its watcher
-        # never built the new adapter) still reads the previous generation, and must not drop it.
-        if db_client.collection_generation != active_generation:
+        active = selection.embeddingCollectionGeneration if selection else None
+        if db_client.collection_generation != active:
             return
         adapter = db_client.adapter  # ungated read adapter; drop_collection lives on the same object
         if not hasattr(adapter, "list_collections") or not hasattr(adapter, "drop_collection"):
             return
+
+        jobs = EmbeddingReindexJob.get_pymongo_collection()
+        running = jobs.find({"status": EmbeddingReindexJobStatus.RUNNING.value})
+        protected = {doc.get("previousCollectionGeneration") async for doc in running}
+        protected.discard(None)
+
         bases = (ExtendedMCPServer.COLLECTION_NAME, A2AAgent.COLLECTION_NAME)
-        active_names = {collection_name_for(base, active_generation) for base in bases}
-        # Re-check right before the drops: a reindex may have started AND committed since the first
-        # check, leaving a still-in-grace previous generation looking stale. A job is RUNNING for the
-        # whole sweep+grace, so this catches it. The drop loop below has no ``await``, so this check
-        # and the drops are one atomic step on the event loop — nothing can commit in between.
-        if await get_active_embedding_reindex_job() is not None:
-            return
-        for name in adapter.list_collections() or []:
-            if name in active_names:
-                continue
-            if any(name.startswith(f"{base}_") for base in bases):
-                try:
-                    adapter.drop_collection(name)
-                    logger.info("GC dropped stale embedding generation collection '%s'", name)
-                except Exception:  # noqa: BLE001
-                    logger.warning("GC could not drop stale collection '%s'", name)
+        names = await asyncio.to_thread(adapter.list_collections) or []
+        retention_cutoff = datetime.now(UTC) - _PREVIOUS_GENERATION_RETENTION
+        for name in names:
+            generation = _generation_suffix(name, bases)
+            if generation is None or generation == active or generation in protected:
+                continue  # base name / not ours (b) / RUNNING-protected (c)
+            try:
+                job_id = PydanticObjectId(generation)
+            except (InvalidId, TypeError, ValueError):
+                continue  # suffix isn't a job id -> not ours
+            job = await EmbeddingReindexJob.get(job_id)
+            if job is None or job.status not in (EmbeddingReindexJobStatus.COMPLETED, EmbeddingReindexJobStatus.FAILED):
+                continue  # (a): only a finished job's generation may be dropped
+            recently_superseded = await jobs.find_one(
+                {
+                    "status": EmbeddingReindexJobStatus.COMPLETED.value,
+                    "previousCollectionGeneration": generation,
+                    "finishedAt": {"$gt": retention_cutoff},
+                }
+            )
+            if recently_superseded is not None:
+                continue  # (d): still within a recent switch's retention window
+            try:
+                await asyncio.to_thread(adapter.drop_collection, name)
+                logger.info("GC dropped stale embedding generation collection '%s'", name)
+            except Exception:  # noqa: BLE001
+                logger.warning("GC could not drop stale collection '%s'", name)
     except Exception:  # noqa: BLE001 - GC must never block startup
         logger.exception("Embedding generation GC failed (continuing startup)")
 

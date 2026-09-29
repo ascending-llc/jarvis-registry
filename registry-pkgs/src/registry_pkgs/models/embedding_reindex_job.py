@@ -24,6 +24,8 @@ class EmbeddingReindexJob(Document):
     previousCollectionGeneration: str | None = None
     requestedBy: str | None = None  # audit for the deferred commit
     switchedAt: datetime | None = None  # set on commit; grace is measured from here
+    attempts: int = 0  # incremented on every claim; caps automatic retries
+    lastError: str | None = None  # most recent attempt's exception text (for the give-up message)
     status: EmbeddingReindexJobStatus = EmbeddingReindexJobStatus.RUNNING
     leaseOwner: str | None = None
     leaseExpiresAt: datetime | None = None

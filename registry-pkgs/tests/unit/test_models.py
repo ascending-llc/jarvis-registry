@@ -830,3 +830,70 @@ class TestExtendedMCPServerDisabledTools:
         for d in docs:
             if d.metadata.get("entity_type") in ("resource", "prompt"):
                 assert d.metadata["tool_enabled"] is True
+
+    def test_to_documents_assigns_stable_unique_ids(self):
+        server = self._server([])
+        first = [d.id for d in server.to_documents()]
+        second = [d.id for d in server.to_documents()]
+        assert None not in first
+        assert len(set(first)) == len(first)  # unique within one entity
+        assert first == second  # deterministic across calls (upsert on re-insert)
+
+    def test_to_documents_leaves_ids_none_without_entity_id(self):
+        server = self._server([])
+        server.id = None
+        assert all(d.id is None for d in server.to_documents())
+
+
+class TestDeterministicVectorDocIds:
+    def test_helper_is_deterministic_unique_and_skips_without_id(self):
+        from langchain_core.documents import Document
+
+        from registry_pkgs.models.vector_doc_ids import assign_deterministic_doc_ids
+
+        def _docs():
+            return [Document(page_content=f"c{i}") for i in range(3)]
+
+        first = assign_deterministic_doc_ids(_docs(), "MCP_Servers", "entity-1")
+        second = assign_deterministic_doc_ids(_docs(), "MCP_Servers", "entity-1")
+        assert [d.id for d in first] == [d.id for d in second]  # deterministic
+        assert len({d.id for d in first}) == 3  # unique within one entity
+        # A different entity id yields different ids.
+        other = assign_deterministic_doc_ids(_docs(), "MCP_Servers", "entity-2")
+        assert {d.id for d in first}.isdisjoint({d.id for d in other})
+        # No entity id -> ids left untouched.
+        assert all(d.id is None for d in assign_deterministic_doc_ids(_docs(), "MCP_Servers", None))
+
+    def _agent(self):
+        from registry_pkgs.models.a2a_agent import AgentConfig
+
+        return A2AAgent.model_construct(
+            id=PydanticObjectId(),
+            path="a2a1forfederationtesting",
+            card=AgentCard(
+                name="Calculator Agent",
+                description="A test A2A agent",
+                url="https://example.com/a2a",
+                version="1.0.0",
+                capabilities={"streaming": True},
+                defaultInputModes=["text/plain"],
+                defaultOutputModes=["application/json"],
+                skills=[AgentSkill(id="calc", name="Calculate", description="Performs calculations", tags=["math"])],
+            ),
+            config=AgentConfig(title="Calc", description="A test A2A agent", type="jsonrpc", enabled=True),
+            tags=[],
+            author=PydanticObjectId(),
+        )
+
+    def test_a2a_to_documents_assigns_stable_unique_ids(self):
+        agent = self._agent()
+        first = [d.id for d in agent.to_documents()]
+        second = [d.id for d in agent.to_documents()]
+        assert None not in first
+        assert len(set(first)) == len(first)
+        assert first == second
+
+    def test_a2a_to_documents_leaves_ids_none_without_entity_id(self):
+        agent = self._agent()
+        agent.id = None
+        assert all(d.id is None for d in agent.to_documents())

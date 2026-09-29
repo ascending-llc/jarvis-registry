@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,3 +60,52 @@ async def test_no_matching_job_returns_none(monkeypatch: pytest.MonkeyPatch) -> 
     _patch_collection(monkeypatch, None)
 
     assert await repository.get_active_embedding_reindex_job() is None
+
+
+def _patch_update(monkeypatch: pytest.MonkeyPatch, modified_count: int) -> AsyncMock:
+    collection = AsyncMock()
+    collection.update_one.return_value = SimpleNamespace(modified_count=modified_count)
+    monkeypatch.setattr(repository.EmbeddingReindexJob, "get_pymongo_collection", classmethod(lambda cls: collection))
+    return collection
+
+
+@pytest.mark.asyncio
+async def test_transition_applies_write_when_owner_holds_running_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    collection = _patch_update(monkeypatch, 1)
+
+    ok = await repository.transition_embedding_reindex_job(
+        job_id=PydanticObjectId(), lease_owner="worker-1", set_fields={"status": "completed"}
+    )
+
+    assert ok is True
+    flt, update = collection.update_one.await_args.args[0], collection.update_one.await_args.args[1]
+    # The lease gate: only a RUNNING job owned by this pod is writable.
+    assert flt["status"] == "running"
+    assert flt["leaseOwner"] == "worker-1"
+    assert update["$set"]["status"] == "completed"
+    assert "updatedAt" in update["$set"]
+
+
+@pytest.mark.asyncio
+async def test_transition_returns_false_when_not_owner_or_finished(monkeypatch: pytest.MonkeyPatch) -> None:
+    # modified_count == 0: the filter matched nothing (lease taken over, or the job is already
+    # COMPLETED/FAILED so status != RUNNING).
+    _patch_update(monkeypatch, 0)
+
+    ok = await repository.transition_embedding_reindex_job(
+        job_id=PydanticObjectId(), lease_owner="worker-1", set_fields={"status": "failed"}
+    )
+
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_transition_forwards_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    collection = _patch_update(monkeypatch, 1)
+    sentinel = object()
+
+    await repository.transition_embedding_reindex_job(
+        job_id=PydanticObjectId(), lease_owner="w", set_fields={"switchedAt": 1}, session=sentinel
+    )
+
+    assert collection.update_one.await_args.kwargs["session"] is sentinel

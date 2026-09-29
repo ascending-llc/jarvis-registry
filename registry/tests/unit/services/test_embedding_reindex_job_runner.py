@@ -5,10 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 
-from registry.services.embedding_reindex_job_runner import (
-    EmbeddingReindexJobRunner,
-    _EmbeddingReindexLeaseLostError,
-)
+from registry.services import embedding_reindex_job_runner as runner_module
+from registry.services.embedding_reindex_execution_service import EmbeddingReindexLeaseLostError
+from registry.services.embedding_reindex_job_runner import _MAX_ATTEMPTS, EmbeddingReindexJobRunner
 
 pytestmark = pytest.mark.asyncio
 
@@ -23,7 +22,7 @@ def _runner(**overrides):
     return EmbeddingReindexJobRunner(**kwargs)
 
 
-async def test_execute_runs_claimed_job_and_stops_heartbeat():
+async def test_execute_runs_claimed_job_with_lease_owner_and_stops_heartbeat():
     job = SimpleNamespace(id=PydanticObjectId())
     job_service = MagicMock(heartbeat=AsyncMock(return_value=True))
     execution_service = MagicMock(run_claimed_job=AsyncMock())
@@ -31,7 +30,7 @@ async def test_execute_runs_claimed_job_and_stops_heartbeat():
 
     await runner._execute(job)
 
-    execution_service.run_claimed_job.assert_awaited_once_with(job)
+    execution_service.run_claimed_job.assert_awaited_once_with(job, lease_owner="worker-1")
 
 
 async def test_execute_cancels_work_when_lease_is_lost():
@@ -39,7 +38,7 @@ async def test_execute_cancels_work_when_lease_is_lost():
     execution_started = asyncio.Event()
     execution_cancelled = asyncio.Event()
 
-    async def _run_claimed_job(_job):
+    async def _run_claimed_job(_job, *, lease_owner):
         execution_started.set()
         try:
             await asyncio.Event().wait()
@@ -48,17 +47,35 @@ async def test_execute_cancels_work_when_lease_is_lost():
 
     execution_service = MagicMock(run_claimed_job=_run_claimed_job)
     runner = _runner(execution_service=execution_service)
-    runner._heartbeat = AsyncMock(side_effect=_EmbeddingReindexLeaseLostError("lost"))
+    runner._heartbeat = AsyncMock(side_effect=EmbeddingReindexLeaseLostError("lost"))
+    runner._record_last_error = AsyncMock()
 
-    with pytest.raises(_EmbeddingReindexLeaseLostError, match="lost"):
+    with pytest.raises(EmbeddingReindexLeaseLostError, match="lost"):
         await runner._execute(job)
 
     assert execution_started.is_set()
     assert execution_cancelled.is_set()
+    runner._record_last_error.assert_not_awaited()  # a lost lease records nothing
+
+
+async def test_execute_records_last_error_on_unexpected_failure(monkeypatch):
+    job = SimpleNamespace(id=PydanticObjectId())
+    execution_service = MagicMock(run_claimed_job=AsyncMock(side_effect=RuntimeError("weaviate down")))
+    job_service = MagicMock(heartbeat=AsyncMock(return_value=True))
+    runner = _runner(job_service=job_service, execution_service=execution_service)
+    transition = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner_module, "transition_embedding_reindex_job", transition)
+
+    with pytest.raises(RuntimeError, match="weaviate down"):
+        await runner._execute(job)
+
+    transition.assert_awaited_once()
+    assert transition.await_args.kwargs["set_fields"] == {"lastError": "weaviate down"}
+    assert transition.await_args.kwargs["lease_owner"] == "worker-1"
 
 
 async def test_run_claims_and_executes_one_job_before_stop():
-    job = SimpleNamespace(id=PydanticObjectId())
+    job = SimpleNamespace(id=PydanticObjectId(), attempts=1)
     job_service = MagicMock(claim_job=AsyncMock(return_value=job))
     runner = _runner(job_service=job_service)
 
@@ -70,6 +87,24 @@ async def test_run_claims_and_executes_one_job_before_stop():
     await runner._run()
 
     runner._execute.assert_awaited_once_with(job)
+
+
+async def test_run_finalizes_an_exhausted_job_without_executing():
+    job = SimpleNamespace(id=PydanticObjectId(), attempts=_MAX_ATTEMPTS + 1)
+    job_service = MagicMock(claim_job=AsyncMock(return_value=job))
+    execution_service = MagicMock(run_claimed_job=AsyncMock())
+    runner = _runner(job_service=job_service, execution_service=execution_service)
+    runner._execute = AsyncMock()
+
+    async def _finish(_job, *, lease_owner):
+        runner._stop_event.set()
+
+    execution_service.finish_exhausted_job = AsyncMock(side_effect=_finish)
+
+    await runner._run()
+
+    execution_service.finish_exhausted_job.assert_awaited_once_with(job, lease_owner="worker-1")
+    runner._execute.assert_not_awaited()  # no sweep for an exhausted job
 
 
 async def test_run_recovers_from_iteration_error_and_retries_wait():
@@ -92,7 +127,7 @@ async def test_heartbeat_renews_until_lease_is_lost(monkeypatch):
     runner = _runner(job_service=job_service)
     monkeypatch.setattr("registry.services.embedding_reindex_job_runner.asyncio.sleep", AsyncMock())
 
-    with pytest.raises(_EmbeddingReindexLeaseLostError):
+    with pytest.raises(EmbeddingReindexLeaseLostError):
         await runner._heartbeat(job)
 
     assert job_service.heartbeat.await_count == 2

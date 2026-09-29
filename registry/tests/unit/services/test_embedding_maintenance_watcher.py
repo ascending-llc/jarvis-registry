@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from beanie import PydanticObjectId
 
 from registry.services import embedding_maintenance_watcher as watcher_mod
 from registry.services.embedding_maintenance_watcher import (
@@ -12,8 +13,53 @@ from registry.services.embedding_maintenance_watcher import (
     raise_if_reindex_active,
 )
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+from registry_pkgs.models.enums import EmbeddingReindexJobStatus
 
 pytestmark = pytest.mark.asyncio
+
+
+class _AList:
+    """Minimal async-iterable for a mocked ``find()`` cursor."""
+
+    def __init__(self, items):
+        self._items = items
+
+    def __aiter__(self):
+        async def _gen():
+            for item in self._items:
+                yield item
+
+        return _gen()
+
+
+def _wire_gc(monkeypatch, *, active, this_pod="__active__", running_prev=(), recent_prev=(), jobs=None, collections=()):
+    """Wire gc_stale_embedding_generations' collaborators; returns (db_client, dropped list)."""
+    monkeypatch.setattr(
+        watcher_mod,
+        "get_model_gateway_selection",
+        AsyncMock(return_value=SimpleNamespace(embeddingCollectionGeneration=active)),
+    )
+    running_docs = [{"previousCollectionGeneration": g} for g in running_prev]
+
+    async def _find_one(query):
+        return {"_id": "k"} if query.get("previousCollectionGeneration") in recent_prev else None
+
+    monkeypatch.setattr(
+        watcher_mod.EmbeddingReindexJob,
+        "get_pymongo_collection",
+        lambda: SimpleNamespace(find=lambda q: _AList(running_docs), find_one=_find_one),
+    )
+    jobs = jobs or {}
+    monkeypatch.setattr(watcher_mod.EmbeddingReindexJob, "get", AsyncMock(side_effect=lambda oid: jobs.get(str(oid))))
+
+    dropped: list[str] = []
+    adapter = SimpleNamespace(list_collections=lambda: list(collections), drop_collection=lambda n: dropped.append(n))
+    pod_gen = active if this_pod == "__active__" else this_pod
+    return SimpleNamespace(adapter=adapter, collection_generation=pod_gen), dropped
+
+
+def _finished_job(status=EmbeddingReindexJobStatus.COMPLETED):
+    return SimpleNamespace(status=status)
 
 
 def test_is_active_defaults_to_false() -> None:
@@ -180,81 +226,112 @@ async def test_maybe_gc_noop_when_unwired() -> None:
     await EmbeddingMaintenanceWatcher()._maybe_gc()
 
 
-async def test_gc_drops_only_stale_generation_collections(monkeypatch) -> None:
-    monkeypatch.setattr(watcher_mod, "get_active_embedding_reindex_job", AsyncMock(return_value=None))
-    selection = SimpleNamespace(embeddingCollectionGeneration="genB")
-    monkeypatch.setattr(watcher_mod, "get_model_gateway_selection", AsyncMock(return_value=selection))
-    dropped: list[str] = []
-    adapter = SimpleNamespace(
-        list_collections=lambda: [
-            "MCP_Servers",  # legacy base — never dropped
-            "MCP_Servers_genB",  # active — kept
-            "MCP_Servers_genA",  # stale — dropped
-            "A2a_agents_genA",  # stale — dropped
+async def test_gc_drops_when_all_conditions_hold(monkeypatch) -> None:
+    active = str(PydanticObjectId())
+    orphan = str(PydanticObjectId())  # a finished job's generation, safe to drop
+    db_client, dropped = _wire_gc(
+        monkeypatch,
+        active=active,
+        collections=[
+            "MCP_Servers",  # base name — never dropped
+            f"MCP_Servers_{active}",  # active — kept (b)
+            f"MCP_Servers_{orphan}",  # finished, unprotected — dropped
+            f"A2a_agents_{orphan}",  # finished, unprotected — dropped
             "SomethingElse",  # not ours — ignored
         ],
-        drop_collection=lambda name: dropped.append(name),
+        jobs={orphan: _finished_job(EmbeddingReindexJobStatus.FAILED)},
     )
-    # This pod is on the active generation (genB), so it is allowed to GC.
-    db_client = SimpleNamespace(adapter=adapter, collection_generation="genB")
 
     await gc_stale_embedding_generations(db_client)
 
-    assert set(dropped) == {"MCP_Servers_genA", "A2a_agents_genA"}
+    assert set(dropped) == {f"MCP_Servers_{orphan}", f"A2a_agents_{orphan}"}
+
+
+async def test_gc_a_keeps_generation_of_a_running_or_missing_job(monkeypatch) -> None:
+    active = str(PydanticObjectId())
+    still_running = str(PydanticObjectId())  # its own job is RUNNING -> (a) fails
+    no_job = str(PydanticObjectId())  # no job document -> not ours
+    db_client, dropped = _wire_gc(
+        monkeypatch,
+        active=active,
+        collections=[f"MCP_Servers_{still_running}", f"MCP_Servers_{no_job}"],
+        jobs={still_running: _finished_job(EmbeddingReindexJobStatus.RUNNING)},  # not COMPLETED/FAILED
+    )
+
+    await gc_stale_embedding_generations(db_client)
+
+    assert dropped == []
+
+
+async def test_gc_c_keeps_previous_generation_of_a_running_job(monkeypatch) -> None:
+    active = str(PydanticObjectId())
+    prev = str(PydanticObjectId())  # a RUNNING job's previousCollectionGeneration
+    db_client, dropped = _wire_gc(
+        monkeypatch,
+        active=active,
+        running_prev=[prev],  # protected by (c) even though its own job is finished
+        collections=[f"MCP_Servers_{prev}"],
+        jobs={prev: _finished_job(EmbeddingReindexJobStatus.COMPLETED)},
+    )
+
+    await gc_stale_embedding_generations(db_client)
+
+    assert dropped == []
+
+
+async def test_gc_d_keeps_recently_superseded_previous_generation(monkeypatch) -> None:
+    active = str(PydanticObjectId())
+    prev = str(PydanticObjectId())  # previous of a COMPLETED job still within the retention window
+    db_client, dropped = _wire_gc(
+        monkeypatch,
+        active=active,
+        recent_prev=[prev],  # (d): a lagging pod may still read it
+        collections=[f"MCP_Servers_{prev}"],
+        jobs={prev: _finished_job(EmbeddingReindexJobStatus.COMPLETED)},
+    )
+
+    await gc_stale_embedding_generations(db_client)
+
+    assert dropped == []
 
 
 async def test_gc_skips_on_a_stale_pod(monkeypatch) -> None:
-    # This pod never swapped to the active generation (still on genA); it must not drop the
-    # collection it is reading, even with no active job.
-    monkeypatch.setattr(watcher_mod, "get_active_embedding_reindex_job", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        watcher_mod,
-        "get_model_gateway_selection",
-        AsyncMock(return_value=SimpleNamespace(embeddingCollectionGeneration="genB")),
+    # A pod not itself on the active generation still reads the previous one and must not GC at all.
+    active = str(PydanticObjectId())
+    orphan = str(PydanticObjectId())
+    db_client, dropped = _wire_gc(
+        monkeypatch,
+        active=active,
+        this_pod=str(PydanticObjectId()),  # behind the active generation
+        collections=[f"MCP_Servers_{orphan}"],
+        jobs={orphan: _finished_job(EmbeddingReindexJobStatus.COMPLETED)},
     )
-    dropped: list[str] = []
-    adapter = SimpleNamespace(
-        list_collections=lambda: ["MCP_Servers_genA", "MCP_Servers_genB"],
-        drop_collection=lambda name: dropped.append(name),
-    )
-    db_client = SimpleNamespace(adapter=adapter, collection_generation="genA")  # behind
 
     await gc_stale_embedding_generations(db_client)
 
     assert dropped == []
 
 
-async def test_gc_rechecks_active_job_right_before_dropping(monkeypatch) -> None:
-    # No job at the first check, but a reindex commits before the drop (second check finds it):
-    # nothing is dropped, so a still-in-grace previous generation is not deleted under a lagging pod.
-    monkeypatch.setattr(watcher_mod, "get_active_embedding_reindex_job", AsyncMock(side_effect=[None, object()]))
-    monkeypatch.setattr(
-        watcher_mod,
-        "get_model_gateway_selection",
-        AsyncMock(return_value=SimpleNamespace(embeddingCollectionGeneration="genB")),
+async def test_gc_uses_to_thread_for_weaviate_calls(monkeypatch) -> None:
+    active = str(PydanticObjectId())
+    orphan = str(PydanticObjectId())
+    db_client, dropped = _wire_gc(
+        monkeypatch,
+        active=active,
+        collections=[f"MCP_Servers_{orphan}"],
+        jobs={orphan: _finished_job(EmbeddingReindexJobStatus.COMPLETED)},
     )
-    dropped: list[str] = []
-    adapter = SimpleNamespace(
-        list_collections=lambda: ["MCP_Servers_genA", "MCP_Servers_genB"],
-        drop_collection=lambda name: dropped.append(name),
-    )
-    db_client = SimpleNamespace(adapter=adapter, collection_generation="genB")
+    calls: list = []
+    real_to_thread = watcher_mod.asyncio.to_thread
+
+    async def _tracking(func, *args):
+        calls.append(func)
+        return await real_to_thread(func, *args)
+
+    monkeypatch.setattr(watcher_mod.asyncio, "to_thread", _tracking)
 
     await gc_stale_embedding_generations(db_client)
 
-    assert dropped == []
-
-
-async def test_gc_skips_entirely_while_a_reindex_is_active(monkeypatch) -> None:
-    # An active job may be sweeping into <base>_<jobId> or a pod may be lagging on the previous
-    # generation; dropping anything now could corrupt the running reindex or a lagging read.
-    monkeypatch.setattr(watcher_mod, "get_active_embedding_reindex_job", AsyncMock(return_value=object()))
-    dropped: list[str] = []
-    adapter = SimpleNamespace(
-        list_collections=lambda: ["MCP_Servers_genA", "MCP_Servers_genB"],
-        drop_collection=lambda name: dropped.append(name),
-    )
-
-    await gc_stale_embedding_generations(SimpleNamespace(adapter=adapter))
-
-    assert dropped == []
+    assert db_client.adapter.list_collections in calls
+    assert db_client.adapter.drop_collection in calls
+    assert dropped == [f"MCP_Servers_{orphan}"]

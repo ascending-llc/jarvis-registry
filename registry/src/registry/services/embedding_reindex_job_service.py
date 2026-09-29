@@ -108,7 +108,10 @@ class EmbeddingReindexJobService:
                     "leaseExpiresAt": now + lease_duration,
                     "heartbeatAt": now,
                     "updatedAt": now,
-                }
+                },
+                # Every claim counts as an attempt; the runner gives up once this exceeds _MAX_ATTEMPTS.
+                # NOT in the filter: a used-up job must still be claimable so it can be finalized FAILED.
+                "$inc": {"attempts": 1},
             },
             return_document=ReturnDocument.AFTER,
         )

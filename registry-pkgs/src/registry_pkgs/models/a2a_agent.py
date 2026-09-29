@@ -75,6 +75,7 @@ from .federation_metadata import (
     extract_runtime_arn,
     extract_runtime_version,
 )
+from .vector_doc_ids import assign_deterministic_doc_ids
 
 logger = logging.getLogger(__name__)
 
@@ -459,7 +460,8 @@ class A2AAgent(Document):
                 )
             )
 
-        return docs
+        # Deterministic ids so a re-insert of the same agent upserts instead of duplicating.
+        return assign_deterministic_doc_ids(docs, self.COLLECTION_NAME, self.id)
 
     def mutable_metadata(self) -> dict[str, Any]:
         """Return metadata fields that can change without affecting page_content.

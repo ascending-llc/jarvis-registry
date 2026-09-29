@@ -87,6 +87,21 @@ async def test_commit_embedding_generation_cas_matches_expected_generation(monke
     assert args[1]["$set"]["embeddingModelSourceId"] == source_id
     assert args[1]["$set"]["embeddingCollectionGeneration"] == "genNEW"
     assert kwargs["upsert"] is False
+    assert kwargs["session"] is None  # no transaction unless the executor passes one
+
+
+@pytest.mark.asyncio
+async def test_commit_embedding_generation_forwards_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    collection = AsyncMock()
+    collection.find_one_and_update.return_value = {"_id": repository.MODEL_GATEWAY_SELECTION_ID}
+    monkeypatch.setattr(repository.ModelGatewaySelection, "get_pymongo_collection", lambda *_args: collection)
+    sentinel = object()
+
+    await repository.commit_embedding_generation(
+        expected_generation=None, model_source_id=PydanticObjectId(), generation="g", updated_by=None, session=sentinel
+    )
+
+    assert collection.find_one_and_update.await_args.kwargs["session"] is sentinel
 
 
 @pytest.mark.asyncio
