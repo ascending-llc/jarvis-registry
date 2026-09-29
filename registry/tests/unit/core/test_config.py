@@ -54,6 +54,17 @@ class TestSettings:
         assert settings.health_check_interval_seconds == 300  # 5 minutes
         assert settings.auth_server_redis_key_prefix == "jarvis-auth-server"
 
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
+    def test_embedding_reindex_grace_period_default_and_env_override(self):
+        assert Settings(_env_file=None).embedding_reindex_grace_period_seconds == 60.0
+        with patch.dict(os.environ, {**_SETTINGS_ENV, "EMBEDDING_REINDEX_GRACE_PERIOD_SECONDS": "120"}, clear=True):
+            assert Settings(_env_file=None).embedding_reindex_grace_period_seconds == 120.0
+
+    def test_embedding_reindex_grace_period_must_exceed_poll_interval(self):
+        with patch.dict(os.environ, {**_SETTINGS_ENV, "EMBEDDING_REINDEX_GRACE_PERIOD_SECONDS": "1"}, clear=True):
+            with pytest.raises(ValidationError):
+                Settings(_env_file=None)
+
     def test_secret_key_required(self):
         """Test that Settings raises a validation error when SECRET_KEY is absent."""
         env_without_secret_key = {k: v for k, v in _SETTINGS_ENV.items() if k != "SECRET_KEY"}
