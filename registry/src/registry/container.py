@@ -509,7 +509,11 @@ class RegistryContainer:
 
     @cached_property
     def embedding_reindex_execution_service(self) -> EmbeddingReindexExecutionService:
-        return EmbeddingReindexExecutionService(db_client=self.db_client, settings=self.settings)
+        return EmbeddingReindexExecutionService(
+            db_client=self.db_client,
+            settings=self.settings,
+            federation_job_service=self.federation_job_service,
+        )
 
     @cached_property
     def embedding_reindex_job_runner(self) -> EmbeddingReindexJobRunner:

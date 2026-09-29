@@ -59,6 +59,31 @@ async def test_get_job_returns_none_for_invalid_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_has_active_jobs_queries_active_statuses_across_all_federations(monkeypatch):
+    service = FederationJobService()
+    find_one = AsyncMock(return_value=_make_job())
+    monkeypatch.setattr("registry.services.federation_job_service.FederationSyncJob.find_one", find_one)
+
+    result = await service.has_active_jobs()
+
+    assert result is True
+    # No federationId filter: the reindex drain cares about any in-flight sync.
+    query = find_one.await_args.args[0]
+    assert "federationId" not in query
+    assert set(query["status"]["$in"]) == {FederationJobStatus.PENDING.value, FederationJobStatus.SYNCING.value}
+
+
+@pytest.mark.asyncio
+async def test_has_active_jobs_false_when_none_in_flight(monkeypatch):
+    service = FederationJobService()
+    monkeypatch.setattr(
+        "registry.services.federation_job_service.FederationSyncJob.find_one", AsyncMock(return_value=None)
+    )
+
+    assert await service.has_active_jobs() is False
+
+
+@pytest.mark.asyncio
 async def test_mark_syncing_rejects_terminal_job_transition():
     service = FederationJobService()
     job = _make_job(FederationJobStatus.SUCCESS)

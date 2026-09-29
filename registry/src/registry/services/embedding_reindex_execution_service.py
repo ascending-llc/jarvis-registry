@@ -15,10 +15,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from registry.core.config import Settings
+from registry.core.mcp_config import MCPClientConfig
 from registry.core.vector_backend import build_backend_config_from_model_source
+from registry.services.federation_job_service import FederationJobService
 from registry.utils.concurrency import run_bounded
 from registry_pkgs.database.embedding_reindex_job_repository import transition_embedding_reindex_job
 from registry_pkgs.database.model_gateway_selection_repository import (
@@ -42,9 +44,22 @@ _REINDEX_BATCH_SIZE = 200
 # Automatic retries before a job is given up on (kept here so the executor's give-up message and the
 # runner's exhaustion check share one source; the runner imports it).
 _MAX_ATTEMPTS = 3
-# Keep writes blocked (job stays RUNNING) after the commit long enough for every pod's watcher to
-# swap to the new generation. Configurable via settings; falls back to 60s.
-_DEFAULT_GRACE_PERIOD_SECONDS = 60.0
+# A request that passed the write gate just before it closed can still be committing: the longest
+# gated path is one full capability fetch (init + tools + resources + prompts, all sequential in
+# mcp_client) plus scheduling/poll slack. Derived from the MCP timeouts so it tracks any change to
+# them. Measured from startedAt, so a sweep that already ran longer waits for nothing.
+_CATCH_UP_SLACK_SECONDS = 10.0
+_CATCH_UP_MIN_DELAY = timedelta(
+    seconds=MCPClientConfig.INIT_TIMEOUT + 3 * MCPClientConfig.TOOLS_TIMEOUT + _CATCH_UP_SLACK_SECONDS
+)
+# updatedAt is stamped at save(), possibly before a surrounding transaction commits, and pod clocks
+# drift; widen the re-sync window backwards to be safe. Re-syncing extra documents is harmless.
+_CATCH_UP_WATERMARK_MARGIN = timedelta(minutes=5)
+# Poll cadence for the pre-commit drain wait, and the ceiling before a stuck federation sync fails
+# the reindex instead of wedging writes indefinitely.
+_CATCH_UP_POLL_SECONDS = 5.0
+_FEDERATION_DRAIN_TIMEOUT = timedelta(minutes=10)
+_FEDERATION_DRAIN_TIMEOUT_MSG = "Federation sync still active after 10 minutes; embedding model NOT switched"
 
 
 class EmbeddingReindexLeaseLostError(RuntimeError):
@@ -53,6 +68,15 @@ class EmbeddingReindexLeaseLostError(RuntimeError):
 
 class _Superseded(Exception):
     """Internal: a compare-and-set miss inside the commit transaction, used to abort and roll back."""
+
+
+class _Aborted(Exception):
+    """Internal: the job was already terminally handled (FAILED) inside a helper; unwind without commit."""
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Mongo returns datetimes tz-naive (stored as UTC); make one aware before arithmetic."""
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _drop_collection(client: DatabaseClient, name: str) -> None:
@@ -69,28 +93,35 @@ def _drop_collection(client: DatabaseClient, name: str) -> None:
     adapter.drop_collection(name)
 
 
-async def _reindex_server(repo: MCPServerRepository, server: ExtendedMCPServer) -> None:
-    """Insert one server into the fresh generation; raise on failure so run_bounded records it."""
-    result = await repo.sync_to_vector_db(server, is_delete=False)
+async def _reindex_server(repo: MCPServerRepository, server: ExtendedMCPServer, *, is_delete: bool = False) -> None:
+    """Sync one server into the fresh generation; raise on failure so run_bounded records it.
+
+    ``is_delete=False`` (sweep) inserts into the empty generation; ``is_delete=True`` (catch-up)
+    replaces an entity already swept in, so a changed chunk count drops the stale trailing chunks.
+    """
+    result = await repo.sync_to_vector_db(server, is_delete=is_delete)
     if not result or result.get("failed_tools"):
         raise RuntimeError(result.get("error") if result else "vector sync returned no result")
 
 
-async def _reindex_agent(repo: A2AAgentRepository, agent: A2AAgent) -> None:
-    """Insert one agent into the fresh generation; raise on failure so run_bounded records it."""
-    result = await repo.sync_to_vector_db(agent, is_delete=False)
+async def _reindex_agent(repo: A2AAgentRepository, agent: A2AAgent, *, is_delete: bool = False) -> None:
+    """Sync one agent into the fresh generation; raise on failure so run_bounded records it."""
+    result = await repo.sync_to_vector_db(agent, is_delete=is_delete)
     if not result or result.get("failed"):
         raise RuntimeError(result.get("error") if result else "vector sync returned no result")
 
 
-async def _sweep(cursor, handler, ensure_lease: Callable[[], Awaitable[None]]) -> tuple[int, int]:
+async def _sweep(cursor, handler, ensure_lease: Callable[[], Awaitable[None]]) -> tuple[int, int, set[str]]:
     """Re-embed a whole collection in bounded batches (never materialize it all), returning
-    ``(failed, total)``. ``ensure_lease`` is awaited before each batch so a pod whose lease was taken
-    over stops wasting embed calls; correctness (no commit, no duplicates) is enforced elsewhere."""
+    ``(failed, total, swept_ids)``. ``swept_ids`` is every entity id streamed, used later for the
+    delete diff. ``ensure_lease`` is awaited before each batch so a pod whose lease was taken over
+    stops wasting embed calls; correctness (no commit, no duplicates) is enforced elsewhere."""
     failed = total = 0
+    swept_ids: set[str] = set()
     batch: list = []
     async for doc in cursor:
         batch.append(doc)
+        swept_ids.add(str(doc.id))
         if len(batch) >= _REINDEX_BATCH_SIZE:
             await ensure_lease()
             failed, total = await _run_batch(batch, handler, failed, total)
@@ -98,7 +129,7 @@ async def _sweep(cursor, handler, ensure_lease: Callable[[], Awaitable[None]]) -
     if batch:
         await ensure_lease()
         failed, total = await _run_batch(batch, handler, failed, total)
-    return failed, total
+    return failed, total, swept_ids
 
 
 async def _run_batch(batch: list, handler, failed: int, total: int) -> tuple[int, int]:
@@ -117,12 +148,13 @@ class EmbeddingReindexExecutionService:
     reclaimed after a crash in any phase — and two jobs racing — converge consistently.
     """
 
-    def __init__(self, *, db_client: DatabaseClient, settings: Settings) -> None:
+    def __init__(
+        self, *, db_client: DatabaseClient, settings: Settings, federation_job_service: FederationJobService
+    ) -> None:
         self._db_client = db_client
         self._settings = settings
-        self._grace_seconds = float(
-            getattr(settings, "embedding_reindex_grace_period_seconds", _DEFAULT_GRACE_PERIOD_SECONDS)
-        )
+        self._federation_job_service = federation_job_service
+        self._grace_seconds = settings.embedding_reindex_grace_period_seconds
 
     async def _transition_or_lost(self, job: EmbeddingReindexJob, *, lease_owner: str, set_fields: dict) -> None:
         """Apply a lease-checked write, or raise if this pod no longer owns the job."""
@@ -185,17 +217,36 @@ class EmbeddingReindexExecutionService:
 
             # Stream both collections in bounded batches, checking the lease before each batch.
             ensure_lease = self._lease_checker(job, lease_owner)
-            mcp_failed, mcp_total = await _sweep(
+            mcp_failed, mcp_total, swept_mcp_ids = await _sweep(
                 ExtendedMCPServer.find_all(), lambda s: _reindex_server(mcp_repo, s), ensure_lease
             )
-            a2a_failed, a2a_total = await _sweep(
+            a2a_failed, a2a_total, swept_a2a_ids = await _sweep(
                 A2AAgent.find_all(), lambda a: _reindex_agent(a2a_repo, a), ensure_lease
             )
             failed = mcp_failed + a2a_failed
+            total = mcp_total + a2a_total
             if failed:
                 await self._fail_job(
                     job,
-                    f"{failed}/{mcp_total + a2a_total} documents failed to re-embed; embedding model NOT switched",
+                    f"{failed}/{total} documents failed to re-embed; embedding model NOT switched",
+                    lease_owner=lease_owner,
+                )
+                return
+
+            # Catch up on writes that passed the gate before it closed and committed after the sweep
+            # streamed past them, then commit a generation consistent with Mongo. _Aborted means the
+            # catch-up already marked the job FAILED (federation drain timeout).
+            try:
+                catch_up_failed, catch_up_total = await self._catch_up(
+                    job, mcp_repo, a2a_repo, ensure_lease, swept_mcp_ids, swept_a2a_ids, lease_owner=lease_owner
+                )
+            except _Aborted:
+                return
+            if catch_up_failed:
+                await self._fail_job(
+                    job,
+                    f"{catch_up_failed}/{total + catch_up_total} documents failed to re-embed; "
+                    "embedding model NOT switched",
                     lease_owner=lease_owner,
                 )
                 return
@@ -239,6 +290,88 @@ class EmbeddingReindexExecutionService:
         job.switchedAt = now  # keep the in-memory copy so the grace window is measured correctly
         return True
 
+    async def _catch_up(
+        self,
+        job: EmbeddingReindexJob,
+        mcp_repo: MCPServerRepository,
+        a2a_repo: A2AAgentRepository,
+        ensure_lease: Callable[[], Awaitable[None]],
+        swept_mcp_ids: set[str],
+        swept_a2a_ids: set[str],
+        *,
+        lease_owner: str,
+    ) -> tuple[int, int]:
+        """Between the sweep and the commit, reconcile the new generation with Mongo.
+
+        Waits out writers that passed the gate before it closed (so every such write has committed),
+        re-syncs documents changed since a watermark, and deletes entities that no longer exist.
+        Returns ``(failed, total)`` for the re-synced documents; raises ``_Aborted`` if it already
+        failed the job (federation drain timeout), or ``EmbeddingReindexLeaseLostError`` on lease loss.
+        """
+        await self._await_pre_gate_writers(job, ensure_lease, lease_owner=lease_owner)
+
+        since = _as_utc(job.startedAt) - _CATCH_UP_WATERMARK_MARGIN
+        mcp_failed, mcp_total, mcp_ids = await _sweep(
+            ExtendedMCPServer.find({"updatedAt": {"$gte": since}}),
+            lambda s: _reindex_server(mcp_repo, s, is_delete=True),
+            ensure_lease,
+        )
+        a2a_failed, a2a_total, a2a_ids = await _sweep(
+            A2AAgent.find({"updatedAt": {"$gte": since}}),
+            lambda a: _reindex_agent(a2a_repo, a, is_delete=True),
+            ensure_lease,
+        )
+        swept_mcp_ids |= mcp_ids
+        swept_a2a_ids |= a2a_ids
+
+        failed = mcp_failed + a2a_failed
+        if failed:
+            return failed, mcp_total + a2a_total  # caller fails the job; skip deletes on a dirty gen
+
+        await ensure_lease()
+        await self._delete_removed(mcp_repo, a2a_repo, swept_mcp_ids, swept_a2a_ids)
+        return 0, mcp_total + a2a_total
+
+    async def _await_pre_gate_writers(
+        self, job: EmbeddingReindexJob, ensure_lease: Callable[[], Awaitable[None]], *, lease_owner: str
+    ) -> None:
+        """Block until every write that passed the gate before it closed has committed.
+
+        Two waits, polled together: a fixed minimum measured from ``startedAt`` covering the longest
+        gated request path, and a drain of federation syncs that were already running (new ones are
+        gated out). A federation sync stuck past ``_FEDERATION_DRAIN_TIMEOUT`` fails the job rather
+        than wedging writes forever. ``ensure_lease`` runs on every tick so a lost lease stops the wait.
+        """
+        started = _as_utc(job.startedAt)
+        min_delay_deadline = started + _CATCH_UP_MIN_DELAY
+        drain_deadline = started + _FEDERATION_DRAIN_TIMEOUT
+        while True:
+            await ensure_lease()
+            now = datetime.now(UTC)
+            waiting_on_requests = now < min_delay_deadline
+            federation_active = await self._federation_job_service.has_active_jobs()
+            if not waiting_on_requests and not federation_active:
+                return
+            if federation_active and now >= drain_deadline:
+                await self._fail_job(job, _FEDERATION_DRAIN_TIMEOUT_MSG, lease_owner=lease_owner)
+                raise _Aborted
+            await asyncio.sleep(_CATCH_UP_POLL_SECONDS)
+
+    async def _delete_removed(
+        self,
+        mcp_repo: MCPServerRepository,
+        a2a_repo: A2AAgentRepository,
+        swept_mcp_ids: set[str],
+        swept_a2a_ids: set[str],
+    ) -> None:
+        """Drop, from the new generation, entities that were swept but no longer exist in Mongo."""
+        mongo_mcp_ids = {str(d["_id"]) async for d in ExtendedMCPServer.get_pymongo_collection().find({}, {"_id": 1})}
+        mongo_a2a_ids = {str(d["_id"]) async for d in A2AAgent.get_pymongo_collection().find({}, {"_id": 1})}
+        for gone in swept_mcp_ids - mongo_mcp_ids:
+            await mcp_repo.delete_by_server_id(gone)
+        for gone in swept_a2a_ids - mongo_a2a_ids:
+            await a2a_repo.delete_by_agent_id(gone)
+
     async def finish_exhausted_job(self, job: EmbeddingReindexJob, *, lease_owner: str) -> None:
         """Finalize a job that has used up its retries: complete it if the switch already happened
         (every pod has swapped), otherwise fail it with the last error."""
@@ -260,9 +393,7 @@ class EmbeddingReindexExecutionService:
             now = datetime.now(UTC)
             await self._transition_or_lost(job, lease_owner=lease_owner, set_fields={"switchedAt": now})
             job.switchedAt = now
-        # Mongo returns datetimes tz-naive (stored as UTC); make it aware before subtracting.
-        switched_at = job.switchedAt if job.switchedAt.tzinfo else job.switchedAt.replace(tzinfo=UTC)
-        remaining = self._grace_seconds - (datetime.now(UTC) - switched_at).total_seconds()
+        remaining = self._grace_seconds - (datetime.now(UTC) - _as_utc(job.switchedAt)).total_seconds()
         if remaining > 0:
             await asyncio.sleep(remaining)
 

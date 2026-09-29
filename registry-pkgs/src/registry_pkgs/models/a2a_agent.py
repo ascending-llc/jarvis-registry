@@ -284,7 +284,7 @@ class A2AAgent(Document):
         return data
 
     # ========== Lifecycle Hooks ==========
-    @before_event(Insert, Replace, Save)
+    @before_event(Insert, Replace, Save, SaveChanges, Update)
     async def update_timestamps(self):
         """Update timestamps before saving."""
         self.updatedAt = datetime.now(UTC)

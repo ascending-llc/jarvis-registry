@@ -21,6 +21,9 @@ from registry_pkgs.models.federation_sync_job import (
 
 logger = logging.getLogger(__name__)
 
+# Statuses that mean a federation sync is still in flight (could still write vectors).
+_ACTIVE_STATUSES = [FederationJobStatus.PENDING.value, FederationJobStatus.SYNCING.value]
+
 
 class FederationJobService:
     async def get_job(
@@ -50,16 +53,20 @@ class FederationJobService:
         return await FederationSyncJob.find_one(
             {
                 "federationId": federation_id,
-                "status": {
-                    "$in": [
-                        FederationJobStatus.PENDING.value,
-                        FederationJobStatus.SYNCING.value,
-                    ]
-                },
+                "status": {"$in": _ACTIVE_STATUSES},
             },
             sort=[("createdAt", -1)],
             session=session,
         )
+
+    async def has_active_jobs(self) -> bool:
+        """True if ANY federation has a sync job still in flight (PENDING/SYNCING).
+
+        The embedding reindex catch-up uses this to drain federation writes before committing a
+        new generation: new federation jobs are gated out during a reindex, so this only ever
+        reports jobs that started before the reindex.
+        """
+        return await FederationSyncJob.find_one({"status": {"$in": _ACTIVE_STATUSES}}) is not None
 
     async def create_job(
         self,

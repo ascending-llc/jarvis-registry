@@ -632,7 +632,6 @@ class ServerServiceV1:
 
                 # Save updated server
                 server.config = config
-                server.updatedAt = _get_current_utc_time()
                 await server.save(session=session)
             except ValueError:
                 # Re-raise ValueError (our validation errors)
@@ -747,9 +746,6 @@ class ServerServiceV1:
             server.numTools = len(tool_functions) if tool_functions else 0
 
         server.config = updated_config
-
-        # Update the updatedAt timestamp
-        server.updatedAt = _get_current_utc_time()
 
         old_hash = server.vectorContentHash
         await server.save(session=session)
@@ -896,9 +892,6 @@ class ServerServiceV1:
                 await server.save()
                 raise ValueError("Failed to fetch tools from server. Server remains disabled.")
 
-        # Update the updatedAt timestamp
-        server.updatedAt = _get_current_utc_time()
-
         old_hash = server.vectorContentHash
         await server.save()
         logger.info(f"Toggled server {server.serverName} (ID: {server.id}) enabled to {enabled}")
@@ -966,7 +959,6 @@ class ServerServiceV1:
             return server
 
         server.registryDisabledTools = sorted(new_disabled)
-        server.updatedAt = _get_current_utc_time()
         await server.save()
 
         self._schedule_tool_enabled_sync(str(server.id), new_disabled, previous_disabled)
@@ -1225,7 +1217,6 @@ class ServerServiceV1:
             server.lastError = now
             server.errorMessage = tool_error or "Failed to retrieve capabilities"
             # Do NOT update lastConnected on failure - only update on success
-            server.updatedAt = now
 
             await server.save()
 
@@ -1246,7 +1237,6 @@ class ServerServiceV1:
         server.errorMessage = None
         # ONLY update lastConnected on success
         server.lastConnected = now
-        server.updatedAt = now
 
         # Update capabilities, tools, resources, and prompts in config
         config = server.config or {}

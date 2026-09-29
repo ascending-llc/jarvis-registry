@@ -49,7 +49,7 @@ import json
 import logging
 import re
 import struct
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from beanie import Insert, PydanticObjectId, Replace, Save, SaveChanges, Update, before_event
@@ -265,6 +265,18 @@ class ExtendedMCPServer(MCPServer):
     # Beanie's init_actions (>=2.1.0) skips any @before_event/@after_event method whose name
     # starts with "_" (https://github.com/BeanieODM/beanie/issues/1316), so this hook cannot
     # be underscore-prefixed or it silently never runs.
+    @before_event(Insert, Replace, Save, SaveChanges, Update)
+    def update_timestamps(self):
+        """Stamp updatedAt on every write so the reindex catch-up watermark can be trusted.
+
+        Must not be underscore-prefixed (see the refresh_content_hash note above). Mirrors
+        A2AAgent.update_timestamps. Federation updates call save() without stamping updatedAt
+        themselves, so a watermark without this hook would miss the longest-running writer.
+        """
+        self.updatedAt = datetime.now(UTC)
+        if not self.createdAt:
+            self.createdAt = datetime.now(UTC)
+
     @before_event(Insert, Replace, Save, SaveChanges, Update)
     def refresh_content_hash(self):
         """Recompute vectorContentHash before every write.

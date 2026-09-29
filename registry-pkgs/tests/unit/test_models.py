@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from a2a.types import AgentCard, AgentSkill
 from beanie import PydanticObjectId
+from beanie.odm.actions import EventTypes
 from langchain_core.documents import Document as LangChainDocument
 from pydantic import ValidationError
 
@@ -897,3 +898,43 @@ class TestDeterministicVectorDocIds:
         agent = self._agent()
         agent.id = None
         assert all(d.id is None for d in agent.to_documents())
+
+
+class TestUpdateTimestampsHook:
+    """updatedAt is stamped on every write so the embedding-reindex catch-up watermark is trustworthy."""
+
+    _EVENTS = {
+        EventTypes.INSERT,
+        EventTypes.REPLACE,
+        EventTypes.SAVE,
+        EventTypes.SAVE_CHANGES,
+        EventTypes.UPDATE,
+    }
+
+    def test_mcp_hook_is_wired_to_every_write_event(self):
+        # A narrowed decorator would silently stop advancing the watermark on the missing path.
+        assert set(ExtendedMCPServer.update_timestamps.event_types) == self._EVENTS
+
+    def test_a2a_hook_is_wired_to_every_write_event(self):
+        assert set(A2AAgent.update_timestamps.event_types) == self._EVENTS
+
+    def test_mcp_hook_stamps_updated_at_and_backfills_created_at(self):
+        old = datetime(2000, 1, 1, tzinfo=UTC)
+        server = ExtendedMCPServer.model_construct(updatedAt=old, createdAt=None)
+        server.update_timestamps()
+        assert server.updatedAt > old
+        assert server.createdAt is not None
+
+    def test_mcp_hook_preserves_existing_created_at(self):
+        created = datetime(2001, 2, 3, tzinfo=UTC)
+        server = ExtendedMCPServer.model_construct(updatedAt=datetime(2000, 1, 1, tzinfo=UTC), createdAt=created)
+        server.update_timestamps()
+        assert server.createdAt == created
+
+    @pytest.mark.asyncio
+    async def test_a2a_hook_stamps_updated_at_and_backfills_created_at(self):
+        old = datetime(2000, 1, 1, tzinfo=UTC)
+        agent = A2AAgent.model_construct(updatedAt=old, createdAt=None)
+        await agent.update_timestamps()
+        assert agent.updatedAt > old
+        assert agent.createdAt is not None
