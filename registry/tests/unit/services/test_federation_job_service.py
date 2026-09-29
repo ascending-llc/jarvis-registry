@@ -1,6 +1,6 @@
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
@@ -81,6 +81,28 @@ async def test_has_active_jobs_false_when_none_in_flight(monkeypatch):
     )
 
     assert await service.has_active_jobs() is False
+
+
+@pytest.mark.asyncio
+async def test_list_active_jobs_returns_oldest_active_jobs_across_all_federations(monkeypatch):
+    service = FederationJobService()
+    jobs = [_make_job(), _make_job(FederationJobStatus.SYNCING)]
+    cursor = MagicMock()
+    cursor.sort.return_value = cursor
+    cursor.limit.return_value = cursor
+    cursor.to_list = AsyncMock(return_value=jobs)
+    find = MagicMock(return_value=cursor)
+    monkeypatch.setattr("registry.services.federation_job_service.FederationSyncJob.find", find)
+
+    result = await service.list_active_jobs(limit=5)
+
+    assert result == jobs
+    query = find.call_args.args[0]
+    assert "federationId" not in query
+    assert set(query["status"]["$in"]) == {FederationJobStatus.PENDING.value, FederationJobStatus.SYNCING.value}
+    # Oldest first, so an orphaned job is always among the ones reported.
+    cursor.sort.assert_called_once_with([("createdAt", 1)])
+    cursor.limit.assert_called_once_with(5)
 
 
 @pytest.mark.asyncio

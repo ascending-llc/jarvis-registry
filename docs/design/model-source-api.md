@@ -295,7 +295,12 @@ on a deployment that has never selected an embedding model. No job id or progres
 
 **Errors**:
 - `404` — `modelSourceId` does not resolve (invalid id, not found, or soft-deleted).
-- `409` — the target ModelSource has `mode != embedding`, **or** a reindex is already running.
+- `409` — the target ModelSource has `mode != embedding`, **or** a reindex is already running,
+  **or** a federation sync job is in flight (`PENDING`/`SYNCING` for any federation). The reindex
+  must wait for federation writes to drain before it commits, so it is refused up front instead of
+  sweeping the corpus and then failing. The detail names up to five such jobs (id, federation,
+  status, created time). A job that never finishes was orphaned by a registry restart and has to
+  be marked `FAILED` in Mongo before a reindex can start. This check runs before the smoke test.
 - `502` — the target model failed its pre-flight smoke test (bad credentials, wrong endpoint,
   network failure). Neither the selection nor a reindex job is created.
 
@@ -445,6 +450,6 @@ use a **string** `detail` (joined `field: message`, truncated):
 |--------|---------|----------------|
 | `403` | Insufficient permissions (missing `models-read` / `models-write`) | object |
 | `404` | Model source not found or soft-deleted | object |
-| `409` | Conflict — delete blocked (model in use), or selection mode mismatch on a `PUT .../selection/*` | object |
+| `409` | Conflict — delete blocked (model in use), selection mode mismatch on a `PUT .../selection/*`, or an embedding reindex blocked by a running reindex / federation sync | object |
 | `422` | Validation error (invalid input / unknown `providerType`) | **string** |
 | `500` | Internal server error | object |

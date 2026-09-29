@@ -68,6 +68,20 @@ class FederationJobService:
         """
         return await FederationSyncJob.find_one({"status": {"$in": _ACTIVE_STATUSES}}) is not None
 
+    async def list_active_jobs(self, *, limit: int) -> list[FederationSyncJob]:
+        """Return up to ``limit`` in-flight (PENDING/SYNCING) sync jobs across ALL federations, oldest first.
+
+        Oldest first because a job orphaned by a pod restart never finishes, so it sorts ahead of any
+        live sync; the embedding reindex trigger names these jobs in its 409 so an operator can tell
+        which is which.
+        """
+        return (
+            await FederationSyncJob.find({"status": {"$in": _ACTIVE_STATUSES}})
+            .sort([("createdAt", 1)])
+            .limit(limit)
+            .to_list()
+        )
+
     async def create_job(
         self,
         federation_id: PydanticObjectId,

@@ -33,6 +33,7 @@ from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.embedding_reindex_job_service import (
     EmbeddingModelSmokeTestError,
     EmbeddingReindexAlreadyRunningError,
+    EmbeddingReindexFederationSyncActiveError,
     EmbeddingReindexJobService,
 )
 from ....services.model_gateway_selection_service import (
@@ -311,11 +312,12 @@ async def set_default_workflow_model(
     "/model-gateway/selection/embedding-model",
     response_model=ModelGatewaySelectionResponse,
     status_code=http_status.HTTP_202_ACCEPTED,
-    description="Selects the ModelSource used for vector embedding. Synchronously smoke-tests the "
-    "target model, then (on success) persists the selection and starts a background job that "
-    "re-embeds every existing document; returns 202. The model is live once that job completes, "
-    "not on the next restart. Returns 502 if the model fails its smoke test (nothing is persisted), "
-    "and 409 if a reindex is already running.",
+    description="Starts switching the ModelSource used for vector embedding. The target model is smoke-tested "
+    "synchronously, before anything is written. 202 means a background reindex job has started to re-embed "
+    "every document; the response body is the currently active selection, which changes only when that job "
+    "completes. Returns 409 if a reindex is already running, a federation sync is in flight, or the source is "
+    "not an embedding source. Returns 502 if the smoke test fails; no job is created and the selection is "
+    "unchanged.",
 )
 @track_registry_operation("set_embedding_model", resource_type="model_gateway_selection")
 async def set_embedding_model(
@@ -346,7 +348,7 @@ async def set_embedding_model(
         raise HTTPException(
             http_status.HTTP_409_CONFLICT, detail=create_error_detail(ErrorCode.CONFLICT, str(exc))
         ) from exc
-    except EmbeddingReindexAlreadyRunningError as exc:
+    except (EmbeddingReindexAlreadyRunningError, EmbeddingReindexFederationSyncActiveError) as exc:
         raise HTTPException(
             http_status.HTTP_409_CONFLICT, detail=create_error_detail(ErrorCode.CONFLICT, str(exc))
         ) from exc

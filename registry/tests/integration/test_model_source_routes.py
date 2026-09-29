@@ -20,6 +20,7 @@ from registry.schemas.model_source_api_schemas import ModelSourceMetadataRespons
 from registry.services.embedding_reindex_job_service import (
     EmbeddingModelSmokeTestError,
     EmbeddingReindexAlreadyRunningError,
+    EmbeddingReindexFederationSyncActiveError,
 )
 from registry.services.model_gateway_selection_service import (
     ModelSourceModeMismatchError,
@@ -290,6 +291,19 @@ def test_set_embedding_model_maps_already_running_to_409(ctx) -> None:
         json={"modelSourceId": str(ctx.source.id)},
     )
     assert response.status_code == 409
+
+
+def test_set_embedding_model_maps_federation_sync_active_to_409(ctx) -> None:
+    ctx.reindex.trigger_reindex.side_effect = EmbeddingReindexFederationSyncActiveError(
+        "federation sync in flight: job abc (federation def, status syncing)"
+    )
+    response = ctx.client.put(
+        "/model-gateway/selection/embedding-model",
+        json={"modelSourceId": str(ctx.source.id)},
+    )
+    assert response.status_code == 409
+    # The job details reach the operator verbatim.
+    assert "job abc (federation def" in response.json()["detail"]["message"]
 
 
 def test_set_embedding_model_maps_smoke_test_failure_to_502(ctx) -> None:

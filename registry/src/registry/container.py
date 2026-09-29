@@ -505,6 +505,7 @@ class RegistryContainer:
         return EmbeddingReindexJobService(
             settings=self.settings,
             selection_service=self.model_gateway_selection_service,
+            federation_job_service=self.federation_job_service,
         )
 
     @cached_property
