@@ -34,6 +34,9 @@ Usage:
   #   docker compose -f docker-compose.yml -f docker-compose.override.yml \
   #     -f docker-compose.multipod.yml --profile full up -d
   uv run python scripts/embedding_reindex_e2e.py --peer-url http://localhost:7861 --switches 3   # + C1
+  # real dimension change: cycle titan-v1 (1536) / titan-v2 (1024) across the switches
+  uv run python scripts/embedding_reindex_e2e.py --switches 2 \
+    --models amazon.titan-embed-text-v1,amazon.titan-embed-text-v2:0
 
 Prerequisite: the registry container must reach AWS Bedrock (valid creds in .env) for the happy
 path to complete. Run ONLY against a disposable local stack: the happy path re-embeds every real
@@ -124,7 +127,9 @@ def _api(path: str) -> str:
     return _api_at(REGISTRY_URL, path)
 
 
-def _bedrock_body(label: str, model: str) -> dict:
+def _bedrock_body(label: str, model: str, base_model: str | None = None) -> dict:
+    # baseModelId only drives litellm's metadata (dimension) lookup, so it must match the real model
+    # when they differ across a dimension-changing switch; it defaults to EMBED_MODEL otherwise.
     return {
         "displayName": f"{PREFIX}{label}",
         "mode": "embedding",
@@ -132,7 +137,7 @@ def _bedrock_body(label: str, model: str) -> dict:
             "providerType": "aws_bedrock",
             "awsRegion": REGION,
             "modelIdOrArn": model,
-            "baseModelId": EMBED_MODEL,
+            "baseModelId": base_model or EMBED_MODEL,
         },
     }
 
@@ -166,6 +171,19 @@ async def _generation_object_count(client: httpx.AsyncClient, generation: str) -
     r = await client.post(f"{WEAVIATE_URL.rstrip('/')}/v1/graphql", headers=hdr, json={"query": q})
     agg = (r.json().get("data") or {}).get("Aggregate") or {}
     return sum(int((agg.get(cls) or [{}])[0].get("meta", {}).get("count", 0)) for cls in (mcp, a2a))
+
+
+async def _generation_vector_dim(client: httpx.AsyncClient, generation: str) -> int:
+    """Return the real vector dimension of one object in the generation (0 if none). A model change
+    that changes the vector space must show up here as a different dimension in the new generation."""
+    hdr = {"Authorization": f"Bearer {WEAVIATE_API_KEY}"} if WEAVIATE_API_KEY else {}
+    r = await client.get(
+        f"{WEAVIATE_URL.rstrip('/')}/v1/objects",
+        params={"class": f"{MCP_BASE}_{generation}", "include": "vector", "limit": 1},
+        headers=hdr,
+    )
+    objs = r.json().get("objects", []) if r.status_code == 200 else []
+    return len(objs[0].get("vector", [])) if objs else 0
 
 
 async def _search_code_at(client: httpx.AsyncClient, base_url: str, headers: dict) -> int:
@@ -303,23 +321,28 @@ async def _happy_and_409_part(client: httpx.AsyncClient, headers: dict, peer_url
 
 
 async def _multi_switch_part(
-    client: httpx.AsyncClient, headers: dict, rounds: int, peer_url: str | None = None
+    client: httpx.AsyncClient, headers: dict, rounds: int, models: list[str], peer_url: str | None = None
 ) -> list[str]:
     """Change the embedding model ``rounds`` times back to back — the real-world path.
 
     Each switch must commit a NEW generation distinct from every earlier one (so generations never
     collide or get reused), keep search available on every pod throughout, and — in multi-pod — leave
-    the peer converged on the latest source. This exercises the generation chain and the
-    compare-and-set on the previous generation across repeated switches, which a single switch cannot.
+    the peer converged on the latest source. ``models`` is cycled round by round: pass two models with
+    different vector spaces (e.g. titan-v1 1536 + titan-v2 1024) to also exercise a real dimension
+    change, which the generation design must isolate into separate collections.
     """
     servers, agents = await _corpus_size()
     _check("corpus has documents to re-embed", servers + agents > 0, f"servers={servers} agents={agents}")
 
     ids: list[str] = []
     seen_gens: set[str] = set()
+    seen_dims: dict[str, int] = {}
     prev_gen: str | None = None
     for i in range(1, rounds + 1):
-        r = await client.post(_api("/model-sources"), headers=headers, json=_bedrock_body(f"switch{i}", EMBED_MODEL))
+        model = models[(i - 1) % len(models)]
+        r = await client.post(
+            _api("/model-sources"), headers=headers, json=_bedrock_body(f"switch{i}", model, base_model=model)
+        )
         _check(f"[{i}] create embedding source → 201", r.status_code == 201, f"HTTP {r.status_code}")
         embed_id = r.json()["id"] if r.status_code == 201 else None
         if embed_id is None:
@@ -357,6 +380,9 @@ async def _multi_switch_part(
         _check(f"[{i}] search available after switch", await _search_code(client, headers) != 503, "search 503")
         count = await _generation_object_count(client, gen) if gen else 0
         _check(f"[{i}] new generation holds re-embedded data (count > 0)", count > 0, f"weaviate objects={count}")
+        dim = await _generation_vector_dim(client, gen) if gen else 0
+        _check(f"[{i}] generation has real {model} vectors (dim > 0)", dim > 0, f"dim={dim}")
+        seen_dims.setdefault(model, dim)
         if peer_url:
             await asyncio.sleep(3.0)  # let the peer's ~1s watcher poll observe and swap
             sel = (await client.get(_api_at(peer_url, "/model-gateway/selection"), headers=headers)).json()
@@ -371,6 +397,12 @@ async def _multi_switch_part(
         if gen:
             seen_gens.add(gen)
         prev_gen = gen
+    if len(set(models)) > 1 and len(seen_dims) > 1:
+        _check(
+            "distinct models committed distinct vector dimensions (real dimension change)",
+            len(set(seen_dims.values())) >= 2,
+            f"model->dim {seen_dims}",
+        )
     return ids
 
 
@@ -390,7 +422,8 @@ async def _restore_and_cleanup(baseline_embedding, baseline_generation, ids: lis
             )
 
 
-async def amain(peer_url: str | None = None, switches: int = 1) -> int:
+async def amain(peer_url: str | None = None, switches: int = 1, models: list[str] | None = None) -> int:
+    models = models or [EMBED_MODEL]
     await MongoDB.connect_db(
         config=MongoConfig(
             mongo_uri=os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/jarvis"),
@@ -414,7 +447,7 @@ async def amain(peer_url: str | None = None, switches: int = 1) -> int:
             created_ids.append(bad_id)
             if switches > 1:
                 # Real-world path: change the model several times in a row.
-                created_ids.extend(await _multi_switch_part(client, headers, switches, peer_url=peer_url))
+                created_ids.extend(await _multi_switch_part(client, headers, switches, models, peer_url=peer_url))
             else:
                 created_ids.append(await _happy_and_409_part(client, headers, peer_url=peer_url))
     finally:
@@ -448,5 +481,13 @@ if __name__ == "__main__":
         default=int(os.getenv("REINDEX_SWITCHES", "1")),
         help="Change the embedding model this many times in a row (>1 runs the repeated-switch scenario).",
     )
+    parser.add_argument(
+        "--models",
+        default=os.getenv("REINDEX_MODELS", ""),
+        help="Comma-separated Bedrock model ids to cycle across --switches rounds. Pass two with "
+        "different vector spaces (e.g. amazon.titan-embed-text-v1,amazon.titan-embed-text-v2:0) to "
+        "exercise a real dimension change. Defaults to the single EMBED_MODEL.",
+    )
     args = parser.parse_args()
-    sys.exit(asyncio.run(amain(peer_url=args.peer_url, switches=args.switches)))
+    model_list = [m.strip() for m in args.models.split(",") if m.strip()] or None
+    sys.exit(asyncio.run(amain(peer_url=args.peer_url, switches=args.switches, models=model_list)))

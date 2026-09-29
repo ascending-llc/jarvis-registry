@@ -145,9 +145,7 @@ def _wire(
     # Every job write is lease-checked; default to "we own the lease".
     transition = AsyncMock(return_value=True)
     monkeypatch.setattr(exec_module, "transition_embedding_reindex_job", transition)
-    monkeypatch.setattr(
-        exec_module.MongoDB, "get_client", lambda: SimpleNamespace(start_session=_FakeSession)
-    )
+    monkeypatch.setattr(exec_module.MongoDB, "get_client", lambda: SimpleNamespace(start_session=_FakeSession))
     # The per-batch lease check reads the job; default to "still owned" (truthy doc).
     lease_probe = AsyncMock(return_value={"_id": "held"})
     monkeypatch.setattr(
