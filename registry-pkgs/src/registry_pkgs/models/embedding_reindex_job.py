@@ -38,6 +38,9 @@ class EmbeddingReindexJob(Document):
 
     class Settings:
         name = "embedding_reindex_jobs"
-        indexes = [IndexModel([("status", 1), ("leaseExpiresAt", 1)])]
+        indexes = [
+            IndexModel([("status", 1), ("leaseExpiresAt", 1)]),  # active-job claim query
+            IndexModel([("startedAt", -1)]),  # newest-first history listing (list_jobs)
+        ]
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
