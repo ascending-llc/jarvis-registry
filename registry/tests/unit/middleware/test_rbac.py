@@ -1107,3 +1107,18 @@ class TestRealScopesConfigServerTools:
 
         assert response.status_code == 200
         assert response.json() == {"id": "507f1f77bcf86cd799439011"}
+
+
+@pytest.mark.unit
+class TestReindexJobsScope:
+    """The new read-only reindex-jobs endpoint is covered by models-read (real scopes.yml)."""
+
+    _ENDPOINT = "/model-gateway/selection/embedding-model/reindex-jobs"
+
+    def test_models_read_grants_get(self):
+        middleware = ScopePermissionMiddleware(app=MagicMock())
+        assert middleware._has_permission(["models-read"], self._ENDPOINT, "GET") is True
+
+    def test_no_scope_denied(self):
+        middleware = ScopePermissionMiddleware(app=MagicMock())
+        assert middleware._has_permission([], self._ENDPOINT, "GET") is False

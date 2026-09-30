@@ -26,7 +26,7 @@ from registry.services.model_gateway_selection_service import (
     ModelSourceModeMismatchError,
     ModelSourceNotFoundError,
 )
-from registry_pkgs.models.enums import ModelSourceMode
+from registry_pkgs.models.enums import EmbeddingReindexJobStatus, ModelSourceMode
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
 
 USER_ID = "000000000000000000000111"
@@ -98,6 +98,7 @@ def ctx():
             embeddingModelSourceId=source.id,
         )
     )
+    reindex.list_jobs = AsyncMock(return_value=[])
 
     app.dependency_overrides[get_current_user] = lambda: {"user_id": USER_ID}
     app.dependency_overrides[get_model_source_crud_service] = lambda: crud
@@ -314,6 +315,84 @@ def test_set_embedding_model_maps_smoke_test_failure_to_502(ctx) -> None:
     )
     assert response.status_code == 502
     assert "bad credentials" in response.json()["detail"]["message"]
+
+
+def _make_reindex_job(**overrides):
+    now = datetime.now(UTC)
+    defaults = {
+        "id": PydanticObjectId(),
+        "status": EmbeddingReindexJobStatus.RUNNING,
+        "targetEmbeddingModelSourceId": PydanticObjectId(),
+        "previousEmbeddingModelSourceId": None,
+        "previousCollectionGeneration": None,
+        "requestedBy": USER_ID,
+        "startedAt": now,
+        "switchedAt": None,
+        "finishedAt": None,
+        "attempts": 1,
+        "error": None,
+        "lastError": None,
+        "leaseOwner": None,
+        "leaseExpiresAt": None,
+        "heartbeatAt": None,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_list_reindex_jobs_maps_jobs(ctx) -> None:
+    prev_source = PydanticObjectId()
+    running = _make_reindex_job(
+        status=EmbeddingReindexJobStatus.RUNNING,
+        switchedAt=datetime.now(UTC),
+        previousEmbeddingModelSourceId=prev_source,
+        previousCollectionGeneration="gen-1",
+    )
+    failed = _make_reindex_job(status=EmbeddingReindexJobStatus.FAILED, error="some documents failed")
+    retried = _make_reindex_job(attempts=3, lastError="attempt 2 timed out")
+    ctx.reindex.list_jobs = AsyncMock(return_value=[running, failed, retried])
+
+    response = ctx.client.get("/model-gateway/selection/embedding-model/reindex-jobs")
+
+    assert response.status_code == 200
+    jobs = response.json()["jobs"]
+    assert len(jobs) == 3
+    # Order is preserved from the service (newest first); ObjectIds/enums render as strings.
+    assert jobs[0]["id"] == str(running.id)
+    assert jobs[0]["status"] == "running"
+    assert jobs[0]["switchedAt"] is not None
+    assert jobs[0]["targetEmbeddingModelSourceId"] == str(running.targetEmbeddingModelSourceId)
+    # Non-null ObjectId optional renders as a string, not the raw ObjectId.
+    assert jobs[0]["previousEmbeddingModelSourceId"] == str(prev_source)
+    assert jobs[0]["previousCollectionGeneration"] == "gen-1"
+    assert jobs[1]["status"] == "failed"
+    assert jobs[1]["error"] == "some documents failed"
+    assert jobs[2]["attempts"] == 3
+    assert jobs[2]["lastError"] == "attempt 2 timed out"
+    ctx.reindex.list_jobs.assert_awaited_once_with(limit=10)
+
+
+def test_list_reindex_jobs_empty(ctx) -> None:
+    response = ctx.client.get("/model-gateway/selection/embedding-model/reindex-jobs")
+    assert response.status_code == 200
+    assert response.json() == {"jobs": []}
+
+
+def test_list_reindex_jobs_honors_limit(ctx) -> None:
+    ctx.client.get("/model-gateway/selection/embedding-model/reindex-jobs?limit=25")
+    ctx.reindex.list_jobs.assert_awaited_once_with(limit=25)
+
+
+def test_list_reindex_jobs_rejects_out_of_range_limit(ctx) -> None:
+    assert ctx.client.get("/model-gateway/selection/embedding-model/reindex-jobs?limit=0").status_code == 422
+    assert ctx.client.get("/model-gateway/selection/embedding-model/reindex-jobs?limit=51").status_code == 422
+
+
+def test_list_reindex_jobs_maps_error_to_500(ctx) -> None:
+    ctx.reindex.list_jobs.side_effect = RuntimeError("mongo down")
+    response = ctx.client.get("/model-gateway/selection/embedding-model/reindex-jobs")
+    assert response.status_code == 500
+    assert response.json()["detail"]["error"] == "internal_error"
 
 
 def test_scopes_config_grants_are_correct() -> None:
