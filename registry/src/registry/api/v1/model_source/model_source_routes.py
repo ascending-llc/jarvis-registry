@@ -4,6 +4,7 @@ import math
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
+from registry_pkgs.models.embedding_reindex_job import EmbeddingReindexJob
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
 
@@ -18,6 +19,8 @@ from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.model_source_api_schemas import (
     AwsBedrockModelConfigResponse,
     AzureOpenAIModelConfigResponse,
+    EmbeddingReindexJobListResponse,
+    EmbeddingReindexJobResponse,
     ModelGatewaySelectionResponse,
     ModelSourceCreateRequest,
     ModelSourceDeleteResponse,
@@ -86,6 +89,28 @@ def _to_detail(source: ModelSource, *, include_metadata: bool) -> ModelSourceDet
         metadata=get_model_metadata(source.providerConfig) if include_metadata else None,
         createdBy=source.createdBy,
         updatedBy=source.updatedBy,
+    )
+
+
+def _to_reindex_job_response(job: EmbeddingReindexJob) -> EmbeddingReindexJobResponse:
+    return EmbeddingReindexJobResponse(
+        id=str(job.id),
+        status=job.status,
+        targetEmbeddingModelSourceId=str(job.targetEmbeddingModelSourceId),
+        previousEmbeddingModelSourceId=(
+            str(job.previousEmbeddingModelSourceId) if job.previousEmbeddingModelSourceId else None
+        ),
+        previousCollectionGeneration=job.previousCollectionGeneration,
+        requestedBy=job.requestedBy,
+        startedAt=job.startedAt,
+        switchedAt=job.switchedAt,
+        finishedAt=job.finishedAt,
+        attempts=job.attempts,
+        error=job.error,
+        lastError=job.lastError,
+        leaseOwner=job.leaseOwner,
+        leaseExpiresAt=job.leaseExpiresAt,
+        heartbeatAt=job.heartbeatAt,
     )
 
 
@@ -361,6 +386,33 @@ async def set_embedding_model(
         raise
     except Exception as exc:
         logger.exception("Failed to set embedding model")
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
+
+
+@router.get(
+    "/model-gateway/selection/embedding-model/reindex-jobs",
+    response_model=EmbeddingReindexJobListResponse,
+    description="Lists recent embedding-model reindex jobs, newest first. `status` `running` covers both the "
+    "corpus sweep and the grace period; a set `switchedAt` means the new generation is already committed. "
+    "`error` is the terminal failure reason; `lastError` is the most recent failed attempt. `attempts` counts "
+    "lease claims, not operator retries, so a job that ran cleanly on its first try shows `attempts == 1`.",
+)
+@track_registry_operation("list", resource_type="embedding_reindex_job")
+async def list_embedding_reindex_jobs(
+    user_context: CurrentUser,
+    limit: int = Query(default=10, ge=1, le=50),
+    reindex_job_service: EmbeddingReindexJobService = Depends(get_embedding_reindex_job_service),
+):
+    try:
+        jobs = await reindex_job_service.list_jobs(limit=limit)
+        return EmbeddingReindexJobListResponse(jobs=[_to_reindex_job_response(job) for job in jobs])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to list embedding reindex jobs")
         raise HTTPException(
             http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),

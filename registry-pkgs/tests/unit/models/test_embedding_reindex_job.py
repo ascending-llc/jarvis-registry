@@ -50,8 +50,11 @@ def test_defaults_to_running_with_no_lease() -> None:
 
 def test_collection_name_and_index() -> None:
     assert EmbeddingReindexJob.Settings.name == "embedding_reindex_jobs"
-    # Only the active-job query index; no single-flight unique index (CAS handles it).
-    assert len(EmbeddingReindexJob.Settings.indexes) == 1
+    # Active-job claim query + newest-first history listing (list_jobs). No single-flight unique
+    # index (CAS handles it).
+    keys = [tuple(i.document["key"].items()) for i in EmbeddingReindexJob.Settings.indexes]
+    assert (("status", 1), ("leaseExpiresAt", 1)) in keys
+    assert (("startedAt", -1),) in keys
     assert not any(i.document.get("unique") for i in EmbeddingReindexJob.Settings.indexes)
 
 

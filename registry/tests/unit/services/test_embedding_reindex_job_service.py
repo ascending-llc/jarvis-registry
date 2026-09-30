@@ -248,3 +248,20 @@ async def test_trigger_reindex_proceeds_when_no_federation_sync_active(monkeypat
     smoke.assert_awaited_once()
     created.insert.assert_awaited_once()
     assert result is current
+
+
+async def test_list_jobs_sorts_by_started_at_desc_and_honors_limit(monkeypatch):
+    expected = [SimpleNamespace(id=PydanticObjectId()), SimpleNamespace(id=PydanticObjectId())]
+    query = MagicMock()
+    query.sort.return_value = query
+    query.limit.return_value = query
+    query.to_list = AsyncMock(return_value=expected)
+    monkeypatch.setattr(EmbeddingReindexJob, "find_all", lambda: query)
+
+    result = await _service().list_jobs(limit=5)
+
+    assert result is expected
+    # Ordering key is the exposed startedAt field, descending.
+    query.sort.assert_called_once_with("-startedAt")
+    query.limit.assert_called_once_with(5)
+    query.to_list.assert_awaited_once()

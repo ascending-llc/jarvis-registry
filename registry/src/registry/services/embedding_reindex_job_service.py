@@ -72,6 +72,10 @@ class EmbeddingReindexJobService:
         """Return the running job whose lease has not expired, else None."""
         return await get_active_embedding_reindex_job()
 
+    async def list_jobs(self, *, limit: int) -> list[EmbeddingReindexJob]:
+        """Return the most recent reindex jobs, newest first."""
+        return await EmbeddingReindexJob.find_all().sort("-startedAt").limit(limit).to_list()
+
     async def trigger_reindex(self, model_source_id: str, *, updated_by: str | None) -> ModelGatewaySelection:
         """Smoke-test the target model, then create the running job. Returns the CURRENT selection.
 

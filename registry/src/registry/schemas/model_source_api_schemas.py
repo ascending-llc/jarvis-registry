@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
+from registry_pkgs.models.enums import EmbeddingReindexJobStatus, ModelSourceMode, ModelSourceProviderType
 
 from .server_api_schemas import PaginationMetadata
 
@@ -122,6 +122,29 @@ class ModelSourceDeleteResponse(BaseModel):
 class ModelGatewaySelectionResponse(BaseModel):
     defaultWorkflowModelSourceId: str | None = None
     embeddingModelSourceId: str | None = None
+
+
+class EmbeddingReindexJobResponse(BaseModel):
+    id: str
+    status: EmbeddingReindexJobStatus
+    targetEmbeddingModelSourceId: str
+    previousEmbeddingModelSourceId: str | None = None
+    previousCollectionGeneration: str | None = None
+    requestedBy: str | None = None
+    startedAt: datetime
+    switchedAt: datetime | None = None
+    finishedAt: datetime | None = None
+    attempts: int
+    error: str | None = None
+    lastError: str | None = None
+    leaseOwner: str | None = None
+    leaseExpiresAt: datetime | None = None
+    heartbeatAt: datetime | None = None
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class EmbeddingReindexJobListResponse(BaseModel):
+    jobs: list[EmbeddingReindexJobResponse]
 
 
 class SetDefaultWorkflowModelRequest(BaseModel):
