@@ -19,6 +19,7 @@ singleton records which ModelSource currently backs each of the two global slots
    - 3.6. [Get Gateway Selection](#6-get-gateway-selection)
    - 3.7. [Set Default Workflow Model](#7-set-default-workflow-model)
    - 3.8. [Set Embedding Model](#8-set-embedding-model)
+     - 3.8.1. [List Reindex Jobs](#81-list-reindex-jobs)
 4. [Access Control](#access-control)
 5. [Data Models](#data-models)
 6. [Credentials & Encryption](#credentials--encryption)
@@ -288,7 +289,8 @@ means:
 
 **Response**: `202 Accepted` → same shape as [Get Gateway Selection](#6-get-gateway-selection). The
 body echoes the **current** selection (unchanged; it switches only on completion), so it is `null`
-on a deployment that has never selected an embedding model. No job id or progress is exposed.
+on a deployment that has never selected an embedding model. The `202` carries no job id; use
+[List Reindex Jobs](#81-list-reindex-jobs) to see whether the job is running, committed, or failed.
 ```json
 { "defaultWorkflowModelSourceId": null, "embeddingModelSourceId": null }
 ```
@@ -312,6 +314,28 @@ on a deployment that has never selected an embedding model. No job id or progres
 - Selected Azure source with **no** `apiKeyEncrypted` → startup **fails loudly** (Workload Identity
   is not supported on the embedding path; see [Data Models](#azureopenaimodelconfig)), rather than
   silently falling back.
+
+#### 8.1. List Reindex Jobs
+
+`GET /model-gateway/selection/embedding-model/reindex-jobs` — read-only, `models-read` scope.
+Since the `PUT` above returns no job id, this is how an operator sees whether a reindex is running
+or why one failed (AS-1868 leaves retries to the operator).
+
+**Query**: `limit` (default `10`, range `1`–`50`; out-of-range → `422`).
+
+**Response**: `200 OK` → `{ "jobs": [...] }`, **newest first** (by `startedAt`), empty when no job
+has ever run. Each job carries: `id`, `status`, `targetEmbeddingModelSourceId`,
+`previousEmbeddingModelSourceId`, `previousCollectionGeneration`, `requestedBy`, `startedAt`,
+`switchedAt`, `finishedAt`, `attempts`, `error`, `lastError`, `leaseOwner`, `leaseExpiresAt`,
+`heartbeatAt`. ObjectId fields are strings; unset optionals are `null`.
+
+**Reading a job**:
+- `status` `RUNNING` covers both the corpus sweep and the post-switch grace period. A set
+  `switchedAt` means the new generation is already committed (grace is measured from there).
+- `error` is the terminal failure reason (set once the job ends `FAILED`); `lastError` is the most
+  recent failed attempt's text.
+- `attempts` counts lease claims, not operator retries — a job that ran cleanly on its first try
+  shows `attempts == 1`.
 
 ---
 
@@ -338,6 +362,7 @@ Model sources are **scope-only** — no ACL, no per-record ownership.
 | `GET /model-gateway/selection` | `models-read` |
 | `PUT /model-gateway/selection/default-workflow-model` | `models-write` |
 | `PUT /model-gateway/selection/embedding-model` | `models-write` |
+| `GET /model-gateway/selection/embedding-model/reindex-jobs` | `models-read` |
 
 ---
 
