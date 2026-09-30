@@ -3,11 +3,14 @@ import type React from 'react';
 import { createContext, useContext } from 'react';
 import type { Workflow } from '@/services/workflow/type';
 import type { AgentInfo, NodeData, SchemaField, WorkflowNode } from '../types';
+import type { WorkflowScheduleController } from './Schedule/model';
 
 export interface WorkflowPanelContextValue {
   workflowId?: string;
   refreshRunHistoryKey?: number;
   workflow: Partial<Workflow> | null;
+  workflowSchedule: WorkflowScheduleController;
+  scheduleFocusRequestKey: number;
   selectedNode: WorkflowNode | null;
   nodes: WorkflowNode[];
   edges: Edge[];

@@ -1,7 +1,7 @@
-import { CheckIcon, CogIcon, PlayIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, ClockIcon, CogIcon, PlayIcon } from '@heroicons/react/24/outline';
 import type { Edge } from '@xyflow/react';
 import type React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HiOutlineShare } from 'react-icons/hi2';
 import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
 import ShareModal from '@/components/ShareModal';
@@ -26,6 +26,7 @@ import type {
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import { useActiveWorkflowRun } from './hooks/useActiveWorkflowRun';
 import { useWorkflowDraftGuard } from './hooks/useWorkflowDraftGuard';
+import { useWorkflowSchedule } from './hooks/useWorkflowSchedule';
 import TriggerRunModal from './TriggerRunModal';
 import TriggerUnsavedChangesDialog from './TriggerUnsavedChangesDialog';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
@@ -175,25 +176,40 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     initialEdges: initialCanvas.edges,
   });
 
+  const handleScheduleError = useCallback((message: string) => showToast(message, 'error'), [showToast]);
+  const workflowSchedule = useWorkflowSchedule({
+    workflowId: id ?? undefined,
+    workflowEnabled: currentWorkflow?.enabled === true,
+    workflowCanEdit: currentWorkflow?.permissions?.EDIT === true,
+    isReadOnly,
+    pageBusy: mutatingAction !== 'idle',
+    hasUnsavedWorkflowChanges: isDirty,
+    onError: handleScheduleError,
+  });
+  const hasUnsavedChanges = useCallback(
+    () => isDirty() || workflowSchedule.isDirty,
+    [isDirty, workflowSchedule.isDirty],
+  );
+
   // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
   const blocker = useBlocker(({ currentLocation, nextLocation }) => {
     if (isReadOnly) return false;
     const currentUrl = currentLocation.pathname + currentLocation.search;
     const nextUrl = nextLocation.pathname + nextLocation.search;
-    return isDirty() && currentUrl !== nextUrl;
+    return hasUnsavedChanges() && currentUrl !== nextUrl;
   });
 
   useEffect(() => {
     if (isReadOnly) return;
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isDirty()) {
+      if (hasUnsavedChanges()) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isDirty, isReadOnly]);
+  }, [hasUnsavedChanges, isReadOnly]);
 
   useEffect(() => {
     if (initialCanvas.error) showToast(initialCanvas.error, 'error');
@@ -205,7 +221,14 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     edges: Edge[],
     viewport: { x: number; y: number; zoom: number },
   ): Promise<boolean> => {
-    if (isReadOnly || savingRef.current || mutatingAction !== 'idle') return false;
+    if (
+      isReadOnly ||
+      savingRef.current ||
+      mutatingAction !== 'idle' ||
+      workflowSchedule.saving ||
+      workflowSchedule.toggling
+    )
+      return false;
     if (existingDetailUnavailable) {
       showToast(detailLoadError ?? 'Workflow details are not ready', 'error');
       return false;
@@ -255,6 +278,11 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         handleWorkflowUpdate(id, { nodeCount: updated.numNodes ?? validatedNodes.length, name: workflow?.name });
         markSaved(submittedMetadata, nodes, edges, workflow);
         setWorkflow(current => (current === workflow && current ? { ...current, ...updated } : current));
+        const scheduleSaved = await workflowSchedule.saveDraft();
+        if (!scheduleSaved) {
+          showToast('Workflow saved, but schedule changes remain unsaved.', 'error');
+          return false;
+        }
         showToast('Workflow updated successfully!', 'success');
         return true;
       } else {
@@ -429,6 +457,18 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             <CogIcon className='h-4 w-4' />
           </button>
 
+          {isExistingDetailReady && !detailLoadError && workflowSchedule.activeSummary && (
+            <button
+              type='button'
+              onClick={() => canvasRef.current?.openSchedule()}
+              title={`Scheduled: ${workflowSchedule.activeSummary}`}
+              className='ml-1 inline-flex max-w-[260px] flex-shrink items-center gap-1.5 truncate rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-primary-soft)] px-2 py-1 font-mono text-[10px] text-[var(--jarvis-primary-text)] transition-colors hover:border-[var(--jarvis-primary)]'
+            >
+              <ClockIcon className='h-3.5 w-3.5 flex-shrink-0' />
+              <span className='truncate'>{workflowSchedule.activeSummary}</span>
+            </button>
+          )}
+
           {isReadOnly && (
             <span className='ml-1 flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-[var(--jarvis-info-soft)] text-[var(--jarvis-info-text)]'>
               View only
@@ -469,7 +509,12 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             {!isReadOnly && (
               <button
                 onClick={() => void canvasRef.current?.save()}
-                disabled={mutatingAction !== 'idle' || existingDetailUnavailable}
+                disabled={
+                  mutatingAction !== 'idle' ||
+                  workflowSchedule.saving ||
+                  workflowSchedule.toggling ||
+                  existingDetailUnavailable
+                }
                 className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
               >
                 {mutatingAction === 'saving' ? (
@@ -510,6 +555,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             ref={canvasRef}
             workflowId={id ?? undefined}
             workflow={currentWorkflow}
+            workflowSchedule={workflowSchedule}
             refreshRunHistoryKey={runHistoryRefresh}
             activeWorkflowRun={activeWorkflowRun.activeRun}
             isMonitoringActive={activeWorkflowRun.isMonitoringActive}

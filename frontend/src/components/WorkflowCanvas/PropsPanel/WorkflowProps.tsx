@@ -1,5 +1,6 @@
 import { TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
+import WorkflowScheduleSection from './Schedule/WorkflowScheduleSection';
 import { useWorkflowPanel } from './WorkflowPanelContext';
 
 interface WorkflowPropsProps {
@@ -7,7 +8,14 @@ interface WorkflowPropsProps {
 }
 
 const WorkflowProps: React.FC<WorkflowPropsProps> = ({ isNewWorkflow }) => {
-  const { workflow, isReadOnly, onWorkflowChange: onChange, onDeleteWorkflow } = useWorkflowPanel();
+  const {
+    workflow,
+    workflowSchedule,
+    scheduleFocusRequestKey,
+    isReadOnly,
+    onWorkflowChange: onChange,
+    onDeleteWorkflow,
+  } = useWorkflowPanel();
   if (!workflow) return null;
 
   return (
@@ -39,6 +47,8 @@ const WorkflowProps: React.FC<WorkflowPropsProps> = ({ isNewWorkflow }) => {
           />
         </div>
       </div>
+
+      <WorkflowScheduleSection controller={workflowSchedule} focusRequestKey={scheduleFocusRequestKey} />
 
       <div className='px-4 py-3 border-t border-[var(--jarvis-border)] shrink-0'>
         <button

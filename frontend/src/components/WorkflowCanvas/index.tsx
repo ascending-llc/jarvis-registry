@@ -17,6 +17,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
     {
       workflowId,
       workflow: workflowData,
+      workflowSchedule,
       refreshRunHistoryKey,
       activeWorkflowRun,
       isMonitoringActive,
@@ -32,6 +33,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
     ref,
   ) => {
     const [panelMode, setPanelMode] = useState<import('./types').PanelMode>('workflow');
+    const [scheduleFocusRequestKey, setScheduleFocusRequestKey] = useState(0);
     // UI Modal States (moved out of useWorkflowCanvas)
     const [pickerOpen, setPickerOpen] = useState(false);
     const [pickerTab, setPickerTab] = useState('A2A Agents');
@@ -100,6 +102,12 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
           canvas.clearSelection();
         }
       },
+      openSchedule: () => {
+        canvas.setPanelCollapsed(false);
+        setPanelMode('workflow');
+        canvas.clearSelection();
+        setScheduleFocusRequestKey(current => current + 1);
+      },
     }));
 
     const onOpenAgentPicker = (cb: (agent: AgentInfo) => void) => {
@@ -125,6 +133,8 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
               workflowId={workflowId}
               refreshRunHistoryKey={refreshRunHistoryKey}
               workflow={workflowData ?? null}
+              workflowSchedule={workflowSchedule}
+              scheduleFocusRequestKey={scheduleFocusRequestKey}
               selectedNode={canvas.selectedNode}
               nodes={canvas.nodes}
               edges={canvas.edges}

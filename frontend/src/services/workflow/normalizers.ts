@@ -1,4 +1,14 @@
-import type { NodeRunStatus, NodeRunSummary, StepRequirementSummary, WorkflowRunStatusResponse } from './type';
+import type {
+  GetWorkflowSchedulesResponse,
+  NodeRunStatus,
+  NodeRunSummary,
+  StepRequirementSummary,
+  WorkflowPermissionType,
+  WorkflowRunStatusResponse,
+  WorkflowSchedule,
+  WorkflowScheduleInitialInput,
+  WorkflowScheduleJsonValue,
+} from './type';
 import { isWorkflowRunStatus, NODE_RUN_STATUSES } from './type';
 
 const ON_REJECT_VALUES = new Set<StepRequirementSummary['onReject']>(['skip', 'cancel', 'retry', 'else_branch']);
@@ -18,6 +28,32 @@ const _firstOptionalStringOrNull = (...values: unknown[]): string | null | undef
     if (normalized !== undefined) return normalized;
   }
   return undefined;
+};
+
+const _isWorkflowScheduleJsonValue = (value: unknown): value is WorkflowScheduleJsonValue => {
+  if (value === null || ['boolean', 'number', 'string'].includes(typeof value)) return true;
+  if (Array.isArray(value)) return value.every(_isWorkflowScheduleJsonValue);
+  const record = _asRecord(value);
+  return record !== null && Object.values(record).every(_isWorkflowScheduleJsonValue);
+};
+
+const _normalizeInitialInput = (value: unknown): WorkflowScheduleInitialInput | null => {
+  if (value === null || value === undefined) return null;
+  const record = _asRecord(value);
+  if (!record || !Object.values(record).every(_isWorkflowScheduleJsonValue)) {
+    throw new Error('Invalid workflow schedule initial input');
+  }
+  return record as WorkflowScheduleInitialInput;
+};
+
+const _normalizePermissions = (value: unknown): WorkflowPermissionType => {
+  const raw = _asRecord(value);
+  return {
+    VIEW: raw?.VIEW === true,
+    EDIT: raw?.EDIT === true,
+    DELETE: raw?.DELETE === true,
+    SHARE: raw?.SHARE === true,
+  };
 };
 
 const _isNodeRunStatus = (value: unknown): value is NodeRunStatus =>
@@ -100,5 +136,61 @@ export const normalizeWorkflowRunStatusResponse = (value: unknown): WorkflowRunS
     status,
     pendingRequirements: normalizePendingRequirements(raw.pendingRequirements ?? raw.pending_requirements),
     nodeRuns: _normalizeNodeRuns(nodeRunsRaw),
+  };
+};
+
+export const normalizeWorkflowSchedule = (value: unknown): WorkflowSchedule => {
+  const raw = _asRecord(value);
+  if (!raw) throw new Error('Invalid workflow schedule response');
+
+  const id = _asNonEmptyString(raw.id);
+  const workflowDefinitionId =
+    _asNonEmptyString(raw.workflowDefinitionId) ?? _asNonEmptyString(raw.workflow_definition_id);
+  const cronExpression = _asNonEmptyString(raw.cronExpression) ?? _asNonEmptyString(raw.cron_expression);
+  const timezone = _asNonEmptyString(raw.timezone);
+  const createdBy = _asNonEmptyString(raw.createdBy) ?? _asNonEmptyString(raw.created_by);
+  const createdAt = _asNonEmptyString(raw.createdAt) ?? _asNonEmptyString(raw.created_at);
+  const updatedAt = _asNonEmptyString(raw.updatedAt) ?? _asNonEmptyString(raw.updated_at);
+
+  if (
+    !id ||
+    !workflowDefinitionId ||
+    !cronExpression ||
+    !timezone ||
+    typeof raw.enabled !== 'boolean' ||
+    !createdBy ||
+    !createdAt ||
+    !updatedAt
+  ) {
+    throw new Error('Invalid workflow schedule response');
+  }
+
+  const lastRunStatusRaw = raw.lastRunStatus ?? raw.last_run_status;
+
+  return {
+    id,
+    workflowDefinitionId,
+    cronExpression,
+    timezone,
+    initialInput: _normalizeInitialInput(raw.initialInput ?? raw.initial_input),
+    enabled: raw.enabled,
+    nextRunAt: _firstOptionalStringOrNull(raw.nextRunAt, raw.next_run_at) ?? null,
+    lastRunAt: _firstOptionalStringOrNull(raw.lastRunAt, raw.last_run_at) ?? null,
+    lastRunId: _firstOptionalStringOrNull(raw.lastRunId, raw.last_run_id) ?? null,
+    lastRunStatus: isWorkflowRunStatus(lastRunStatusRaw) ? lastRunStatusRaw : null,
+    createdBy,
+    createdAt,
+    updatedAt,
+    permissions: _normalizePermissions(raw.permissions),
+  };
+};
+
+export const normalizeWorkflowSchedulesResponse = (value: unknown): GetWorkflowSchedulesResponse => {
+  const raw = _asRecord(value);
+  if (!raw || !Array.isArray(raw.items)) throw new Error('Invalid workflow schedules response');
+
+  return {
+    items: raw.items.map(normalizeWorkflowSchedule),
+    total: typeof raw.total === 'number' && Number.isInteger(raw.total) ? raw.total : raw.items.length,
   };
 };

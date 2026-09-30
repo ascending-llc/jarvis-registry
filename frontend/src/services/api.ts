@@ -92,6 +92,11 @@ const API = {
   replayWorkflowRun: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/replay`,
   rerunWorkflowNode: (id: string, runId: string, nodeId: string) =>
     `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/nodes/${nodeId}/rerun`,
+  getWorkflowSchedules: (id: string) => `${WORKFLOW_BASE_URL}/${id}/schedules`,
+  createWorkflowSchedule: (id: string) => `${WORKFLOW_BASE_URL}/${id}/schedules`,
+  updateWorkflowSchedule: (id: string, scheduleId: string) => `${WORKFLOW_BASE_URL}/${id}/schedules/${scheduleId}`,
+  toggleWorkflowSchedule: (id: string, scheduleId: string) =>
+    `${WORKFLOW_BASE_URL}/${id}/schedules/${scheduleId}/toggle`,
 
   // skill
   getSkillsList: SKILL_BASE_URL,

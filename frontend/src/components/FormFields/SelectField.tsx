@@ -16,6 +16,7 @@ export interface SelectFieldProps extends BaseFieldProps {
   onChange?: (value: string) => void;
   defaultValue?: string;
   placeholder?: string;
+  ariaLabel?: string;
 }
 
 /**
@@ -31,6 +32,7 @@ export const SelectField: React.FC<SelectFieldProps> = ({
   onChange,
   defaultValue,
   placeholder = 'Select an option',
+  ariaLabel,
   className = '',
   error,
   helperText,
@@ -81,6 +83,8 @@ export const SelectField: React.FC<SelectFieldProps> = ({
             <div className='relative'>
               <Listbox.Button
                 ref={btnRef}
+                id={id}
+                aria-label={ariaLabel}
                 className={`block w-full rounded-md border shadow-sm sm:text-sm text-left relative outline-none transition-colors
                   disabled:cursor-not-allowed disabled:opacity-50
                   ${borderClass} ${focusClass}
