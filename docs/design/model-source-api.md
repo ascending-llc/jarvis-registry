@@ -330,7 +330,7 @@ has ever run. Each job carries: `id`, `status`, `targetEmbeddingModelSourceId`,
 `heartbeatAt`. ObjectId fields are strings; unset optionals are `null`.
 
 **Reading a job**:
-- `status` `RUNNING` covers both the corpus sweep and the post-switch grace period. A set
+- `status` `running` covers both the corpus sweep and the post-switch grace period. A set
   `switchedAt` means the new generation is already committed (grace is measured from there).
 - `error` is the terminal failure reason (set once the job ends `FAILED`); `lastError` is the most
   recent failed attempt's text.
