@@ -18,6 +18,7 @@ from registry.schemas.skill_api_schemas import (
     SkillFileContentResponse,
     SkillFileMetadataResponse,
     SkillFileResponse,
+    SkillOriginResponse,
 )
 
 pytestmark = pytest.mark.integration
@@ -47,6 +48,7 @@ def _make_skill(skill_id: PydanticObjectId | None = None) -> MagicMock:
     skill.authorName = "Integration User"
     skill.source = "inline"
     skill.sourceMetadata = None
+    skill.createdByRegistry = True
     skill.createdAt = datetime(2026, 8, 1, tzinfo=UTC)
     skill.updatedAt = datetime(2026, 8, 2, tzinfo=UTC)
     return skill
@@ -73,6 +75,9 @@ def skill_app() -> Generator[SimpleNamespace, None, None]:
     service.get_skill_with_files = AsyncMock()
     service.get_skill_file_content = AsyncMock()
     service.update_skill = AsyncMock()
+    service.resolve_origins = AsyncMock(
+        side_effect=lambda skills: {skill.id: SkillOriginResponse(kind="registry") for skill in skills}
+    )
     service.delete_skill = AsyncMock()
     service.toggle_skill = AsyncMock()
     service.upsert_skill_file = AsyncMock()
@@ -107,8 +112,39 @@ def test_list_skills_returns_acl_metadata_and_forwards_filters(skill_app):
     assert item["name"] == "test-skill"
     assert item["enabled"] is True
     assert item["permissions"]["EDIT"] is True
+    assert item["origin"] == {"kind": "registry", "provider": None}
     assert "path" not in item
     skill_app.service.list_skills.assert_awaited_once_with(user_id=_USER_ID, enabled=True, file_count=0)
+    skill_app.service.resolve_origins.assert_awaited_once()
+
+
+def test_all_endpoints_include_origin(skill_app):
+    skill = _make_skill()
+    skill_app.service.list_skills.return_value = [(skill, _PERMISSIONS)]
+    skill_app.service.create_skill.return_value = (skill, [], _PERMISSIONS)
+    skill_app.service.get_skill.return_value = (skill, [], _PERMISSIONS)
+    skill_app.service.update_skill.return_value = (skill, [], _PERMISSIONS)
+
+    create_body = {"name": "test-skill", "description": "A test skill", "body": "# Test"}
+    responses = {
+        "list": skill_app.client.get("/api/v1/skills").json()["skills"][0],
+        "create": skill_app.client.post("/api/v1/skills", json=create_body).json(),
+        "get": skill_app.client.get(f"/api/v1/skills/{skill.id}").json(),
+        "update": skill_app.client.patch(f"/api/v1/skills/{skill.id}", json={"description": "x"}).json(),
+    }
+    for name, payload in responses.items():
+        assert payload["origin"] == {"kind": "registry", "provider": None}, name
+
+
+def test_list_skills_db_error_in_resolve_origins_returns_500(skill_app):
+    skill = _make_skill()
+    skill_app.service.list_skills.return_value = [(skill, _PERMISSIONS)]
+    skill_app.service.resolve_origins.side_effect = RuntimeError("mongo down")
+
+    response = skill_app.client.get("/api/v1/skills")
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["message"] == "Internal server error"
 
 
 def test_create_skill_returns_201(skill_app):
