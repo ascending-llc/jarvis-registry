@@ -395,7 +395,7 @@ async def set_embedding_model(
 @router.get(
     "/model-gateway/selection/embedding-model/reindex-jobs",
     response_model=EmbeddingReindexJobListResponse,
-    description="Lists recent embedding-model reindex jobs, newest first. `status` RUNNING covers both the "
+    description="Lists recent embedding-model reindex jobs, newest first. `status` `running` covers both the "
     "corpus sweep and the grace period; a set `switchedAt` means the new generation is already committed. "
     "`error` is the terminal failure reason; `lastError` is the most recent failed attempt. `attempts` counts "
     "lease claims, not operator retries, so a job that ran cleanly on its first try shows `attempts == 1`.",

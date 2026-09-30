@@ -329,10 +329,10 @@ has ever run. Each job carries: `id`, `status`, `targetEmbeddingModelSourceId`,
 `switchedAt`, `finishedAt`, `attempts`, `error`, `lastError`, `leaseOwner`, `leaseExpiresAt`,
 `heartbeatAt`. ObjectId fields are strings; unset optionals are `null`.
 
-**Reading a job**:
-- `status` `RUNNING` covers both the corpus sweep and the post-switch grace period. A set
+**Reading a job** (`status` wire values are lowercase: `running`, `completed`, `failed`):
+- `status` `running` covers both the corpus sweep and the post-switch grace period. A set
   `switchedAt` means the new generation is already committed (grace is measured from there).
-- `error` is the terminal failure reason (set once the job ends `FAILED`); `lastError` is the most
+- `error` is the terminal failure reason (set once the job ends `failed`); `lastError` is the most
   recent failed attempt's text.
 - `attempts` counts lease claims, not operator retries — a job that ran cleanly on its first try
   shows `attempts == 1`.
