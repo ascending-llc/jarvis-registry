@@ -83,9 +83,9 @@ const SkillListView: React.FC<SkillListViewProps> = ({
       <div className='grid min-w-[640px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border)] px-1 py-2.5 text-[13px] text-[var(--jarvis-muted)]'>
         <div className='grid min-w-0 grid-cols-[2fr_1fr_1fr_1fr] gap-3'>
           <span>Skill</span>
-          <span>Last updated</span>
           <span>Source</span>
           <span>Author</span>
+          <span>Last updated</span>
         </div>
         <span className='sr-only'>Actions</span>
       </div>
@@ -153,11 +153,11 @@ const SkillListView: React.FC<SkillListViewProps> = ({
                   {skill.enabled ? 'Enabled' : 'Disabled'}
                 </span>
               </span>
-              <span className='text-[13.5px] text-[var(--jarvis-muted)]'>{formatUpdatedDate(skill.updatedAt)}</span>
               <span className='flex min-w-0'>
                 <SkillSourceChip origin={skill.origin} />
               </span>
               <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>{skill.authorName || '—'}</span>
+              <span className='text-[13.5px] text-[var(--jarvis-muted)]'>{formatUpdatedDate(skill.updatedAt)}</span>
             </button>
             <span className='flex items-center justify-end gap-0.5 pr-1'>
               {skill.permissions?.SHARE === true && (
