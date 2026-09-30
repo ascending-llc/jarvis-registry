@@ -15,7 +15,6 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 
 from ...auth.dependencies import UserContextDict
 from ...services.access_control_service import ACLService
-from ...services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 from ...utils.otel_metrics import record_tool_discovery
 from .base import VectorSearchService
 
@@ -70,13 +69,11 @@ class SearchService:
         mcp_server_repo: MCPServerRepository,
         a2a_agent_repo: A2AAgentRepository,
         acl_service: ACLService,
-        embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
     ) -> None:
         self.vector_service = vector_service
         self.mcp_server_repo = mcp_server_repo
         self.a2a_agent_repo = a2a_agent_repo
         self.acl_service = acl_service
-        self._embedding_maintenance_watcher = embedding_maintenance_watcher
 
     async def _get_accessible_ids(
         self,
@@ -116,8 +113,6 @@ class SearchService:
         ACL filtering is pushed into the Weaviate query so that ``top_n`` is
         respected at the database level, not post-hoc.
         """
-        raise_if_reindex_active(self._embedding_maintenance_watcher)
-
         query = search.query.strip()
         top_n = search.top_n
         start_time = time.perf_counter()
@@ -267,8 +262,6 @@ class SearchService:
         A2A results come from ``a2a_agent_repo`` with ACL filtering applied via
         agent_id/$in. An A2A vector outage degrades gracefully.
         """
-        raise_if_reindex_active(self._embedding_maintenance_watcher)
-
         query = query.strip()
         requested = entity_types or list(_DEFAULT_SEMANTIC_TYPES)
         mcp_types = [t for t in requested if t in _MCP_SEMANTIC_TYPES]

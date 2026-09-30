@@ -3,6 +3,22 @@ import os
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from registry_pkgs.core.config import DISABLE_DOTENV_ENV_VAR
+
+
+def disable_dotenv_loading() -> None:
+    """Stop every test from reading a developer's `.env`. Call at the top of ``conftest.py``, before any app import.
+
+    Two loaders are closed:
+    - ``JarvisBaseSettings`` has ``env_file=".env"``, resolved against the current directory, so a run from
+      the repo root would read the root `.env`. ``JARVIS_DISABLE_DOTENV=1`` drops that source.
+    - In its default "DEV" mode, ``import litellm`` calls ``dotenv.load_dotenv()``, which walks up from the
+      ``.venv`` to the repo-root `.env` and copies it into ``os.environ``. ``LITELLM_MODE=PRODUCTION``
+      skips that; it must be set before anything imports litellm.
+    """
+    os.environ[DISABLE_DOTENV_ENV_VAR] = "1"
+    os.environ["LITELLM_MODE"] = "PRODUCTION"
+
 
 def setup_test_rsa_keys() -> rsa.RSAPrivateKey:
     """Generate a test RSA key pair and set ``JWT_PRIVATE_KEY`` / ``JWT_PUBLIC_KEY``.
@@ -41,14 +57,12 @@ def setup_registry_test_env() -> rsa.RSAPrivateKey:
     - ``CREDS_KEY`` (hex-encoded encryption key)
     - ``SECRET_KEY`` (HMAC / signing key)
     - ``TOOL_DISCOVERY_MODE`` (required validator value)
-    - ``LITELLM_MODE=PRODUCTION``: in its default "DEV" mode, ``import litellm`` calls
-      ``dotenv.load_dotenv()``, which finds the developer's repo-root ``.env`` and copies it into
-      ``os.environ``, so local config such as ``REGISTRY_URL`` would leak into tests. Must be set
-      before anything imports litellm.
+
+    Also calls ``disable_dotenv_loading`` so no `.env` leaks into the run.
 
     Returns the RSA private key for reuse in test fixtures.
     """
-    os.environ["LITELLM_MODE"] = "PRODUCTION"
+    disable_dotenv_loading()
     os.environ["TOOL_DISCOVERY_MODE"] = "external"
     os.environ["CREDS_KEY"] = os.urandom(32).hex()
     os.environ["SECRET_KEY"] = os.urandom(32).hex()

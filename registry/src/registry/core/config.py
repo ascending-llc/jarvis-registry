@@ -127,6 +127,14 @@ class Settings(JarvisBaseSettings):
     federation_vector_sync_max_concurrency: int = Field(default=5, gt=0)
     azure_foundry_discovery_max_concurrency: int = Field(default=10, gt=0)
     skill_sync_apply_max_concurrency: int = Field(default=10, gt=0)
+    # How long a committed embedding-reindex job stays RUNNING (writes 503'd) after the switch, so every
+    # pod's watcher can swap to the new generation. Must exceed the watcher poll interval (1s) or a pod
+    # could miss the swap window.
+    embedding_reindex_grace_period_seconds: float = Field(default=60.0, gt=1.0)
+    # Catch-up waits at least this long, measured from the job's start, before reading the
+    # post-sweep watermark — it covers the longest gated write still in flight. None → derive from the
+    # MCP client timeouts (~175s). Tests and ops can shorten it; must be >= 0.
+    embedding_reindex_catch_up_min_delay_seconds: float | None = Field(default=None, ge=0)
 
     # ==================== Azure OpenAI ====================
     azure_openai_api_key: str | None = None

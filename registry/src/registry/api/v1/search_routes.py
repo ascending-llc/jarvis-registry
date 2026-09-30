@@ -4,12 +4,9 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import Field
 
-from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
-
 from ...core.telemetry_decorators import track_registry_operation
 from ...deps import get_search_service
 from ...schemas.case_conversion import APIBaseModel
-from ...schemas.errors import reindex_in_progress_error
 from ...services.search.service import SearchService
 
 logger = logging.getLogger(__name__)
@@ -179,8 +176,6 @@ async def semantic_search(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except EmbeddingReindexInProgressException as exc:
-        raise reindex_in_progress_error() from exc
     except RuntimeError as exc:
         logger.error("Search service unavailable: %s", exc, exc_info=True)
         raise HTTPException(

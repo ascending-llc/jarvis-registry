@@ -329,6 +329,8 @@ class BackendConfig(BaseModel):
     vector_store_config: VectorStoreConfig
     embedding_model_config: EmbeddingModelConfig
     rerank_config: RerankConfig = Field(default_factory=RerankConfig)
+    # Generation this backend reads/writes; None = legacy base names, else suffixes every name.
+    collection_generation: str | None = None
 
     @classmethod
     def from_vector_config(cls, config: VectorConfig) -> "BackendConfig":

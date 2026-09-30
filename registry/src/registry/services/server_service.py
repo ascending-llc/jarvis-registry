@@ -632,7 +632,6 @@ class ServerServiceV1:
 
                 # Save updated server
                 server.config = config
-                server.updatedAt = _get_current_utc_time()
                 await server.save(session=session)
             except ValueError:
                 # Re-raise ValueError (our validation errors)
@@ -748,9 +747,6 @@ class ServerServiceV1:
 
         server.config = updated_config
 
-        # Update the updatedAt timestamp
-        server.updatedAt = _get_current_utc_time()
-
         old_hash = server.vectorContentHash
         await server.save(session=session)
 
@@ -776,6 +772,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found
         """
+        # Guard before the Mongo delete: the reindex sweep rebuilds from Mongo, so a delete mid-sweep
+        # could leave the deleted server in the new generation. Block it (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         try:
             obj_id = PydanticObjectId(server_id)
         except Exception:
@@ -871,6 +870,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found or user_id missing for OAuth server
         """
+        # Guard before the Mongo write: the vector sync would fail during a reindex while Mongo
+        # already changed, so block the toggle (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         server = await self.get_server_by_id(server_id, user_id)
 
         if not server:
@@ -889,9 +891,6 @@ class ServerServiceV1:
                 server.config["enabled"] = False
                 await server.save()
                 raise ValueError("Failed to fetch tools from server. Server remains disabled.")
-
-        # Update the updatedAt timestamp
-        server.updatedAt = _get_current_utc_time()
 
         old_hash = server.vectorContentHash
         await server.save()
@@ -944,6 +943,9 @@ class ServerServiceV1:
         Weaviate only for tools whose status actually flipped — batched by new state, at most two
         round-trips, not the server's entire tool set.
         """
+        # Guard before the Mongo write: the scheduled tool_enabled push would fail during a reindex
+        # while Mongo already changed, so block it (503) until the reindex ends.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         server = await self.get_server_by_id(server_id, user_id)
         if not server:
             raise ValueError("Server not found")
@@ -957,7 +959,6 @@ class ServerServiceV1:
             return server
 
         server.registryDisabledTools = sorted(new_disabled)
-        server.updatedAt = _get_current_utc_time()
         await server.save()
 
         self._schedule_tool_enabled_sync(str(server.id), new_disabled, previous_disabled)
@@ -1189,6 +1190,9 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found
         """
+        # Guard before refetch/save: refresh rewrites the server + its vectors, so block it (503)
+        # during a reindex to keep the sweep's source of truth stable.
+        raise_if_reindex_active(self._embedding_maintenance_watcher)
         server = await self.get_server_by_id(server_id, user_id)
 
         if not server:
@@ -1213,7 +1217,6 @@ class ServerServiceV1:
             server.lastError = now
             server.errorMessage = tool_error or "Failed to retrieve capabilities"
             # Do NOT update lastConnected on failure - only update on success
-            server.updatedAt = now
 
             await server.save()
 
@@ -1234,7 +1237,6 @@ class ServerServiceV1:
         server.errorMessage = None
         # ONLY update lastConnected on success
         server.lastConnected = now
-        server.updatedAt = now
 
         # Update capabilities, tools, resources, and prompts in config
         config = server.config or {}

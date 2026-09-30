@@ -1,4 +1,5 @@
 import logging
+import os
 from functools import cached_property
 from typing import Any, Self
 from urllib.parse import urlparse
@@ -7,11 +8,15 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from .scopes import load_scopes_config
 
 INTERACTIVE_TOKEN_CLIENT_ID = "user-generated"
+
+# Set to "1" to stop every JarvisBaseSettings subclass from reading a `.env` file. The test suites set it
+# (registry_pkgs.testing.fixtures.disable_dotenv_loading) so a developer's local `.env` never leaks in.
+DISABLE_DOTENV_ENV_VAR = "JARVIS_DISABLE_DOTENV"
 
 
 class ChunkingConfig(BaseModel):
@@ -156,6 +161,24 @@ class JarvisBaseSettings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Keep pydantic-settings' default source order, minus the `.env` file when it is disabled.
+
+        `env_file` is resolved against the current directory, so without this a test run from the repo
+        root would read the developer's `.env`. Checked on every instantiation, not at import.
+        """
+        if os.environ.get(DISABLE_DOTENV_ENV_VAR) == "1":
+            return init_settings, env_settings, file_secret_settings
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
 
     # ==================== Deployment ====================
     deployment_environment: str | None = None

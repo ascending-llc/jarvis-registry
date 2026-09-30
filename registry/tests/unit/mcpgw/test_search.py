@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from registry.mcpgw.tools.search import _run_search
-from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException, InternalServerException
+from registry_pkgs.core.exceptions import InternalServerException
 
 
 def _make_ctx(search_entities: AsyncMock) -> MagicMock:
@@ -17,20 +17,6 @@ def _make_ctx(search_entities: AsyncMock) -> MagicMock:
     ctx = MagicMock()
     ctx.request_context = request_context
     return ctx
-
-
-@pytest.mark.asyncio
-async def test_run_search_reindex_reports_soft_unavailable() -> None:
-    search_entities = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
-    ctx = _make_ctx(search_entities)
-
-    with pytest.raises(InternalServerException) as excinfo:
-        await _run_search(ctx, "q", 3, "hybrid", ["tool"], "mcp")
-
-    message = str(excinfo.value)
-    assert "temporarily unavailable" in message
-    assert "embedding model" in message
-    assert "entity discovery failed" not in message
 
 
 @pytest.mark.asyncio
@@ -56,7 +42,7 @@ async def test_run_search_success_returns_results() -> None:
 
 # ---------------------------------------------------------------------------
 # End-to-end: a raised exception from the tool becomes CallToolResult(isError=True)
-# via the real FastMCP -> lowlevel-server conversion (AS-1867 AC4).
+# via the real FastMCP -> lowlevel-server conversion.
 # ---------------------------------------------------------------------------
 
 
@@ -97,20 +83,6 @@ async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock):
         return (await handler(req)).root
     finally:
         request_ctx.reset(token)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["discover_servers", "discover_agents"])
-async def test_discover_tool_reports_soft_error_during_reindex(tool_name: str):
-    search_entities = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
-
-    result = await _call_tool_e2e(tool_name, search_entities)
-
-    assert result.isError is True
-    text = result.content[0].text
-    assert "temporarily unavailable" in text
-    assert "embedding model" in text
-    assert "entity discovery failed" not in text
 
 
 @pytest.mark.asyncio

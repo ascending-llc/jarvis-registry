@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from beanie import Document
+from beanie import Document, PydanticObjectId
 from pydantic import ConfigDict, Field
 from pymongo import IndexModel
 
@@ -16,6 +16,16 @@ class EmbeddingReindexJob(Document):
     stuck in maintenance mode forever.
     """
 
+    # Sweep target; the new generation's collections are named ``<Base>_<str(job.id)>``.
+    targetEmbeddingModelSourceId: PydanticObjectId
+    # The (model, generation) being replaced, captured at trigger. The commit is a compare-and-set on
+    # previousCollectionGeneration; the executor uses these to resume (committed / superseded / sweep).
+    previousEmbeddingModelSourceId: PydanticObjectId | None = None
+    previousCollectionGeneration: str | None = None
+    requestedBy: str | None = None  # audit for the deferred commit
+    switchedAt: datetime | None = None  # set on commit; grace is measured from here
+    attempts: int = 0  # incremented on every claim; caps automatic retries
+    lastError: str | None = None  # most recent attempt's exception text (for the give-up message)
     status: EmbeddingReindexJobStatus = EmbeddingReindexJobStatus.RUNNING
     leaseOwner: str | None = None
     leaseExpiresAt: datetime | None = None

@@ -16,7 +16,7 @@ dependencies = [
     # A2A Protocol SDK
     "a2a-sdk==0.3.24",
     # Database
-    "beanie>=2.0.0",
+    "beanie>=2.1.0",
     "pymongo>4.0.0",
     "redis>=7.1.0",
     # Vector search and AI

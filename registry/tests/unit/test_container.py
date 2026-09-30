@@ -21,6 +21,7 @@ def _make_settings(*, aip_arn: str | None = None) -> MagicMock:
     settings.aws_session_token = None
     settings.registry_internal_url = "http://localhost:7860"
     settings.jwt_signing_config = MagicMock()
+    settings.embedding_reindex_catch_up_min_delay_seconds = None
     return settings
 
 

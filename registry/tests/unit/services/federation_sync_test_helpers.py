@@ -12,7 +12,7 @@ from registry_pkgs.models.enums import FederationProviderType, FederationStatus,
 _DEFAULT_USER_OBJECT_ID = PydanticObjectId()
 
 
-def _make_federation_sync_service() -> FederationSyncService:
+def _make_federation_sync_service(*, reindex_active: bool = False) -> FederationSyncService:
     user_service = MagicMock()
     user_service.get_user_by_user_id = AsyncMock(
         return_value=SimpleNamespace(id=_DEFAULT_USER_OBJECT_ID, user_id="user-1")
@@ -29,6 +29,7 @@ def _make_federation_sync_service() -> FederationSyncService:
         acl_service=MagicMock(),
         user_service=user_service,
         azure_client_cache=MagicMock(),
+        embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: reindex_active),
     )
 
 

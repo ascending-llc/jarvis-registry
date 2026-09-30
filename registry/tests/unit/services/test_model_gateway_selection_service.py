@@ -65,7 +65,9 @@ async def test_set_default_workflow_model_success(service, monkeypatch) -> None:
     monkeypatch.setattr(
         svc_module.ModelSource,
         "get",
-        AsyncMock(return_value=SimpleNamespace(mode=ModelSourceMode.CHAT, deletedAt=None)),
+        AsyncMock(
+            return_value=SimpleNamespace(id=PydanticObjectId(VALID_ID), mode=ModelSourceMode.CHAT, deletedAt=None)
+        ),
     )
     set_selection = AsyncMock(return_value=selection)
     monkeypatch.setattr(svc_module, "set_model_gateway_selection", set_selection)
@@ -81,14 +83,23 @@ async def test_set_default_workflow_model_success(service, monkeypatch) -> None:
     )
 
 
-async def test_set_embedding_model_requires_embedding_mode(service, monkeypatch) -> None:
+async def test_resolve_embedding_model_source_requires_embedding_mode(service, monkeypatch) -> None:
+    # resolve_embedding_model_source validates + returns the source (the reindex trigger smoke-tests
+    # it, and the executor commits via compare-and-set).
     monkeypatch.setattr(
         svc_module.ModelSource,
         "get",
         AsyncMock(return_value=SimpleNamespace(mode=ModelSourceMode.CHAT, deletedAt=None)),
     )
     with pytest.raises(ModelSourceModeMismatchError, match="expected 'embedding'"):
-        await service.set_embedding_model(VALID_ID, updated_by="admin")
+        await service.resolve_embedding_model_source(VALID_ID)
+
+
+async def test_resolve_embedding_model_source_returns_source(service, monkeypatch) -> None:
+    source = SimpleNamespace(mode=ModelSourceMode.EMBEDDING, deletedAt=None)
+    monkeypatch.setattr(svc_module.ModelSource, "get", AsyncMock(return_value=source))
+
+    assert await service.resolve_embedding_model_source(VALID_ID) is source
 
 
 async def test_missing_model_source_raises(service, monkeypatch) -> None:

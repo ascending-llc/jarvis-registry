@@ -832,7 +832,7 @@ def test_resolve_agent_card_path_override_falls_back_when_metadata_path_is_missi
 
 @pytest.mark.asyncio
 class TestA2AReindexGate:
-    """create_agent/update_agent must refuse to write while a reindex is active."""
+    """create/update/delete/toggle/refresh must refuse to write while a reindex is active."""
 
     def _service(self, *, reindex_active: bool) -> A2AAgentService:
         return A2AAgentService(
@@ -849,8 +849,33 @@ class TestA2AReindexGate:
             await service.create_agent(data=data, user_id="user-1")
 
     async def test_update_agent_raises_when_reindex_active(self):
-
         service = self._service(reindex_active=True)
 
         with pytest.raises(EmbeddingReindexInProgressException):
             await service.update_agent(agent_id="agent-gated", data=AgentUpdateRequest())
+
+    async def test_delete_agent_raises_when_reindex_active(self):
+        service = self._service(reindex_active=True)
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.delete_agent(agent_id="agent-gated")
+
+    async def test_toggle_agent_raises_when_reindex_active(self):
+        service = self._service(reindex_active=True)
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.toggle_agent_status(agent_id="agent-gated", enabled=False)
+
+    async def test_refresh_agent_raises_when_reindex_active(self):
+        service = self._service(reindex_active=True)
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.refresh_agent_capabilities(agent_id="agent-gated")
+
+    async def test_sync_wellknown_raises_when_reindex_active(self):
+        # The direct POST /agents/{id}/wellknown route calls this; the guard lives here so both it
+        # and refresh_agent_capabilities are covered.
+        service = self._service(reindex_active=True)
+
+        with pytest.raises(EmbeddingReindexInProgressException):
+            await service.sync_wellknown(agent_id="agent-gated")

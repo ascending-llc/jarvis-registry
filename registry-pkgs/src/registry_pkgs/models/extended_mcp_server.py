@@ -49,7 +49,7 @@ import json
 import logging
 import re
 import struct
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from beanie import Insert, PydanticObjectId, Replace, Save, SaveChanges, Update, before_event
@@ -62,6 +62,7 @@ from ..core.config import ChunkingConfig
 from ..models.enums import McpAuthMode, MCPEntityType
 from ._generated import MCPServer
 from .federation_metadata import AgentCoreMcpFederationMetadata, extract_runtime_arn, extract_runtime_version
+from .vector_doc_ids import assign_deterministic_doc_ids
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +266,18 @@ class ExtendedMCPServer(MCPServer):
     # starts with "_" (https://github.com/BeanieODM/beanie/issues/1316), so this hook cannot
     # be underscore-prefixed or it silently never runs.
     @before_event(Insert, Replace, Save, SaveChanges, Update)
+    def update_timestamps(self):
+        """Stamp updatedAt on every write so the reindex catch-up watermark can be trusted.
+
+        Must not be underscore-prefixed (see the refresh_content_hash note above). Mirrors
+        A2AAgent.update_timestamps. Federation updates call save() without stamping updatedAt
+        themselves, so a watermark without this hook would miss the longest-running writer.
+        """
+        self.updatedAt = datetime.now(UTC)
+        if not self.createdAt:
+            self.createdAt = datetime.now(UTC)
+
+    @before_event(Insert, Replace, Save, SaveChanges, Update)
     def refresh_content_hash(self):
         """Recompute vectorContentHash before every write.
 
@@ -320,7 +333,8 @@ class ExtendedMCPServer(MCPServer):
             f"(tools:{len(tool_functions)}, resources:{len(resources)}, prompts:{len(prompts)})"
         )
 
-        return docs
+        # Deterministic ids so a re-insert of the same server upserts instead of duplicating.
+        return assign_deterministic_doc_ids(docs, self.COLLECTION_NAME, self.id)
 
     def _create_tool_docs(
         self, tool_name: str, tool_data: dict, chunking_config: ChunkingConfig

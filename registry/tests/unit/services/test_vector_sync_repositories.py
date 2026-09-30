@@ -61,12 +61,23 @@ class _FakeAdapter:
         pass
 
 
+def _fake_db_client(docs: list[Document]) -> SimpleNamespace:
+    # Reads use .adapter, writes use .write_adapter (same underlying fake here, since
+    # no reindex is active), and .collection is resolved via .collection_name_for (generation 0).
+    adapter = _FakeAdapter(docs)
+    return SimpleNamespace(
+        adapter=adapter,
+        write_adapter=adapter,
+        collection_name_for=lambda base: base,
+    )
+
+
 def _make_a2a_repo(docs: list[Document]) -> A2AAgentRepository:
-    return A2AAgentRepository(SimpleNamespace(adapter=_FakeAdapter(docs)))
+    return A2AAgentRepository(_fake_db_client(docs))
 
 
 def _make_mcp_repo(docs: list[Document]) -> MCPServerRepository:
-    return MCPServerRepository(SimpleNamespace(adapter=_FakeAdapter(docs)))
+    return MCPServerRepository(_fake_db_client(docs))
 
 
 def _make_agent(page_content: str = "x") -> SimpleNamespace:
@@ -199,7 +210,10 @@ async def test_update_entity_metadata_skips_when_adapter_lacks_update_metadata()
         def ensure_filterable_properties(self, collection_name: str, property_names) -> None:
             pass
 
-    repo = A2AAgentRepository(SimpleNamespace(adapter=_LegacyAdapter()))
+    legacy = _LegacyAdapter()
+    repo = A2AAgentRepository(
+        SimpleNamespace(adapter=legacy, write_adapter=legacy, collection_name_for=lambda base: base)
+    )
 
     result = await repo.update_entity_metadata("agent_id", "a", {"enabled": True})
 

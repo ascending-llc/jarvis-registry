@@ -3,10 +3,11 @@ from typing import Literal
 
 from beanie import PydanticObjectId
 from pymongo import ReturnDocument
+from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.models.model_gateway_selection import MODEL_GATEWAY_SELECTION_ID, ModelGatewaySelection
 
-SelectionField = Literal["defaultWorkflowModelSourceId", "embeddingModelSourceId"]
+SelectionField = Literal["defaultWorkflowModelSourceId"]
 
 
 async def get_model_gateway_selection(*, create_if_missing: bool) -> ModelGatewaySelection | None:
@@ -46,3 +47,35 @@ async def set_model_gateway_selection(
     if document is None:  # defensive: ReturnDocument.AFTER + upsert should always return a document
         raise RuntimeError("Failed to update model gateway selection")
     return ModelGatewaySelection.model_validate(document)
+
+
+async def commit_embedding_generation(
+    *,
+    expected_generation: str | None,
+    model_source_id: PydanticObjectId,
+    generation: str,
+    updated_by: str | None,
+    session: AsyncClientSession | None = None,
+) -> ModelGatewaySelection | None:
+    """Compare-and-set the ``(embeddingModelSourceId, embeddingCollectionGeneration)`` pair.
+
+    Commits only while the generation still equals ``expected_generation``; returns ``None`` when
+    another reindex committed first, so exactly one concurrent reindex wins. A ``None`` expected also
+    matches a missing field (first switch on a deployment). ``upsert=False`` — the singleton already
+    exists. ``session`` lets the executor run this inside the lease-check transaction (Change 3).
+    """
+    document = await ModelGatewaySelection.get_pymongo_collection().find_one_and_update(
+        {"_id": MODEL_GATEWAY_SELECTION_ID, "embeddingCollectionGeneration": expected_generation},
+        {
+            "$set": {
+                "embeddingModelSourceId": model_source_id,
+                "embeddingCollectionGeneration": generation,
+                "updatedBy": updated_by,
+                "updatedAt": datetime.now(UTC),
+            }
+        },
+        upsert=False,
+        return_document=ReturnDocument.AFTER,
+        session=session,
+    )
+    return ModelGatewaySelection.model_validate(document) if document is not None else None

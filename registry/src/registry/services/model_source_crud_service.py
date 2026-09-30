@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from registry.utils.crypto_utils import encrypt_value
 from registry_pkgs.core.crypto_utils import is_encrypted
+from registry_pkgs.database.embedding_reindex_job_repository import get_active_embedding_reindex_job
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
@@ -20,6 +21,30 @@ from ..schemas.model_source_api_schemas import (
 from .model_gateway_selection_service import ModelGatewaySelectionService, ModelSourceModeMismatchError
 
 StoredProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig
+
+# Fields whose change moves an embedding to a different vector space (different model / different
+# Azure resource+deployment). Editing them on the source backing the ACTIVE embedding selection would
+# leave every existing vector unreadable, so they are rejected there (a new generation must reindex).
+# apiKey rotation, apiVersion, and a Bedrock awsRegion change (same model) do NOT change the space.
+_VECTOR_SPACE_FIELDS: dict[type, tuple[str, ...]] = {
+    AwsBedrockModelConfig: ("modelIdOrArn",),
+    AzureOpenAIModelConfig: ("deploymentName", "endpoint"),
+}
+_ACTIVE_SOURCE_VECTOR_SPACE_ERROR = (
+    "Cannot change the embedding model or endpoint of the model source backing the active embedding "
+    "selection; this would make existing vectors unreadable. Create a new ModelSource and call "
+    "PUT /model-gateway/selection/embedding-model to run a reindex instead."
+)
+
+
+def _assert_vector_space_unchanged(old: StoredProviderConfig, new: StoredProviderConfig) -> None:
+    """Raise ValueError (→ 409) if ``new`` would change ``old``'s vector space. A provider-type switch
+    is the most drastic such change, so a type mismatch is rejected outright."""
+    if type(old) is not type(new):
+        raise ValueError(_ACTIVE_SOURCE_VECTOR_SPACE_ERROR)
+    for field in _VECTOR_SPACE_FIELDS.get(type(new), ()):
+        if getattr(old, field) != getattr(new, field):
+            raise ValueError(_ACTIVE_SOURCE_VECTOR_SPACE_ERROR)
 
 
 class _WorkflowNodesProjection(BaseModel):
@@ -135,11 +160,32 @@ class ModelSourceCrudService:
             source.mode = changes["mode"]
         provider_config = changes.get("providerConfig")
         if provider_config is not None:
+            # The reindex executor reloads this source at sweep time, so changing its provider config
+            # mid-reindex would embed the whole corpus with credentials/model settings that were never
+            # smoke-tested. Refuse the change while this source is the active reindex target.
+            active_job = await get_active_embedding_reindex_job()
+            if active_job is not None and source.id == active_job.targetEmbeddingModelSourceId:
+                raise ValueError(
+                    "Cannot change the provider configuration of a model source while it is being reindexed"
+                )
             new_config = self._to_stored_config(provider_config)
+            await self._reject_vector_space_change_on_active_source(source, new_config)
             source.providerConfig = self._preserve_existing_secret(new_config, source.providerConfig)
         source.updatedBy = updated_by
         await source.save()
         return source
+
+    async def _reject_vector_space_change_on_active_source(
+        self, source: ModelSource, new_config: StoredProviderConfig
+    ) -> None:
+        """Guard the generations invariant: the source the active embedding selection points to must
+        keep its vector space. Non-active sources and non-vector-space fields are unaffected."""
+        selection = await self._selection_service.get_selection_or_none()
+        if selection is None or selection.embeddingModelSourceId is None:
+            return
+        if selection.embeddingModelSourceId != source.id:
+            return
+        _assert_vector_space_unchanged(source.providerConfig, new_config)
 
     @staticmethod
     def _preserve_existing_secret(
@@ -168,6 +214,11 @@ class ModelSourceCrudService:
             selection.defaultWorkflowModelSourceId,
             selection.embeddingModelSourceId,
         ):
+            return True
+        # The selection changes only at commit, so also protect a pending reindex's target from
+        # deletion mid-sweep.
+        active_job = await get_active_embedding_reindex_job()
+        if active_job is not None and object_id == active_job.targetEmbeddingModelSourceId:
             return True
         return await self._referenced_by_workflow(object_id)
 

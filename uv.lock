@@ -3068,7 +3068,7 @@ requires-dist = [
     { name = "aioboto3", specifier = ">=7.0.0" },
     { name = "async-lru", specifier = ">=2.0.5" },
     { name = "azure-identity", specifier = ">=1.25.3" },
-    { name = "beanie", specifier = ">=2.0.0" },
+    { name = "beanie", specifier = ">=2.1.0" },
     { name = "boto3", specifier = ">=1.35.0" },
     { name = "cel-python", specifier = ">=0.1.5" },
     { name = "croniter", specifier = ">=6.0.0" },

@@ -45,7 +45,7 @@ class ExternalVectorSearchService(VectorSearchService):
                 raise Exception("Database client not initialized")
             self._initialized = True
 
-            collection_name = ExtendedMCPServer.COLLECTION_NAME
+            collection_name = self.mcp_server_repo.collection  # live generation, not the base name
             adapter = self.client.adapter
 
             if hasattr(adapter, "collection_exists"):
