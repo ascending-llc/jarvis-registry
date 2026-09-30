@@ -32,6 +32,16 @@ export type SkillFileMetadata = {
   source?: string | null;
 };
 
+export type SkillOriginKind = 'registry' | 'chat' | 'external_provider';
+export type SkillOriginProvider = {
+  id: string;
+  name?: string | null;
+  type: string;
+  repo?: string | null;
+  ref?: string | null;
+};
+export type SkillOrigin = { kind: SkillOriginKind; provider?: SkillOriginProvider | null };
+
 export type SkillMetadata = {
   id: string;
   name: string;
@@ -48,6 +58,7 @@ export type SkillMetadata = {
   source: string;
   sourceMetadata?: { [key: string]: JsonValue } | null;
   createdByRegistry: boolean;
+  origin: SkillOrigin;
   permissions?: SkillPermissions | null;
   updatedAt?: string | null;
   deletedAt?: string | null;

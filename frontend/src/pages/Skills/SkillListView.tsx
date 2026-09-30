@@ -1,15 +1,10 @@
-import {
-  ArrowPathIcon,
-  DocumentTextIcon,
-  PlusIcon,
-  ShareIcon,
-  TrashIcon,
-} from '@heroicons/react/24/outline';
+import { ArrowPathIcon, DocumentTextIcon, PlusIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 
 import IconButton from '@/components/IconButton';
 import type { SkillMetadata } from '@/services/skill/type';
 
+import SkillSourceChip from './SkillSourceChip';
 import { getSkillDisplayName } from './skillDraft';
 
 type SkillListViewProps = {
@@ -86,9 +81,10 @@ const SkillListView: React.FC<SkillListViewProps> = ({
 
     <div className='min-h-0 flex-1 overflow-x-auto'>
       <div className='grid min-w-[640px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border)] px-1 py-2.5 text-[13px] text-[var(--jarvis-muted)]'>
-        <div className='grid min-w-0 grid-cols-[2fr_1fr_1fr] gap-3'>
+        <div className='grid min-w-0 grid-cols-[2fr_1fr_1fr_1fr] gap-3'>
           <span>Skill</span>
           <span>Last updated</span>
+          <span>Source</span>
           <span>Author</span>
         </div>
         <span className='sr-only'>Actions</span>
@@ -138,7 +134,7 @@ const SkillListView: React.FC<SkillListViewProps> = ({
             <button
               type='button'
               onClick={() => onOpenSkill(skill.id)}
-              className='grid min-w-0 grid-cols-[2fr_1fr_1fr] items-center gap-3 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--jarvis-primary)]'
+              className='grid min-w-0 grid-cols-[2fr_1fr_1fr_1fr] items-center gap-3 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--jarvis-primary)]'
             >
               <span className='flex min-w-0 items-center gap-2.5'>
                 <span className='flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-[5px] bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]'>
@@ -158,9 +154,10 @@ const SkillListView: React.FC<SkillListViewProps> = ({
                 </span>
               </span>
               <span className='text-[13.5px] text-[var(--jarvis-muted)]'>{formatUpdatedDate(skill.updatedAt)}</span>
-              <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>
-                {skill.authorName || '—'}
+              <span className='flex min-w-0'>
+                <SkillSourceChip origin={skill.origin} />
               </span>
+              <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>{skill.authorName || '—'}</span>
             </button>
             <span className='flex items-center justify-end gap-0.5 pr-1'>
               {skill.permissions?.SHARE === true && (

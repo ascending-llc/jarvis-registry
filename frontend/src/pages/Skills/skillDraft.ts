@@ -369,6 +369,7 @@ export const metadataFromDetail = (detail: SkillDetail): SkillMetadata => ({
   source: detail.source,
   sourceMetadata: detail.sourceMetadata,
   createdByRegistry: detail.createdByRegistry,
+  origin: detail.origin,
   permissions: detail.permissions,
   updatedAt: detail.updatedAt,
   deletedAt: null,
