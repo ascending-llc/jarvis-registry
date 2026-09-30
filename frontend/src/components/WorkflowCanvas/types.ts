@@ -1,5 +1,6 @@
 import type { Edge, Node } from '@xyflow/react';
 import type { Workflow, WorkflowRunStatusResponse } from '@/services/workflow/type';
+import type { WorkflowScheduleController } from './PropsPanel/Schedule/model';
 
 export type PanelMode = 'node' | 'workflow';
 
@@ -9,12 +10,15 @@ export interface WorkflowCanvasRef {
   clearSelection: () => void;
   /** Toggle panel: expand if collapsed, collapse if expanded and workflow mode */
   togglePanel: () => void;
+  /** Open workflow properties and focus the schedule section. */
+  openSchedule: () => void;
 }
 
 /** WorkflowCanvas main component Props */
 export interface WorkflowCanvasProps {
   workflowId?: string;
   workflow?: Partial<Workflow> | null;
+  workflowSchedule: WorkflowScheduleController;
   refreshRunHistoryKey?: number;
   activeWorkflowRun: WorkflowRunStatusResponse | null;
   isMonitoringActive: boolean;

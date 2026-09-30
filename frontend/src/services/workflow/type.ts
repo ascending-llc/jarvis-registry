@@ -89,6 +89,7 @@ export interface Workflow {
   id: string;
   name: string;
   description?: string;
+  enabled: boolean;
   numNodes?: number;
   nodes?: WorkflowNode[];
   canvas?: { viewport: { x?: number; y?: number; zoom?: number } };
@@ -134,6 +135,54 @@ export interface ToggleWorkflowStateRequest {
 export type ToggleWorkflowStateResponse = Workflow;
 
 export type UpdateWorkflowResponse = Workflow;
+
+export type WorkflowScheduleJsonValue =
+  | boolean
+  | number
+  | string
+  | null
+  | WorkflowScheduleJsonValue[]
+  | { [key: string]: WorkflowScheduleJsonValue };
+
+export type WorkflowScheduleInitialInput = { [key: string]: WorkflowScheduleJsonValue };
+
+export interface WorkflowSchedule {
+  id: string;
+  workflowDefinitionId: string;
+  cronExpression: string;
+  timezone: string;
+  initialInput: WorkflowScheduleInitialInput | null;
+  enabled: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunId: string | null;
+  lastRunStatus: WorkflowRunStatus | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  permissions: WorkflowPermissionType;
+}
+
+export interface GetWorkflowSchedulesResponse {
+  items: WorkflowSchedule[];
+  total: number;
+}
+
+export interface CreateWorkflowScheduleRequest {
+  cronExpression: string;
+  timezone: string;
+  initialInput?: WorkflowScheduleInitialInput | null;
+}
+
+export interface UpdateWorkflowScheduleRequest {
+  cronExpression?: string;
+  timezone?: string;
+  initialInput?: WorkflowScheduleInitialInput | null;
+}
+
+export interface ToggleWorkflowScheduleRequest {
+  enabled: boolean;
+}
 
 export const WORKFLOW_RUN_STATUSES = [
   'pending',

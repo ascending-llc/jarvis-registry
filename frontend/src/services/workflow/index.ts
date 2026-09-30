@@ -1,7 +1,11 @@
 import API from '@/services/api';
 import Request from '@/services/request';
 
-import { normalizeWorkflowRunStatusResponse } from './normalizers';
+import {
+  normalizeWorkflowRunStatusResponse,
+  normalizeWorkflowSchedule,
+  normalizeWorkflowSchedulesResponse,
+} from './normalizers';
 import type * as TYPE from './type';
 import { EMPTY_WORKFLOW_PERMISSIONS } from './type';
 
@@ -71,6 +75,45 @@ const replayWorkflowRun = async (id: string, runId: string): Promise<TYPE.Replay
 const rerunWorkflowNode = async (id: string, runId: string, nodeId: string): Promise<TYPE.RerunWorkflowNodeResponse> =>
   await Request.post(API.rerunWorkflowNode(id, runId, nodeId));
 
+const getWorkflowSchedules = async (id: string): Promise<TYPE.GetWorkflowSchedulesResponse> => {
+  const response = await Request.get(API.getWorkflowSchedules(id));
+  return normalizeWorkflowSchedulesResponse(response);
+};
+
+const createWorkflowSchedule = async (
+  id: string,
+  data: TYPE.CreateWorkflowScheduleRequest,
+): Promise<TYPE.WorkflowSchedule> => {
+  const response = await Request.post(API.createWorkflowSchedule(id), {
+    cron_expression: data.cronExpression,
+    timezone: data.timezone,
+    initial_input: data.initialInput ?? null,
+  });
+  return normalizeWorkflowSchedule(response);
+};
+
+const updateWorkflowSchedule = async (
+  id: string,
+  scheduleId: string,
+  data: TYPE.UpdateWorkflowScheduleRequest,
+): Promise<TYPE.WorkflowSchedule> => {
+  const payload: Record<string, object | string | null> = {};
+  if (data.cronExpression !== undefined) payload.cron_expression = data.cronExpression;
+  if (data.timezone !== undefined) payload.timezone = data.timezone;
+  if (data.initialInput !== undefined) payload.initial_input = data.initialInput;
+  const response = await Request.put(API.updateWorkflowSchedule(id, scheduleId), payload);
+  return normalizeWorkflowSchedule(response);
+};
+
+const toggleWorkflowSchedule = async (
+  id: string,
+  scheduleId: string,
+  data: TYPE.ToggleWorkflowScheduleRequest,
+): Promise<TYPE.WorkflowSchedule> => {
+  const response = await Request.post(API.toggleWorkflowSchedule(id, scheduleId), data);
+  return normalizeWorkflowSchedule(response);
+};
+
 const WORKFLOW = {
   getWorkflowsList,
   getWorkflowDetail,
@@ -85,6 +128,10 @@ const WORKFLOW = {
   approveWorkflowRun,
   replayWorkflowRun,
   rerunWorkflowNode,
+  getWorkflowSchedules,
+  createWorkflowSchedule,
+  updateWorkflowSchedule,
+  toggleWorkflowSchedule,
 };
 
 export default WORKFLOW;

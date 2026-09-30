@@ -22,7 +22,7 @@ const NODE_TYPE_ICON_MAP: Record<string, string> = {
 /** PropsPanel - collapsible properties panel. */
 const PropsPanel: React.FC<PropsPanelProps> = ({ panelMode, isNewWorkflow, collapsed = false, onCollapsedChange }) => {
   const [tab, setTab] = useState<'props' | 'hist'>('props');
-  const { workflow, selectedNode } = useWorkflowPanel();
+  const { workflow, selectedNode, scheduleFocusRequestKey } = useWorkflowPanel();
 
   const nodeData = selectedNode?.data as NodeData | undefined;
   const nodeType = selectedNode?.type;
@@ -40,6 +40,10 @@ const PropsPanel: React.FC<PropsPanelProps> = ({ panelMode, isNewWorkflow, colla
       setTab('props');
     }
   }, [isLogicNode, tab]);
+
+  useEffect(() => {
+    if (scheduleFocusRequestKey > 0) setTab('props');
+  }, [scheduleFocusRequestKey]);
 
   const header = <PanelHeader iconText={ctxIconText} label={ctxLabel} scope={ctxScope} isWorkflow={isWorkflow} />;
 
