@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from beanie import PydanticObjectId
+from bson.errors import InvalidId
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 from pymongo.asynchronous.client_session import AsyncClientSession
@@ -17,8 +18,8 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedSkill as Skill
 from registry_pkgs.models import ExtendedSkillFile as SkillFile
-from registry_pkgs.models import PrincipalType, SkillSource
-from registry_pkgs.models.enums import RoleBits
+from registry_pkgs.models import PrincipalType, SkillSource, SkillSyncSource
+from registry_pkgs.models.enums import RoleBits, SkillSyncSourceStatus
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.oauth.user_service import UserService
 
@@ -43,6 +44,8 @@ from ..schemas.skill_api_schemas import (
     SkillFileMetadataResponse,
     SkillFileResponse,
     SkillFileUpsertRequest,
+    SkillOriginProviderResponse,
+    SkillOriginResponse,
     SkillUpdateRequest,
 )
 from ..utils.skill_files import guess_mime_type, is_text_content
@@ -297,6 +300,32 @@ def _sync_file_response(skill_file: SkillFile) -> SkillFileResponse:
     )
 
 
+def _is_external_provider_skill(skill: Skill) -> bool:
+    """External-provider skills are Registry-owned syncs from a non-inline source (see AS-1890 Change 1)."""
+    return skill.createdByRegistry and skill.source != SkillSource.INLINE
+
+
+def _build_skill_origin(skill: Skill, provider_names: dict[str, str]) -> SkillOriginResponse:
+    """Classify a skill's origin from stored fields only; never raises."""
+    if not skill.createdByRegistry:
+        return SkillOriginResponse(kind="chat")
+    if skill.source == SkillSource.INLINE:
+        return SkillOriginResponse(kind="registry")
+
+    metadata = skill.sourceMetadata or {}
+    source_id = str(metadata.get("sourceId") or "")
+    owner = metadata.get("owner")
+    repo = metadata.get("repo")
+    provider = SkillOriginProviderResponse(
+        id=source_id,
+        name=provider_names.get(source_id),
+        type=skill.source,
+        repo=f"{owner}/{repo}" if owner and repo else None,
+        ref=metadata.get("ref"),
+    )
+    return SkillOriginResponse(kind="external_provider", provider=provider)
+
+
 class SkillService:
     """App-scoped service for Skill persistence and permissions."""
 
@@ -344,6 +373,33 @@ class SkillService:
                 )
 
         return result
+
+    async def resolve_origins(self, skills: list[Skill]) -> dict[PydanticObjectId, SkillOriginResponse]:
+        """Batch-resolve external-provider display names in one query; classify every skill's origin.
+
+        Issues exactly one SkillSyncSource lookup when any skill is external-provider, zero otherwise.
+        """
+        ids: dict[str, PydanticObjectId] = {}
+        for skill in skills:
+            if not _is_external_provider_skill(skill):
+                continue
+            raw_id = (skill.sourceMetadata or {}).get("sourceId")
+            if not raw_id or str(raw_id) in ids:
+                continue
+            try:
+                ids[str(raw_id)] = PydanticObjectId(str(raw_id))
+            except (InvalidId, TypeError, ValueError):
+                continue
+
+        provider_names: dict[str, str] = {}
+        if ids:
+            sources = await SkillSyncSource.find({"_id": {"$in": list(ids.values())}}).to_list()
+            for source in sources:
+                if source.status == SkillSyncSourceStatus.DELETED or source.deletedAt is not None:
+                    continue
+                provider_names[str(source.id)] = source.displayName
+
+        return {skill.id: _build_skill_origin(skill, provider_names) for skill in skills}
 
     async def list_skills(
         self,
