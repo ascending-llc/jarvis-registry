@@ -565,6 +565,9 @@ models-read:
   - action: get_model_gateway_selection
     method: GET
     endpoint: /model-gateway/selection
+  - action: list_embedding_reindex_jobs
+    method: GET
+    endpoint: /model-gateway/selection/embedding-model/reindex-jobs
 
 models-write:
   description: "Create, update, and delete model sources; change the default workflow model."
