@@ -88,4 +88,14 @@ describe('SkillSourceChip', () => {
     expect(document.querySelector('img')).toBeNull();
     expect(document.querySelector('svg')).toBeTruthy();
   });
+
+  test('exposes the provider detail as screen-reader text (not mouse-only)', () => {
+    render(
+      <SkillSourceChip
+        origin={externalProvider({ id: 's1', name: 'Acme', type: 'github', repo: 'acme/skills', ref: 'main' })}
+      />,
+    );
+    const srDetail = document.querySelector('.sr-only');
+    expect(srDetail?.textContent).toBe('Acme · acme/skills@main');
+  });
 });
