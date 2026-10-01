@@ -25,6 +25,8 @@ interface UseExternalProviderSyncOptions {
   serverJobId?: string | null;
   /** Reload provider data after a job finishes or on a "Refresh Status" action. */
   onSettled: () => void;
+  /** Opens an in-app prompt before redirecting a GitHub sync to OAuth. */
+  onGithubAuthorizationRequired?: () => void;
 }
 
 interface StartSyncOptions {
@@ -69,6 +71,7 @@ export const useExternalProviderSync = ({
   syncMessage,
   serverJobId,
   onSettled,
+  onGithubAuthorizationRequired,
 }: UseExternalProviderSyncOptions): UseExternalProviderSyncReturn => {
   const { showToast } = useGlobal();
   const [isStarting, setIsStarting] = useState(false);
@@ -132,8 +135,14 @@ export const useExternalProviderSync = ({
         const jobId = await _requestSyncJobId(providerId, isGithub);
         if (requestGeneration !== requestGenerationRef.current) return false;
         if (jobId === null) {
-          const redirected = allowAuthorizationRedirect && confirmGithubAuthorizationRedirect(providerId, 'sync');
-          if (!redirected) showToast?.(GITHUB_SYNC_NEEDS_AUTHORIZATION_MESSAGE, 'error');
+          if (!allowAuthorizationRedirect) {
+            showToast?.(GITHUB_SYNC_NEEDS_AUTHORIZATION_MESSAGE, 'error');
+          } else if (onGithubAuthorizationRequired) {
+            onGithubAuthorizationRequired();
+          } else {
+            const redirected = confirmGithubAuthorizationRedirect(providerId, 'sync');
+            if (!redirected) showToast?.(GITHUB_SYNC_NEEDS_AUTHORIZATION_MESSAGE, 'error');
+          }
           return false;
         }
 
@@ -151,7 +160,7 @@ export const useExternalProviderSync = ({
         }
       }
     },
-    [isGithub, isPolling, providerId, showToast, startPolling],
+    [isGithub, isPolling, onGithubAuthorizationRequired, providerId, showToast, startPolling],
   );
 
   const runSyncAction = useCallback(() => {
