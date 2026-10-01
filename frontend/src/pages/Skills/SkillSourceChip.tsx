@@ -56,8 +56,6 @@ const SkillSourceChip: React.FC<{ origin: SkillOrigin }> = ({ origin }) => {
       <span className='inline-flex max-w-full items-center gap-1.5 rounded-full border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] px-2 py-[3px] text-[12px] font-medium leading-none text-[var(--jarvis-text)]'>
         <SkillSourceChipIcon icon={icon} />
         <span className='truncate'>{label}</span>
-        {/* The hover tooltip is mouse-only; expose the same detail to the row button's accessible name. */}
-        <span className='sr-only'>{tooltip}</span>
       </span>
     </Tooltip>
   );

@@ -89,13 +89,13 @@ describe('SkillSourceChip', () => {
     expect(document.querySelector('svg')).toBeTruthy();
   });
 
-  test('exposes the provider detail as screen-reader text (not mouse-only)', () => {
+  test('exposes the provider detail to assistive tech exactly once, via the tooltip', () => {
     render(
       <SkillSourceChip
         origin={externalProvider({ id: 's1', name: 'Acme', type: 'github', repo: 'acme/skills', ref: 'main' })}
       />,
     );
-    const srDetail = document.querySelector('.sr-only');
-    expect(srDetail?.textContent).toBe('Acme · acme/skills@main');
+    expect(screen.getByRole('tooltip').textContent).toBe('Acme · acme/skills@main');
+    expect(screen.getAllByText('Acme · acme/skills@main')).toHaveLength(1);
   });
 });
