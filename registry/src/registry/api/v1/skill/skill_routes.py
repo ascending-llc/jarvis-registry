@@ -24,6 +24,7 @@ from ....schemas.skill_api_schemas import (
     SkillFileUpsertRequest,
     SkillListResponse,
     SkillMetadataResponse,
+    SkillOriginResponse,
     SkillToggleRequest,
     SkillToggleResponse,
     SkillUpdateRequest,
@@ -64,7 +65,7 @@ def handle_service_errors(operation: str) -> Callable[[Callable[_P, Awaitable[_R
     return decorator
 
 
-def _metadata_response(skill, permissions: ResourcePermissions) -> SkillMetadataResponse:
+def _metadata_response(skill, permissions: ResourcePermissions, origin: SkillOriginResponse) -> SkillMetadataResponse:
     return SkillMetadataResponse(
         id=str(skill.id),
         name=skill.name,
@@ -81,12 +82,15 @@ def _metadata_response(skill, permissions: ResourcePermissions) -> SkillMetadata
         source=skill.source,
         sourceMetadata=skill.sourceMetadata,
         createdByRegistry=skill.createdByRegistry,
+        origin=origin,
         permissions=permissions,
         updatedAt=skill.updatedAt,
     )
 
 
-def _detail_response(skill, files, permissions: ResourcePermissions) -> SkillDetailResponse:
+def _detail_response(
+    skill, files, permissions: ResourcePermissions, origin: SkillOriginResponse
+) -> SkillDetailResponse:
     return SkillDetailResponse(
         id=str(skill.id),
         name=skill.name,
@@ -108,6 +112,7 @@ def _detail_response(skill, files, permissions: ResourcePermissions) -> SkillDet
         source=skill.source,
         sourceMetadata=skill.sourceMetadata,
         createdByRegistry=skill.createdByRegistry,
+        origin=origin,
         createdAt=skill.createdAt,
         updatedAt=skill.updatedAt,
         files=[skill_file_metadata(skill_file) for skill_file in files],
@@ -129,7 +134,10 @@ async def list_skills_route(
         enabled=enabled,
         file_count=file_count,
     )
-    return SkillListResponse(skills=[_metadata_response(skill, permissions) for skill, permissions in results])
+    origins = await skill_service.resolve_origins([skill for skill, _ in results])
+    return SkillListResponse(
+        skills=[_metadata_response(skill, permissions, origins[skill.id]) for skill, permissions in results]
+    )
 
 
 @router.post(
@@ -150,7 +158,8 @@ async def create_skill(
         user_id=user_context.get("user_id"),
         author_name=user_context.get("username"),
     )
-    return _detail_response(skill, files, permissions)
+    origins = await skill_service.resolve_origins([skill])
+    return _detail_response(skill, files, permissions, origins[skill.id])
 
 
 @router.get("/skills/{skill_id}", response_model=SkillDetailResponse, summary="Get a skill")
@@ -162,7 +171,8 @@ async def get_skill(
     skill_service: SkillService = Depends(get_skill_service),
 ) -> SkillDetailResponse:
     skill, files, permissions = await skill_service.get_skill(skill_id, user_context.get("user_id"))
-    return _detail_response(skill, files, permissions)
+    origins = await skill_service.resolve_origins([skill])
+    return _detail_response(skill, files, permissions, origins[skill.id])
 
 
 @router.get(
@@ -261,7 +271,8 @@ async def update_skill(
         data=data,
         user_id=user_context.get("user_id"),
     )
-    return _detail_response(skill, files, permissions)
+    origins = await skill_service.resolve_origins([skill])
+    return _detail_response(skill, files, permissions, origins[skill.id])
 
 
 @router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a skill")

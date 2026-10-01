@@ -1,7 +1,7 @@
 """Request and response schemas for the Skill management API."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -88,6 +88,19 @@ class SkillFileResponse(BaseModel):
     unavailableReason: str | None = None
 
 
+class SkillOriginProviderResponse(BaseModel):
+    id: str  # sourceMetadata.sourceId, as stored
+    name: str | None = None  # SkillSyncSource.displayName; None when the provider can't be resolved
+    type: str  # skill.source, e.g. "github"
+    repo: str | None = None  # f"{owner}/{repo}" from sourceMetadata; None if either is missing
+    ref: str | None = None  # sourceMetadata.ref
+
+
+class SkillOriginResponse(BaseModel):
+    kind: Literal["registry", "chat", "external_provider"]
+    provider: SkillOriginProviderResponse | None = None  # set iff kind == "external_provider"
+
+
 class SkillMetadataResponse(BaseModel):
     id: str
     name: str
@@ -104,6 +117,7 @@ class SkillMetadataResponse(BaseModel):
     source: str = "inline"
     sourceMetadata: dict[str, Any] | None = None
     createdByRegistry: bool = False
+    origin: SkillOriginResponse
     permissions: ResourcePermissions | None = None
     updatedAt: datetime | None = None
 
@@ -148,6 +162,7 @@ class SkillDetailResponse(BaseModel):
     source: str = "inline"
     sourceMetadata: dict[str, Any] | None = None
     createdByRegistry: bool = False
+    origin: SkillOriginResponse
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
     files: list[SkillFileMetadataResponse] = Field(default_factory=list)

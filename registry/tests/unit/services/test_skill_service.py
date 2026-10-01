@@ -16,11 +16,13 @@ from registry.schemas.skill_api_schemas import (
 )
 from registry.services.skill_service import (
     SkillService,
+    _build_skill_origin,
     _prepare_inline_file,
     _validate_files_batch,
     _validate_relative_path,
 )
 from registry_pkgs.models import SkillSource
+from registry_pkgs.models.enums import SkillSyncSourceStatus
 
 _USER_ID = "000000000000000000000001"
 _OTHER_USER_ID = "000000000000000000000002"
@@ -1210,3 +1212,155 @@ async def test_delete_skill_file_delete_failure_skips_skill_update(
         await SkillService(acl_service, user_service).delete_skill_file(skill.id, "scripts/run.sh", _USER_ID)
 
     skill.save.assert_not_awaited()
+
+
+# --- AS-1890: origin classification and resolution ---
+
+
+def _make_external_skill(*, source_id="0000000000000000000000a1", owner="acme", repo="skills", ref="main"):
+    skill = MagicMock()
+    skill.id = PydanticObjectId()
+    skill.source = SkillSource.GITHUB
+    skill.createdByRegistry = True
+    metadata = {"sourceId": source_id, "owner": owner, "repo": repo, "ref": ref}
+    skill.sourceMetadata = {k: v for k, v in metadata.items() if v is not None}
+    return skill
+
+
+def _make_sync_source(source_id, display_name, *, status=SkillSyncSourceStatus.ACTIVE, deleted_at=None):
+    source = MagicMock()
+    source.id = PydanticObjectId(source_id)
+    source.displayName = display_name
+    source.status = status
+    source.deletedAt = deleted_at
+    return source
+
+
+def _patch_sync_source_find(sources):
+    query = MagicMock()
+    query.to_list = AsyncMock(return_value=sources)
+    find = MagicMock(return_value=query)
+    return patch("registry.services.skill_service.SkillSyncSource.find", find), find
+
+
+def test_build_origin_chat_when_not_created_by_registry():
+    skill = _make_skill(created_by_registry=False)
+    skill.source = SkillSource.GITHUB  # Chat can also write source=github
+    origin = _build_skill_origin(skill, {})
+    assert origin.kind == "chat"
+    assert origin.provider is None
+
+
+def test_build_origin_registry_when_inline():
+    origin = _build_skill_origin(_make_skill(created_by_registry=True), {})
+    assert origin.kind == "registry"
+    assert origin.provider is None
+
+
+def test_build_origin_external_provider_full_metadata():
+    skill = _make_external_skill(source_id="0000000000000000000000a1")
+    origin = _build_skill_origin(skill, {"0000000000000000000000a1": "Acme Skills"})
+    assert origin.kind == "external_provider"
+    assert origin.provider.id == "0000000000000000000000a1"
+    assert origin.provider.name == "Acme Skills"
+    assert origin.provider.type == SkillSource.GITHUB
+    assert origin.provider.repo == "acme/skills"
+    assert origin.provider.ref == "main"
+
+
+def test_build_origin_external_name_none_when_unresolved():
+    origin = _build_skill_origin(_make_external_skill(), {})
+    assert origin.provider.name is None
+
+
+@pytest.mark.parametrize(
+    ("owner", "repo"),
+    [(None, "skills"), ("acme", None), (None, None)],
+)
+def test_build_origin_external_repo_none_when_owner_or_repo_missing(owner, repo):
+    skill = _make_external_skill(owner=owner, repo=repo)
+    origin = _build_skill_origin(skill, {})
+    assert origin.provider.repo is None
+
+
+def test_build_origin_external_ref_none():
+    skill = _make_external_skill(ref=None)
+    origin = _build_skill_origin(skill, {})
+    assert origin.provider.ref is None
+
+
+def test_build_origin_external_missing_source_metadata_does_not_raise():
+    skill = MagicMock()
+    skill.source = SkillSource.GITHUB
+    skill.createdByRegistry = True
+    skill.sourceMetadata = None
+    origin = _build_skill_origin(skill, {})
+    assert origin.kind == "external_provider"
+    assert origin.provider.id == ""
+    assert origin.provider.repo is None
+    assert origin.provider.ref is None
+
+
+async def test_resolve_origins_no_query_when_no_external(acl_service, user_service):
+    skills = [_make_skill(created_by_registry=True), _make_skill(created_by_registry=False)]
+    patcher, find = _patch_sync_source_find([])
+    with patcher:
+        result = await SkillService(acl_service, user_service).resolve_origins(skills)
+    find.assert_not_called()
+    assert set(result) == {s.id for s in skills}
+    assert result[skills[0].id].kind == "registry"
+    assert result[skills[1].id].kind == "chat"
+
+
+async def test_resolve_origins_single_query_dedups_providers(acl_service, user_service):
+    id_a = "0000000000000000000000a1"
+    id_b = "0000000000000000000000a2"
+    skills = [
+        _make_external_skill(source_id=id_a),
+        _make_external_skill(source_id=id_a),  # duplicate provider
+        _make_external_skill(source_id=id_b),
+    ]
+    sources = [_make_sync_source(id_a, "Alpha"), _make_sync_source(id_b, "Beta")]
+    patcher, find = _patch_sync_source_find(sources)
+    with patcher:
+        result = await SkillService(acl_service, user_service).resolve_origins(skills)
+    find.assert_called_once()
+    queried_ids = find.call_args.args[0]["_id"]["$in"]
+    assert len(queried_ids) == 2
+    assert result[skills[0].id].provider.name == "Alpha"
+    assert result[skills[2].id].provider.name == "Beta"
+
+
+async def test_resolve_origins_deleting_source_still_resolves(acl_service, user_service):
+    source_id = "0000000000000000000000a1"
+    skill = _make_external_skill(source_id=source_id)
+    source = _make_sync_source(source_id, "Deleting One", status=SkillSyncSourceStatus.DELETING)
+    patcher, _ = _patch_sync_source_find([source])
+    with patcher:
+        result = await SkillService(acl_service, user_service).resolve_origins([skill])
+    assert result[skill.id].provider.name == "Deleting One"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        _make_sync_source("0000000000000000000000a1", "Gone", status=SkillSyncSourceStatus.DELETED),
+        _make_sync_source("0000000000000000000000a1", "Gone", deleted_at="2026-01-01T00:00:00Z"),
+    ],
+)
+async def test_resolve_origins_deleted_source_name_none(acl_service, user_service, source):
+    skill = _make_external_skill(source_id="0000000000000000000000a1")
+    patcher, _ = _patch_sync_source_find([source])
+    with patcher:
+        result = await SkillService(acl_service, user_service).resolve_origins([skill])
+    assert result[skill.id].provider.name is None
+
+
+async def test_resolve_origins_invalid_object_id_skipped(acl_service, user_service):
+    skill = _make_external_skill(source_id="not-an-object-id")
+    patcher, find = _patch_sync_source_find([])
+    with patcher:
+        result = await SkillService(acl_service, user_service).resolve_origins([skill])
+    find.assert_not_called()
+    assert result[skill.id].kind == "external_provider"
+    assert result[skill.id].provider.name is None

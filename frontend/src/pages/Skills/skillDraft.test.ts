@@ -7,6 +7,7 @@ import {
   createDraft,
   createEmptyDraft,
   createSkillMarkdownState,
+  metadataFromDetail,
   parseSkillMarkdown,
   splitSkillMarkdown,
   toCreateRequest,
@@ -35,6 +36,7 @@ const makeDetail = (overrides: Partial<SkillDetail> = {}): SkillDetail => ({
   authorName: 'Test Author',
   source: 'inline',
   createdByRegistry: true,
+  origin: { kind: 'registry' },
   files: [],
   ...overrides,
 });
@@ -394,5 +396,16 @@ describe('validateDraft', () => {
     draft.markdown = updateSkillMarkdownMetadata(draft.markdown, { displayTitle: 'Renamed Skill' });
 
     expect(validateDraft(draft).valid).toBe(true);
+  });
+});
+
+describe('metadataFromDetail', () => {
+  test('preserves origin from the detail response', () => {
+    const origin = {
+      kind: 'external_provider' as const,
+      provider: { id: 'src-1', name: 'Acme', type: 'github', repo: 'acme/skills', ref: 'main' },
+    };
+    const metadata = metadataFromDetail(makeDetail({ origin }));
+    expect(metadata.origin).toEqual(origin);
   });
 });
