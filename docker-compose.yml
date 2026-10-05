@@ -77,6 +77,8 @@ services:
         condition: service_healthy
       registry-mongodb:
         condition: service_healthy
+      registry-migrations:
+        condition: service_completed_successfully
       registry-redis:
         condition: service_started
     restart: unless-stopped
@@ -120,6 +122,8 @@ services:
         condition: service_started
       registry-mongodb:
         condition: service_healthy
+      registry-migrations:
+        condition: service_completed_successfully
       registry-redis:
         condition: service_started
     restart: unless-stopped
@@ -158,6 +162,23 @@ services:
       - full
       - dev
 
+  # One-shot: applies pending data migrations (registry_pkgs.migrations) before the services start.
+  # Runs the migrations baked into the image; a no-op when nothing is pending.
+  registry-migrations:
+    image: ghcr.io/ascending-llc/jarvis/registry:latest
+    entrypoint: ["python", "-m", "registry_pkgs.migrations"]
+    command: ["up"]
+    environment:
+      - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
+    depends_on:
+      registry-mongodb:
+        condition: service_healthy
+    restart: "no"
+    env_file:
+      - .env
+    profiles:
+      - full
+      - dev
 
   registry-redis:
     container_name: registry-redis
@@ -214,6 +235,8 @@ services:
         condition: service_started
       registry-mongodb:
         condition: service_healthy
+      registry-migrations:
+        condition: service_completed_successfully
     restart: unless-stopped
     env_file:
       - .env

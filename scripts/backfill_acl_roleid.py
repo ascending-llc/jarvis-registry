@@ -25,7 +25,7 @@ async def backfill_acl_roleids(db, session):
 
     if not role_map:
         raise RuntimeError(
-            "No roles found in 'accessroles'. Run seed_access_roles_standalone.py "
+            "No roles found in 'accessroles'. Run the migrations (python -m registry_pkgs.migrations up) "
             "(and ensure Jarvis Chat has seeded base roles) first."
         )
 

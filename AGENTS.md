@@ -180,6 +180,7 @@ These rules are non-negotiable. They define where code lives and how workspaces 
 | `vector/` | Weaviate vector DB integration: adapters, backends, repositories, rerankers (FlashRank). |
 | `core/` | Shared `Settings` (`BaseSettings`): vector store, Weaviate, AWS Bedrock, MongoDB, OTEL config. |
 | `telemetry/` | OpenTelemetry decorators and metrics client. |
+| `migrations/` | Flyway-style MongoDB data migrations (`python -m registry_pkgs.migrations {up\|status\|wait}`); scripts in `migrations/versions/`. See § Data Migrations. |
 
 ---
 
@@ -286,6 +287,26 @@ process directly from the repo root, e.g. `uv run uvicorn registry.dispatcher:ap
 run these from the repo root, not from within a workspace subdirectory.
 
 **Frontend** (from `frontend/`): `npm run dev` (Vite dev server), `npm run build`, `npx @biomejs/biome check --write .`
+
+---
+
+## Data Migrations
+
+**Before writing or reviewing a migration, read `registry-pkgs/src/registry_pkgs/migrations/README.md`.**
+
+- **Location and naming**: `registry-pkgs/src/registry_pkgs/migrations/versions/m<NNNN>_<name>.py`, next free number, `[a-z0-9_]` name. It defines `async def up(db: AsyncDatabase) -> None`.
+- **Contract**: raw pymongo through `db` only, never Beanie `Document` classes. Idempotent: safe to re-run after a full or partial run, while old pods, new pods and Jarvis Chat write the same collections concurrently. Compatible with the previous release's code (rollouts overlap old and new pods).
+- **Records and transactions**: the `registry_migrations` record is written only after `up()` succeeds; a failed migration has no record and is retried. There are no transactions and no down-migrations.
+- **Imported helpers**: import an app helper only when the migration should follow the app's current logic; otherwise copy the logic in. The checksum covers only the migration file, and fresh databases replay every migration against current code.
+- **Immutability**: applied migrations never change (CI `migration-immutability` job plus the runtime checksum). Fix forward with a new migration. The only exception is a deliberate, reviewed edit (e.g. a merged migration that crashes on fresh client databases):
+  1. Open the PR with the `migration-edit-approved` label; the reviewer approves the edit explicitly.
+  2. After it merges, in every environment where that migration was already applied (DEMO, PROD, each client), delete its record **after** the rollout to the new image has started: `db.registry_migrations.deleteOne({_id: "<version>"})`. `up` then re-runs it. Deleting it earlier lets a restarting old-image pod re-apply the old version and record the old checksum.
+
+  The same record deletion covers a migration applied to DEMO from an unmerged branch and then edited.
+- **Linting**: `versions/` is excluded from repo-wide ruff runs, so a ruff upgrade never rewrites an applied migration. Lint and format a new migration by path before committing it (never after merge): `uv run ruff check --fix <file>` and `uv run ruff format <file>`.
+- **Out-of-order merges** are run, with a warning.
+- **Running locally**: from the repo root, `MONGO_URI=mongodb://localhost:27017/jarvis uv run python -m registry_pkgs.migrations status` (or `up`). Other settings come from `.env`; the explicit URI overrides its in-network host. In compose, the `registry-migrations` service runs `up` automatically, but with the migrations baked into the published `registry:latest` image, so apply a migration you are writing with the `uv run` command.
+- **Adding a member to `RegistryResourceType` requires a new migration that seeds its access roles.**
 
 ---
 

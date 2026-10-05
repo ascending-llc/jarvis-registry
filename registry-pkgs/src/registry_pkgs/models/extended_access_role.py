@@ -5,6 +5,7 @@ from pydantic import Field
 from ._generated import AccessRole
 
 
+# Adding a member requires a new migration (registry_pkgs/migrations/versions/) that seeds its access roles.
 class RegistryResourceType(StrEnum):
     MCP_SERVER = "mcpServer"
     REMOTE_AGENT = "remoteAgent"
