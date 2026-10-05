@@ -1,0 +1,84 @@
+name: Migrations
+
+# Separate from lint.yml so that adding or removing a label re-runs only this job.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  migration-immutability:
+    name: "Migration Immutability"
+    runs-on: ubuntu-latest
+    env:
+      EDIT_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'migration-edit-approved') }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Check applied migrations are unchanged
+      id: immutability
+      run: |
+        changes=$(git diff --name-status --no-renames "origin/${{ github.base_ref }}...HEAD" -- \
+          'registry-pkgs/src/registry_pkgs/migrations/versions/m*.py')
+        echo "Changed migrations:"
+        echo "${changes:-  (none)}"
+
+        added=$(echo "$changes" | awk '$1 == "A" {print $2}')
+        modified=$(echo "$changes" | awk '$1 != "" && $1 != "A" {print $1 " " $2}')
+
+        if [ -n "$modified" ]; then
+          if [ "$EDIT_APPROVED" = "true" ]; then
+            echo "::warning::migration-edit-approved label present; applied migrations changed:%0A${modified//$'\n'/%0A}"
+          else
+            echo "::error::Applied migrations are immutable. Add a new migration instead. If editing this migration is deliberate and reviewed, add the \`migration-edit-approved\` label and follow the remediation in AGENTS.md § Data Migrations."
+            echo "Offending files:"
+            echo "$modified"
+            exit 1
+          fi
+        fi
+
+        # Files to lint: every added migration, plus modified (not deleted) ones when the edit is approved.
+        to_lint="$added"
+        if [ "$EDIT_APPROVED" = "true" ]; then
+          approved=$(echo "$changes" | awk '$1 == "M" {print $2}')
+          to_lint=$(printf '%s\n%s\n' "$added" "$approved" | sed '/^$/d')
+        fi
+        {
+          echo "files<<EOF"
+          echo "$to_lint" | sed '/^$/d'
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # ruff applies `exclude` (pyproject.toml excludes versions/ from repo-wide runs) only to files it discovers
+    # itself, not to paths passed explicitly unless --force-exclude is given. So the explicit paths below are
+    # linted and format-checked even though bulk runs skip them. This step is never skipped by the label.
+    - name: Set up Python
+      if: steps.immutability.outputs.files != ''
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+
+    - name: Install the latest version of uv
+      if: steps.immutability.outputs.files != ''
+      uses: astral-sh/setup-uv@v8.0.0
+      with:
+        enable-cache: true
+
+    - name: Install dependencies
+      if: steps.immutability.outputs.files != ''
+      run: |
+        uv sync
+
+    - name: Lint and format-check changed migrations
+      if: steps.immutability.outputs.files != ''
+      env:
+        FILES: ${{ steps.immutability.outputs.files }}
+      run: |
+        mapfile -t files <<< "$FILES"
+        echo "Checking: ${files[*]}"
+        uv run ruff check --output-format=github "${files[@]}"
+        uv run ruff format --check "${files[@]}"

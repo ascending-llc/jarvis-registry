@@ -1,43 +1,32 @@
-"""
-Seed AccessRole data for Registry-owned ACL resource types (Standalone version)
+"""Seed AccessRole documents for the Registry-owned ACL resource types.
 
-This script directly operates on MongoDB collections without using Beanie ORM
-to completely avoid any model imports that might trigger A2AAgent initialization.
-
-Registry seeds federation, workflow, skill, skillSyncSource, mcpServer, and
-remoteAgent roles.
+Registry seeds federation, workflow, workflowSchedule, skill, skillSyncSource,
+mcpServer, and remoteAgent roles.
 
 Jarvis Chat predates Registry and owns seeding mcpServer roles in deployments
-where it shares a MongoDB with Registry. This script also seeds mcpServer here,
+where it shares a MongoDB with Registry. This migration also seeds mcpServer here,
 using the same accessRoleId/name/description/permBits values Chat already
 creates there, so the upsert below is a no-op in a shared deployment — it only
 fills the gap for a Registry-only deployment with no Chat present.
 
-Usage:
-    python scripts/seed_access_roles_standalone.py
+Idempotent: each role is upserted on its natural key `accessRoleId` with `$setOnInsert`
+only, so a re-run (or a run after a partial one) inserts the missing roles and never
+modifies an existing one.
 """
 
-import asyncio
-import os
+import logging
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
 
-from pymongo import AsyncMongoClient
+from pymongo.asynchronous.database import AsyncDatabase
+
+logger = logging.getLogger(__name__)
 
 
-async def seed_access_roles(collection, session):
-    """
-    Seed AccessRole records for Registry-owned resource types.
-
-    Uses direct MongoDB operations instead of Beanie ORM to avoid
-    triggering A2AAgent model initialization.
-    """
-    print("=== Seeding Federation, Workflow, Skill, Skill Sync Source, MCP Server & Remote Agent AccessRoles ===\n")
-
+async def up(db: AsyncDatabase) -> None:
+    now = datetime.now(UTC)
     # Chat owns its own resource types (agent, promptGroup) plus mcpServer (see module
-    # docstring). Registry owns federation, workflow, skill, skillSyncSource, and
-    # remoteAgent, and also seeds mcpServer here so a Registry-only deployment (no
-    # Chat) still gets it.
+    # docstring). Registry owns the rest, and also seeds mcpServer here so a Registry-only
+    # deployment (no Chat) still gets it.
     roles_data = [
         {
             "accessRoleId": "federation_viewer",
@@ -45,8 +34,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_federation_role_viewer",
             "description": "com_ui_federation_viewer_desc",
             "permBits": 1,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -55,8 +44,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_federation_role_editor",
             "description": "com_ui_federation_editor_desc",
             "permBits": 3,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -65,8 +54,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_federation_role_owner",
             "description": "com_ui_federation_owner_desc",
             "permBits": 15,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -75,8 +64,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_workflow_role_viewer",
             "description": "com_ui_workflow_viewer_desc",
             "permBits": 1,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -85,8 +74,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_workflow_role_editor",
             "description": "com_ui_workflow_editor_desc",
             "permBits": 3,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -95,8 +84,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_workflow_role_owner",
             "description": "com_ui_workflow_owner_desc",
             "permBits": 15,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -105,8 +94,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_skill_role_viewer",
             "description": "com_ui_skill_viewer_desc",
             "permBits": 1,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -115,8 +104,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_workflow_schedule_role_viewer",
             "description": "com_ui_workflow_schedule_viewer_desc",
             "permBits": 1,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -125,8 +114,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_workflow_schedule_role_editor",
             "description": "com_ui_workflow_schedule_editor_desc",
             "permBits": 3,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -135,8 +124,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_workflow_schedule_role_owner",
             "description": "com_ui_workflow_schedule_owner_desc",
             "permBits": 15,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -145,8 +134,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_skill_role_editor",
             "description": "com_ui_skill_editor_desc",
             "permBits": 3,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -155,8 +144,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_skill_role_owner",
             "description": "com_ui_skill_owner_desc",
             "permBits": 15,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -165,8 +154,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_skill_sync_source_role_viewer",
             "description": "com_ui_skill_sync_source_viewer_desc",
             "permBits": 1,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -175,8 +164,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_skill_sync_source_role_editor",
             "description": "com_ui_skill_sync_source_editor_desc",
             "permBits": 3,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -185,8 +174,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_skill_sync_source_role_owner",
             "description": "com_ui_skill_sync_source_owner_desc",
             "permBits": 15,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -195,8 +184,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_mcp_server_role_viewer",
             "description": "com_ui_mcp_server_role_viewer_desc",
             "permBits": 1,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -205,8 +194,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_mcp_server_role_editor",
             "description": "com_ui_mcp_server_role_editor_desc",
             "permBits": 3,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -215,8 +204,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_mcp_server_role_owner",
             "description": "com_ui_mcp_server_role_owner_desc",
             "permBits": 15,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -225,8 +214,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_remote_agent_role_viewer",
             "description": "com_ui_remote_agent_role_viewer_desc",
             "permBits": 1,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -235,8 +224,8 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_remote_agent_role_editor",
             "description": "com_ui_remote_agent_role_editor_desc",
             "permBits": 3,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
         {
@@ -245,65 +234,20 @@ async def seed_access_roles(collection, session):
             "name": "com_ui_remote_agent_role_owner",
             "description": "com_ui_remote_agent_role_owner_desc",
             "permBits": 15,
-            "createdAt": datetime.now(UTC),
-            "updatedAt": datetime.now(UTC),
+            "createdAt": now,
+            "updatedAt": now,
             "__v": 0,
         },
     ]
 
+    collection = db["accessroles"]
+    inserted = 0
     for role_data in roles_data:
-        await collection.update_one(
-            {"accessRoleId": role_data["accessRoleId"]}, {"$setOnInsert": role_data}, upsert=True, session=session
+        result = await collection.update_one(
+            {"accessRoleId": role_data["accessRoleId"]}, {"$setOnInsert": role_data}, upsert=True
         )
-        print(f"[OK] Ensured: {role_data['accessRoleId']} (permBits={role_data['permBits']})")
+        if result.upserted_id is not None:
+            inserted += 1
+            logger.info("Inserted access role %s (permBits=%s)", role_data["accessRoleId"], role_data["permBits"])
 
-    print(f"\n=== Completed: {len(roles_data)} roles processed ===\n")
-
-
-async def main():
-    """
-    Main entry point - Direct MongoDB operations without Beanie
-
-    This completely avoids importing any models, ensuring we don't
-    trigger A2AAgent initialization.
-    """
-    mongo_uri = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/jarvis")
-
-    parsed = urlsplit(mongo_uri)
-    path = parsed.path.lstrip("/")
-    db_name = path if path else "jarvis"
-
-    if not db_name:
-        raise ValueError("MongoDB database name is required in MONGO_URI")
-
-    query_params = f"?{parsed.query}" if parsed.query else ""
-    mongodb_url = f"{parsed.scheme}://{parsed.netloc}/{db_name}{query_params}"
-
-    async with AsyncMongoClient(
-        mongodb_url,
-        directConnection=True,
-        maxPoolSize=50,
-        minPoolSize=10,
-        maxIdleTimeMS=30000,
-        waitQueueTimeoutMS=5000,
-        connectTimeoutMS=10000,
-        serverSelectionTimeoutMS=10000,
-        retryWrites=True,
-        retryReads=True,
-    ) as client:
-        await client.admin.command("ping")
-        print(f"Connected to MongoDB database: {db_name}\n")
-
-        database = client[db_name]
-        collection = database["accessroles"]
-
-        async with client.start_session() as session:
-
-            async def callback(session):
-                await seed_access_roles(collection, session)
-
-            await session.with_transaction(callback)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    logger.info("Access roles: %d inserted, %d already present", inserted, len(roles_data) - inserted)

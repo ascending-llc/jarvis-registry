@@ -84,6 +84,9 @@ exclude = [
 ]
 
 [tool.ruff.lint]
+# Applied migrations must stay byte-for-byte unchanged (their checksum is recorded), so repo-wide `ruff check --fix`
+# must never touch them. CI (.github/workflows/migrations.yml) lints new migrations by explicit path instead.
+exclude = ["registry-pkgs/src/registry_pkgs/migrations/versions/*"]
 select = [
   "E",   # pycodestyle errors
   "W",   # pycodestyle warnings
@@ -116,6 +119,8 @@ known-first-party = ["registry_pkgs", "auth_utils", "registry", "auth_server", "
 "registry-pkgs/src/registry_pkgs/vector/__init__.py" = ["I001"]
 
 [tool.ruff.format]
+# See [tool.ruff.lint] exclude: a formatter upgrade must never rewrite an applied migration.
+exclude = ["registry-pkgs/src/registry_pkgs/migrations/versions/*"]
 quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false

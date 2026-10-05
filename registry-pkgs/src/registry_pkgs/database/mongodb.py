@@ -43,6 +43,15 @@ logger = logging.getLogger(__name__)
 
 _NAMESPACE_EXISTS_CODE = 48
 
+# pymongo eagerly opens and keeps `minPoolSize` connections per process (a 1 s background task refills the pool),
+# whether or not they are used. A floor would only save the handshake on the first request after an idle period,
+# so connections are opened on demand instead; this also keeps one-shot processes such as the migration runner
+# from holding idle connections.
+_MIN_POOL_SIZE = 0
+# Longer than the workflow-worker's default idle poll interval (WORKFLOW_WORKER_MAX_SLEEP_SECONDS, 30 s), so its
+# pooled connection is reused across polls instead of being reaped just before each one.
+_MAX_IDLE_TIME_MS = 60_000
+
 _DOCUMENT_MODELS: list[type[Document]] = [
     User,
     RegistryAccessRole,
@@ -93,10 +102,64 @@ async def ensure_collections(database: AsyncDatabase, document_models: list[type
         existing.add(name)
 
 
+def create_mongo_client(config: MongoConfig, db_name: str | None = None) -> tuple[AsyncMongoClient, str]:
+    """Build the MongoDB URL from config (credentials, db name, query) and return (client, db_name).
+
+    The client is created lazily by pymongo, so this performs no I/O; callers ping it themselves.
+    Raises ValueError when neither the URI path nor `db_name` names a database.
+    """
+    mongo_uri = config.mongo_uri
+    mongo_username = config.mongodb_username
+    mongo_password = config.mongodb_password
+
+    parsed = urlsplit(mongo_uri)
+    path = parsed.path.lstrip("/")
+    extracted_db = path if path else None
+    if extracted_db and not db_name:
+        db_name = extracted_db
+    if not db_name:
+        raise ValueError("MongoDB database name is required in mongo_uri or explicit db_name")
+
+    base_path = ""
+    query_params = f"?{parsed.query}" if parsed.query else ""
+    base_uri = f"{parsed.scheme}://{parsed.netloc}{base_path}"
+
+    # Construct the final MongoDB URL
+    if mongo_username and mongo_password:
+        # Credentials provided via env vars - insert them into the URI
+        escaped_username = quote_plus(mongo_username)
+        escaped_password = quote_plus(mongo_password)
+        protocol, rest = base_uri.split("://", 1)
+        # Strip any existing credentials from rest (everything before @)
+        if "@" in rest:
+            rest = rest.split("@", 1)[1]
+        mongodb_url = f"{protocol}://{escaped_username}:{escaped_password}@{rest}/{db_name}{query_params}"
+    else:
+        # Credentials already in URI or not needed
+        mongodb_url = f"{base_uri}/{db_name}{query_params}" if db_name else base_uri
+
+    # Create PyMongo async client with connection pool settings
+    client: AsyncMongoClient = AsyncMongoClient(
+        mongodb_url,
+        directConnection=True,
+        maxPoolSize=50,  # Maximum number of connections in the pool
+        minPoolSize=_MIN_POOL_SIZE,
+        maxIdleTimeMS=_MAX_IDLE_TIME_MS,
+        waitQueueTimeoutMS=5000,  # Wait up to 5 seconds for a connection from pool
+        connectTimeoutMS=10000,  # Connection timeout
+        serverSelectionTimeoutMS=10000,  # Server selection timeout
+        retryWrites=True,  # Retry write operations
+        retryReads=True,  # Retry read operations
+    )
+    return client, db_name
+
+
 class MongoDB:
     """MongoDB connection manager with connection pooling."""
 
     client: AsyncMongoClient | None = None
+    # Set by connect_db; deliberately no default, so reading it before connecting still raises AttributeError.
+    database_name: str
 
     @classmethod
     async def connect_db(cls, config: MongoConfig, db_name: str | None = None):
@@ -108,51 +171,9 @@ class MongoDB:
         """
         if cls.client is not None:
             return
-        mongo_uri = config.mongo_uri
-        mongo_username = config.mongodb_username
-        mongo_password = config.mongodb_password
-
-        parsed = urlsplit(mongo_uri)
-        path = parsed.path.lstrip("/")
-        extracted_db = path if path else None
-        if extracted_db and not db_name:
-            db_name = extracted_db
-        if not db_name:
-            raise ValueError("MongoDB database name is required in mongo_uri or explicit db_name")
-
-        base_path = ""
-        query_params = f"?{parsed.query}" if parsed.query else ""
-        base_uri = f"{parsed.scheme}://{parsed.netloc}{base_path}"
-
-        # Construct the final MongoDB URL
-        if mongo_username and mongo_password:
-            # Credentials provided via env vars - insert them into the URI
-            escaped_username = quote_plus(mongo_username)
-            escaped_password = quote_plus(mongo_password)
-            protocol, rest = base_uri.split("://", 1)
-            # Strip any existing credentials from rest (everything before @)
-            if "@" in rest:
-                rest = rest.split("@", 1)[1]
-            mongodb_url = f"{protocol}://{escaped_username}:{escaped_password}@{rest}/{db_name}{query_params}"
-        else:
-            # Credentials already in URI or not needed
-            mongodb_url = f"{base_uri}/{db_name}{query_params}" if db_name else base_uri
-
-        cls.database_name = db_name
+        cls.client, cls.database_name = create_mongo_client(config, db_name)
+        db_name = cls.database_name
         try:
-            # Create PyMongo async client with connection pool settings
-            cls.client = AsyncMongoClient(
-                mongodb_url,
-                directConnection=True,
-                maxPoolSize=50,  # Maximum number of connections in the pool
-                minPoolSize=10,  # Minimum number of connections in the pool
-                maxIdleTimeMS=30000,  # Close connections after 30 seconds of inactivity
-                waitQueueTimeoutMS=5000,  # Wait up to 5 seconds for a connection from pool
-                connectTimeoutMS=10000,  # Connection timeout
-                serverSelectionTimeoutMS=10000,  # Server selection timeout
-                retryWrites=True,  # Retry write operations
-                retryReads=True,  # Retry read operations
-            )
             # Verify connection
             await cls.client.admin.command("ping")
             # Get database
