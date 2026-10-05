@@ -43,6 +43,15 @@ logger = logging.getLogger(__name__)
 
 _NAMESPACE_EXISTS_CODE = 48
 
+# pymongo eagerly opens and keeps `minPoolSize` connections per process (a 1 s background task refills the pool),
+# whether or not they are used. A floor would only save the handshake on the first request after an idle period,
+# so connections are opened on demand instead; this also keeps one-shot processes such as the migration runner
+# from holding idle connections.
+_MIN_POOL_SIZE = 0
+# Longer than the workflow-worker's default idle poll interval (WORKFLOW_WORKER_MAX_SLEEP_SECONDS, 30 s), so its
+# pooled connection is reused across polls instead of being reaped just before each one.
+_MAX_IDLE_TIME_MS = 60_000
+
 _DOCUMENT_MODELS: list[type[Document]] = [
     User,
     RegistryAccessRole,
@@ -134,8 +143,8 @@ def create_mongo_client(config: MongoConfig, db_name: str | None = None) -> tupl
         mongodb_url,
         directConnection=True,
         maxPoolSize=50,  # Maximum number of connections in the pool
-        minPoolSize=10,  # Minimum number of connections in the pool
-        maxIdleTimeMS=30000,  # Close connections after 30 seconds of inactivity
+        minPoolSize=_MIN_POOL_SIZE,
+        maxIdleTimeMS=_MAX_IDLE_TIME_MS,
         waitQueueTimeoutMS=5000,  # Wait up to 5 seconds for a connection from pool
         connectTimeoutMS=10000,  # Connection timeout
         serverSelectionTimeoutMS=10000,  # Server selection timeout

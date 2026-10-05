@@ -17,8 +17,8 @@ from registry_pkgs.database.mongodb import (
 _POOL_OPTIONS = {
     "directConnection": True,
     "maxPoolSize": 50,
-    "minPoolSize": 10,
-    "maxIdleTimeMS": 30000,
+    "minPoolSize": 0,
+    "maxIdleTimeMS": 60000,
     "waitQueueTimeoutMS": 5000,
     "connectTimeoutMS": 10000,
     "serverSelectionTimeoutMS": 10000,
