@@ -11,6 +11,17 @@ Jarvis Chat write the same collections. The lock only excludes other runners, ne
 
 Use raw pymongo through `db`. Never use Beanie `Document` classes.
 
+## Never block the event loop
+
+The migration lock's heartbeat is an asyncio task on the same event loop as `up()`. Blocking the loop for longer
+than the lock's TTL (60 s) lets the lease expire. Another pod's runner then takes the lock and starts the same
+migration concurrently, and this runner exits 1 once it sees the lock is lost. So:
+
+- Await every I/O call through the async `db`. No sync pymongo client, `requests`, or `time.sleep`.
+- In a long Python loop over many documents (e.g. computing values for a `bulk_write`), process in batches and
+  yield between them: `await asyncio.sleep(0)`.
+- Stream large result sets with `async for doc in db["c"].find(...)` rather than one huge `to_list()`.
+
 ## Updates
 
 - Put the precondition in the filter, so only unmigrated documents match. A re-run matches nothing, a
