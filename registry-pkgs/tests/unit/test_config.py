@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from registry_pkgs.core.config import DISABLE_DOTENV_ENV_VAR, JarvisBaseSettings
+from registry_pkgs.core.config import DISABLE_DOTENV_ENV_VAR, JarvisBaseSettings, MongoConfig, MongoSettings
 from registry_pkgs.testing.fixtures import disable_dotenv_loading
 
 
@@ -149,3 +149,69 @@ def test_disable_dotenv_loading_sets_both_guards(monkeypatch) -> None:
 
     assert os.environ[DISABLE_DOTENV_ENV_VAR] == "1"
     assert os.environ["LITELLM_MODE"] == "PRODUCTION"
+
+
+@pytest.mark.unit
+def test_mongo_settings_load_without_jwt_keys() -> None:
+    env = {"MONGO_URI": "mongodb://h:27017/db", "BUILD_VERSION": "x", DISABLE_DOTENV_ENV_VAR: "1"}
+    with patch.dict(os.environ, env, clear=True):
+        settings = MongoSettings()
+
+    assert settings.mongo_uri == "mongodb://h:27017/db"
+    assert settings.build_version == "x"
+    assert settings.mongo_config == MongoConfig(mongo_uri="mongodb://h:27017/db")
+
+
+@pytest.mark.unit
+def test_mongo_settings_defaults() -> None:
+    with patch.dict(os.environ, {DISABLE_DOTENV_ENV_VAR: "1"}, clear=True):
+        settings = MongoSettings()
+
+    assert settings.mongo_uri == "mongodb://127.0.0.1:27017/jarvis"
+    assert settings.mongodb_username == ""
+    assert settings.mongodb_password == ""
+    assert settings.build_version == "unknown"
+
+
+@pytest.mark.unit
+def test_mongo_settings_respect_dotenv_switch(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text("MONGO_URI=mongodb://from-dotenv:27017/db\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MONGO_URI", raising=False)
+
+    assert MongoSettings().mongo_uri == "mongodb://127.0.0.1:27017/jarvis"
+    monkeypatch.delenv(DISABLE_DOTENV_ENV_VAR)
+    assert MongoSettings().mongo_uri == "mongodb://from-dotenv:27017/db"
+
+
+@pytest.mark.unit
+def test_jarvis_base_settings_keeps_mongo_and_build_version_surface() -> None:
+    env = {
+        "MONGO_URI": "mongodb://h:27017/db",
+        "MONGODB_USERNAME": "u",
+        "MONGODB_PASSWORD": "p",
+        "BUILD_VERSION": "abc123",
+        "X_JARVIS_REGISTRY_IMPORT_CHECKS": "disabled",
+        DISABLE_DOTENV_ENV_VAR: "1",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        settings = JarvisBaseSettings()
+
+    assert isinstance(settings, MongoSettings)
+    assert settings.mongo_uri == "mongodb://h:27017/db"
+    assert settings.mongodb_username == "u"
+    assert settings.mongodb_password == "p"
+    assert settings.build_version == "abc123"
+    assert settings.mongo_config == MongoConfig(
+        mongo_uri="mongodb://h:27017/db", mongodb_username="u", mongodb_password="p"
+    )
+    assert settings.telemetry_config.build_version == "abc123"
+
+
+@pytest.mark.unit
+def test_jarvis_base_settings_still_validates_jwt_keys() -> None:
+    with (
+        patch.dict(os.environ, {"SECRET_KEY": "s", "CREDS_KEY": "ab", DISABLE_DOTENV_ENV_VAR: "1"}, clear=True),
+        pytest.raises(ValidationError, match="JWT_PRIVATE_KEY and JWT_PUBLIC_KEY must be provided"),
+    ):
+        JarvisBaseSettings()

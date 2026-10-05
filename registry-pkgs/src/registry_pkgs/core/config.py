@@ -14,7 +14,7 @@ from .scopes import load_scopes_config
 
 INTERACTIVE_TOKEN_CLIENT_ID = "user-generated"
 
-# Set to "1" to stop every JarvisBaseSettings subclass from reading a `.env` file. The test suites set it
+# Set to "1" to stop every JarvisEnvSettings subclass from reading a `.env` file. The test suites set it
 # (registry_pkgs.testing.fixtures.disable_dotenv_loading) so a developer's local `.env` never leaks in.
 DISABLE_DOTENV_ENV_VAR = "JARVIS_DISABLE_DOTENV"
 
@@ -149,11 +149,11 @@ class WorkflowPromptSettings(BaseSettings):
     )
 
 
-class JarvisBaseSettings(BaseSettings):
-    """Shared base settings for all Jarvis services.
+class JarvisEnvSettings(BaseSettings):
+    """Source policy (env vars, optional `.env`) shared by every Jarvis settings class, plus deployment-wide fields.
 
-    Both `registry` and `auth-server` read from the same secret store (AWS Secrets Manager
-    or Azure Key Vault) in every deployment, so shared fields belong here.
+    Holds no required fields and runs no validation, so it can be instantiated on its own wherever the full
+    `JarvisBaseSettings` (and its JWT / secret-key checks) is not needed.
     """
 
     model_config = SettingsConfigDict(
@@ -179,6 +179,33 @@ class JarvisBaseSettings(BaseSettings):
         if os.environ.get(DISABLE_DOTENV_ENV_VAR) == "1":
             return init_settings, env_settings, file_secret_settings
         return init_settings, env_settings, dotenv_settings, file_secret_settings
+
+    # Set in every image's Dockerfile.
+    build_version: str = "unknown"
+
+
+class MongoSettings(JarvisEnvSettings):
+    """MongoDB connection settings. Instantiated alone by the migration runner (`registry_pkgs.migrations`)."""
+
+    mongo_uri: str = "mongodb://127.0.0.1:27017/jarvis"
+    mongodb_username: str = ""
+    mongodb_password: str = ""
+
+    @cached_property
+    def mongo_config(self) -> MongoConfig:
+        return MongoConfig(
+            mongo_uri=self.mongo_uri,
+            mongodb_username=self.mongodb_username,
+            mongodb_password=self.mongodb_password,
+        )
+
+
+class JarvisBaseSettings(MongoSettings):
+    """Shared base settings for all Jarvis services.
+
+    Both `registry` and `auth-server` read from the same secret store (AWS Secrets Manager
+    or Azure Key Vault) in every deployment, so shared fields belong here.
+    """
 
     # ==================== Deployment ====================
     deployment_environment: str | None = None
@@ -243,17 +270,11 @@ class JarvisBaseSettings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "%(asctime)s,p%(process)s,{%(name)s:%(lineno)d},%(levelname)s,%(message)s"
 
-    # ==================== MongoDB ====================
-    mongo_uri: str = "mongodb://127.0.0.1:27017/jarvis"
-    mongodb_username: str = ""
-    mongodb_password: str = ""
-
     # ==================== Telemetry ====================
     otel_metrics_config_path: str = ""
     otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
     otel_prometheus_enabled: bool = False
     otel_prometheus_port: int = 9464
-    build_version: str = "unknown"
     otel_gateway_token: SecretStr = SecretStr("")
     otel_trace_hide_inputs: bool = True
     otel_trace_hide_outputs: bool = True
@@ -395,14 +416,6 @@ class JarvisBaseSettings(BaseSettings):
             self.registry_client_url = self.registry_client_url.rstrip("/")
 
     # ==================== Shared Properties ====================
-
-    @cached_property
-    def mongo_config(self) -> MongoConfig:
-        return MongoConfig(
-            mongo_uri=self.mongo_uri,
-            mongodb_username=self.mongodb_username,
-            mongodb_password=self.mongodb_password,
-        )
 
     @cached_property
     def jwt_signing_config(self) -> JwtSigningConfig:

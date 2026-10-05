@@ -138,4 +138,6 @@ exclude-signatures = [
     {signature = '98a17f2f79343e964496ea55e7e52755d6f6c15ae9c855c2c6e11ed8f7cdd6ea', reason = 'removed config file path is not credential'},
     {signature = 'ce57dbd8e4d08c91563bf7f5928138cf89f23539653b39a6f1ceafa54d82a8dd', reason = 'mcp registry schema server.json char-class regex/constant, not a credential'},
     {signature = 'cc632ac2b2c1531fb61b5660cd9228ebce9c440c4b9551f6d17548f0ebe78af3', reason = 'docker-compose OTEL endpoint env-var defaults and dev profile diff is not a credential'},
+    {signature = '042c4794e96f05be2a5a24f56fe13b2c2fb73ae65332f1552f8894651899c2da', reason = 'fake MongoDB credentials in create_mongo_client URL-building unit tests are not credentials'},
+    {signature = '9775c81493dd8663f25171fe586cfa241f955ff688bf2eb10a7a055dc25f2125', reason = 'fake MongoDB credentials in create_mongo_client URL-building unit tests are not credentials'},
 ]

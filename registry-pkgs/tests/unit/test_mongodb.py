@@ -6,7 +6,121 @@ import pytest
 from pymongo.errors import OperationFailure
 
 from registry_pkgs.core.config import MongoConfig
-from registry_pkgs.database.mongodb import MongoDB, close_mongodb, ensure_collections, init_mongodb
+from registry_pkgs.database.mongodb import (
+    MongoDB,
+    close_mongodb,
+    create_mongo_client,
+    ensure_collections,
+    init_mongodb,
+)
+
+_POOL_OPTIONS = {
+    "directConnection": True,
+    "maxPoolSize": 50,
+    "minPoolSize": 10,
+    "maxIdleTimeMS": 30000,
+    "waitQueueTimeoutMS": 5000,
+    "connectTimeoutMS": 10000,
+    "serverSelectionTimeoutMS": 10000,
+    "retryWrites": True,
+    "retryReads": True,
+}
+
+
+class TestCreateMongoClient:
+    """URL building and client construction shared by connect_db and the migration runner."""
+
+    @pytest.mark.parametrize(
+        ("config", "db_name", "expected_url", "expected_db"),
+        [
+            pytest.param(
+                MongoConfig(mongo_uri="mongodb://localhost:27017/jarvis"),
+                None,
+                "mongodb://localhost:27017/jarvis",
+                "jarvis",
+                id="db-from-uri-path",
+            ),
+            pytest.param(
+                MongoConfig(mongo_uri="mongodb://localhost:27017/jarvis"),
+                "explicit",
+                "mongodb://localhost:27017/explicit",
+                "explicit",
+                id="explicit-db-name-wins-over-uri-path",
+            ),
+            pytest.param(
+                MongoConfig(mongo_uri="mongodb://localhost:27017"),
+                "explicit",
+                "mongodb://localhost:27017/explicit",
+                "explicit",
+                id="explicit-db-name-without-uri-path",
+            ),
+            pytest.param(
+                MongoConfig(mongo_uri="mongodb://localhost:27017/jarvis?authSource=admin&tls=true"),
+                None,
+                "mongodb://localhost:27017/jarvis?authSource=admin&tls=true",
+                "jarvis",
+                id="query-params-passed-through",
+            ),
+            pytest.param(
+                MongoConfig(
+                    mongo_uri="mongodb://mongo:27017/jarvis?authSource=admin",
+                    mongodb_username="us@r",
+                    mongodb_password="p:ss/w@rd",
+                ),
+                None,
+                "mongodb://us%40r:p%3Ass%2Fw%40rd@mongo:27017/jarvis?authSource=admin",
+                "jarvis",
+                id="injected-credentials-escaped",
+            ),
+            pytest.param(
+                MongoConfig(
+                    mongo_uri="mongodb://old:secret@mongo:27017/jarvis",
+                    mongodb_username="new",
+                    mongodb_password="pw",
+                ),
+                None,
+                "mongodb://new:pw@mongo:27017/jarvis",
+                "jarvis",
+                id="injected-credentials-replace-uri-credentials",
+            ),
+            pytest.param(
+                MongoConfig(mongo_uri="mongodb://user:pw@mongo:27017/jarvis"),
+                None,
+                "mongodb://user:pw@mongo:27017/jarvis",
+                "jarvis",
+                id="credentials-already-in-uri",
+            ),
+            pytest.param(
+                MongoConfig(mongo_uri="mongodb://mongo:27017/jarvis", mongodb_username="only-user"),
+                None,
+                "mongodb://mongo:27017/jarvis",
+                "jarvis",
+                id="username-without-password-not-injected",
+            ),
+        ],
+    )
+    def test_builds_url_and_resolves_db_name(
+        self,
+        config: MongoConfig,
+        db_name: str | None,
+        expected_url: str,
+        expected_db: str,
+    ) -> None:
+        with patch("registry_pkgs.database.mongodb.AsyncMongoClient") as MockClient:
+            client, resolved_db = create_mongo_client(config, db_name)
+
+        MockClient.assert_called_once_with(expected_url, **_POOL_OPTIONS)
+        assert client is MockClient.return_value
+        assert resolved_db == expected_db
+
+    def test_raises_when_no_db_name_resolvable(self) -> None:
+        with (
+            patch("registry_pkgs.database.mongodb.AsyncMongoClient") as MockClient,
+            pytest.raises(ValueError, match="database name is required"),
+        ):
+            create_mongo_client(MongoConfig(mongo_uri="mongodb://localhost:27017/"))
+
+        MockClient.assert_not_called()
 
 
 class TestMongoDBConnection:
@@ -135,6 +249,32 @@ class TestMongoDBConnection:
 
             # Every model's collection is ensured after Beanie is initialized
             mock_ensure_collections.assert_awaited_once_with(mock_db, document_models)
+
+    @pytest.mark.asyncio
+    async def test_connect_db_uses_create_mongo_client(self):
+        """connect_db delegates URL building to create_mongo_client and keeps its result."""
+        mock_client = MagicMock()
+        mock_client.admin.command = AsyncMock(return_value={"ok": 1})
+        config = MongoConfig(mongo_uri="mongodb://localhost:27017/test_db")
+        with (
+            patch(
+                "registry_pkgs.database.mongodb.create_mongo_client", return_value=(mock_client, "resolved")
+            ) as mock_create,
+            patch("registry_pkgs.database.mongodb.init_beanie", new_callable=AsyncMock),
+        ):
+            await MongoDB.connect_db(config, "explicit")
+
+        mock_create.assert_called_once_with(config, "explicit")
+        assert MongoDB.client is mock_client
+        assert MongoDB.database_name == "resolved"
+        mock_client.__getitem__.assert_called_with("resolved")
+
+    @pytest.mark.asyncio
+    async def test_connect_db_raises_without_db_name(self):
+        with pytest.raises(ValueError, match="database name is required"):
+            await MongoDB.connect_db(MongoConfig(mongo_uri="mongodb://localhost:27017"))
+
+        assert MongoDB.client is None
 
     @pytest.mark.asyncio
     async def test_connect_db_only_once(self):
