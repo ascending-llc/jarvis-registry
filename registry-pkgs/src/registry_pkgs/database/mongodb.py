@@ -139,7 +139,7 @@ def create_mongo_client(config: MongoConfig, db_name: str | None = None) -> tupl
         mongodb_url = f"{base_uri}/{db_name}{query_params}" if db_name else base_uri
 
     # Create PyMongo async client with connection pool settings
-    client = AsyncMongoClient(
+    client: AsyncMongoClient = AsyncMongoClient(
         mongodb_url,
         directConnection=True,
         maxPoolSize=50,  # Maximum number of connections in the pool
@@ -158,6 +158,8 @@ class MongoDB:
     """MongoDB connection manager with connection pooling."""
 
     client: AsyncMongoClient | None = None
+    # Set by connect_db; deliberately no default, so reading it before connecting still raises AttributeError.
+    database_name: str
 
     @classmethod
     async def connect_db(cls, config: MongoConfig, db_name: str | None = None):
