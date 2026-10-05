@@ -41,8 +41,8 @@ def default_owner() -> str:
 class MigrationLock:
     """Async context manager: acquire (waiting while another owner holds it), heartbeat, release.
 
-    `lost` becomes True when a heartbeat finds the lock no longer names this owner. The holder must check it
-    before starting each migration and before writing each record.
+    `lost` becomes True when a heartbeat finds the lock no longer names this owner, or fails with an error that is
+    not a `PyMongoError`. The holder must check it before starting each migration and before writing each record.
     """
 
     def __init__(self, db: AsyncDatabase, owner: str) -> None:
@@ -93,6 +93,12 @@ class MigrationLock:
         except PyMongoError as exc:
             # Retried at the next tick. If another runner takes the lock meanwhile, that tick sees no match.
             logger.warning("Migration lock heartbeat failed; retrying in %ss: %s", LOCK_HEARTBEAT_SECONDS, exc)
+            return
+        except Exception:
+            # Unexpected, so retrying cannot be trusted to renew the lease. Treat the lock as lost: the runner stops
+            # before its next migration or record, and the heartbeat task ends cleanly so the release still runs.
+            self._lost = True
+            logger.exception("Migration lock heartbeat failed unexpectedly; treating the lock as lost")
             return
         if result.matched_count == 0:
             self._lost = True

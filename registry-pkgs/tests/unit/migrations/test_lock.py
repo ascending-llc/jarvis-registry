@@ -173,6 +173,38 @@ async def test_heartbeat_error_alone_does_not_set_lost(db: MagicMock, collection
 
 
 @pytest.mark.asyncio
+async def test_unexpected_heartbeat_error_sets_lost_and_is_logged(
+    db: MagicMock, collection: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    collection.update_one.side_effect = RuntimeError("unexpected")
+    lock = MigrationLock(db, _OWNER)
+
+    with patch.object(lock_module.asyncio, "sleep", new_callable=AsyncMock):
+        await lock._heartbeat_loop()  # returns instead of raising: the error marks the lock lost
+
+    assert lock.lost
+    assert collection.update_one.await_count == 1
+    assert "heartbeat failed unexpectedly" in caplog.text
+    assert "RuntimeError: unexpected" in caplog.text  # traceback logged
+
+
+@pytest.mark.asyncio
+async def test_unexpected_heartbeat_error_still_releases_the_lock(db: MagicMock, collection: MagicMock) -> None:
+    collection.update_one.side_effect = RuntimeError("unexpected")
+
+    with patch.object(lock_module, "LOCK_HEARTBEAT_SECONDS", 0):
+        async with MigrationLock(db, _OWNER) as lock:
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert lock.lost
+            task = lock._heartbeat_task
+
+    # The task ended without an exception, so __aexit__ did not re-raise it and went on to release.
+    assert task is not None and task.done() and not task.cancelled() and task.exception() is None
+    collection.delete_one.assert_awaited_once_with({"_id": LOCK_ID, "owner": _OWNER})
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_runs_in_background_while_held(db: MagicMock, collection: MagicMock) -> None:
     with patch.object(lock_module, "LOCK_HEARTBEAT_SECONDS", 0):
         async with MigrationLock(db, _OWNER):
