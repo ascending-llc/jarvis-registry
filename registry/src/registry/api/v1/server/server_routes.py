@@ -414,10 +414,6 @@ async def create_server(
                     session=mongo_session,
                 )
 
-                if not server:
-                    logger.error("Server creation failed without exception")
-                    raise ValueError("Failed to create server")
-
                 await acl_service.grant_permission(
                     principal_type=PrincipalType.USER,
                     principal_id=PydanticObjectId(user_id),
@@ -551,21 +547,19 @@ async def delete_server(
                     session=mongo_session,
                 )
 
-                successful_delete = await server_service.delete_server(
+                await server_service.delete_server(
                     server_id=server_id,
                     user_id=None,
                     session=mongo_session,
                 )
 
-                if successful_delete:
-                    deleted_count = await acl_service.delete_acl_entries_for_resource(
-                        resource_type=ResourceType.MCPSERVER,
-                        resource_id=PydanticObjectId(server_id),
-                        session=mongo_session,
-                    )
-                    logger.info(f"Removed {deleted_count} ACL permissions for server Id {server_id}")
-                    return None  # 204 No Content
-                raise ValueError(f"Failed to delete server {server_id}. Skipping ACL cleanup")
+                deleted_count = await acl_service.delete_acl_entries_for_resource(
+                    resource_type=ResourceType.MCPSERVER,
+                    resource_id=PydanticObjectId(server_id),
+                    session=mongo_session,
+                )
+                logger.info(f"Removed {deleted_count} ACL permissions for server Id {server_id}")
+                return None  # 204 No Content
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc

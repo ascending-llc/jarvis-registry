@@ -9,9 +9,6 @@ from registry_pkgs.testing.fixtures import setup_registry_test_env
 
 setup_registry_test_env()
 
-# Import factories for use in tests
-pytest_plugins = ["tests.fixtures.factories"]
-
 
 def pytest_report_teststatus(report, config):
     """

@@ -1124,9 +1124,8 @@ async def test_delete_workflow_cascades_agno_sessions(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(workflow_service.MongoDB, "get_database", staticmethod(lambda: _Db()))
 
-    result = await WorkflowService(acl_service=AsyncMock()).delete_workflow(str(workflow_oid))
+    await WorkflowService(acl_service=AsyncMock()).delete_workflow(str(workflow_oid))
 
-    assert result is True
     assert workflow_deleted == [True]
     assert deleted_session_query == {"session_id": {"$in": [str(rid) for rid in run_ids]}}
 

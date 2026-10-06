@@ -1,14 +1,10 @@
 import logging
 import time
 from typing import Any
-from urllib.parse import urlencode
 
 import httpx
-from authlib.integrations.requests_client import OAuth2Session
 
 from registry_pkgs.core.jwt_utils import (
-    ExpiredSignatureError,
-    InvalidTokenError,
     decode_jwt_with_jwk,
     find_matching_jwk,
     get_token_kid,
@@ -104,28 +100,6 @@ class GoogleProvider(AuthProvider):
             audience=self.client_id,
         )
 
-    async def validate_token(self, token: str, **kwargs: Any) -> dict[str, Any]:
-        """Validate a Google id_token and return a standard validation dict."""
-        try:
-            claims = await self._verify_id_token(token)
-            email = claims.get("email")
-            return {
-                "valid": True,
-                "username": email,
-                "email": email,
-                "groups": [],
-                "scopes": [],
-                "client_id": claims.get("aud", self.client_id),
-                "method": "google",
-                "data": claims,
-            }
-        except ExpiredSignatureError:
-            logger.warning("Google token validation failed: token expired")
-            raise ValueError("Token has expired")
-        except InvalidTokenError as e:
-            logger.warning(f"Google token validation failed: {e}")
-            raise ValueError(f"Invalid token: {e}")
-
     async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
         """Verify the id_token, enforce the login gate, then resolve groups.
 
@@ -161,66 +135,3 @@ class GoogleProvider(AuthProvider):
             "id": claims.get("sub"),
             "groups": [_group_local_part(g.email) for g in groups],
         }
-
-    def get_auth_url(self, redirect_uri: str, state: str, scope: str | None = None) -> str:
-        """Build Google's authorization URL, narrowing the account picker via `hd`."""
-        params = {
-            "client_id": self.client_id,
-            "response_type": "code",
-            "scope": scope or " ".join(self.scopes),
-            "redirect_uri": redirect_uri,
-            "state": state,
-        }
-        if self.allowed_hd:
-            # UX nicety only — never a substitute for the server-side hd-claim check.
-            params["hd"] = self.allowed_hd
-        return f"{self.auth_url}?{urlencode(params)}"
-
-    def get_logout_url(self, redirect_uri: str) -> str:
-        """Google has no RP-initiated logout endpoint — return the redirect unchanged."""
-        return redirect_uri
-
-    def exchange_code_for_token(self, code: str, redirect_uri: str) -> dict[str, Any]:
-        """Exchange an authorization code for tokens via Authlib."""
-        try:
-            client = OAuth2Session(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                token_endpoint=self.token_url,
-                scope=" ".join(self.scopes),
-            )
-            return client.fetch_token(
-                self.token_url,
-                code=code,
-                redirect_uri=redirect_uri,
-                grant_type=self.grant_type,
-            )
-        except Exception as e:
-            logger.error(f"Failed to exchange code for token: {e}")
-            raise ValueError(f"Token exchange failed: {e}")
-
-    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
-        """Refresh an access token using a refresh token."""
-        try:
-            data = {
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            }
-            headers = {"Content-Type": "application/x-www-form-urlencoded"}
-            async with httpx.AsyncClient() as client:
-                response = await client.post(self.token_url, data=data, headers=headers, timeout=10)
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPError as e:
-            logger.error(f"Failed to refresh token: {e}")
-            raise ValueError(f"Token refresh failed: {e}")
-
-    async def get_m2m_token(
-        self, client_id: str | None = None, client_secret: str | None = None, scope: str | None = None
-    ) -> dict[str, Any]:
-        raise NotImplementedError("Google does not support machine-to-machine authentication")
-
-    async def validate_m2m_token(self, token: str) -> dict[str, Any]:
-        raise NotImplementedError("Google does not support machine-to-machine authentication")

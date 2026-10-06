@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException
+from pymongo.errors import PyMongoError
 
 from registry.api.v1.a2a.agent_routes import create_agent, delete_agent, get_agent_stats, list_agents, update_agent
 from registry.schemas.a2a_agent_api_schemas import (
@@ -13,7 +14,13 @@ from registry.schemas.a2a_agent_api_schemas import (
     convert_to_detail,
     convert_to_list_item,
 )
-from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+from registry_pkgs.core.exceptions import (
+    A2AAgentCardNotFoundException,
+    A2AAgentCardParseException,
+    A2AAgentCardTransportException,
+    A2AAgentCardUpstreamException,
+    EmbeddingReindexInProgressException,
+)
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -576,11 +583,106 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
 
 
 @pytest.mark.asyncio
+async def test_create_agent_returns_500_on_database_error(sample_user_context):
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.create_agent = AsyncMock(side_effect=PyMongoError("connection reset"))
+    acl_service = MagicMock()
+
+    request = AgentCreateRequest(
+        path="/test-agent",
+        title="Test Agent",
+        description="Agent description",
+        url="https://agent.example.com",
+        type="jsonrpc",
+    )
+
+    fake_client = _FakeTxnClient(_FakeTxnSession(_RecordingTxnCtx()))
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await create_agent(
+                data=request,
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 500
+    assert "connection reset" not in str(exc_info.value.detail)
+
+
+_AGENT_CARD_ERROR_CASES = [
+    (A2AAgentCardNotFoundException("Agent card not found"), 404, "resource_not_found"),
+    (A2AAgentCardTransportException("Connection timeout"), 503, "service_unavailable"),
+    (A2AAgentCardUpstreamException("Upstream returned 500"), 502, "external_service_error"),
+    (A2AAgentCardParseException("Invalid agent card"), 502, "external_service_error"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("error", "status_code", "error_code"), _AGENT_CARD_ERROR_CASES)
+async def test_create_agent_maps_agent_card_errors(sample_user_context, error, status_code, error_code):
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.create_agent = AsyncMock(side_effect=error)
+    acl_service = MagicMock()
+    acl_service.grant_permission = AsyncMock()
+
+    request = AgentCreateRequest(
+        path="/test-agent",
+        title="Test Agent",
+        description="Agent description",
+        url="https://agent.example.com",
+        type="jsonrpc",
+    )
+
+    fake_client = _FakeTxnClient(_FakeTxnSession(_RecordingTxnCtx()))
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await create_agent(
+                data=request,
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == status_code
+    assert error_code in str(exc_info.value.detail)
+    assert str(error) in str(exc_info.value.detail)
+    acl_service.grant_permission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("error", "status_code", "error_code"), _AGENT_CARD_ERROR_CASES)
+async def test_update_agent_maps_agent_card_errors(sample_user_context, error, status_code, error_code):
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=15)
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.update_agent = AsyncMock(side_effect=error)
+
+    fake_client = _FakeTxnClient(_FakeTxnSession(_RecordingTxnCtx()))
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await update_agent(
+                agent_id=str(PydanticObjectId()),
+                data=AgentUpdateRequest(url="https://new-agent.example.com"),
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == status_code
+    assert error_code in str(exc_info.value.detail)
+    assert str(error) in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_context):
     agent_id = str(PydanticObjectId())
 
     a2a_agent_service = MagicMock()
-    a2a_agent_service.delete_agent = AsyncMock(return_value=True)
+    a2a_agent_service.delete_agent = AsyncMock()
 
     acl_service = MagicMock()
     acl_service.check_user_permission = AsyncMock(return_value=MagicMock())

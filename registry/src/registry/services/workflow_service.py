@@ -596,15 +596,12 @@ class WorkflowService:
             logger.exception("Error listing versions for workflow %s", workflow_id)
             raise
 
-    async def delete_workflow(self, workflow_id: str) -> bool:
+    async def delete_workflow(self, workflow_id: str) -> None:
         """
         Delete a workflow and all associated runs.
 
         Args:
             workflow_id: Workflow ID
-
-        Returns:
-            True if deleted successfully
 
         Raises:
             ValueError: If workflow not found
@@ -653,7 +650,6 @@ class WorkflowService:
             await workflow.delete()
 
             logger.info(f"Deleted workflow {workflow_id}: {workflow.name}")
-            return True
 
         except ValueError:
             raise

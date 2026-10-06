@@ -1,19 +1,15 @@
 import logging
 import time
 from typing import Any
-from urllib.parse import urlencode
 
 import httpx
-from authlib.integrations.requests_client import OAuth2Session
 
 from registry_pkgs.core.jwt_utils import (
-    ExpiredSignatureError,
     InvalidTokenError,
     decode_jwt_unverified,
     decode_jwt_with_jwk,
     find_matching_jwk,
     get_token_kid,
-    get_token_unverified_header,
 )
 
 from ..core.config import settings
@@ -108,98 +104,6 @@ class EntraIdProvider(AuthProvider):
             f"claims: username={username_claim}, email={email_claim}, groups={groups_claim}, name={name_claim}"
         )
 
-    async def validate_token(self, token: str, **kwargs: Any) -> dict[str, Any]:
-        """Validate Entra ID JWT token.
-
-        Args:
-            token: The JWT access token to validate
-            **kwargs: Additional provider-specific arguments
-
-        Returns:
-            Dictionary containing:
-                - valid: True if token is valid
-                - username: User's preferred_username or sub claim
-                - email: User's email address
-                - groups: List of Azure AD group Object IDs
-                - scopes: List of token scopes
-                - client_id: Client ID that issued the token
-                - method: 'entra'
-                - data: Raw token claims
-
-        Raises:
-            ValueError: If token validation fails
-        """
-        try:
-            logger.debug("Validating Entra ID JWT token")
-
-            # Get JWKS for validation
-            jwks = await self.get_jwks()
-
-            # Decode token header to get key ID
-            unverified_header = get_token_unverified_header(token)
-            kid = unverified_header.get("kid")
-
-            if not kid:
-                raise ValueError("Token missing 'kid' in header")
-
-            # Find matching key
-            matching_key = None
-            for key in jwks.get("keys", []):
-                if key.get("kid") == kid:
-                    matching_key = key
-                    break
-
-            if not matching_key:
-                raise ValueError(f"No matching key found for kid: {kid}")
-
-            # First, decode without validation to check issuer
-            unverified_claims = decode_jwt_unverified(token)
-            token_issuer = unverified_claims.get("iss")
-
-            # Check if issuer is valid (v1.0 or v2.0)
-            if token_issuer not in self.valid_issuers:
-                raise ValueError(f"Invalid issuer: {token_issuer}. Expected one of: {self.valid_issuers}")
-
-            # Validate and decode token with the correct issuer
-            claims = decode_jwt_with_jwk(
-                token,
-                matching_key,
-                algorithms=["RS256"],
-                issuer=self.issuer,
-                audience=[self.client_id, f"api://{self.client_id}"],
-            )
-
-            # Extract user info from claims using configured claim mappings
-            username = claims.get(self.username_claim) or claims.get("sub")  # Fallback to 'sub' as last resort
-            email = claims.get(self.email_claim)
-
-            # Extract groups - handle both string and list claims
-            groups_raw = claims.get(self.groups_claim, [])
-            groups = groups_raw if isinstance(groups_raw, list) else []
-
-            logger.debug(f"Token validation successful for user: {username}")
-
-            return {
-                "valid": True,
-                "username": username,
-                "email": email,
-                "groups": groups,
-                "scopes": claims.get("scp", "").split() if claims.get("scp") else [],
-                "client_id": claims.get("azp", claims.get("appid", self.client_id)),
-                "method": "entra",
-                "data": claims,
-            }
-
-        except ExpiredSignatureError:
-            logger.warning("Token validation failed: Token has expired")
-            raise ValueError("Token has expired")
-        except InvalidTokenError as e:
-            logger.warning(f"Token validation failed: Invalid token - {e}")
-            raise ValueError(f"Invalid token: {e}")
-        except Exception as e:
-            logger.error(f"Entra ID token validation error: {e}")
-            raise ValueError(f"Token validation failed: {e}")
-
     async def get_jwks(self) -> dict[str, Any]:
         """Get JSON Web Key Set from Entra ID with caching."""
         current_time = time.time()
@@ -223,32 +127,6 @@ class EntraIdProvider(AuthProvider):
         except Exception as e:
             logger.error(f"Failed to retrieve JWKS from Entra ID: {e}")
             raise ValueError(f"Cannot retrieve JWKS: {e}")
-
-    def exchange_code_for_token(self, code: str, redirect_uri: str) -> dict[str, Any]:
-        """Exchange authorization code for access token using Authlib."""
-        try:
-            logger.debug("Exchanging authorization code for token")
-
-            client = OAuth2Session(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                token_endpoint=self.token_url,
-                scope=" ".join(self.scopes),
-            )
-
-            token_data = client.fetch_token(
-                self.token_url,
-                code=code,
-                redirect_uri=redirect_uri,
-                grant_type=self.grant_type,
-            )
-
-            logger.debug("Token exchange successful")
-            return token_data
-
-        except Exception as e:
-            logger.error(f"Failed to exchange code for token: {e}")
-            raise ValueError(f"Token exchange failed: {e}")
 
     async def _verify_user_info_token(self, token: str) -> dict[str, Any]:
         """Verify a JWT before using it as an identity source."""
@@ -443,165 +321,3 @@ class EntraIdProvider(AuthProvider):
         except Exception as e:
             logger.error(f"Failed to get user info: {e}")
             raise ValueError(f"User info retrieval failed: {e}")
-
-    def get_auth_url(self, redirect_uri: str, state: str, scope: str | None = None) -> str:
-        """Get Entra ID authorization URL.
-
-        Args:
-            redirect_uri: URI to redirect to after authorization
-            state: State parameter for CSRF protection
-            scope: Optional scope parameter (defaults to openid email profile)
-
-        Returns:
-            Full authorization URL
-        """
-        logger.debug(f"Generating auth URL with redirect_uri: {redirect_uri}")
-
-        params = {
-            "client_id": self.client_id,
-            "response_type": "code",
-            "scope": scope or " ".join(self.scopes),
-            "redirect_uri": redirect_uri,
-            "state": state,
-        }
-
-        auth_url = f"{self.auth_url}?{urlencode(params)}"
-        logger.debug(f"Generated auth URL: {auth_url}")
-
-        return auth_url
-
-    def get_logout_url(self, redirect_uri: str) -> str:
-        """Get Entra ID logout URL.
-
-        Args:
-            redirect_uri: URI to redirect to after logout
-
-        Returns:
-            Full logout URL
-        """
-        logger.debug(f"Generating logout URL with redirect_uri: {redirect_uri}")
-
-        params = {"client_id": self.client_id, "post_logout_redirect_uri": redirect_uri}
-
-        logout_url = f"{self.logout_url}?{urlencode(params)}"
-        logger.debug(f"Generated logout URL: {logout_url}")
-
-        return logout_url
-
-    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
-        """Refresh an access token using a refresh token.
-
-        Args:
-            refresh_token: The refresh token
-
-        Returns:
-            Dictionary containing new token response
-
-        Raises:
-            ValueError: If token refresh fails
-        """
-        try:
-            logger.debug("Refreshing access token")
-
-            data = {
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-                "scope": " ".join(self.scopes),
-            }
-
-            headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-            async with httpx.AsyncClient() as client:
-                response = await client.post(self.token_url, data=data, headers=headers, timeout=10)
-                response.raise_for_status()
-                token_data = response.json()
-
-            logger.debug("Token refresh successful")
-            return token_data
-
-        except httpx.HTTPError as e:
-            logger.error(f"Failed to refresh token: {e}")
-            raise ValueError(f"Token refresh failed: {e}")
-
-    async def validate_m2m_token(self, token: str) -> dict[str, Any]:
-        """Validate a machine-to-machine token.
-
-        Args:
-            token: The M2M access token to validate
-
-        Returns:
-            Dictionary containing validation result
-
-        Raises:
-            ValueError: If token validation fails
-        """
-        return await self.validate_token(token)
-
-    async def get_m2m_token(
-        self, client_id: str | None = None, client_secret: str | None = None, scope: str | None = None
-    ) -> dict[str, Any]:
-        """Get machine-to-machine token using client credentials.
-
-        This method is used for AI agent authentication using Azure AD service principals.
-        Each AI agent should have its own service principal (app registration) in Azure AD.
-
-        Args:
-            client_id: Optional client ID (uses default if not provided)
-            client_secret: Optional client secret (uses default if not provided)
-            scope: Optional scope for the token (defaults to .default)
-
-        Returns:
-            Dictionary containing token response:
-                - access_token: The M2M access token
-                - token_type: "Bearer"
-                - expires_in: Token expiration time in seconds
-
-        Raises:
-            ValueError: If token generation fails
-        """
-        try:
-            logger.debug("Requesting M2M token using client credentials")
-
-            # Default scope for Entra ID M2M tokens
-            if not scope:
-                scope = f"api://{client_id or self.client_id}/.default"
-
-            data = {
-                "grant_type": "client_credentials",
-                "client_id": client_id or self.client_id,
-                "client_secret": client_secret or self.client_secret,
-                "scope": scope or self.m2m_scope,
-            }
-            headers = {"Content-Type": "application/x-www-form-urlencoded"}
-            async with httpx.AsyncClient() as client:
-                response = await client.post(self.token_url, data=data, headers=headers, timeout=10)
-                response.raise_for_status()
-                token_data = response.json()
-            logger.debug("M2M token generation successful")
-            return token_data
-
-        except httpx.HTTPError as e:
-            logger.error(f"Failed to get M2M token: {e}")
-            raise ValueError(f"M2M token generation failed: {e}")
-
-    async def get_provider_info(self) -> dict[str, Any]:
-        """Get provider-specific information.
-
-        Returns:
-            Dictionary containing provider configuration and endpoints
-        """
-        return {
-            "provider_type": "entra",
-            "tenant_id": self.tenant_id,
-            "client_id": self.client_id,
-            "endpoints": {
-                "auth": self.auth_url,
-                "token": self.token_url,
-                "userinfo": self.userinfo_url,
-                "jwks": self.jwks_url,
-                "logout": self.logout_url,
-            },
-            "issuers": {"v2": self.issuer_v2, "v1": self.issuer_v1},
-        }

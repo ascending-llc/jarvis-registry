@@ -1,23 +1,25 @@
 # Development Guide
 
-This guide covers the development workflow for the MCP Gateway project.
+This guide covers the development workflow for Jarvis Registry.
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.12 (the root `pyproject.toml` requires `>=3.12,<3.13`)
 - [uv](https://docs.astral.sh/uv/) - Fast Python package manager
+- Node.js 22 (frontend; matches `docker/Dockerfile.registry-frontend`)
+- Docker with Compose (local end-to-end runs use `docker-compose.yml`)
 
 ## Initial Setup
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd mcp-gateway
+git clone https://github.com/ascending-llc/jarvis-registry.git
+cd jarvis-registry
 
 # Install all dependencies (including dev tools)
 uv sync --all-groups
 
-# Install pre-commit hooks (runs automatically on every commit)
+# Install pre-commit and post-merge hooks
 uv run poe hooks-install
 ```
 
@@ -40,11 +42,9 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and formattin
 
 Pre-commit hooks run automatically when you commit code. They catch issues before they reach CI.
 
-```bash
-# Install hooks (one-time setup)
-uv run poe hooks-install
+Install them once with `uv run poe hooks-install` (see Initial Setup). To run them manually on all files:
 
-# Run hooks manually on all files
+```bash
 uv run poe hooks-run
 ```
 
@@ -58,6 +58,9 @@ uv run poe hooks-run
 - Merge conflicts
 - Private keys (security)
 - Bandit security scanning
+- Tartufo credential scanning
+
+After a `git pull`, the post-merge hooks run `uv sync` if `uv.lock` changed and `npm ci` in `frontend/` if `frontend/package-lock.json` changed.
 
 ### Bypassing Hooks (Emergency Only)
 
@@ -67,30 +70,14 @@ If you need to commit without running hooks (not recommended):
 git commit --no-verify -m "message"
 ```
 
-Note: CI will still catch any issues, so this just delays the fix.
+Note: CI re-runs the ruff lint and format checks and the tests, so those issues still block the PR. CI does not run tartufo, so a skipped credential scan is not caught later. CI's bandit step only uploads a report and never fails the build, because its findings are mostly false positives.
 
 ## How the Double Defense Works
-
-```
-Developer Machine                     GitHub CI
-       |                                  |
-       v                                  v
-  git commit                         push / PR
-       |                                  |
-  Pre-commit hooks                   Lint job runs
-  run automatically                  ruff check
-       |                                  |
-  [BLOCKS commit                     [FAILS PR if
-   if errors]                         errors found]
-       |                                  |
-       v                                  v
-  Clean commit  ------------------>  Merge allowed
-```
 
 | Stage | Action | Result of Failure |
 |-------|--------|-------------------|
 | Local (Pre-commit) | Runs on `git commit` | Blocks the commit |
-| CI (GitHub Actions) | Runs on push/PR | Fails the build, blocks merge |
+| CI (GitHub Actions) | Runs ruff and tests on PRs and pushes to `main` | Fails the build, blocks merge |
 
 ## Running Tests
 
@@ -105,47 +92,33 @@ uv run poe test-all-cov
 uv run poe test-registry
 uv run poe test-auth-server
 uv run poe test-registry-pkgs
+uv run poe test-workflow-worker
 ```
 
 ## Project Structure
 
 ```
-mcp-gateway/
+jarvis-registry/
 ├── registry/          # Main registry service
 ├── auth-server/       # Authentication service
+├── workflow-worker/   # Workflow scheduler and executor
 ├── registry-pkgs/     # Shared packages
-├── servers/           # MCP servers
 ├── frontend/          # Web UI
+├── docker/            # Dockerfiles
+├── config/            # Observability config (Prometheus, Grafana, OTel, Tempo)
+├── scripts/           # Utility scripts
 ├── docs/              # Documentation
 └── pyproject.toml     # Root workspace config
 ```
 
-## IDE Setup
+## GitNexus (code intelligence for agents)
 
-### VS Code
+CI re-indexes `main` with GitNexus on every push that changes code (pushes touching only docs, Markdown or `.github/` are skipped), and the index is served as a remote MCP server; nobody runs GitNexus locally. Agents reach it two ways:
 
-Recommended extensions:
-- [Ruff](https://marketplace.visualstudio.com/items?itemName=charliermarsh.ruff) - Linting and formatting
-- [Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python) - Python support
+- **Through jarvis-registry (recommended)**: add jarvis-registry as an MCP server in your agent. The GitNexus tools then show up through its discovery tools and use the registry's auth.
+- **Directly**: connect to the hosted runtime with a bearer token.
 
-Settings (`.vscode/settings.json`):
-```json
-{
-  "[python]": {
-    "editor.defaultFormatter": "charliermarsh.ruff",
-    "editor.formatOnSave": true,
-    "editor.codeActionsOnSave": {
-      "source.fixAll.ruff": "explicit",
-      "source.organizeImports.ruff": "explicit"
-    }
-  }
-}
-```
-
-### PyCharm
-
-1. Install the [Ruff plugin](https://plugins.jetbrains.com/plugin/20574-ruff)
-2. Enable "Format on Save" in Preferences > Tools > Ruff
+The exposed tools are `gitnexus_impact`, `gitnexus_query`, `gitnexus_context`, `gitnexus_detect_changes`, `gitnexus_rename`, `gitnexus_cypher`, `gitnexus_route_map`, `gitnexus_tool_map`, `gitnexus_shape_check`, `gitnexus_api_impact` and `list_repos`, plus the `gitnexus://repo/jarvis-registry/...` resources. `gitnexus_detect_changes` and `gitnexus_rename` don't work remotely; `AGENTS.md` covers how agents should use the rest.
 
 ## Troubleshooting
 
@@ -158,15 +131,16 @@ uv run poe check
 # Auto-fix issues
 uv run poe fix
 
-# Then commit again
-git add -A && git commit -m "message"
+# Re-stage the files the hooks fixed, then commit again
+git add <files>
+git commit -m "message"
 ```
 
 ### Ruff not finding config
 
 Ensure you're running from the repository root:
 ```bash
-cd /path/to/mcp-gateway
+cd /path/to/jarvis-registry
 uv run ruff check .
 ```
 

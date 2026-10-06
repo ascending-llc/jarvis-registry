@@ -450,7 +450,8 @@ class A2AAgentService:
             Agent document
 
         Raises:
-            ValueError: If agent not found or retrieval fails
+            ValueError: If agent not found
+            Other exceptions (e.g. database errors) propagate unchanged.
         """
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id))
@@ -524,6 +525,9 @@ class A2AAgentService:
 
         Raises:
             ValueError: If path already exists or validation fails
+            A2AAgentCardNotFoundException, A2AAgentCardTransportException, A2AAgentCardUpstreamException,
+            A2AAgentCardParseException: If the agent card cannot be fetched from the URL
+            Other exceptions (e.g. database errors) propagate unchanged.
         """
         # Guard first: block the Mongo write below when a reindex is in progress.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
@@ -595,9 +599,8 @@ class A2AAgentService:
             if isinstance(e, DuplicateKeyError) or "duplicate key" in str(e).lower():
                 # Extract the normalized path for a clear error message
                 normalized_path = normalize_a2a_agent_path(data.path)
-                raise ValueError(self._path_conflict_message(data.path, normalized_path))
-            logger.error(f"Error creating agent: {e}", exc_info=True)
-            raise ValueError(f"Failed to create agent: {str(e)}")
+                raise ValueError(self._path_conflict_message(data.path, normalized_path)) from e
+            raise
 
     async def update_agent(
         self,
@@ -616,7 +619,10 @@ class A2AAgentService:
             Updated agent document
 
         Raises:
-            ValueError: If agent not found or validation fails
+            ValueError: If agent not found, path already exists or validation fails
+            A2AAgentCardNotFoundException, A2AAgentCardTransportException, A2AAgentCardUpstreamException,
+            A2AAgentCardParseException: If the agent card cannot be fetched from a changed URL
+            Other exceptions (e.g. database errors) propagate unchanged.
         """
         # Guard first: block the Mongo write below when a reindex is in progress.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
@@ -757,23 +763,19 @@ class A2AAgentService:
                 new_path = update_data.get("path") if "path" in update_data else None
                 if new_path:
                     normalized_path = normalize_a2a_agent_path(new_path)
-                    raise ValueError(self._path_conflict_message(new_path, normalized_path))
-            logger.error(f"Error updating agent {agent_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to update agent: {str(e)}")
+                    raise ValueError(self._path_conflict_message(new_path, normalized_path)) from e
+            raise
 
     async def delete_agent(
         self,
         agent_id: str,
         session: AsyncClientSession | None = None,
-    ) -> bool:
+    ) -> None:
         """
         Delete an agent.
 
         Args:
             agent_id: Agent ID
-
-        Returns:
-            True if deleted successfully
 
         Raises:
             ValueError: If agent not found
@@ -781,23 +783,15 @@ class A2AAgentService:
         # Guard before the Mongo delete: the reindex sweep rebuilds from Mongo, so a delete mid-sweep
         # could leave the deleted agent in the new generation. Block it (503) until the reindex ends.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
-        try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
-            if not agent:
-                raise ValueError(f"Agent not found: {agent_id}")
+        agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
+        if not agent:
+            raise ValueError(f"Agent not found: {agent_id}")
 
-            agent_name = agent.card.name
-            await agent.delete(session=session)
-            logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
+        agent_name = agent.card.name
+        await agent.delete(session=session)
+        logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
 
-            self._schedule_delete(agent_id, agent_name)
-            return True
-
-        except ValueError:
-            raise
-        except Exception as e:
-            logger.error(f"Error deleting agent {agent_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to delete agent: {str(e)}")
+        self._schedule_delete(agent_id, agent_name)
 
     async def toggle_agent_status(
         self,
@@ -821,32 +815,25 @@ class A2AAgentService:
         # Guard before the Mongo write: the scheduled vector sync would fail during a reindex while
         # Mongo already changed, so block the toggle (503) until the reindex ends.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
-        try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
-            if not agent:
-                raise ValueError(f"Agent not found: {agent_id}")
+        agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
+        if not agent:
+            raise ValueError(f"Agent not found: {agent_id}")
 
-            self._ensure_agent_config(agent).enabled = enabled
-            agent.updatedAt = datetime.now(UTC)
+        self._ensure_agent_config(agent).enabled = enabled
+        agent.updatedAt = datetime.now(UTC)
 
-            old_hash = agent.vectorContentHash
-            await agent.save(session=session)
+        old_hash = agent.vectorContentHash
+        await agent.save(session=session)
 
-            logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
+        logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
 
-            # When enabling, always force a full sync — Weaviate may be empty even if the
-            # content hash hasn't changed (e.g. after a collection reset or a previous failed sync).
-            if enabled:
-                self._schedule_vector_sync(agent, old_hash=None)
-            else:
-                self._schedule_vector_sync(agent, old_hash)
-            return agent
-
-        except ValueError:
-            raise
-        except Exception as e:
-            logger.error(f"Error toggling agent {agent_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to toggle agent: {str(e)}")
+        # When enabling, always force a full sync — Weaviate may be empty even if the
+        # content hash hasn't changed (e.g. after a collection reset or a previous failed sync).
+        if enabled:
+            self._schedule_vector_sync(agent, old_hash=None)
+        else:
+            self._schedule_vector_sync(agent, old_hash)
+        return agent
 
     async def refresh_agent_capabilities(
         self,
@@ -866,7 +853,7 @@ class A2AAgentService:
             Updated agent document with refreshed capabilities
 
         Raises:
-            ValueError: If agent not found, well-known not enabled, or sync fails
+            ValueError: If agent not found, well-known not enabled, or agent URL not configured
             A2AAgentCardNotFoundException: If agent card not found at well-known endpoint
             A2AAgentCardTransportException: If network/transport errors occur
             A2AAgentCardUpstreamException: If upstream returns non-404 errors
@@ -894,7 +881,10 @@ class A2AAgentService:
             Sync result with status and changes
 
         Raises:
-            ValueError: If agent not found, well-known not enabled, or sync fails
+            ValueError: If agent not found, well-known not enabled, or agent URL not configured
+            A2AAgentCardNotFoundException, A2AAgentCardTransportException, A2AAgentCardUpstreamException,
+            A2AAgentCardParseException: If the agent card cannot be fetched from the agent URL
+            Other exceptions (e.g. database errors) propagate unchanged.
         """
         # Guard before refetch/save: a well-known sync rewrites the agent + its vectors. This is the
         # shared chokepoint for both refresh_agent_capabilities and the direct /wellknown route.
@@ -1013,4 +1003,4 @@ class A2AAgentService:
                 await agent.save(session=session)
 
             logger.error(f"Error syncing agent {agent_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to sync well-known configuration: {str(e)}")
+            raise

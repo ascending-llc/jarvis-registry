@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -26,13 +26,6 @@ from registry.health.service import HealthMonitoringService
 from registry.main import app
 from registry.services.search.base import VectorSearchService
 from registry.services.server_service import ServerServiceV1
-
-# Import test utilities
-from tests.fixtures.factories import (
-    ServerInfoFactory,
-    create_multiple_servers,
-    create_server_with_tools,
-)
 
 if TYPE_CHECKING:
     from registry.core.config import Settings
@@ -149,24 +142,6 @@ def health_service() -> HealthMonitoringService:
     """Create a fresh health monitoring service for testing."""
     service = HealthMonitoringService(server_service=Mock(), mcp_client_service=Mock())
     return service
-
-
-@pytest.fixture
-def sample_server() -> dict[str, Any]:
-    """Create a sample server for testing."""
-    return ServerInfoFactory()
-
-
-@pytest.fixture
-def sample_servers() -> dict[str, dict[str, Any]]:
-    """Create multiple sample servers for testing."""
-    return create_multiple_servers(count=3)
-
-
-@pytest.fixture
-def server_with_tools() -> dict[str, Any]:
-    """Create a server with tools for testing."""
-    return create_server_with_tools(num_tools=5)
 
 
 def create_test_jwt_token(

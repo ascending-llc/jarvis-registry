@@ -6,10 +6,11 @@ import pytest
 from a2a.client import A2AClientHTTPError
 from a2a.types import AgentCard, TransportProtocol
 from beanie import PydanticObjectId
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
-from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+from registry_pkgs.core.exceptions import A2AAgentCardNotFoundException, EmbeddingReindexInProgressException
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, NoSupportedTransportError
 from registry_pkgs.testing.federation_metadata import (
     make_agentcore_a2a_metadata,
@@ -410,9 +411,8 @@ async def test_delete_agent_passes_session_to_delete():
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
-        result = await service.delete_agent(agent_id=str(PydanticObjectId()), session=_SENTINEL_SESSION)
+        await service.delete_agent(agent_id=str(PydanticObjectId()), session=_SENTINEL_SESSION)
 
-    assert result is True
     fake_agent.delete.assert_awaited_once()
     assert fake_agent.delete.await_args.kwargs["session"] is _SENTINEL_SESSION
 
@@ -434,6 +434,110 @@ async def test_toggle_agent_status_passes_session_to_save():
 
     fake_agent.save.assert_awaited_once()
     assert fake_agent.save.await_args.kwargs["session"] is _SENTINEL_SESSION
+
+
+def _create_request() -> AgentCreateRequest:
+    return AgentCreateRequest(
+        path="/test-agent",
+        title="Test Agent",
+        description="desc",
+        url="https://agent.example.com",
+        type="jsonrpc",
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_agent_propagates_database_error():
+    """A database failure must not be rewrapped as ValueError, which routes map to 400."""
+    service = _service()
+    mock_card = SimpleNamespace(version="1.0.0", name="Test Agent", description="desc")
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_fetch_agent_card_from_url", AsyncMock(return_value=mock_card)),
+    ):
+        MockAgent.find_one = AsyncMock(return_value=None)
+        MockAgent.return_value.insert = AsyncMock(side_effect=PyMongoError("connection reset"))
+
+        with pytest.raises(PyMongoError):
+            await service.create_agent(data=_create_request(), user_id=str(PydanticObjectId()))
+
+
+@pytest.mark.asyncio
+async def test_create_agent_propagates_agent_card_error():
+    """Agent-card fetch failures reach the route unwrapped, so it can map them to 404/502/503."""
+    service = _service()
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(
+            service, "_fetch_agent_card_from_url", AsyncMock(side_effect=A2AAgentCardNotFoundException("no card"))
+        ),
+    ):
+        MockAgent.find_one = AsyncMock(return_value=None)
+
+        with pytest.raises(A2AAgentCardNotFoundException):
+            await service.create_agent(data=_create_request(), user_id=str(PydanticObjectId()))
+
+
+@pytest.mark.asyncio
+async def test_create_agent_maps_duplicate_key_to_path_conflict():
+    service = _service()
+    mock_card = SimpleNamespace(version="1.0.0", name="Test Agent", description="desc")
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_fetch_agent_card_from_url", AsyncMock(return_value=mock_card)),
+    ):
+        MockAgent.find_one = AsyncMock(return_value=None)
+        MockAgent.return_value.insert = AsyncMock(side_effect=DuplicateKeyError("E11000 duplicate key", code=11000))
+
+        with pytest.raises(ValueError, match="already exists"):
+            await service.create_agent(data=_create_request(), user_id=str(PydanticObjectId()))
+
+
+@pytest.mark.asyncio
+async def test_update_agent_propagates_database_error():
+    service = _service()
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock(side_effect=PyMongoError("connection reset"))
+    fake_agent.config = SimpleNamespace(title="old", url="https://agent.example.com")
+    fake_agent.vectorContentHash = "hash"
+
+    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        with pytest.raises(PyMongoError):
+            await service.update_agent(agent_id=str(PydanticObjectId()), data=AgentUpdateRequest(title="New Title"))
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_propagates_database_error():
+    service = _service()
+    fake_agent = MagicMock()
+    fake_agent.delete = AsyncMock(side_effect=PyMongoError("connection reset"))
+    fake_agent.card = SimpleNamespace(name="Test Agent")
+
+    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        with pytest.raises(PyMongoError):
+            await service.delete_agent(agent_id=str(PydanticObjectId()))
+
+
+@pytest.mark.asyncio
+async def test_toggle_agent_status_propagates_database_error():
+    service = _service()
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock(side_effect=PyMongoError("connection reset"))
+    fake_agent.card = SimpleNamespace(name="Test Agent")
+    fake_agent.vectorContentHash = "hash"
+
+    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        with pytest.raises(PyMongoError):
+            await service.toggle_agent_status(agent_id=str(PydanticObjectId()), enabled=True)
 
 
 @pytest.mark.asyncio

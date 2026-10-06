@@ -66,6 +66,33 @@ def check_admin_permission(user_context: dict) -> bool:
     return "mcp-registry-admin" in scopes
 
 
+# Agent-card fetch failures raised by A2AAgentService whenever it fetches a remote agent card.
+AGENT_CARD_ERRORS = (
+    A2AAgentCardNotFoundException,
+    A2AAgentCardTransportException,
+    A2AAgentCardUpstreamException,
+    A2AAgentCardParseException,
+)
+
+
+def agent_card_http_error(exc: Exception) -> HTTPException:
+    """Map an agent-card fetch failure to 404 (no card), 503 (unreachable) or 502 (bad upstream response)."""
+    if isinstance(exc, A2AAgentCardNotFoundException):
+        return HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, str(exc)),
+        )
+    if isinstance(exc, A2AAgentCardTransportException):
+        return HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, str(exc)),
+        )
+    return HTTPException(
+        status_code=http_status.HTTP_502_BAD_GATEWAY,
+        detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, str(exc)),
+    )
+
+
 # ==================== Endpoints ====================
 
 
@@ -283,10 +310,6 @@ async def create_agent(
                 # Create agent
                 agent = await a2a_agent_service.create_agent(data=data, user_id=user_id, session=mongo_session)
 
-                if not agent:
-                    logger.error("Agent creation failed without exception")
-                    raise ValueError("Failed to create agent")
-
                 # Grant OWNER permission to creator
                 await acl_service.grant_permission(
                     principal_type=PrincipalType.USER,
@@ -310,6 +333,8 @@ async def create_agent(
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc
+    except AGENT_CARD_ERRORS as e:
+        raise agent_card_http_error(e) from e
     except ValueError as e:
         error_msg = str(e)
 
@@ -374,6 +399,8 @@ async def update_agent(
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc
+    except AGENT_CARD_ERRORS as e:
+        raise agent_card_http_error(e) from e
     except ValueError as e:
         error_msg = str(e)
 
@@ -436,18 +463,16 @@ async def delete_agent(
                 )
 
                 # Delete agent
-                successful_delete = await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
+                await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
 
-                if successful_delete:
-                    # Delete all associated ACL permission records
-                    deleted_count = await acl_service.delete_acl_entries_for_resource(
-                        resource_type=ResourceType.REMOTE_AGENT,
-                        resource_id=PydanticObjectId(agent_id),
-                        session=mongo_session,
-                    )
-                    logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
-                    return None  # 204 No Content
-                raise ValueError(f"Failed to delete agent {agent_id}. Skipping ACL cleanup")
+                # Delete all associated ACL permission records
+                deleted_count = await acl_service.delete_acl_entries_for_resource(
+                    resource_type=ResourceType.REMOTE_AGENT,
+                    resource_id=PydanticObjectId(agent_id),
+                    session=mongo_session,
+                )
+                logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
+                return None  # 204 No Content
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc
@@ -629,24 +654,8 @@ async def refresh_agent_capabilities(
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc
-    except A2AAgentCardNotFoundException as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_404_NOT_FOUND,
-            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
-        )
-    except A2AAgentCardTransportException as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, error_msg),
-        )
-    except (A2AAgentCardUpstreamException, A2AAgentCardParseException) as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_502_BAD_GATEWAY,
-            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, error_msg),
-        )
+    except AGENT_CARD_ERRORS as e:
+        raise agent_card_http_error(e) from e
     except ValueError as e:
         error_msg = str(e)
 
@@ -719,24 +728,8 @@ async def sync_wellknown(
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc
-    except A2AAgentCardNotFoundException as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_404_NOT_FOUND,
-            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
-        )
-    except A2AAgentCardTransportException as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, error_msg),
-        )
-    except (A2AAgentCardUpstreamException, A2AAgentCardParseException) as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_502_BAD_GATEWAY,
-            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, error_msg),
-        )
+    except AGENT_CARD_ERRORS as e:
+        raise agent_card_http_error(e) from e
     except ValueError as e:
         error_msg = str(e)
 
@@ -805,24 +798,8 @@ async def get_agent_wellknown_card(
         logger.info(f"Successfully fetched and returned agent card from URL: {url}")
         return JSONResponse(content=agent_card_data, headers=headers)
 
-    except A2AAgentCardNotFoundException as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_404_NOT_FOUND,
-            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
-        )
-    except A2AAgentCardTransportException as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, error_msg),
-        )
-    except (A2AAgentCardUpstreamException, A2AAgentCardParseException) as e:
-        error_msg = str(e)
-        raise HTTPException(
-            status_code=http_status.HTTP_502_BAD_GATEWAY,
-            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, error_msg),
-        )
+    except AGENT_CARD_ERRORS as e:
+        raise agent_card_http_error(e) from e
     except Exception as e:
         logger.error(f"Error getting well-known agent card from URL {url}: {e}", exc_info=True)
         raise HTTPException(
