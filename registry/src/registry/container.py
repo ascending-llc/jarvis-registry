@@ -46,11 +46,9 @@ from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
 from .services.group_directory_client import (
-    CognitoGroupDirectoryClient,
     EntraIdGroupDirectoryClient,
     GoogleGroupDirectoryClient,
     IdPGroupDirectoryClient,
-    KeycloakGroupDirectoryClient,
 )
 from .services.group_service import GroupService
 from .services.model_gateway_selection_service import ModelGatewaySelectionService
@@ -168,19 +166,14 @@ class RegistryContainer:
         return UserService()
 
     @cached_property
-    def group_directory_client(self) -> IdPGroupDirectoryClient:
-        """Supplies the "entra" slot of GroupService (Cognito/Keycloak stay no-op)."""
-        provider = self.settings.auth_provider
-        if provider == "entra":
-            return EntraIdGroupDirectoryClient(
-                tenant_id=self.settings.entra_tenant_id or "",
-                client_id=self.settings.entra_client_id or "",
-                client_secret=self.settings.entra_client_secret or "",
-                graph_url=self.settings.entra_graph_url,
-            )
-        if provider == "cognito":
-            return CognitoGroupDirectoryClient()
-        return KeycloakGroupDirectoryClient()
+    def group_directory_client(self) -> EntraIdGroupDirectoryClient:
+        """Supplies the ENTRA slot of GroupService; built only when entra_group_sync_enabled is on."""
+        return EntraIdGroupDirectoryClient(
+            tenant_id=self.settings.entra_tenant_id or "",
+            client_id=self.settings.entra_client_id or "",
+            client_secret=self.settings.entra_client_secret or "",
+            graph_url=self.settings.entra_graph_url,
+        )
 
     @cached_property
     def cloud_identity_client(self) -> CloudIdentityGroupsClient:

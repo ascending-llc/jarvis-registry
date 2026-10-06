@@ -197,7 +197,7 @@ These rules are non-negotiable. They define where code lives and how workspaces 
 
 ### Python Patterns
 - **Type hints** on all functions and methods. No exceptions.
-- **Optional params**: Always use `Optional[type]` explicitly; never bare `= None` without annotation.
+- **Optional params**: Annotate nullable values as `type | None` (PEP 604, enforced by ruff UP045), not `Optional[type]`; never a bare `= None` without annotation.
 - **Private functions**: Prefix with `_` (e.g., `_validate_server_input()`).
 - **Function size**: Aim for under 50 lines. Extract complex logic into testable helpers.
 - **Spacing**: Two blank lines between top-level functions/classes. One parameter per line for functions with 3+ parameters.

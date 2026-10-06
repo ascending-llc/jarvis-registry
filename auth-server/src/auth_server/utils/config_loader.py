@@ -78,14 +78,6 @@ class OAuth2ConfigLoader:
         elif isinstance(config, list):
             return [self._substitute_env_vars(item) for item in config]
         elif isinstance(config, str) and "${" in config:
-            # Handle special case for auto-derived Cognito domain
-            if "COGNITO_DOMAIN:-auto" in config:
-                cognito_domain = self._get_value("COGNITO_DOMAIN")
-                if not cognito_domain:
-                    user_pool_id = self._get_value("COGNITO_USER_POOL_ID") or ""
-                    cognito_domain = self._auto_derive_cognito_domain(user_pool_id)
-                config = config.replace("${COGNITO_DOMAIN:-auto}", cognito_domain)
-
             # Support bash-style default values: ${VAR_NAME:-default_value}
             def replace_var(match):
                 var_expr = match.group(1)
@@ -105,25 +97,6 @@ class OAuth2ConfigLoader:
             return re.sub(r"\$\{([^}]+)\}", replace_var, config)
         else:
             return config
-
-    def _auto_derive_cognito_domain(self, user_pool_id: str) -> str:
-        """Auto-derive Cognito domain from User Pool ID.
-
-        Example: us-east-1_KmP5A3La3 → us-east-1kmp5a3la3
-
-        Args:
-            user_pool_id: AWS Cognito User Pool ID
-
-        Returns:
-            Derived domain string
-        """
-        if not user_pool_id:
-            return ""
-
-        # Remove underscore and convert to lowercase
-        domain = user_pool_id.replace("_", "").lower()
-        logger.info(f"Auto-derived Cognito domain '{domain}' from user pool ID '{user_pool_id}'")
-        return domain
 
     def get_config(self) -> OAuth2Config:
         """Get the loaded OAuth2 configuration."""

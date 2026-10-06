@@ -1,11 +1,9 @@
 """Skill management and CLI sync-down routes."""
 
-# ruff: noqa: UP045 -- Repository guidance requires explicit Optional[T] annotations.
-
 import functools
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Optional, ParamSpec, TypeVar
+from typing import Annotated, ParamSpec, TypeVar
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -125,8 +123,8 @@ def _detail_response(
 @handle_service_errors("list skills")
 async def list_skills_route(
     user_context: CurrentUser,
-    enabled: Optional[bool] = None,
-    file_count: Annotated[Optional[int], Query(alias="fileCount", ge=0)] = None,
+    enabled: bool | None = None,
+    file_count: Annotated[int | None, Query(alias="fileCount", ge=0)] = None,
     skill_service: SkillService = Depends(get_skill_service),
 ) -> SkillListResponse:
     results = await skill_service.list_skills(

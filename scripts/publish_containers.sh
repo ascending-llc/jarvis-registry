@@ -51,7 +51,6 @@ declare -a EXTERNAL_IMAGES=(
     "postgres:postgres:16-alpine"
     "prometheus:prom/prometheus:latest"
     "grafana:grafana/grafana:latest"
-    "keycloak:quay.io/keycloak/keycloak:25.0"
     "alpine:alpine:latest"
 )
 

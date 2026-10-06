@@ -131,7 +131,13 @@ class TestSettings:
 
         Settings()
 
-        for key in ("JWT_PRIVATE_KEY and JWT_PUBLIC_KEY", "CREDS_KEY", "TOOL_DISCOVERY_MODE", "LLM Model ID"):
+        for key in (
+            "JWT_PRIVATE_KEY and JWT_PUBLIC_KEY",
+            "CREDS_KEY",
+            "TOOL_DISCOVERY_MODE",
+            "LLM Model ID",
+            "Entra group sync",
+        ):
             assert f"{key} validation is disabled." in caplog.text
 
     @pytest.mark.unit
@@ -298,3 +304,60 @@ def test_a2a_pool_defaults_are_sized_per_pool() -> None:
     assert Settings.model_fields["a2a_proxy_max_keepalive_connections"].default == 20
     assert Settings.model_fields["azure_foundry_max_connections"].default == 300
     assert Settings.model_fields["azure_foundry_max_keepalive_connections"].default == 20
+
+
+_ENTRA_SYNC_ENV = {
+    "ENTRA_GROUP_SYNC_ENABLED": "true",
+    "ENTRA_TENANT_ID": "tenant-id",
+    "ENTRA_CLIENT_ID": "client-id",
+    "ENTRA_CLIENT_SECRET": "client-secret",
+}
+
+
+@pytest.mark.unit
+@pytest.mark.core
+class TestValidateEntraGroupSync:
+    """`_validate_entra_group_sync` fails fast when Entra sync is on without Entra credentials."""
+
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
+    def test_sync_off_without_entra_settings_passes(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert settings.entra_group_sync_enabled is False
+        assert settings.entra_client_secret is None
+
+    @patch.dict(os.environ, {**_SETTINGS_ENV, **_ENTRA_SYNC_ENV}, clear=True)
+    def test_sync_on_with_all_entra_settings_passes(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert settings.entra_group_sync_enabled is True
+
+    @pytest.mark.parametrize("missing", ["ENTRA_TENANT_ID", "ENTRA_CLIENT_ID", "ENTRA_CLIENT_SECRET"])
+    def test_sync_on_with_one_missing_names_only_that_variable(self, missing: str) -> None:
+        env = {**_SETTINGS_ENV, **{k: v for k, v in _ENTRA_SYNC_ENV.items() if k != missing}}
+        with patch.dict(os.environ, env, clear=True), pytest.raises(ValidationError) as exc_info:
+            Settings(_env_file=None)
+
+        message = str(exc_info.value)
+        assert f"ENTRA_GROUP_SYNC_ENABLED is true but these settings are empty: {missing}" in message
+        for other in {"ENTRA_TENANT_ID", "ENTRA_CLIENT_ID", "ENTRA_CLIENT_SECRET"} - {missing}:
+            assert other not in message
+
+    @patch.dict(os.environ, {**_SETTINGS_ENV, **_ENTRA_SYNC_ENV, "ENTRA_CLIENT_SECRET": "  "}, clear=True)
+    def test_sync_on_with_blank_value_raises(self) -> None:
+        with pytest.raises(ValidationError, match="these settings are empty: ENTRA_CLIENT_SECRET"):
+            Settings(_env_file=None)
+
+    @patch.dict(os.environ, {**_SETTINGS_ENV, "ENTRA_GROUP_SYNC_ENABLED": "true"}, clear=True)
+    def test_sync_on_with_nothing_set_lists_all_missing(self) -> None:
+        with pytest.raises(
+            ValidationError,
+            match="these settings are empty: ENTRA_TENANT_ID, ENTRA_CLIENT_ID, ENTRA_CLIENT_SECRET",
+        ):
+            Settings(_env_file=None)
+
+    @patch.dict(os.environ, {**_SETTINGS_ENV, "ENTRA_GROUP_SYNC_ENABLED": "true"}, clear=True)
+    def test_sync_on_with_import_checks_disabled_passes(self) -> None:
+        settings = Settings(_env_file=None, x_jarvis_registry_import_checks="disabled")
+
+        assert settings.entra_group_sync_enabled is True

@@ -6,7 +6,6 @@ All environment variables are loaded here and accessed through the global `setti
 """
 
 from functools import cached_property
-from typing import Any
 
 from registry_pkgs.core.config import JarvisBaseSettings, RedisConfig
 
@@ -28,24 +27,6 @@ class AuthSettings(JarvisBaseSettings):
 
     # ==================== CORS Configuration ====================
     cors_origins: str = "*"  # Comma-separated list of allowed origins, or "*" for all
-
-    # ==================== Keycloak Settings ====================
-    keycloak_url: str | None = None
-    keycloak_external_url: str | None = None
-    keycloak_realm: str = "mcp-gateway"
-    keycloak_client_id: str | None = None
-    keycloak_client_secret: str | None = None
-    keycloak_m2m_client_id: str | None = None
-    keycloak_m2m_client_secret: str | None = None
-    keycloak_enabled: str = "false"
-
-    # ==================== Cognito Settings ====================
-    cognito_user_pool_id: str | None = None
-    cognito_client_id: str | None = None
-    cognito_client_secret: str | None = None
-    cognito_domain: str | None = None
-    aws_region: str = "us-east-1"
-    cognito_enabled: str = "false"
 
     # ==================== Entra ID Settings ====================
     # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
@@ -78,12 +59,6 @@ class AuthSettings(JarvisBaseSettings):
     @cached_property
     def redis_config(self) -> RedisConfig:
         return RedisConfig(redis_uri=self.redis_uri, redis_key_prefix=self.auth_server_redis_key_prefix)
-
-    def model_post_init(self, __context: Any) -> None:
-        super().model_post_init(__context)
-        # Set keycloak_external_url to keycloak_url if not provided
-        if self.keycloak_url and not self.keycloak_external_url:
-            self.keycloak_external_url = self.keycloak_url
 
 
 # Global settings instance

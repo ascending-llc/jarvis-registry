@@ -19,10 +19,8 @@ from auth_server.routes.oauth_flow import _redirect_to_provider
 
 def _demo_settings(**overrides) -> AuthSettings:
     # Explicit toggles keep the test independent of any local .env; this mirrors a demo env
-    # that sets GOOGLE_ENABLED=true (entra on by default, keycloak/cognito off by default).
+    # that sets GOOGLE_ENABLED=true (entra on by default).
     base = {
-        "keycloak_enabled": "false",
-        "cognito_enabled": "false",
         "entra_enabled": "true",
         "google_enabled": "true",
         "entra_tenant_id": "tenant-abc",
@@ -50,11 +48,11 @@ class TestDualProviderLogin:
         listed = {name for name, cfg in providers.items() if cfg["enabled"]}
         assert listed == {"entra", "google"}
 
-    def test_keycloak_stays_off_even_if_env_sets_it_true(self):
-        # Toggling KEYCLOAK_ENABLED brings it back — proves the toggle is env-driven, not hardcoded.
-        providers = _container(keycloak_enabled="true").oauth2_config["providers"]
+    def test_google_toggle_comes_from_env(self):
+        # Turning GOOGLE_ENABLED off drops it — proves the toggle is env-driven, not hardcoded.
+        providers = _container(google_enabled="false").oauth2_config["providers"]
         listed = {name for name, cfg in providers.items() if cfg["enabled"]}
-        assert listed == {"keycloak", "entra", "google"}
+        assert listed == {"entra"}
 
     def test_container_builds_each_provider_independently_and_caches(self):
         container = _container()

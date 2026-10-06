@@ -153,14 +153,6 @@ class Settings(JarvisBaseSettings):
     # ==================== Google Group Sync ====================
     google_group_sync_enabled: bool = True
 
-    # ==================== Keycloak Integration ====================
-    keycloak_url: str = "http://keycloak:8080"
-    keycloak_realm: str = "mcp-gateway"
-    keycloak_admin: str = "admin"
-    keycloak_admin_password: str | None = None
-    keycloak_m2m_client_id: str = "mcp-gateway-m2m"
-    keycloak_m2m_client_secret: str | None = None
-
     # ==================== Federation ====================
     federation_config_path: str = "/app/config/federation.json"
     asor_access_token: str | None = None
@@ -190,6 +182,27 @@ class Settings(JarvisBaseSettings):
             raise ValueError(
                 f"Invalid tool_discovery_mode: '{self.tool_discovery_mode}'. Must be 'embedded' or 'external'."
             )
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_entra_group_sync(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("Entra group sync validation is disabled. This should only happen in CI import checks.")
+
+            return self
+
+        if not self.entra_group_sync_enabled:
+            return self
+
+        required = {
+            "ENTRA_TENANT_ID": self.entra_tenant_id,
+            "ENTRA_CLIENT_ID": self.entra_client_id,
+            "ENTRA_CLIENT_SECRET": self.entra_client_secret,
+        }
+        missing = [name for name, value in required.items() if value is None or not value.strip()]
+        if missing:
+            raise ValueError(f"ENTRA_GROUP_SYNC_ENABLED is true but these settings are empty: {', '.join(missing)}")
 
         return self
 

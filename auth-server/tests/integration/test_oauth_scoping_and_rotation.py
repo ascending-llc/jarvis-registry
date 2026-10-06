@@ -31,7 +31,7 @@ from registry_pkgs.core.client_categories import ClientCategory
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS as REFRESH_TOKEN_EXPIRY_SECONDS
 from tests.conftest import test_consent_store
-from tests.integration.conftest import _mock_keycloak_provider
+from tests.support.auth_provider import _mock_entra_provider
 from tests.support.oauth_state_store import (
     authorization_codes_storage,
     device_codes_storage,
@@ -188,18 +188,12 @@ class TestAccessTokenScoping:
         assert refresh_token_data["scope"] == expected_scope
         assert "servers-read" not in jwt_payload["scope"]
 
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
-    @patch("auth_server.routes.oauth_flow.get_user_info")
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     def test_scope_negotiation_in_callback_success(
         self,
         mock_exchange,
-        mock_get_user_info,
         mock_map_groups,
-        mock_decode_jwt,
-        mock_get_token_kid,
         clear_device_storage,
         mock_user_service,
     ):
@@ -218,34 +212,24 @@ class TestAccessTokenScoping:
             "access_token": "provider_access_token",
             "id_token": "provider_id_token",
         }
-        mock_get_token_kid.return_value = "test-kid"
 
-        # Mock JWT decode to return valid claims (prevents DecodeError)
-        mock_decode_jwt.return_value = {
-            "sub": "user123",
-            "preferred_username": "testuser",
+        # Identity returned by the provider's get_user_info
+        user_info = {
+            "username": "testuser",
             "email": "test@example.com",
             "name": "Test User",
-            "groups": ["jarvis-registry-admin"],
-        }
-
-        # Mock user info (fallback path, not used if JWT decode works)
-        mock_get_user_info.return_value = {
-            "sub": "user123",
-            "preferred_username": "testuser",
-            "email": "test@example.com",
-            "name": "Test User",
+            "id": "user123",
             "groups": ["jarvis-registry-admin"],
         }
 
         oauth2_config = {
             "providers": {
-                "keycloak": {
+                "entra": {
                     "enabled": True,
                     "client_id": "test-client",
                     "client_secret": "test-secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
+                    "token_url": "http://entra/token",
+                    "user_info_url": "http://entra/userinfo",
                     "username_claim": "preferred_username",
                     "email_claim": "email",
                     "name_claim": "name",
@@ -269,7 +253,7 @@ class TestAccessTokenScoping:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+            app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
             test_client = TestClient(app)
 
@@ -277,7 +261,7 @@ class TestAccessTokenScoping:
             session_data = {
                 "state": "test_state",
                 "client_state": "client_state_123",
-                "provider": "keycloak",
+                "provider": "entra",
                 "redirect_uri": "https://example.com/callback",
                 "client_id": "test-client",
                 "client_redirect_uri": "https://example.com/callback",
@@ -290,7 +274,7 @@ class TestAccessTokenScoping:
             # Call the actual callback route
             test_client.cookies.set(settings.oauth2_temp_session_cookie_name, oauth2_temp_session)
             response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "auth_code_123", "state": "test_state"},
                 follow_redirects=False,
             )
@@ -321,18 +305,12 @@ class TestAccessTokenScoping:
             # Cleanup
             app.dependency_overrides = {}
 
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
-    @patch("auth_server.routes.oauth_flow.get_user_info")
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     def test_scope_negotiation_empty_intersection_returns_error(
         self,
         mock_exchange,
-        mock_get_user_info,
         mock_map_groups,
-        mock_decode_jwt,
-        mock_get_token_kid,
         clear_device_storage,
         mock_user_service,
     ):
@@ -351,34 +329,24 @@ class TestAccessTokenScoping:
             "access_token": "provider_access_token",
             "id_token": "provider_id_token",
         }
-        mock_get_token_kid.return_value = "test-kid"
 
-        # Mock JWT decode to return valid claims (prevents DecodeError)
-        mock_decode_jwt.return_value = {
-            "sub": "user456",
-            "preferred_username": "basicuser",
+        # Identity returned by the provider's get_user_info
+        user_info = {
+            "username": "basicuser",
             "email": "basic@example.com",
             "name": "Basic User",
-            "groups": ["basic-user"],
-        }
-
-        # Mock user info (fallback path)
-        mock_get_user_info.return_value = {
-            "sub": "user456",
-            "preferred_username": "basicuser",
-            "email": "basic@example.com",
-            "name": "Basic User",
+            "id": "user456",
             "groups": ["basic-user"],
         }
 
         oauth2_config = {
             "providers": {
-                "keycloak": {
+                "entra": {
                     "enabled": True,
                     "client_id": "test-client",
                     "client_secret": "test-secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
+                    "token_url": "http://entra/token",
+                    "user_info_url": "http://entra/userinfo",
                     "username_claim": "preferred_username",
                     "email_claim": "email",
                     "name_claim": "name",
@@ -402,7 +370,7 @@ class TestAccessTokenScoping:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+            app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
             test_client = TestClient(app)
 
@@ -410,7 +378,7 @@ class TestAccessTokenScoping:
             session_data = {
                 "state": "test_state",
                 "client_state": "client_state_456",
-                "provider": "keycloak",
+                "provider": "entra",
                 "redirect_uri": "https://example.com/callback",
                 "client_id": "test-client",
                 "client_redirect_uri": "https://example.com/callback",
@@ -423,7 +391,7 @@ class TestAccessTokenScoping:
             # Call the actual callback route
             test_client.cookies.set(settings.oauth2_temp_session_cookie_name, oauth2_temp_session)
             response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "auth_code_456", "state": "test_state"},
                 follow_redirects=False,
             )
@@ -457,18 +425,12 @@ class TestAccessTokenScoping:
             # Cleanup
             app.dependency_overrides = {}
 
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
-    @patch("auth_server.routes.oauth_flow.get_user_info")
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     def test_device_scope_negotiation_failure_is_terminal(
         self,
         mock_exchange,
-        mock_get_user_info,
         mock_map_groups,
-        mock_decode_jwt,
-        mock_get_token_kid,
         clear_device_storage,
         mock_user_service,
     ):
@@ -492,25 +454,21 @@ class TestAccessTokenScoping:
             "access_token": "provider_access_token",
             "id_token": "provider_id_token",
         }
-        mock_get_token_kid.return_value = "test-kid"
-        mock_decode_jwt.return_value = {
-            "sub": "user456",
-            "preferred_username": "basicuser",
-            "groups": ["basic-user"],
-        }
-        mock_get_user_info.return_value = {
-            "sub": "user456",
-            "preferred_username": "basicuser",
+        user_info = {
+            "username": "basicuser",
+            "email": None,
+            "name": None,
+            "id": "user456",
             "groups": ["basic-user"],
         }
         oauth2_config = {
             "providers": {
-                "keycloak": {
+                "entra": {
                     "enabled": True,
                     "client_id": "test-client",
                     "client_secret": "test-secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
+                    "token_url": "http://entra/token",
+                    "user_info_url": "http://entra/userinfo",
                 }
             }
         }
@@ -527,7 +485,7 @@ class TestAccessTokenScoping:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+            app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
             app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
                 mock_user_service, test_oauth_state_store, test_consent_store
             )
@@ -536,7 +494,7 @@ class TestAccessTokenScoping:
             session = signer.dumps(
                 {
                     "state": "device-state",
-                    "provider": "keycloak",
+                    "provider": "entra",
                     "flow_type": "device",
                     "device_code": device_code,
                 }
@@ -544,7 +502,7 @@ class TestAccessTokenScoping:
             test_client.cookies.set(settings.oauth2_temp_session_cookie_name, session)
 
             callback_response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "auth-code", "state": "device-state"},
             )
             token_response = test_client.post(

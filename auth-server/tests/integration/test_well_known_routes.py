@@ -43,7 +43,7 @@ class TestWellKnownRoutes:
         # Issuer is at root (per RFC 8414)
         assert data["issuer"] == "http://localhost:8888"
         # OAuth endpoints include the /auth prefix when AUTH_SERVER_API_PREFIX is set
-        assert data["authorization_endpoint"] == "http://localhost:8888/auth/oauth2/login/keycloak"
+        assert data["authorization_endpoint"] == "http://localhost:8888/auth/oauth2/login/entra"
         assert data["token_endpoint"] == "http://localhost:8888/auth/oauth2/token"
         # JWKS is at root level
         assert data["jwks_uri"] == "http://localhost:8888/.well-known/jwks.json"

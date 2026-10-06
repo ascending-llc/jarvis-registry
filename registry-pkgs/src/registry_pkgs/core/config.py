@@ -282,12 +282,12 @@ class JarvisBaseSettings(MongoSettings):
     otel_trace_hide_llm_invocation_parameters: bool = True
 
     # ==================== Auth Provider ====================
-    auth_provider: str = "entra"  # cognito, keycloak, entra
+    auth_provider: str = "entra"  # entra, google
 
     @field_validator("auth_provider")
     @classmethod
     def validate_auth_provider(cls, v: str) -> str:
-        allowed = ["cognito", "keycloak", "entra", "google"]
+        allowed = ["entra", "google"]
         if v.lower() not in allowed:
             raise ValueError(f"auth_provider must be one of {allowed}, got '{v}'")
         return v.lower()

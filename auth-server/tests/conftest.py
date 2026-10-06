@@ -18,7 +18,7 @@ from registry_pkgs.testing.fixtures import disable_dotenv_loading, setup_test_rs
 disable_dotenv_loading()
 os.environ["AUTH_SERVER_EXTERNAL_URL"] = "http://localhost:8888"
 os.environ["AUTH_SERVER_API_PREFIX"] = "/auth"
-os.environ["AUTH_PROVIDER"] = "keycloak"
+os.environ["AUTH_PROVIDER"] = "entra"
 os.environ["SECRET_KEY"] = "test-secret-key-for-testing"
 os.environ["CREDS_KEY"] = "00" * 16
 

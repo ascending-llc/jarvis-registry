@@ -5,14 +5,11 @@ import logging
 
 from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
 
-from ..core.config import AuthSettings
 from ..core.types import AllowedProvider, GoogleConfig
 from ..utils.config_loader import EntraConfig, OAuth2Config
 from .base import AuthProvider
-from .cognito import CognitoProvider
 from .entra import EntraIdProvider
 from .google import GoogleProvider
-from .keycloak import KeycloakProvider
 
 # Get logger - logging is configured centrally in server.py via settings.configure_logging()
 logger = logging.getLogger(__name__)
@@ -20,16 +17,13 @@ logger = logging.getLogger(__name__)
 
 def get_auth_provider(
     provider_type: AllowedProvider,
-    settings: AuthSettings,
     oauth2_config: OAuth2Config,
     cloud_identity_client: CloudIdentityGroupsClient,
 ) -> AuthProvider:
     """Factory function to get the appropriate auth provider.
 
     Args:
-        provider_type: Type of provider to create ('cognito', 'keycloak', or 'entra').
-                      If None, uses auth-server settings.
-        settings:
+        provider_type: Type of provider to create ('entra' or 'google').
         oauth2_config:
         cloud_identity_client:
 
@@ -41,92 +35,12 @@ def get_auth_provider(
     """
     logger.info(f"Creating authentication provider: {provider_type}")
 
-    if provider_type == "keycloak":
-        return _create_keycloak_provider(settings)
-    elif provider_type == "cognito":
-        return _create_cognito_provider(settings)
-    elif provider_type == "entra":
+    if provider_type == "entra":
         return _create_entra_provider(oauth2_config["providers"]["entra"])
     elif provider_type == "google":
         return _create_google_provider(oauth2_config["providers"]["google"], cloud_identity_client)
     else:
         raise ValueError(f"Unknown auth provider: {provider_type}")
-
-
-def _create_keycloak_provider(resolved_settings) -> KeycloakProvider:
-    """Create and configure Keycloak provider."""
-    # Get configuration from settings
-    keycloak_url = resolved_settings.keycloak_url
-    keycloak_external_url = resolved_settings.keycloak_external_url or keycloak_url
-    realm = resolved_settings.keycloak_realm
-    client_id = resolved_settings.keycloak_client_id
-    client_secret = resolved_settings.keycloak_client_secret
-
-    # Optional M2M configuration
-    m2m_client_id = resolved_settings.keycloak_m2m_client_id
-    m2m_client_secret = resolved_settings.keycloak_m2m_client_secret
-
-    # Validate required configuration
-    missing_vars = []
-    if not keycloak_url:
-        missing_vars.append("KEYCLOAK_URL")
-    if not client_id:
-        missing_vars.append("KEYCLOAK_CLIENT_ID")
-    if not client_secret:
-        missing_vars.append("KEYCLOAK_CLIENT_SECRET")
-
-    if missing_vars:
-        raise ValueError(
-            f"Missing required Keycloak configuration: {', '.join(missing_vars)}. "
-            "Please set these environment variables."
-        )
-
-    logger.info(
-        f"Initializing Keycloak provider for realm '{realm}' at {keycloak_url} (external: {keycloak_external_url})"
-    )
-
-    return KeycloakProvider(
-        keycloak_url=keycloak_url,
-        keycloak_external_url=keycloak_external_url,
-        realm=realm,
-        client_id=client_id,
-        client_secret=client_secret,
-        m2m_client_id=m2m_client_id,
-        m2m_client_secret=m2m_client_secret,
-    )
-
-
-def _create_cognito_provider(resolved_settings) -> CognitoProvider:
-    """Create and configure Cognito provider."""
-    # Required configuration
-    user_pool_id = resolved_settings.cognito_user_pool_id
-    client_id = resolved_settings.cognito_client_id
-    client_secret = resolved_settings.cognito_client_secret
-    region = resolved_settings.aws_region
-
-    # Optional configuration
-    domain = resolved_settings.cognito_domain
-
-    # Validate required configuration
-    missing_vars = []
-    if not user_pool_id:
-        missing_vars.append("COGNITO_USER_POOL_ID")
-    if not client_id:
-        missing_vars.append("COGNITO_CLIENT_ID")
-    if not client_secret:
-        missing_vars.append("COGNITO_CLIENT_SECRET")
-
-    if missing_vars:
-        raise ValueError(
-            f"Missing required Cognito configuration: {', '.join(missing_vars)}. "
-            "Please set these environment variables."
-        )
-
-    logger.info(f"Initializing Cognito provider for user pool '{user_pool_id}' in region '{region}'")
-
-    return CognitoProvider(
-        user_pool_id=user_pool_id, client_id=client_id, client_secret=client_secret, region=region, domain=domain
-    )
 
 
 def _create_entra_provider(entra_config: EntraConfig) -> EntraIdProvider:

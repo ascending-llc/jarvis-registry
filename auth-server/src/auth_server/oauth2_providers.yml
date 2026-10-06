@@ -1,41 +1,4 @@
 providers:
-  keycloak:
-    display_name: "Keycloak"
-    client_id: "${KEYCLOAK_CLIENT_ID}"
-    client_secret: "${KEYCLOAK_CLIENT_SECRET}"
-    auth_url: "${KEYCLOAK_EXTERNAL_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/auth"
-    token_url: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
-    user_info_url: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/userinfo"
-    logout_url: "${KEYCLOAK_EXTERNAL_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/logout"
-    scopes: ["openid", "email", "profile"]
-    response_type: "code"
-    grant_type: "authorization_code"
-    # Claims mapping for user info
-    username_claim: "preferred_username"
-    groups_claim: "groups"
-    email_claim: "email"
-    name_claim: "name"
-    enabled: "${KEYCLOAK_ENABLED:-false}"
-
-  cognito:
-    display_name: "AWS Cognito"
-    client_id: "${COGNITO_CLIENT_ID}"
-    client_secret: "${COGNITO_CLIENT_SECRET}"
-    # Domain will be auto-derived from user pool ID if COGNITO_DOMAIN is not set
-    auth_url: "https://${COGNITO_DOMAIN}.auth.${AWS_REGION}.amazoncognito.com/oauth2/authorize"
-    token_url: "https://${COGNITO_DOMAIN}.auth.${AWS_REGION}.amazoncognito.com/oauth2/token"
-    user_info_url: "https://${COGNITO_DOMAIN}.auth.${AWS_REGION}.amazoncognito.com/oauth2/userInfo"
-    logout_url: "https://${COGNITO_DOMAIN}.auth.${AWS_REGION}.amazoncognito.com/logout"
-    scopes: ["openid", "email", "profile", "aws.cognito.signin.user.admin"]
-    response_type: "code"
-    grant_type: "authorization_code"
-    # Claims mapping for user info
-    username_claim: "email"
-    groups_claim: "cognito:groups"
-    email_claim: "email"
-    name_claim: "name"
-    enabled: "${COGNITO_ENABLED:-false}"
-
   # github:
   #   display_name: "GitHub"
   #   client_id: "${GITHUB_CLIENT_ID}"
