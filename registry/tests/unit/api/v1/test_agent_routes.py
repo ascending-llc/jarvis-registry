@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException
+from pymongo.errors import PyMongoError
 
 from registry.api.v1.a2a.agent_routes import create_agent, delete_agent, get_agent_stats, list_agents, update_agent
 from registry.schemas.a2a_agent_api_schemas import (
@@ -573,6 +574,35 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     acl_service.grant_permission.assert_awaited_once()
     # Transaction context manager sees the original exception before the route maps it to HTTPException.
     assert ctx.exit_exc_type is RuntimeError
+
+
+@pytest.mark.asyncio
+async def test_create_agent_returns_500_on_database_error(sample_user_context):
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.create_agent = AsyncMock(side_effect=PyMongoError("connection reset"))
+    acl_service = MagicMock()
+
+    request = AgentCreateRequest(
+        path="/test-agent",
+        title="Test Agent",
+        description="Agent description",
+        url="https://agent.example.com",
+        type="jsonrpc",
+    )
+
+    fake_client = _FakeTxnClient(_FakeTxnSession(_RecordingTxnCtx()))
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await create_agent(
+                data=request,
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 500
+    assert "connection reset" not in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio

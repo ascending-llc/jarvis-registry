@@ -283,10 +283,6 @@ async def create_agent(
                 # Create agent
                 agent = await a2a_agent_service.create_agent(data=data, user_id=user_id, session=mongo_session)
 
-                if not agent:
-                    logger.error("Agent creation failed without exception")
-                    raise ValueError("Failed to create agent")
-
                 # Grant OWNER permission to creator
                 await acl_service.grant_permission(
                     principal_type=PrincipalType.USER,
@@ -436,18 +432,16 @@ async def delete_agent(
                 )
 
                 # Delete agent
-                successful_delete = await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
+                await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
 
-                if successful_delete:
-                    # Delete all associated ACL permission records
-                    deleted_count = await acl_service.delete_acl_entries_for_resource(
-                        resource_type=ResourceType.REMOTE_AGENT,
-                        resource_id=PydanticObjectId(agent_id),
-                        session=mongo_session,
-                    )
-                    logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
-                    return None  # 204 No Content
-                raise ValueError(f"Failed to delete agent {agent_id}. Skipping ACL cleanup")
+                # Delete all associated ACL permission records
+                deleted_count = await acl_service.delete_acl_entries_for_resource(
+                    resource_type=ResourceType.REMOTE_AGENT,
+                    resource_id=PydanticObjectId(agent_id),
+                    session=mongo_session,
+                )
+                logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
+                return None  # 204 No Content
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc

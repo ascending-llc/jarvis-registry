@@ -268,10 +268,6 @@ async def create_workflow(
                     session=mongo_session,
                 )
 
-                if not workflow:
-                    logger.error("Workflow creation failed without exception")
-                    raise ValueError("Failed to create workflow")
-
                 # Grant OWNER permission to creator
                 await acl_service.grant_permission(
                     principal_type=PrincipalType.USER,
@@ -387,17 +383,14 @@ async def delete_workflow(
         workflow, _ = await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "DELETE")
 
         # Delete workflow
-        successful_delete = await workflow_service.delete_workflow(workflow_id=workflow_id)
+        await workflow_service.delete_workflow(workflow_id=workflow_id)
 
-        if successful_delete:
-            await acl_service.delete_acl_entries_for_resource(
-                resource_type=RegistryResourceType.WORKFLOW.value,
-                resource_id=workflow.id,
-            )
-            logger.info(f"Deleted workflow {workflow_id} and its ACL entries")
-            return None  # 204 No Content
-        else:
-            raise ValueError(f"Failed to delete workflow {workflow_id}")
+        await acl_service.delete_acl_entries_for_resource(
+            resource_type=RegistryResourceType.WORKFLOW.value,
+            resource_id=workflow.id,
+        )
+        logger.info(f"Deleted workflow {workflow_id} and its ACL entries")
+        return None  # 204 No Content
 
     except ValueError as e:
         error_msg = str(e)
