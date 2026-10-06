@@ -8,6 +8,7 @@ from registry_pkgs.core.client_categories import (
     REFRESH_TOKEN_GRANT_TYPE,
     ClientCategory,
     get_builtin_max_scopes,
+    get_client_max_scopes,
     get_client_policy,
     resolve_client_category,
     resolve_granted_scopes,
@@ -147,6 +148,22 @@ def test_category_without_protocol_policy_returns_none():
     assert policy is not None
     assert policy.allowed_grant_types == ()
     assert policy.max_scopes == frozenset()
+
+
+@pytest.mark.parametrize(
+    "client_id, expected",
+    [
+        (_REGISTRY_CLIENT_ID, _ALL_SCOPES - {"mcp-proxy-ops", "a2a-proxy-ops"}),
+        (_HEADLESS_AGENT_CLIENT_ID, frozenset({"mcp-proxy-ops", "a2a-proxy-ops"})),
+        ("user-generated", _ALL_SCOPES),
+        ("jarvis-registry-cli", frozenset({"skills-read"})),
+        ("mcp-client-abc", frozenset({"mcp-proxy-ops"})),
+        ("a2a-client-xyz", frozenset({"a2a-proxy-ops"})),
+        ("totally-unknown", frozenset()),
+    ],
+)
+def test_get_client_max_scopes(cfg, client_id, expected):
+    assert get_client_max_scopes(client_id, cfg) == expected
 
 
 def test_resolve_granted_scopes_filters_by_ceiling(cfg):
