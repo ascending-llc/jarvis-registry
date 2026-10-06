@@ -5,7 +5,7 @@ Jarvis Auth Server: OAuth2/OIDC authentication against Microsoft Entra ID and Go
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import database utilities
@@ -163,35 +163,3 @@ app.include_router(oauth_flow_router, prefix=api_prefix)
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "simplified-auth-server"}
-
-
-@app.get(f"{api_prefix}/config")
-async def get_auth_config(request: Request):
-    """Return the authentication configuration info"""
-    try:
-        auth_provider = request.app.state.container.get_auth_provider()
-        provider_info = await auth_provider.get_provider_info()
-
-        if provider_info.get("provider_type") == "keycloak":
-            return {
-                "auth_type": "keycloak",
-                "description": "Keycloak JWT token validation",
-                "required_headers": ["Authorization: Bearer <token>"],
-                "optional_headers": [],
-                "provider_info": provider_info,
-            }
-        else:
-            return {
-                "auth_type": "cognito",
-                "description": "Header-based Cognito token validation",
-                "required_headers": [
-                    "Authorization: Bearer <token>",
-                    "X-User-Pool-Id: <pool_id>",
-                    "X-Client-Id: <client_id>",
-                ],
-                "optional_headers": ["X-Region: <region> (default: us-east-1)"],
-                "provider_info": provider_info,
-            }
-    except Exception as e:
-        logger.error(f"Error getting auth config: {e}")
-        return {"auth_type": "unknown", "description": f"Error getting provider config: {e}", "error": str(e)}

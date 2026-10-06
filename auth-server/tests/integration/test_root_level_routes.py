@@ -168,17 +168,15 @@ class TestPrefixLogic:
         response = test_client.get("/auth/health")
         assert response.status_code == 404
 
-    def test_config_endpoint_with_prefix(self, test_client: TestClient):
+    def test_config_endpoint_removed(self, test_client: TestClient):
         """
-        Test config endpoint - registered with prefix.
+        Test the removed config endpoint is not served with or without prefix.
 
-        The config endpoint is registered as @app.get(f"{api_prefix}/config"),
-        so it's available at /auth/config when AUTH_SERVER_API_PREFIX=/auth.
+        GET {api_prefix}/config had no callers and failed on every request, so it was deleted.
         """
         response = test_client.get("/auth/config")
-        assert response.status_code in [200, 401], "Config should work at /auth/config"
+        assert response.status_code == 404, "Config should NOT be at /auth/config"
 
-        # Should NOT be at root /config
         response = test_client.get("/config")
         assert response.status_code == 404, "Config should NOT be at root /config"
 
