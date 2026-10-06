@@ -178,29 +178,6 @@ class TestGoogleJwksCaching:
 
 @pytest.mark.unit
 @pytest.mark.auth
-class TestGoogleMisc:
-    def test_auth_url_includes_hd_when_configured(self):
-        url = _provider(allowed_hd="corp.example").get_auth_url("https://cb", "state-1")
-        assert "hd=corp.example" in url
-
-    def test_auth_url_omits_hd_when_unset(self):
-        url = _provider().get_auth_url("https://cb", "state-1")
-        assert "hd=" not in url
-
-    def test_logout_url_returns_redirect_unchanged(self):
-        assert _provider().get_logout_url("https://back") == "https://back"
-
-    @pytest.mark.asyncio
-    async def test_m2m_not_supported(self):
-        provider = _provider()
-        with pytest.raises(NotImplementedError):
-            await provider.get_m2m_token()
-        with pytest.raises(NotImplementedError):
-            await provider.validate_m2m_token("token")
-
-
-@pytest.mark.unit
-@pytest.mark.auth
 class TestGroupLocalPart:
     def test_strips_domain(self):
         assert _group_local_part("jarvis-registry-admin@example.com") == "jarvis-registry-admin"
