@@ -563,6 +563,31 @@ class TestIntegrationScenarios:
         resp = client.get("/servers")
         assert resp.status_code == 403
 
+    def test_managed_agent_context_with_empty_scopes_ignores_groups(self, monkeypatch):
+        """A jwt_auth context with empty scopes gets 403 even when its groups map to the needed scope."""
+        from registry.middleware import rbac as rbac_module
+
+        mock_settings = MagicMock()
+        mock_settings.api_version = "v1"
+        mock_settings.scopes_config = _action_config(
+            {
+                "servers-read": [{"endpoint": "/servers", "method": "GET"}],
+            }
+        )
+        monkeypatch.setattr(rbac_module, "settings", mock_settings)
+
+        app = self._build_app()
+        app.add_middleware(ScopePermissionMiddleware)
+        app.add_middleware(
+            self._auth_middleware_factory(
+                {"scopes": [], "groups": ["jarvis-registry-admin"], "auth_source": "jwt_auth"}
+            )
+        )
+
+        client = TestClient(app)
+        resp = client.get("/servers")
+        assert resp.status_code == 403
+
     def test_multiple_scopes_any_match_grants_access(self, monkeypatch):
         """User with multiple scopes - any matching scope grants access."""
         from registry.middleware import rbac as rbac_module

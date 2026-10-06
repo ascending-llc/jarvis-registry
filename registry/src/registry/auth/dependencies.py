@@ -7,6 +7,7 @@ from itsdangerous import URLSafeTimedSerializer
 from registry_pkgs.core.scopes import map_groups_to_scopes
 from registry_pkgs.types import UserContextDict
 
+from ..constants import MANAGED_AGENT_AUTH_SOURCE
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,9 @@ def effective_scopes_from_context(user_context: UserContextDict) -> list[str]:
     scopes are present, they are returned as-is (de-duplicated, preserving order)
     without augmentation from group-mapped scopes. This avoids unintentionally
     broadening permissions for down-scoped tokens.
-    If no explicit scopes are present, scopes are derived solely from group mappings.
+    If no explicit scopes are present, scopes are derived solely from group mappings, except for
+    managed-agent token contexts: their empty `scope` claim means nothing was granted, and group
+    mapping would bypass the client's scope ceiling, so they get no scopes.
     """
     explicit_scopes = list(user_context.get("scopes") or [])
     if explicit_scopes:
@@ -63,6 +66,9 @@ def effective_scopes_from_context(user_context: UserContextDict) -> list[str]:
                 seen.add(scope)
                 unique_scopes.append(scope)
         return unique_scopes
+
+    if user_context.get("auth_source") == MANAGED_AGENT_AUTH_SOURCE:
+        return []
 
     groups = user_context.get("groups") or []
     if not groups:
