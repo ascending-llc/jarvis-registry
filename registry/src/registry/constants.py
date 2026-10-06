@@ -31,3 +31,19 @@ class DownstreamOAuthConstants:
     SUPPORTED_RESPONSE_TYPE = "code"
     SUPPORTED_CODE_CHALLENGE_METHOD = "S256"
     PROXY_OPS_SCOPE = "mcp-proxy-ops"
+
+
+# auth_source recorded on a user context built from a managed-agent (proxy / Bearer) token.
+MANAGED_AGENT_AUTH_SOURCE = "jwt_auth"
+
+# /api/v1/tokens/generate error details. Scope lists are rendered sorted and comma-separated; {purpose}
+# is the UI label of the token type, quoted rather than preceded by an article ("a Interactive token").
+GENERATED_TOKEN_EMPTY_REQUEST_DETAIL = "requestedScopes must not be empty. Omit it to use your current scopes."
+GENERATED_TOKEN_NO_USER_SCOPES_DETAIL = (
+    "You have no scopes that can be granted to a token. Ask an administrator to add you to a Jarvis Registry group."
+)
+GENERATED_TOKEN_SCOPES_OUTSIDE_CEILING_DETAIL = 'These scopes cannot be granted to a token of type "{purpose}": {rejected}. This token type only accepts: {allowed}.'
+GENERATED_TOKEN_NO_GRANTABLE_SCOPES_DETAIL = (
+    'None of your scopes can be granted to a token of type "{purpose}", so no token was generated. '
+    "This token type only accepts: {allowed}."
+)
