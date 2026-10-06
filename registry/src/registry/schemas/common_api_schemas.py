@@ -25,6 +25,7 @@ class UserInfoResponse(APIBaseModel):
     scopes: list[str] = Field(default_factory=list, description="User scopes")
     groups: list[str] = Field(default_factory=list, description="User groups")
     userId: str | None = Field(default=None, description="User ID")
+    tokenScopes: list[str] = Field(default_factory=list, description="Scopes the user may put in a generated token")
 
 
 # ==================== Token Schemas ====================
