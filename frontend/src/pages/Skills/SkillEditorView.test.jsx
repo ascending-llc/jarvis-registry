@@ -103,7 +103,6 @@ const renderView = ({ editorMode = 'preview', canEdit = true } = {}) => {
       editorMode={editorMode}
       saving={false}
       toggling={false}
-      alwaysApply={draft.alwaysApply}
       onBack={vi.fn()}
       onRetry={vi.fn()}
       onSelectFile={vi.fn()}
@@ -112,7 +111,6 @@ const renderView = ({ editorMode = 'preview', canEdit = true } = {}) => {
       onDescriptionChange={vi.fn()}
       onMarkdownChange={vi.fn()}
       onCategoryChange={vi.fn()}
-      onAlwaysApplyChange={vi.fn()}
       onToggle={vi.fn()}
       onReset={vi.fn()}
       onSave={vi.fn()}
@@ -179,14 +177,5 @@ describe('SkillEditorView overflow containment', () => {
       element.textContent?.includes('name: Overflow fixture'),
     );
     expect(readOnlyFrontmatter).toBeDefined();
-  });
-
-  test('shows Always Apply only to editors in edit mode', () => {
-    const editableSection = renderView({ editorMode: 'edit' });
-    const alwaysApply = editableSection.querySelector('[role="switch"][aria-label="Always apply"]');
-    expect(alwaysApply?.getAttribute('aria-checked')).toBe('true');
-
-    expect(renderView({ editorMode: 'preview' }).querySelector('[aria-label="Always apply"]')).toBeNull();
-    expect(renderView({ editorMode: 'edit', canEdit: false }).querySelector('[aria-label="Always apply"]')).toBeNull();
   });
 });

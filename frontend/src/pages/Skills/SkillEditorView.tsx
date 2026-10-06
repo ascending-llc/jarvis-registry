@@ -24,8 +24,6 @@ type SkillEditorViewProps = {
   onDescriptionChange: (description: string) => void;
   onMarkdownChange: (markdown: string) => void;
   onCategoryChange: (category: string) => void;
-  alwaysApply: boolean;
-  onAlwaysApplyChange: () => void;
   onToggle: () => void;
   onReset: () => void;
   onSave: () => void;
@@ -47,8 +45,6 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
   onDescriptionChange,
   onMarkdownChange,
   onCategoryChange,
-  alwaysApply,
-  onAlwaysApplyChange,
   onToggle,
   onReset,
   onSave,
@@ -201,31 +197,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             </button>
           )}
           {editorMode === 'edit' && canEdit && (
-            <>
-              <button
-                type='button'
-                role='switch'
-                aria-label='Always apply'
-                aria-checked={alwaysApply}
-                disabled={saving}
-                onClick={onAlwaysApplyChange}
-                className='inline-flex items-center gap-2 text-[13px] text-[var(--jarvis-text)] disabled:cursor-not-allowed disabled:opacity-60'
-              >
-                <span>Always Apply</span>
-                <span
-                  className={`relative h-[22px] w-[38px] flex-shrink-0 rounded-full transition ${
-                    alwaysApply ? 'bg-[var(--jarvis-primary)]' : 'bg-[var(--jarvis-border-strong)]'
-                  }`}
-                >
-                  <span
-                    className={`absolute left-0 top-0.5 h-[18px] w-[18px] rounded-full bg-white shadow transition-transform ${
-                      alwaysApply ? 'translate-x-[18px]' : 'translate-x-0.5'
-                    }`}
-                  />
-                </span>
-              </button>
-              <SkillCategoryMenu value={draft.category} disabled={saving} onChange={onCategoryChange} />
-            </>
+            <SkillCategoryMenu value={draft.category} disabled={saving} onChange={onCategoryChange} />
           )}
         </div>
       </div>
