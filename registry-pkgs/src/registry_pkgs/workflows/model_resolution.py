@@ -37,6 +37,32 @@ def _bedrock_request_params(aws_region: str) -> dict[str, Any]:
     return {"aws_region_name": aws_region, "drop_params": True}
 
 
+def _litellm_model(
+    model_id: str,
+    request_params: dict[str, Any],
+    *,
+    api_base: str | None = None,
+    api_key: str | None = None,
+) -> LiteLLM:
+    """Build an agno LiteLLM model that sends no sampling params.
+
+    agno's ``LiteLLM`` defaults ``temperature=0.7`` and ``top_p=1.0`` and sends both on every request,
+    but newer models reject them outright (Claude Sonnet 5 on Bedrock: "`temperature` is deprecated
+    for this model"). ``drop_params`` can't catch this: LiteLLM only drops params for models it can
+    look up, and an application inference profile ARN or an Azure deployment name is not one of them.
+    agno omits ``None`` params, so the provider's own defaults apply — as with agno's native
+    ``AwsBedrock`` used before LiteLLM.
+    """
+    return LiteLLM(
+        id=model_id,
+        api_base=api_base,
+        api_key=api_key,
+        temperature=None,
+        top_p=None,
+        request_params=request_params,
+    )
+
+
 class AzureModelCredential:
     """App-scoped Azure credential and synchronous bearer-token provider for agno's AzureOpenAI."""
 
@@ -55,10 +81,7 @@ class AzureModelCredential:
 
 def build_legacy_bedrock_model(model_id: str, aws_region: str) -> Model:
     """Build the Settings-based fallback used before a workflow ModelSource is selected."""
-    return LiteLLM(
-        id=_bedrock_model_id(model_id),
-        request_params=_bedrock_request_params(aws_region),
-    )
+    return _litellm_model(_bedrock_model_id(model_id), _bedrock_request_params(aws_region))
 
 
 def get_litellm_model_info(model: str) -> dict[str, Any]:
@@ -75,10 +98,7 @@ def build_agno_model(
     """Build the agno Model for one ModelSource. No client/connection is constructed here."""
     config = model_source.providerConfig
     if isinstance(config, AwsBedrockModelConfig):
-        return LiteLLM(
-            id=_bedrock_model_id(config.modelIdOrArn),
-            request_params=_bedrock_request_params(config.awsRegion),
-        )
+        return _litellm_model(_bedrock_model_id(config.modelIdOrArn), _bedrock_request_params(config.awsRegion))
     if isinstance(config, AzureOpenAIModelConfig):
         request_params: dict[str, Any] = {"api_version": config.apiVersion}
         api_key: str | None = None
@@ -88,11 +108,11 @@ def build_agno_model(
             if azure_ad_token_provider is None:
                 raise RuntimeError("Azure Workload Identity model requires an app-scoped token provider")
             request_params["azure_ad_token_provider"] = azure_ad_token_provider
-        return LiteLLM(
-            id=f"azure/{config.deploymentName}",
+        return _litellm_model(
+            f"azure/{config.deploymentName}",
+            request_params,
             api_base=config.endpoint,
             api_key=api_key,
-            request_params=request_params,
         )
     raise TypeError(f"Unsupported model source provider config: {type(config).__name__}")
 

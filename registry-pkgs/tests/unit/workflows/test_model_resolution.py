@@ -153,6 +153,50 @@ def test_build_agno_model_rejects_unknown_provider_config() -> None:
         )
 
 
+def _legacy_bedrock_aip() -> LiteLLM:
+    return model_resolution.build_legacy_bedrock_model(
+        "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id",
+        "us-east-1",
+    )
+
+
+def _bedrock_source_model() -> LiteLLM:
+    source = _source(
+        AwsBedrockModelConfig(
+            awsRegion="us-east-1",
+            modelIdOrArn="arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id",
+            baseModelId="anthropic.claude-sonnet-5",
+        )
+    )
+    return model_resolution.build_agno_model(source, encryption_key=b"unused", azure_ad_token_provider=None)
+
+
+def _azure_source_model() -> LiteLLM:
+    source = _source(
+        AzureOpenAIModelConfig(
+            endpoint="https://example.openai.azure.com",
+            deploymentName="chat",
+            baseModelId="gpt-4o",
+            apiVersion="2024-10-21",
+        )
+    )
+    return model_resolution.build_agno_model(source, encryption_key=b"unused", azure_ad_token_provider=lambda: "t")
+
+
+@pytest.mark.parametrize(
+    "build",
+    [_legacy_bedrock_aip, _bedrock_source_model, _azure_source_model],
+    ids=["legacy-bedrock", "bedrock-model-source", "azure-model-source"],
+)
+def test_built_models_send_no_sampling_params(build) -> None:
+    # Claude Sonnet 5 on Bedrock rejects both ("`temperature` is deprecated for this model"), and
+    # LiteLLM's drop_params can't drop them for an unrecognized AIP ARN / Azure deployment name.
+    params = build().get_request_params(tools=[{"type": "function", "function": {"name": "t"}}])
+
+    assert "temperature" not in params
+    assert "top_p" not in params
+
+
 def test_azure_model_credential_owns_and_closes_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     credential = SimpleNamespace(close=MagicMock())
     token_provider = object()
