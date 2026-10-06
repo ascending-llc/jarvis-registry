@@ -284,6 +284,8 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             editorMode={editorMode}
             canEdit={canEdit}
             fileMetadata={selectedMetadata}
+            availableFilePaths={draft.files.map(file => file.relativePath)}
+            onSelectFile={onSelectFile}
             onMarkdownChange={onMarkdownChange}
             onEditorModeChange={onEditorModeChange}
           />

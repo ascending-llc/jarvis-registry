@@ -1,13 +1,20 @@
 import { PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import SERVICES from '@/services';
 import type { SkillFileContent, SkillFileMetadata } from '@/services/skill/type';
-
 import { SKILL_MARKDOWN_PATH } from './constants';
+import HighlightedTextarea from './HighlightedTextarea';
+import { resolveSkillFilePath } from './skillFileLinks';
+import {
+  getLanguageFromClassName,
+  getLanguageFromPath,
+  highlightCode,
+  highlightSkillMarkdown,
+} from './syntaxHighlighting';
 import type { EditorMode } from './types';
 
 type SkillContentPanelProps = {
@@ -20,6 +27,8 @@ type SkillContentPanelProps = {
   editorMode: EditorMode;
   canEdit: boolean;
   fileMetadata?: SkillFileMetadata;
+  availableFilePaths?: readonly string[];
+  onSelectFile?: (path: string) => void;
   onMarkdownChange: (markdown: string) => void;
   onEditorModeChange: (mode: EditorMode) => void;
 };
@@ -54,6 +63,8 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
   editorMode,
   canEdit,
   fileMetadata,
+  availableFilePaths = [],
+  onSelectFile,
   onMarkdownChange,
   onEditorModeChange,
 }) => {
@@ -62,6 +73,23 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
   const cacheRef = useRef<Map<string, SkillFileContent>>(new Map());
   const requestSequenceRef = useRef(0);
   const isSkillMarkdown = selectedPath === SKILL_MARKDOWN_PATH;
+  const highlightedFrontmatter = useMemo(
+    () => highlightCode(`---\n${frontmatterSource}\n---`, 'yaml'),
+    [frontmatterSource],
+  );
+  const highlightedInvalidMarkdown = useMemo(() => highlightSkillMarkdown(markdown), [markdown]);
+  const highlightedSupportingFile = useMemo(() => {
+    if (fileState.status !== 'loaded' || !fileState.data.available || fileState.data.isBinary) return null;
+    if (fileMetadata?.isBinary) return null;
+
+    const language = getLanguageFromPath(selectedPath);
+    if (!language) return null;
+
+    return {
+      html: highlightCode(fileState.data.content ?? '', language),
+      language,
+    };
+  }, [fileMetadata?.isBinary, fileState, selectedPath]);
 
   useEffect(() => {
     cacheRef.current.clear();
@@ -150,6 +178,17 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
       );
     }
 
+    if (highlightedSupportingFile) {
+      return (
+        <pre className='min-h-72 max-w-full overflow-auto whitespace-pre p-6 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'>
+          <code
+            className={`skill-syntax-highlight language-${highlightedSupportingFile.language}`}
+            dangerouslySetInnerHTML={{ __html: highlightedSupportingFile.html }}
+          />
+        </pre>
+      );
+    }
+
     return (
       <pre className='min-h-72 max-w-full overflow-auto whitespace-pre p-6 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'>
         <code>{file.content ?? ''}</code>
@@ -183,13 +222,7 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
 
       <div className='min-h-0 min-w-0 flex-1 overflow-auto'>
         {isSkillMarkdown && editorMode === 'edit' && canEdit && (
-          <textarea
-            value={markdown}
-            spellCheck={false}
-            aria-label='SKILL.md content'
-            onChange={event => onMarkdownChange(event.target.value)}
-            className='h-full min-h-[360px] w-full resize-y border-0 bg-transparent px-7 py-6 font-mono text-[13px] leading-[1.7] text-[var(--jarvis-text)] outline-none focus:ring-0'
-          />
+          <HighlightedTextarea value={markdown} ariaLabel='SKILL.md content' onChange={onMarkdownChange} />
         )}
 
         {isSkillMarkdown && (editorMode !== 'edit' || !canEdit) && (
@@ -200,14 +233,16 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
               </div>
             )}
             {markdownError ? (
-              <pre className='overflow-auto whitespace-pre-wrap font-mono text-[13px] leading-6 text-[var(--jarvis-text)]'>
-                {markdown}
-              </pre>
+              <pre
+                className='skill-syntax-highlight overflow-auto whitespace-pre-wrap font-mono text-[13px] leading-6 text-[var(--jarvis-text)]'
+                dangerouslySetInnerHTML={{ __html: highlightedInvalidMarkdown }}
+              />
             ) : (
               <>
-                <pre className='mb-6 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--jarvis-card-muted)] p-4 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'>
-                  {`---\n${frontmatterSource}\n---`}
-                </pre>
+                <pre
+                  className='skill-syntax-highlight mb-6 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--jarvis-card-muted)] p-4 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'
+                  dangerouslySetInnerHTML={{ __html: highlightedFrontmatter }}
+                />
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{
@@ -236,25 +271,44 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
                       <strong className='font-bold text-[var(--jarvis-text-strong)]'>{children}</strong>
                     ),
                     pre: ({ children }) => (
-                      <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
+                      <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:rounded-none [&>code]:bg-transparent [&>code]:p-0 [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
                         {children}
                       </pre>
                     ),
-                    code: ({ children }) => (
-                      <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
-                        {children}
-                      </code>
-                    ),
-                    a: ({ children, href }) => (
-                      <a
-                        href={href}
-                        target='_blank'
-                        rel='noreferrer'
-                        className='break-words text-[var(--jarvis-primary-text)] underline'
-                      >
-                        {children}
-                      </a>
-                    ),
+                    code: ({ children, className }) => {
+                      const language = getLanguageFromClassName(className);
+                      if (language) {
+                        return (
+                          <code
+                            className={`skill-syntax-highlight ${className ?? ''} font-mono text-[12.5px]`}
+                            dangerouslySetInnerHTML={{ __html: highlightCode(String(children), language) }}
+                          />
+                        );
+                      }
+                      return (
+                        <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
+                          {children}
+                        </code>
+                      );
+                    },
+                    a: ({ children, href }) => {
+                      const linkedSkillFilePath = onSelectFile ? resolveSkillFilePath(href, availableFilePaths) : null;
+                      return (
+                        <a
+                          href={href}
+                          target={linkedSkillFilePath ? undefined : '_blank'}
+                          rel={linkedSkillFilePath ? undefined : 'noreferrer'}
+                          onClick={event => {
+                            if (!linkedSkillFilePath) return;
+                            event.preventDefault();
+                            onSelectFile?.(linkedSkillFilePath);
+                          }}
+                          className='break-words text-[var(--jarvis-primary-text)] underline'
+                        >
+                          {children}
+                        </a>
+                      );
+                    },
                     img: ({ src, alt, title }) => (
                       <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
                     ),

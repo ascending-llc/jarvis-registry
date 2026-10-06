@@ -1,6 +1,6 @@
 import { ChevronRightIcon, DocumentTextIcon, FolderIcon, FolderOpenIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { SkillFileMetadata } from '@/services/skill/type';
 
@@ -37,6 +37,18 @@ const materializeFolder = (folder: MutableFolder): SkillFileTreeNode[] => {
   return [...folders, ...files].sort((left, right) =>
     left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }),
   );
+};
+
+const getAncestorFolderPaths = (path: string): string[] => {
+  const ancestors: string[] = [];
+  let currentPath = '';
+
+  for (const segment of path.split('/').filter(Boolean).slice(0, -1)) {
+    currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+    ancestors.push(currentPath);
+  }
+
+  return ancestors;
 };
 
 export const buildSkillFileTree = (files: SkillFileMetadata[]): SkillFileTreeNode[] => {
@@ -77,7 +89,22 @@ type SkillFileTreeProps = {
 
 const SkillFileTree: React.FC<SkillFileTreeProps> = ({ files, selectedPath, onSelect }) => {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const selectedFileRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => buildSkillFileTree(files), [files]);
+
+  useEffect(() => {
+    const ancestorPaths = getAncestorFolderPaths(selectedPath);
+    if (ancestorPaths.length === 0) return;
+
+    setExpandedFolders(current => {
+      if (ancestorPaths.every(path => current.has(path))) return current;
+      return new Set([...current, ...ancestorPaths]);
+    });
+  }, [selectedPath]);
+
+  useEffect(() => {
+    selectedFileRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [expandedFolders, selectedPath]);
 
   const toggleFolder = (path: string) => {
     setExpandedFolders(current => {
@@ -95,6 +122,7 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({ files, selectedPath, onSe
         <button
           type='button'
           key={node.path}
+          ref={selected ? selectedFileRef : undefined}
           aria-current={selected ? 'page' : undefined}
           onClick={() => onSelect(node.path)}
           style={{ paddingLeft: `${depth * 14 + 8}px` }}

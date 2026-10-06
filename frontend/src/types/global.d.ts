@@ -14,3 +14,5 @@ declare module '*.css' {
   const content: undefined;
   export default content;
 }
+
+declare module 'prismjs/components/*';
