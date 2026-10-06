@@ -55,18 +55,16 @@ jobs:
 
     - name: Install bandit
       run: |
-        pip install bandit
+        pip install "bandit[toml]"
 
+    # Report only: findings are mostly false positives, so this step never fails the build.
     - name: Security check with bandit
       run: |
-        bandit -r auth_server/ -f json -o bandit-report-auth.json || true
-        bandit -r registry/ -f json -o bandit-report.json || true
+        bandit -c pyproject.toml -r registry/src auth-server/src registry-pkgs/src workflow-worker/src -f json -o bandit-report.json || true
 
     - name: Upload security report
       uses: actions/upload-artifact@v7
       if: always()
       with:
         name: bandit-reports
-        path: |
-          bandit-report.json
-          bandit-report-auth.json
+        path: bandit-report.json
