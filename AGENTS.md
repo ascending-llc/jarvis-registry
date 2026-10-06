@@ -378,6 +378,8 @@ uv run poe fix
 uv run poe check
 ```
 
+When a change removes or renames a symbol, `git grep` for remaining references before committing.
+
 **From workspace directory** (e.g., `cd registry`):
 ```bash
 # Format + lint + fix
@@ -416,38 +418,14 @@ uv run poe test
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **jarvis-registry** (17936 symbols, 27750 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+The repo is indexed by GitNexus as **jarvis-registry** and served as a remote MCP server through jarvis-registry (see "How agents reach gitnexus"). Use it when a call-graph or execution-flow view helps, such as tracing an unfamiliar flow (`gitnexus_query`, `gitnexus_context`, `gitnexus://repo/jarvis-registry/process/{name}`) or finding transitive callers before changing shared code (`gitnexus_impact`). It is optional.
 
-> Indexes are rebuilt by CI on every push to `main` and served via a remote MCP server (AgentCore Runtime, fronted by jarvis-registry). Staleness self-heals on the next AgentCore session — agents do not run `gitnexus analyze` or `gitnexus mcp` locally.
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/jarvis-registry/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/jarvis-registry/clusters` | All functional areas |
-| `gitnexus://repo/jarvis-registry/processes` | All execution flows |
-| `gitnexus://repo/jarvis-registry/process/{name}` | Step-by-step execution trace |
-
+- **The index reflects `main` as of the last CI rebuild.** It never sees your branch or working tree and can lag recent merges. `git grep` is the source of truth for call sites; treat GitNexus results as leads.
+- **Don't use `gitnexus_detect_changes` or `gitnexus_rename`.** Both need a local checkout: `detect_changes` fails with `Not a git repository`, and `rename` returns `success` with zero edits.
 <!-- gitnexus:end -->
 
 ## How agents reach gitnexus
 
-GitNexus is **deployed as a remote MCP server** — agents call it over MCP and do not run it locally. The same tool set is reachable two ways: through jarvis-registry (recommended; uses the registry's auth) or directly to the hosted runtime with a bearer token. The exposed tools are `gitnexus_impact`, `gitnexus_query`, `gitnexus_context`, `gitnexus_detect_changes`, `gitnexus_rename`, `gitnexus_cypher`, `gitnexus_route_map`, `gitnexus_tool_map`, `gitnexus_shape_check`, `gitnexus_api_impact`, `list_repos`, plus the `gitnexus://...` resources listed above. The "Always Do" / "Never Do" rules apply regardless of transport.
+GitNexus is **deployed as a remote MCP server** — agents call it over MCP and do not run it locally. The same tool set is reachable two ways: through jarvis-registry (recommended; uses the registry's auth) or directly to the hosted runtime with a bearer token. The exposed tools are `gitnexus_impact`, `gitnexus_query`, `gitnexus_context`, `gitnexus_detect_changes`, `gitnexus_rename`, `gitnexus_cypher`, `gitnexus_route_map`, `gitnexus_tool_map`, `gitnexus_shape_check`, `gitnexus_api_impact`, `list_repos`, plus the `gitnexus://repo/jarvis-registry/...` resources. `gitnexus_detect_changes` and `gitnexus_rename` are exposed but do not work remotely (see above).
 
 **Version pinning.** The CI indexer and the deployed runtime MUST install the same `gitnexus@<version>`. A mismatch segfaults the FTS / vector codepaths in `gitnexus_query` because on-disk table layouts shift between versions. Bumping the version is a single PR that updates both pins together; the indexer's cache key already keys off the version so npm + tree-sitter caches rotate cleanly.
