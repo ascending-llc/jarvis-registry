@@ -10,7 +10,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
-from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+from registry_pkgs.core.exceptions import A2AAgentCardNotFoundException, EmbeddingReindexInProgressException
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, NoSupportedTransportError
 from registry_pkgs.testing.federation_metadata import (
     make_agentcore_a2a_metadata,
@@ -461,6 +461,23 @@ async def test_create_agent_propagates_database_error():
         MockAgent.return_value.insert = AsyncMock(side_effect=PyMongoError("connection reset"))
 
         with pytest.raises(PyMongoError):
+            await service.create_agent(data=_create_request(), user_id=str(PydanticObjectId()))
+
+
+@pytest.mark.asyncio
+async def test_create_agent_propagates_agent_card_error():
+    """Agent-card fetch failures reach the route unwrapped, so it can map them to 404/502/503."""
+    service = _service()
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(
+            service, "_fetch_agent_card_from_url", AsyncMock(side_effect=A2AAgentCardNotFoundException("no card"))
+        ),
+    ):
+        MockAgent.find_one = AsyncMock(return_value=None)
+
+        with pytest.raises(A2AAgentCardNotFoundException):
             await service.create_agent(data=_create_request(), user_id=str(PydanticObjectId()))
 
 
