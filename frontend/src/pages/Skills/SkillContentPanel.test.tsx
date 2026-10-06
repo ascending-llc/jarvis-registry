@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { fireEvent, render, screen } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test, vi } from 'vitest';
 import { SKILL_MARKDOWN_PATH } from './constants';
@@ -64,5 +65,60 @@ describe('SkillContentPanel markdown preview', () => {
 
     expect(container.querySelector('table')).toBeNull();
     expect(container.querySelector('p')?.textContent).toBe('Just a plain paragraph, no pipes here.');
+  });
+
+  test('opens links to files in the current skill through the file selector', () => {
+    const onSelectFile = vi.fn();
+    document.body.innerHTML = '';
+    render(
+      <SkillContentPanel
+        skillId='skill-1'
+        selectedPath={SKILL_MARKDOWN_PATH}
+        markdown='---\nname: link-fixture\n---'
+        markdownBody='[references/design-system.md](https://jarvis-demo.ascendingdc.com/gateway/references/design-system.md)'
+        frontmatterSource='name: link-fixture'
+        markdownError={null}
+        editorMode='preview'
+        canEdit={true}
+        availableFilePaths={[SKILL_MARKDOWN_PATH, 'references/design-system.md']}
+        onSelectFile={onSelectFile}
+        onMarkdownChange={vi.fn()}
+        onEditorModeChange={vi.fn()}
+      />,
+    );
+
+    const link = screen.getByRole('link', { name: 'references/design-system.md' });
+    expect(link.getAttribute('target')).toBeNull();
+
+    fireEvent.click(link);
+
+    expect(onSelectFile).toHaveBeenCalledOnce();
+    expect(onSelectFile).toHaveBeenCalledWith('references/design-system.md');
+  });
+
+  test('keeps links that are not current skill files external', () => {
+    const onSelectFile = vi.fn();
+    document.body.innerHTML = '';
+    render(
+      <SkillContentPanel
+        skillId='skill-1'
+        selectedPath={SKILL_MARKDOWN_PATH}
+        markdown='---\nname: link-fixture\n---'
+        markdownBody='[External documentation](https://example.com/docs/design-system.md)'
+        frontmatterSource='name: link-fixture'
+        markdownError={null}
+        editorMode='preview'
+        canEdit={true}
+        availableFilePaths={[SKILL_MARKDOWN_PATH, 'references/design-system.md']}
+        onSelectFile={onSelectFile}
+        onMarkdownChange={vi.fn()}
+        onEditorModeChange={vi.fn()}
+      />,
+    );
+
+    const link = screen.getByRole('link', { name: 'External documentation' });
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noreferrer');
+    expect(onSelectFile).not.toHaveBeenCalled();
   });
 });

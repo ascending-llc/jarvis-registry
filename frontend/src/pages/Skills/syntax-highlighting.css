@@ -1,0 +1,151 @@
+.skill-highlighted-textarea {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 360px;
+  height: 100%;
+  grid-template-rows: minmax(360px, 1fr);
+}
+
+.skill-highlighted-textarea__highlight,
+.skill-highlighted-textarea__input {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 360px;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  padding: 1.5rem 1.75rem;
+  background: transparent;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  font-variant-ligatures: none;
+  line-height: 1.7;
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  scrollbar-gutter: stable;
+}
+
+.skill-highlighted-textarea__highlight {
+  z-index: 0;
+  contain: size;
+  overflow: hidden;
+  color: var(--jarvis-text);
+  pointer-events: none;
+}
+
+.skill-highlighted-textarea__input {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  resize: vertical;
+  overflow: auto;
+  outline: none;
+  color: transparent;
+  caret-color: var(--jarvis-text);
+  -webkit-text-fill-color: transparent;
+}
+
+.skill-highlighted-textarea__input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.skill-syntax-highlight {
+  --skill-syntax-comment: #64748b;
+  --skill-syntax-punctuation: #64748b;
+  --skill-syntax-property: #9f1239;
+  --skill-syntax-tag: #9f1239;
+  --skill-syntax-constant: #7c3aed;
+  --skill-syntax-number: #b45309;
+  --skill-syntax-selector: #047857;
+  --skill-syntax-string: #047857;
+  --skill-syntax-operator: #0369a1;
+  --skill-syntax-keyword: #6d28d9;
+  --skill-syntax-function: #1d4ed8;
+  --skill-syntax-regex: #c2410c;
+}
+
+.dark .skill-syntax-highlight {
+  --skill-syntax-comment: #94a3b8;
+  --skill-syntax-punctuation: #94a3b8;
+  --skill-syntax-property: #fda4af;
+  --skill-syntax-tag: #fda4af;
+  --skill-syntax-constant: #c4b5fd;
+  --skill-syntax-number: #fbbf24;
+  --skill-syntax-selector: #6ee7b7;
+  --skill-syntax-string: #86efac;
+  --skill-syntax-operator: #7dd3fc;
+  --skill-syntax-keyword: #c4b5fd;
+  --skill-syntax-function: #93c5fd;
+  --skill-syntax-regex: #fdba74;
+}
+
+.skill-syntax-highlight .token.comment,
+.skill-syntax-highlight .token.prolog,
+.skill-syntax-highlight .token.doctype,
+.skill-syntax-highlight .token.cdata {
+  color: var(--skill-syntax-comment);
+}
+
+.skill-syntax-highlight .token.punctuation {
+  color: var(--skill-syntax-punctuation);
+}
+
+.skill-syntax-highlight .token.property,
+.skill-syntax-highlight .token.tag,
+.skill-syntax-highlight .token.deleted {
+  color: var(--skill-syntax-property);
+}
+
+.skill-syntax-highlight .token.boolean,
+.skill-syntax-highlight .token.constant,
+.skill-syntax-highlight .token.symbol {
+  color: var(--skill-syntax-constant);
+}
+
+.skill-syntax-highlight .token.number {
+  color: var(--skill-syntax-number);
+}
+
+.skill-syntax-highlight .token.selector {
+  color: var(--skill-syntax-selector);
+}
+
+.skill-syntax-highlight .token.attr-name,
+.skill-syntax-highlight .token.string,
+.skill-syntax-highlight .token.char,
+.skill-syntax-highlight .token.builtin,
+.skill-syntax-highlight .token.inserted {
+  color: var(--skill-syntax-string);
+}
+
+.skill-syntax-highlight .token.operator,
+.skill-syntax-highlight .token.entity,
+.skill-syntax-highlight .token.url,
+.skill-syntax-highlight .language-css .token.string,
+.skill-syntax-highlight .style .token.string {
+  color: var(--skill-syntax-operator);
+}
+
+.skill-syntax-highlight .token.atrule,
+.skill-syntax-highlight .token.attr-value,
+.skill-syntax-highlight .token.keyword {
+  color: var(--skill-syntax-keyword);
+}
+
+.skill-syntax-highlight .token.function,
+.skill-syntax-highlight .token.class-name {
+  color: var(--skill-syntax-function);
+}
+
+.skill-syntax-highlight .token.regex,
+.skill-syntax-highlight .token.important,
+.skill-syntax-highlight .token.variable {
+  color: var(--skill-syntax-regex);
+}
