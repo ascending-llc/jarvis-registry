@@ -28,12 +28,6 @@ services:
       - LOG_LEVEL=DEBUG
     profiles:
       - disabled
-  keycloak:
-    profiles:
-      - disabled
-  keycloak-db:
-    profiles:
-      - disabled
   registry-frontend:
     image: registry-frontend
     build:
