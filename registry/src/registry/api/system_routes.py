@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from ..auth.dependencies import CurrentUser
 from ..core.config import settings
 from ..schemas.common_api_schemas import UserInfoResponse
+from ..services.generated_token_policy import get_user_token_scopes
 
 router = APIRouter()
 
@@ -17,6 +18,7 @@ async def get_current_user(user_context: CurrentUser) -> UserInfoResponse:
         scopes=user_context.get("scopes", []),
         groups=user_context.get("groups", []),
         userId=user_context.get("user_id"),
+        tokenScopes=get_user_token_scopes(user_context.get("groups", [])),
     )
 
 

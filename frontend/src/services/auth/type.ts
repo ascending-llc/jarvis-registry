@@ -3,6 +3,7 @@ export type GetAuthMeResponse = {
   userId?: string;
   email: string;
   scopes: string[];
+  tokenScopes: string[];
   groups: string[];
   authMethod: string;
   provider: string;

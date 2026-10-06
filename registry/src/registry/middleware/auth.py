@@ -12,7 +12,11 @@ from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenErro
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..auth.dependencies import UserContextDict
-from ..constants import MAX_RETURN_PATH_LENGTH, OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL
+from ..constants import (
+    MANAGED_AGENT_AUTH_SOURCE,
+    MAX_RETURN_PATH_LENGTH,
+    OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL,
+)
 from ..core.config import settings
 from ..core.telemetry_decorators import AuthMetricsContext
 from ..utils.crypto_utils import verify_access_token
@@ -324,12 +328,15 @@ class UnifiedAuthMiddleware:
         scope_string = claims.get("scope", "")
         scopes = scope_string.split() if scope_string else []
 
-        if not scopes and groups:
-            scopes = map_groups_to_scopes(groups)
-            logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
-
+        # Every managed-agent token is minted with a scope claim, so an empty one means nothing was
+        # granted. Never fall back to the user's groups: that would bypass the client's scope ceiling.
         if not scopes:
-            logger.debug(f"JWT token has no scopes and groups mapping failed. Groups: {groups}")
+            jti = claims.get("jti")
+            logger.warning(
+                "Rejecting managed-agent token with empty scope: client_id=%s%s",
+                claims.get("client_id"),
+                f", jti={jti}" if jti else "",
+            )
             return None
 
         user_id = claims.get("user_id")
@@ -360,7 +367,7 @@ class UnifiedAuthMiddleware:
             scopes=scopes,
             auth_method="jwt",
             provider="jwt",
-            auth_source="jwt_auth",
+            auth_source=MANAGED_AGENT_AUTH_SOURCE,
         )
 
     async def _try_session_auth(self, request: Request) -> UserContextDict | None:

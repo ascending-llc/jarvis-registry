@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
@@ -11,7 +12,7 @@ from registry.constants import MAX_RETURN_PATH_LENGTH
 from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
 from registry.utils.crypto_utils import generate_access_token
-from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
+from registry_pkgs.core.jwt_tokens import mint_managed_agent_token, verify_managed_agent_token
 
 _COOKIE = settings.session_cookie_name
 
@@ -104,12 +105,15 @@ def _managed_agent_token(
     user_id: str | None = None,
     server_path: str | None = None,
     token_scope: str = "mcp-proxy-ops",
+    groups: list[str] | None = None,
 ) -> str:
     extra: dict = {}
     if user_id is not None:
         extra["user_id"] = user_id
     if server_path is not None:
         extra["server_path"] = server_path
+    if groups is not None:
+        extra["groups"] = groups
     return mint_managed_agent_token(
         settings.jwt_token_config,
         subject="alice",
@@ -234,6 +238,39 @@ def test_skill_write_rejects_managed_agent_bearer(client):
 
     assert resp.status_code == 401
     assert "WWW-Authenticate" not in resp.headers
+
+
+def _empty_scope_token_with_admin_groups() -> str:
+    # The mint helpers can't write scope="" directly; requesting a scope outside the client's
+    # ceiling produces it.
+    token = _managed_agent_token(
+        client_id="mcp-client-abc",
+        user_id=USER_A,
+        token_scope="servers-read",
+        groups=["jarvis-registry-admin"],
+    )
+    assert verify_managed_agent_token(settings.jwt_token_config, token)["scope"] == ""
+    return token
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/proxy/server/{USER_A}/github",
+        "/api/v1/skills",
+    ],
+)
+def test_empty_scope_managed_agent_token_is_rejected_despite_groups(client, caplog, path):
+    token = _empty_scope_token_with_admin_groups()
+
+    with caplog.at_level(logging.WARNING, logger="registry.middleware.auth"):
+        resp = client.get(path, headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 401
+    assert resp.headers.get("WWW-Authenticate", "").startswith("Bearer")
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("empty scope" in message and "client_id=mcp-client-abc" in message for message in warnings)
+    assert not any("alice" in message for message in warnings)
 
 
 def test_a2a_proxy_401_advertises_a2a_scope(client):

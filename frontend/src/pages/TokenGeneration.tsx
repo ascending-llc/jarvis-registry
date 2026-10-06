@@ -3,8 +3,39 @@ import type React from 'react';
 import { useState } from 'react';
 import IconButton from '@/components/IconButton';
 import SERVICES from '@/services';
-import { TokenPurpose } from '@/services/auth/type';
+import { type GetTokenRequest, type GetTokenResponse, TokenPurpose } from '@/services/auth/type';
+import type { RequestErrorPayload } from '@/services/request';
 import { useAuth } from '../contexts/AuthContext';
+
+const GENERIC_GENERATE_ERROR = 'Failed to generate token';
+
+type CustomScopesParseResult = { scopes: string[]; error: null } | { scopes: null; error: string };
+
+// Custom mode must always send a non-empty requestedScopes: the backend treats an omitted list as
+// "use my current scopes" and rejects an empty one.
+const parseCustomScopes = (text: string): CustomScopesParseResult => {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { scopes: null, error: 'Enter a JSON array with at least one scope' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (_e) {
+    return { scopes: null, error: 'Invalid JSON format' };
+  }
+  if (!Array.isArray(parsed)) {
+    return { scopes: null, error: 'Custom scopes must be a JSON array' };
+  }
+  if (parsed.length === 0) {
+    return { scopes: null, error: 'Enter a JSON array with at least one scope' };
+  }
+  // The backend rejects non-string items with a 422, which would only surface as the generic error
+  if (!parsed.every((scope): scope is string => typeof scope === 'string' && scope.trim() !== '')) {
+    return { scopes: null, error: 'Scopes must be non-empty strings' };
+  }
+  return { scopes: parsed, error: null };
+};
 
 const TokenGeneration: React.FC = () => {
   const { user } = useAuth();
@@ -16,7 +47,7 @@ const TokenGeneration: React.FC = () => {
     tokenPurpose: TokenPurpose.Interactive,
   });
   const [generatedToken, setGeneratedToken] = useState<string>('');
-  const [tokenDetails, setTokenDetails] = useState<any>(null);
+  const [tokenDetails, setTokenDetails] = useState<GetTokenResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [copiedTarget, setCopiedTarget] = useState<'token' | 'cli-helper' | null>(null);
   const [error, setError] = useState<string>('');
@@ -29,33 +60,28 @@ const TokenGeneration: React.FC = () => {
 
   const handleGenerateToken = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError('');
+    setGeneratedToken('');
+    setTokenDetails(null);
 
-    try {
-      const requestData: any = {
-        description: formData.description,
-        expiresInHours: formData.expiresInHours,
-        tokenPurpose: formData.tokenPurpose,
-      };
+    const requestData: GetTokenRequest = {
+      description: formData.description,
+      expiresInHours: formData.expiresInHours,
+      tokenPurpose: formData.tokenPurpose,
+    };
 
-      // Handle scopes based on the selected method
-      if (formData.scopeMethod === 'custom') {
-        const customScopesText = formData.customScopes.trim();
-        if (customScopesText) {
-          try {
-            const parsedScopes = JSON.parse(customScopesText);
-            if (!Array.isArray(parsedScopes)) {
-              throw new Error('Custom scopes must be a JSON array');
-            }
-            requestData.requestedScopes = parsedScopes;
-          } catch (_e) {
-            setError('Invalid JSON format for custom scopes. Please provide a valid JSON array.');
-            return;
-          }
-        }
+    // In current mode requestedScopes is omitted, so the backend uses all of the user's token-eligible scopes
+    if (formData.scopeMethod === 'custom') {
+      const { scopes, error: parseError } = parseCustomScopes(formData.customScopes);
+      if (parseError !== null) {
+        setError(parseError);
+        return;
       }
-      // If using current scopes, we don't need to set requestedScopes - it will default to user's current scopes
+      requestData.requestedScopes = scopes;
+    }
+
+    setLoading(true);
+    try {
       const response = await SERVICES.AUTH.getToken(requestData);
 
       if (response.success) {
@@ -64,9 +90,12 @@ const TokenGeneration: React.FC = () => {
       } else {
         throw new Error('Token generation failed');
       }
-    } catch (error: any) {
-      console.error('Failed to generate token:', error);
-      setError(error.response?.data?.detail || 'Failed to generate token');
+    } catch (err) {
+      console.error('Failed to generate token:', err);
+      // request() rethrows the response body ({ detail, httpStatus }), not the AxiosError. A 422 validation
+      // error carries a list detail; only show a detail the backend wrote as a message
+      const detail = err && typeof err === 'object' ? (err as RequestErrorPayload).detail : undefined;
+      setError(typeof detail === 'string' && detail ? detail : GENERIC_GENERATE_ERROR);
     } finally {
       setLoading(false);
     }
@@ -105,22 +134,8 @@ const TokenGeneration: React.FC = () => {
     }
   };
 
-  const validateCustomScopes = () => {
-    if (formData.scopeMethod === 'custom' && formData.customScopes.trim()) {
-      try {
-        const parsed = JSON.parse(formData.customScopes);
-        if (!Array.isArray(parsed)) {
-          return 'Custom scopes must be a JSON array';
-        }
-        return null;
-      } catch (_e) {
-        return 'Invalid JSON format';
-      }
-    }
-    return null;
-  };
-
-  const scopeValidationError = validateCustomScopes();
+  const scopeValidationError =
+    formData.scopeMethod === 'custom' ? parseCustomScopes(formData.customScopes).error : null;
   const cliHelper = `export AUTH_TOKEN="${generatedToken}"`;
 
   return (
@@ -145,10 +160,10 @@ const TokenGeneration: React.FC = () => {
           <div className='card bg-[var(--jarvis-card-muted)] p-4'>
             <h3 className='mb-2 text-base font-semibold text-[var(--jarvis-text-strong)]'>Your Current Permissions</h3>
             <div className='mb-2'>
-              <span className='text-xs font-medium text-[var(--jarvis-text)]'>Current Scopes:</span>
+              <span className='text-xs font-medium text-[var(--jarvis-text)]'>Scopes available for tokens:</span>
               <div className='flex flex-wrap gap-1 mt-1'>
-                {user?.scopes && user.scopes.length > 0 ? (
-                  user.scopes.map(scope => (
+                {user?.tokenScopes && user.tokenScopes.length > 0 ? (
+                  user.tokenScopes.map(scope => (
                     <span
                       key={scope}
                       className='inline-flex items-center rounded-full bg-[var(--jarvis-info-soft)] px-2 py-0.5 text-xs font-medium text-[var(--jarvis-info-text)]'
@@ -162,7 +177,7 @@ const TokenGeneration: React.FC = () => {
               </div>
             </div>
             <p className='text-xs text-[var(--jarvis-muted)]'>
-              <em>Generated tokens can have the same or fewer permissions than your current scopes.</em>
+              <em>Generated tokens can have the same or fewer permissions than the scopes available for tokens.</em>
             </p>
           </div>
 
@@ -246,7 +261,8 @@ const TokenGeneration: React.FC = () => {
                             Use my current scopes
                           </div>
                           <div className='text-xs text-[var(--jarvis-muted)] mt-1'>
-                            Generate token with all your current permissions
+                            Generate token with all your token-eligible scopes. Non-interactive agent tokens keep only{' '}
+                            <code>mcp-proxy-ops</code> and <code>a2a-proxy-ops</code>.
                           </div>
                         </div>
                       </label>
@@ -304,7 +320,7 @@ const TokenGeneration: React.FC = () => {
                           onChange={e => setFormData(prev => ({ ...prev, customScopes: e.target.value }))}
                         />
                         <p className='mt-1 text-xs text-[var(--jarvis-muted)]'>
-                          Enter a JSON array of scope names. Must be a subset of your current scopes.
+                          Enter a JSON array of scope names. Must be a subset of the scopes available for tokens.
                         </p>
                         {scopeValidationError && (
                           <p className='mt-1 text-xs text-[var(--jarvis-danger-text)]'>{scopeValidationError}</p>
@@ -413,7 +429,10 @@ const TokenGeneration: React.FC = () => {
 
               {/* Error Display */}
               {error && (
-                <div className='rounded-lg border border-[var(--jarvis-danger)]/30 bg-[var(--jarvis-danger-soft)] p-3'>
+                <div
+                  role='alert'
+                  className='rounded-lg border border-[var(--jarvis-danger)]/30 bg-[var(--jarvis-danger-soft)] p-3'
+                >
                   <div className='flex items-center space-x-2'>
                     <ExclamationTriangleIcon className='h-4 w-4 text-[var(--jarvis-danger-text)]' />
                     <span className='text-sm text-[var(--jarvis-danger-text)]'>{error}</span>
@@ -488,13 +507,8 @@ const TokenGeneration: React.FC = () => {
                   {new Date(Date.now() + tokenDetails.tokenData.expiresIn * 1000).toLocaleString()}
                 </p>
                 <p>
-                  <strong>Scopes:</strong> {tokenDetails.requestedScopes.join(', ')}
+                  <strong>Scopes:</strong> {tokenDetails.tokenData.scope.split(' ').filter(Boolean).join(', ')}
                 </p>
-                {tokenDetails.tokenData.description && (
-                  <p>
-                    <strong>Description:</strong> {tokenDetails.tokenData.description}
-                  </p>
-                )}
               </div>
 
               {/* Usage Instructions */}

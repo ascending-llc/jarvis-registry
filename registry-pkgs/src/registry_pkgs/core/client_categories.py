@@ -131,6 +131,11 @@ def get_builtin_max_scopes(category: ClientCategory, all_scopes: frozenset[str])
     return policy.max_scopes if policy is not None else frozenset()
 
 
+def get_client_max_scopes(client_id: str, config: JwtTokenConfig) -> frozenset[str]:
+    """Return the builtin max scope set for client_id's category."""
+    return get_builtin_max_scopes(resolve_client_category(client_id, config), config.all_scopes)
+
+
 def resolve_granted_scopes(
     client_id: str,
     requested_scopes: str | list[str],
@@ -138,5 +143,5 @@ def resolve_granted_scopes(
 ) -> list[str]:
     """Intersect requested scopes against client_id's category ceiling. Order-preserving."""
     scopes = requested_scopes.split() if isinstance(requested_scopes, str) else requested_scopes
-    ceiling = get_builtin_max_scopes(resolve_client_category(client_id, config), config.all_scopes)
+    ceiling = get_client_max_scopes(client_id, config)
     return [scope for scope in scopes if scope in ceiling]
