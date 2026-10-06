@@ -87,7 +87,6 @@ class AuthContainer:
     def get_auth_provider(self, provider: AllowedProvider):
         return get_auth_provider(
             provider,
-            self._settings,
             self._oauth2_config,
             self.cloud_identity_client,
         )

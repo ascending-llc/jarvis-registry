@@ -28,40 +28,6 @@ class IdPGroupDirectoryClient(ABC):
         """Return name/email/description dicts for the given group GUIDs."""
 
 
-class CognitoGroupDirectoryClient(IdPGroupDirectoryClient):
-    async def get_user_group_ids(self, user_oid: str) -> list[str]:
-        logger.warning("IdP group sync is not supported for cognito; group-based ACLs will not reflect IdP membership.")
-        return []
-
-    async def get_group_members(self, group_oid: str) -> list[str]:
-        logger.warning("IdP group sync is not supported for cognito; group-based ACLs will not reflect IdP membership.")
-        return []
-
-    async def get_group_details_batch(self, group_ids: list[str]) -> list[dict]:
-        logger.warning("IdP group sync is not supported for cognito; group-based ACLs will not reflect IdP membership.")
-        return []
-
-
-class KeycloakGroupDirectoryClient(IdPGroupDirectoryClient):
-    async def get_user_group_ids(self, user_oid: str) -> list[str]:
-        logger.warning(
-            "IdP group sync is not supported for keycloak; group-based ACLs will not reflect IdP membership."
-        )
-        return []
-
-    async def get_group_members(self, group_oid: str) -> list[str]:
-        logger.warning(
-            "IdP group sync is not supported for keycloak; group-based ACLs will not reflect IdP membership."
-        )
-        return []
-
-    async def get_group_details_batch(self, group_ids: list[str]) -> list[dict]:
-        logger.warning(
-            "IdP group sync is not supported for keycloak; group-based ACLs will not reflect IdP membership."
-        )
-        return []
-
-
 class GoogleGroupDirectoryClient(IdPGroupDirectoryClient):
     """Wraps the shared CloudIdentityGroupsClient. Group identity is the Cloud Identity
     resource name (``groups/{id}``) throughout — stable, and directly usable by every endpoint.

@@ -201,17 +201,7 @@ services:
   auth-server:
     image: ghcr.io/ascending-llc/jarvis/auth-server:latest
     environment:
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      # Keycloak configuration
-      - AUTH_PROVIDER=${AUTH_PROVIDER:-cognito}  # 'cognito' or 'keycloak' or 'entra'
-      - KEYCLOAK_ENABLED=${KEYCLOAK_ENABLED:-false}
-      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
-      - KEYCLOAK_EXTERNAL_URL=${KEYCLOAK_EXTERNAL_URL:-http://localhost:8080}
-      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-mcp-gateway}
-      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-mcp-gateway-web}
-      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
-      - KEYCLOAK_M2M_CLIENT_ID=${KEYCLOAK_M2M_CLIENT_ID:-mcp-gateway-m2m}
-      - KEYCLOAK_M2M_CLIENT_SECRET=${KEYCLOAK_M2M_CLIENT_SECRET}
+      - AUTH_PROVIDER=${AUTH_PROVIDER:-entra}  # 'entra' or 'google'
       # Microsoft Entra ID (Azure AD) configuration
       - ENTRA_TENANT_ID=${ENTRA_TENANT_ID}
       - ENTRA_CLIENT_ID=${ENTRA_CLIENT_ID}

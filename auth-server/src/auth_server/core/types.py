@@ -1,6 +1,6 @@
 from typing import Literal, TypedDict
 
-AllowedProvider = Literal["keycloak", "cognito", "entra", "google"]
+AllowedProvider = Literal["entra", "google"]
 
 
 class AuthProviderConfig(TypedDict):
@@ -43,8 +43,6 @@ class SessionCookieConfig(TypedDict):
 
 
 class OAuth2Providers(TypedDict):
-    keycloak: AuthProviderConfig
-    cognito: AuthProviderConfig
     entra: EntraConfig
     google: GoogleConfig
 

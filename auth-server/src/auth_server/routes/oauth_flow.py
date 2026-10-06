@@ -34,9 +34,6 @@ from registry_pkgs.core.jwt_utils import (
     InvalidIssuerError,
     InvalidSignatureError,
     InvalidTokenError,
-    decode_jwt_with_jwk,
-    find_matching_jwk,
-    get_token_kid,
 )
 from registry_pkgs.core.oauth_state_store import OAuthStateStoreProtocol
 from registry_pkgs.core.redirect_uri import (
@@ -96,7 +93,6 @@ router = APIRouter()
 # All access tokens issued by /oauth2/token (+ device flow) are managed-agent (proxy) tokens.
 JWT_TOKEN_CONFIG = settings.jwt_token_config
 
-_OIDC_TOKEN_ALGORITHMS = ["RS256"]
 _REDIRECT_ERROR_CONSENT_FLOW_TYPE = "redirect_error"
 
 
@@ -173,61 +169,6 @@ def _consume_authorization_consent(
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
     return JSONResponse(status_code=status_code, content=oauth_error_payload(error, error_description))
-
-
-def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvider) -> list[str]:
-    if provider == "keycloak":
-        issuer_candidates = [
-            getattr(auth_provider, "external_realm_url", None),
-            getattr(auth_provider, "realm_url", None),
-            f"http://localhost:8080/realms/{getattr(auth_provider, 'realm', '')}",
-        ]
-        return [issuer for issuer in issuer_candidates if issuer]
-
-    issuer = getattr(auth_provider, "issuer", None)
-    if not issuer:
-        raise InvalidTokenError(f"Provider {provider} does not expose an issuer for token verification")
-
-    return [issuer]
-
-
-def _provider_token_audience(provider: AllowedProvider, auth_provider: AuthProvider) -> str | list[str] | None:
-    client_id = getattr(auth_provider, "client_id", None)
-    if not client_id:
-        raise InvalidTokenError(f"Provider {provider} does not expose a client_id for token verification")
-
-    if provider == "keycloak":
-        audiences = ["account", client_id, getattr(auth_provider, "m2m_client_id", client_id)]
-        return list(dict.fromkeys(audiences))
-
-    # Cognito access tokens omit the standard 'aud' claim; skipping audience
-    # verification avoids InvalidAudienceError for both id_token and access_token flows.
-    return None
-
-
-async def _decode_oidc_provider_token(
-    token: str,
-    provider: AllowedProvider,
-    auth_provider: AuthProvider,
-) -> dict[str, Any]:
-    jwks = await auth_provider.get_jwks()
-    matching_key = find_matching_jwk(jwks, get_token_kid(token))
-    audience = _provider_token_audience(provider, auth_provider)
-
-    last_issuer_error: InvalidIssuerError | None = None
-    for issuer in _provider_token_issuers(provider, auth_provider):
-        try:
-            return decode_jwt_with_jwk(
-                token,
-                matching_key,
-                algorithms=_OIDC_TOKEN_ALGORITHMS,
-                issuer=issuer,
-                audience=audience,
-            )
-        except InvalidIssuerError as e:
-            last_issuer_error = e
-
-    raise last_issuer_error or ValueError(f"Token issuer is not trusted for provider {provider}")
 
 
 def _is_registered_redirect_uri(client_metadata: dict[str, Any], redirect_uri: str) -> bool:
@@ -1152,42 +1093,16 @@ async def oauth2_callback(
         # Extract user information from tokens or userinfo
         mapped_user: dict[str, Any] | None = None
         try:
-            if provider in ["cognito", "keycloak"]:
-                if "id_token" in token_data:
-                    id_claims = await _decode_oidc_provider_token(token_data["id_token"], provider, auth_provider)
-                    mapped_user = {
-                        "username": id_claims.get("preferred_username") or id_claims.get("sub"),
-                        "email": id_claims.get("email"),
-                        "name": id_claims.get("name") or id_claims.get("given_name"),
-                        "idp_id": id_claims.get("sub"),
-                        "groups": id_claims.get("groups", []),
-                    }
-                elif "access_token" in token_data:
-                    access_claims = await _decode_oidc_provider_token(
-                        token_data["access_token"], provider, auth_provider
-                    )
-                    mapped_user = {
-                        "username": access_claims.get("username") or access_claims.get("sub"),
-                        "email": access_claims.get("email"),
-                        "name": access_claims.get("name"),
-                        "idp_id": access_claims.get("sub"),
-                        "groups": access_claims.get("groups", []),
-                    }
-                else:
-                    raise ValueError("No ID token and access token claims unavailable")
-            elif provider in ("entra", "google"):
-                user_info = await auth_provider.get_user_info(
-                    access_token=token_data["access_token"], id_token=token_data.get("id_token")
-                )
-                mapped_user = {
-                    "username": user_info.get("username"),
-                    "email": user_info.get("email"),
-                    "name": user_info.get("name"),
-                    "idp_id": user_info.get("id"),
-                    "groups": user_info.get("groups", []),
-                }
-            else:
-                raise ValueError(f"Unsupported provider {provider}")
+            user_info = await auth_provider.get_user_info(
+                access_token=token_data["access_token"], id_token=token_data.get("id_token")
+            )
+            mapped_user = {
+                "username": user_info.get("username"),
+                "email": user_info.get("email"),
+                "name": user_info.get("name"),
+                "idp_id": user_info.get("id"),
+                "groups": user_info.get("groups", []),
+            }
         except (
             InvalidSignatureError,
             InvalidTokenError,
@@ -1407,22 +1322,17 @@ def map_user_info(user_info: dict, provider_config: AuthProviderConfig | EntraCo
         "idp_id": user_info.get("sub") or user_info.get("id"),
         "groups": [],
     }
-    groups_claim = provider_config.get("groups_claim")
-    if groups_claim and groups_claim in user_info:
-        groups = user_info[groups_claim]
-        if isinstance(groups, list):
-            mapped["groups"] = groups
-        elif isinstance(groups, str):
-            mapped["groups"] = [groups]
-    else:
-        for possible_group_claim in ["cognito:groups", "groups", "custom:groups"]:
-            if possible_group_claim in user_info:
-                groups = user_info[possible_group_claim]
-                if isinstance(groups, list):
-                    mapped["groups"] = groups
-                elif isinstance(groups, str):
-                    mapped["groups"] = [groups]
-                break
+    # The configured claim wins when present; otherwise fall back to the standard "groups" claim.
+    candidates = dict.fromkeys(claim for claim in (provider_config.get("groups_claim"), "groups") if claim)
+    groups_claim = next((claim for claim in candidates if claim in user_info), None)
+    if groups_claim is None:
+        return mapped
+
+    groups = user_info[groups_claim]
+    if isinstance(groups, list):
+        mapped["groups"] = groups
+    elif isinstance(groups, str):
+        mapped["groups"] = [groups]
     return mapped
 
 

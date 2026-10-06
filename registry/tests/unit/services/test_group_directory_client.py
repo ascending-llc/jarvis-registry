@@ -6,49 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from registry.services.group_directory_client import (
-    CognitoGroupDirectoryClient,
     EntraIdGroupDirectoryClient,
     GoogleGroupDirectoryClient,
-    KeycloakGroupDirectoryClient,
 )
 from registry_pkgs.google.cloud_identity_client import GoogleWorkspaceGroupInfo
-
-
-async def test_cognito_get_user_group_ids_returns_empty():
-    client = CognitoGroupDirectoryClient()
-    result = await client.get_user_group_ids("some-oid")
-    assert result == []
-
-
-async def test_cognito_get_group_members_returns_empty():
-    client = CognitoGroupDirectoryClient()
-    result = await client.get_group_members("some-group-oid")
-    assert result == []
-
-
-async def test_cognito_get_group_details_batch_returns_empty():
-    client = CognitoGroupDirectoryClient()
-    result = await client.get_group_details_batch(["g1", "g2"])
-    assert result == []
-
-
-async def test_keycloak_get_user_group_ids_returns_empty():
-    client = KeycloakGroupDirectoryClient()
-    result = await client.get_user_group_ids("some-oid")
-    assert result == []
-
-
-async def test_keycloak_get_group_members_returns_empty():
-    client = KeycloakGroupDirectoryClient()
-    result = await client.get_group_members("some-group-oid")
-    assert result == []
-
-
-async def test_keycloak_get_group_details_batch_returns_empty():
-    client = KeycloakGroupDirectoryClient()
-    result = await client.get_group_details_batch(["g1"])
-    assert result == []
-
 
 # ---------------------------------------------------------------------------
 # GoogleGroupDirectoryClient

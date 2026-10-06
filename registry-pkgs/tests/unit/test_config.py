@@ -215,3 +215,25 @@ def test_jarvis_base_settings_still_validates_jwt_keys() -> None:
         pytest.raises(ValidationError, match="JWT_PRIVATE_KEY and JWT_PUBLIC_KEY must be provided"),
     ):
         JarvisBaseSettings()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("value", "expected"), [("entra", "entra"), ("google", "google"), ("Entra", "entra")])
+def test_auth_provider_accepts_entra_and_google_lowercased(value: str, expected: str) -> None:
+    settings = JarvisBaseSettings(auth_provider=value, x_jarvis_registry_import_checks="disabled")
+
+    assert settings.auth_provider == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["keycloak", "cognito"])
+def test_auth_provider_rejects_removed_providers(value: str) -> None:
+    with pytest.raises(ValidationError, match="auth_provider must be one of"):
+        JarvisBaseSettings(auth_provider=value, x_jarvis_registry_import_checks="disabled")
+
+
+@pytest.mark.unit
+def test_auth_provider_env_keycloak_raises() -> None:
+    env = {"AUTH_PROVIDER": "keycloak", "X_JARVIS_REGISTRY_IMPORT_CHECKS": "disabled", DISABLE_DOTENV_ENV_VAR: "1"}
+    with patch.dict(os.environ, env, clear=True), pytest.raises(ValidationError, match="auth_provider"):
+        JarvisBaseSettings()

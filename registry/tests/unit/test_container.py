@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from registry.container import RegistryContainer
+from registry.services.group_directory_client import EntraIdGroupDirectoryClient
+from registry_pkgs.models import ExtendedGroupSource
 
 _AIP_ARN = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/bedrock-governance-sonnet"
 _FALLBACK_MODEL = "amazon.nova-2-lite-v1:0"
@@ -149,3 +151,34 @@ async def test_shutdown_delegates_to_idempotent_skill_sync_runner(monkeypatch):
     await container.shutdown()
 
     runner.shutdown.assert_awaited_once()
+
+
+@pytest.mark.unit
+def test_entra_slot_is_real_client_even_when_auth_provider_is_google():
+    """The ENTRA slot is controlled only by entra_group_sync_enabled, not by AUTH_PROVIDER."""
+    settings = _make_settings()
+    settings.auth_provider = "google"
+    settings.entra_group_sync_enabled = True
+    settings.google_group_sync_enabled = False
+    settings.entra_tenant_id = "tenant-id"
+    settings.entra_client_id = "client-id"
+    settings.entra_client_secret = "client-secret"
+    settings.entra_graph_url = "https://graph.microsoft.com"
+    container = _make_container(settings)
+
+    clients = container.group_service._clients
+
+    assert isinstance(clients[ExtendedGroupSource.ENTRA], EntraIdGroupDirectoryClient)
+
+
+@pytest.mark.unit
+def test_entra_slot_absent_and_client_never_built_when_sync_disabled():
+    settings = _make_settings()
+    settings.entra_group_sync_enabled = False
+    settings.google_group_sync_enabled = False
+    container = _make_container(settings)
+
+    clients = container.group_service._clients
+
+    assert ExtendedGroupSource.ENTRA not in clients
+    assert "group_directory_client" not in container.__dict__

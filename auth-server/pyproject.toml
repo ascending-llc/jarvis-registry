@@ -22,9 +22,6 @@ dependencies = [
     "itsdangerous>=2.1.0",
     "authlib>=1.3.0",
 
-    # OAuth providers
-    "boto3>=1.28.0",  # For Cognito
-
     # workspace packages
     "registry-pkgs",
 ]

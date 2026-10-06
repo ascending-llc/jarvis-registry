@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 
-from .api.management_routes import router as management_router
 from .api.proxy_routes import router as proxy_router
 from .api.redirect_routes import router as auth_provider_router
 from .api.system_routes import router as system_router
@@ -36,7 +35,6 @@ def register_routers(app: FastAPI) -> None:
         prefix=f"/api/{settings.api_version}",
         tags=["Workflow Schedule Management V1"],
     )
-    app.include_router(management_router, prefix="/api")
     app.include_router(search_router, prefix=f"/api/{settings.api_version}", tags=["Semantic Search"])
     app.include_router(health_router, prefix="/api/health", tags=["Health Monitoring"])
     app.include_router(oauth_router, prefix=f"/api/{settings.api_version}", tags=["MCP  Oauth Management"])

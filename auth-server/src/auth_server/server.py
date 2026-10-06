@@ -1,6 +1,5 @@
 """
-Simplified Authentication server that validates JWT tokens against Amazon Cognito.
-Configuration is passed via headers instead of environment variables.
+Jarvis Auth Server: OAuth2/OIDC authentication against Microsoft Entra ID and Google.
 """
 
 import logging
@@ -128,7 +127,7 @@ logger.info(f"Auth server API prefix: '{api_prefix}'")
 
 app = FastAPI(
     title="Jarvis Auth Server",
-    description="Authentication server to integrate with Identity Providers like Cognito, Keycloak, Entra ID",
+    description="Authentication server to integrate with Identity Providers like Microsoft Entra ID and Google",
     version="0.1.0",
     lifespan=lifespan,
     docs_url=f"{api_prefix}/docs" if api_prefix else "/docs",
