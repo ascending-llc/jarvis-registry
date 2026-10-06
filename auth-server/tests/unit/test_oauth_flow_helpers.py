@@ -1,8 +1,9 @@
-"""Unit tests for oauth_flow redirect_uri helpers."""
+"""Unit tests for oauth_flow helpers."""
 
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from itsdangerous import URLSafeTimedSerializer
 
 from auth_server.routes.oauth_flow import (
@@ -11,6 +12,7 @@ from auth_server.routes.oauth_flow import (
     _redirect_to_provider,
     _trusted_error_redirect_uris,
     _validate_known_client_for_redirect,
+    map_user_info,
 )
 from registry_pkgs.core.client_categories import AUTHORIZATION_CODE_GRANT_TYPE
 from registry_pkgs.core.redirect_uri import is_safe_unverified_redirect_target
@@ -177,3 +179,65 @@ def test_redirect_error_to_client_builds_302_with_oauth_error() -> None:
         "error_description": ["Unknown client_id"],
         "state": ["client-state"],
     }
+
+
+def _claims_config(groups_claim: str | None) -> dict:
+    return {
+        "username_claim": "preferred_username",
+        "email_claim": "email",
+        "name_claim": "name",
+        "groups_claim": groups_claim,
+    }
+
+
+class TestMapUserInfo:
+    def test_maps_identity_claims(self) -> None:
+        user_info = {"preferred_username": "alice", "email": "a@example.com", "name": "Alice", "sub": "sub-1"}
+
+        mapped = map_user_info(user_info, _claims_config("groups"))
+
+        assert mapped == {
+            "username": "alice",
+            "email": "a@example.com",
+            "name": "Alice",
+            "idp_id": "sub-1",
+            "groups": [],
+        }
+
+    def test_configured_groups_claim_list(self) -> None:
+        mapped = map_user_info({"roles": ["g1", "g2"]}, _claims_config("roles"))
+
+        assert mapped["groups"] == ["g1", "g2"]
+
+    def test_configured_groups_claim_str_is_wrapped(self) -> None:
+        mapped = map_user_info({"roles": "g1"}, _claims_config("roles"))
+
+        assert mapped["groups"] == ["g1"]
+
+    def test_null_groups_claim_falls_back_to_groups(self) -> None:
+        # Google config: groups_claim is null in oauth2_providers.yml.
+        mapped = map_user_info({"groups": ["g1"]}, _claims_config(None))
+
+        assert mapped["groups"] == ["g1"]
+
+    def test_null_groups_claim_without_groups_key_is_empty(self) -> None:
+        mapped = map_user_info({"email": "a@example.com"}, _claims_config(None))
+
+        assert mapped["groups"] == []
+
+    def test_configured_claim_absent_falls_back_to_groups(self) -> None:
+        mapped = map_user_info({"groups": ["g1"]}, _claims_config("roles"))
+
+        assert mapped["groups"] == ["g1"]
+
+    def test_configured_claim_wins_over_groups(self) -> None:
+        mapped = map_user_info({"roles": ["r1"], "groups": ["g1"]}, _claims_config("roles"))
+
+        assert mapped["groups"] == ["r1"]
+
+    @pytest.mark.parametrize("groups_claim", [None, "groups"])
+    @pytest.mark.parametrize("cognito_claim", ["cognito:groups", "custom:groups"])
+    def test_cognito_group_claims_are_ignored(self, groups_claim: str | None, cognito_claim: str) -> None:
+        mapped = map_user_info({cognito_claim: ["g1"]}, _claims_config(groups_claim))
+
+        assert mapped["groups"] == []

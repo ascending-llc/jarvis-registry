@@ -20,6 +20,7 @@ from auth_server.deps import (
     get_user_service,
 )
 from auth_server.routes.oauth_flow import router
+from tests.support.auth_provider import _mock_entra_provider
 from tests.support.oauth_state_store import InMemoryOAuthStateStore
 
 
@@ -103,7 +104,7 @@ def _client() -> tuple[TestClient, InMemoryOAuthStateStore, _InMemoryConsentStor
 def _oauth2_config() -> dict[str, Any]:
     return {
         "providers": {
-            "keycloak": {
+            "entra": {
                 "enabled": True,
                 "client_id": "provider-client",
                 "client_secret": "provider-secret",
@@ -115,17 +116,6 @@ def _oauth2_config() -> dict[str, Any]:
             }
         }
     }
-
-
-def _auth_provider() -> MagicMock:
-    provider = MagicMock()
-    provider.get_jwks = AsyncMock(return_value={"keys": [{"kid": "test-kid"}]})
-    provider.client_id = "provider-client"
-    provider.m2m_client_id = "provider-client"
-    provider.realm = "test-realm"
-    provider.realm_url = "https://idp.example.com/realms/test-realm"
-    provider.external_realm_url = "https://idp.example.com/realms/test-realm"
-    return provider
 
 
 def _user_service() -> MagicMock:
@@ -488,34 +478,29 @@ def test_deny_consent_rejects_redirect_error_payload_without_consuming() -> None
 
 
 @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-@patch("auth_server.routes.oauth_flow.get_token_kid")
-@patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
 def test_oauth_callback_without_client_consent_redirects_to_consent(
-    mock_decode_jwt,
-    mock_get_token_kid,
     mock_exchange_code_for_token,
 ) -> None:
     client, oauth_store, _, pending_store = _client()
     signer = URLSafeTimedSerializer("test-secret-key")
     mock_exchange_code_for_token.return_value = {"access_token": "provider-token", "id_token": "provider-id-token"}
-    mock_get_token_kid.return_value = "test-kid"
-    mock_decode_jwt.return_value = {
-        "sub": "provider-user",
-        "preferred_username": "alice",
+    user_info = {
+        "username": "alice",
         "email": "alice@example.com",
         "name": "Alice",
+        "id": "provider-user",
         "groups": ["jarvis-registry-admin"],
     }
 
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
     client.app.dependency_overrides[get_signer] = lambda: signer
-    client.app.dependency_overrides[get_auth_provider] = _auth_provider
+    client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
     client.app.dependency_overrides[get_user_service] = _user_service
 
     session_data = {
         "state": "internal-state",
         "client_state": "client-state",
-        "provider": "keycloak",
+        "provider": "entra",
         "redirect_uri": "https://client.example.com/callback",
         "client_id": "external-client",
         "client_redirect_uri": "https://client.example.com/callback",
@@ -525,7 +510,7 @@ def test_oauth_callback_without_client_consent_redirects_to_consent(
 
     client.cookies.set(settings.oauth2_temp_session_cookie_name, signer.dumps(session_data))
     response = client.get(
-        "/auth/oauth2/callback/keycloak",
+        "/auth/oauth2/callback/entra",
         params={"code": "idp-code", "state": "internal-state"},
         follow_redirects=False,
     )
@@ -539,35 +524,30 @@ def test_oauth_callback_without_client_consent_redirects_to_consent(
 
 
 @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-@patch("auth_server.routes.oauth_flow.get_token_kid")
-@patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
 def test_oauth_callback_with_cached_client_consent_skips_consent(
-    mock_decode_jwt,
-    mock_get_token_kid,
     mock_exchange_code_for_token,
 ) -> None:
     client, oauth_store, consent_store, pending_store = _client()
     signer = URLSafeTimedSerializer("test-secret-key")
     consent_store.grant_client_consent("507f1f77bcf86cd799439011", "external-client")
     mock_exchange_code_for_token.return_value = {"access_token": "provider-token", "id_token": "provider-id-token"}
-    mock_get_token_kid.return_value = "test-kid"
-    mock_decode_jwt.return_value = {
-        "sub": "provider-user",
-        "preferred_username": "alice",
+    user_info = {
+        "username": "alice",
         "email": "alice@example.com",
         "name": "Alice",
+        "id": "provider-user",
         "groups": ["jarvis-registry-admin"],
     }
 
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
     client.app.dependency_overrides[get_signer] = lambda: signer
-    client.app.dependency_overrides[get_auth_provider] = _auth_provider
+    client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
     client.app.dependency_overrides[get_user_service] = _user_service
 
     session_data = {
         "state": "internal-state",
         "client_state": "client-state",
-        "provider": "keycloak",
+        "provider": "entra",
         "redirect_uri": "https://client.example.com/callback",
         "client_id": "external-client",
         "client_redirect_uri": "https://client.example.com/callback",
@@ -577,7 +557,7 @@ def test_oauth_callback_with_cached_client_consent_skips_consent(
 
     client.cookies.set(settings.oauth2_temp_session_cookie_name, signer.dumps(session_data))
     response = client.get(
-        "/auth/oauth2/callback/keycloak",
+        "/auth/oauth2/callback/entra",
         params={"code": "idp-code", "state": "internal-state"},
         follow_redirects=False,
     )
@@ -591,34 +571,29 @@ def test_oauth_callback_with_cached_client_consent_skips_consent(
 
 
 @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-@patch("auth_server.routes.oauth_flow.get_token_kid")
-@patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
 def test_oauth_callback_registry_client_skips_consent(
-    mock_decode_jwt,
-    mock_get_token_kid,
     mock_exchange_code_for_token,
 ) -> None:
     client, oauth_store, _, pending_store = _client()
     signer = URLSafeTimedSerializer("test-secret-key")
     mock_exchange_code_for_token.return_value = {"access_token": "provider-token", "id_token": "provider-id-token"}
-    mock_get_token_kid.return_value = "test-kid"
-    mock_decode_jwt.return_value = {
-        "sub": "provider-user",
-        "preferred_username": "alice",
+    user_info = {
+        "username": "alice",
         "email": "alice@example.com",
         "name": "Alice",
+        "id": "provider-user",
         "groups": ["jarvis-registry-admin"],
     }
 
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
     client.app.dependency_overrides[get_signer] = lambda: signer
-    client.app.dependency_overrides[get_auth_provider] = _auth_provider
+    client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
     client.app.dependency_overrides[get_user_service] = _user_service
 
     session_data = {
         "state": "internal-state",
         "client_state": "client-state",
-        "provider": "keycloak",
+        "provider": "entra",
         "redirect_uri": "https://registry.example.com/callback",
         "client_id": "jarvis-registry-client",
         "client_redirect_uri": "https://registry.example.com/callback",
@@ -628,7 +603,7 @@ def test_oauth_callback_registry_client_skips_consent(
 
     client.cookies.set(settings.oauth2_temp_session_cookie_name, signer.dumps(session_data))
     response = client.get(
-        "/auth/oauth2/callback/keycloak",
+        "/auth/oauth2/callback/entra",
         params={"code": "idp-code", "state": "internal-state"},
         follow_redirects=False,
     )

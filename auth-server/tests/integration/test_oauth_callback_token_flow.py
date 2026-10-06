@@ -26,9 +26,9 @@ from auth_server.providers.google import GoogleDomainNotAllowedError, GoogleEmai
 from auth_server.server import app
 from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
-from registry_pkgs.core.jwt_utils import InvalidSignatureError, InvalidTokenError
+from registry_pkgs.core.jwt_utils import InvalidTokenError
 from tests.conftest import test_consent_store
-from tests.integration.conftest import _mock_keycloak_provider
+from tests.support.auth_provider import _mock_entra_provider
 from tests.support.oauth_state_store import authorization_codes_storage, test_oauth_state_store
 
 API_PREFIX = "/auth"
@@ -51,14 +51,8 @@ class TestOAuth2CallbackStandardFlow:
     """Test OAuth2 callback with standard OAuth client flow."""
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-    @patch("auth_server.routes.oauth_flow.get_user_info")
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_always_generates_authorization_code(
         self,
-        mock_decode_jwt,
-        mock_get_token_kid,
-        mock_get_user_info,
         mock_exchange_token,
         clear_device_storage,
         mock_user_service,
@@ -66,32 +60,24 @@ class TestOAuth2CallbackStandardFlow:
         """Test that oauth2_callback always generates authorization code (for both external clients and registry)."""
         # Mock provider token exchange
         mock_exchange_token.return_value = {"access_token": "provider_access_token", "id_token": "provider_id_token"}
-        mock_get_token_kid.return_value = "test-kid"
 
         # Mock user info from provider
-        mock_decode_jwt.return_value = {
-            "sub": "provider-user-123",
-            "preferred_username": "testuser",
+        user_info = {
+            "username": "testuser",
             "email": "test@example.com",
             "name": "Test User",
-            "groups": ["jarvis-registry-admin"],
-        }
-        mock_get_user_info.return_value = {
-            "sub": "provider-user-123",
-            "preferred_username": "testuser",
-            "email": "test@example.com",
-            "name": "Test User",
+            "id": "provider-user-123",
             "groups": ["jarvis-registry-admin"],
         }
 
         oauth2_config = {
             "providers": {
-                "keycloak": {
+                "entra": {
                     "enabled": True,
                     "client_id": "test-client",
                     "client_secret": "test-secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
+                    "token_url": "http://entra/token",
+                    "user_info_url": "http://entra/userinfo",
                     "username_claim": "preferred_username",
                     "email_claim": "email",
                     "name_claim": "name",
@@ -120,7 +106,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+            app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
             test_client = TestClient(app)
 
@@ -128,7 +114,7 @@ class TestOAuth2CallbackStandardFlow:
             session_data = {
                 "state": "test-state-123",
                 "client_state": None,
-                "provider": "keycloak",
+                "provider": "entra",
                 "redirect_uri": "http://localhost:3000/redirect",
                 "client_id": "mock-client-id",
                 "code_challenge": "123",
@@ -140,7 +126,7 @@ class TestOAuth2CallbackStandardFlow:
             # Make callback request
             test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "provider_auth_code", "state": "test-state-123"},
                 follow_redirects=False,
             )
@@ -174,45 +160,31 @@ class TestOAuth2CallbackStandardFlow:
             assert "used" not in code_data
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-    @patch("auth_server.routes.oauth_flow.get_user_info")
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_external_client_with_client_id(
         self,
-        mock_decode_jwt,
-        mock_get_token_kid,
-        mock_get_user_info,
         mock_exchange_token,
         clear_device_storage,
         mock_user_service,
     ):
         """Test oauth2_callback with explicit client_id (external OAuth client)."""
         mock_exchange_token.return_value = {"access_token": "provider_access_token", "id_token": "provider_id_token"}
-        mock_get_token_kid.return_value = "test-kid"
 
-        mock_decode_jwt.return_value = {
-            "sub": "provider-user-456",
-            "preferred_username": "externaluser",
+        user_info = {
+            "username": "externaluser",
             "email": "external@example.com",
             "name": "External User",
-            "groups": ["jarvis-registry-admin"],
-        }
-        mock_get_user_info.return_value = {
-            "sub": "provider-user-456",
-            "preferred_username": "externaluser",
-            "email": "external@example.com",
-            "name": "External User",
+            "id": "provider-user-456",
             "groups": ["jarvis-registry-admin"],
         }
 
         oauth2_config = {
             "providers": {
-                "keycloak": {
+                "entra": {
                     "enabled": True,
                     "client_id": "test-client",
                     "client_secret": "test-secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
+                    "token_url": "http://entra/token",
+                    "user_info_url": "http://entra/userinfo",
                     "username_claim": "preferred_username",
                     "email_claim": "email",
                     "name_claim": "name",
@@ -239,7 +211,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+            app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
             test_client = TestClient(app)
 
@@ -247,7 +219,7 @@ class TestOAuth2CallbackStandardFlow:
             session_data = {
                 "state": "test-state-456",
                 "client_state": "external-state-abc",
-                "provider": "keycloak",
+                "provider": "entra",
                 "redirect_uri": "http://external-app.com/callback",
                 "client_id": "external-client-123",
                 "client_redirect_uri": "http://external-app.com/callback",
@@ -258,7 +230,7 @@ class TestOAuth2CallbackStandardFlow:
 
             test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "provider_auth_code", "state": "test-state-456"},
                 follow_redirects=False,
             )
@@ -282,171 +254,6 @@ class TestOAuth2CallbackStandardFlow:
             assert code_data["redirect_uri"] == "http://external-app.com/callback"
             assert code_data["code_challenge"] == "test-challenge"
             assert code_data["code_challenge_method"] == "S256"
-
-    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
-    def test_oauth_callback_keycloak_id_token_parsing(
-        self, mock_jwt_decode, mock_get_token_kid, mock_exchange_token, clear_device_storage, mock_user_service
-    ):
-        """Test that Keycloak ID token is properly parsed."""
-        mock_exchange_token.return_value = {"access_token": "keycloak_access", "id_token": "keycloak_id_token"}
-        mock_get_token_kid.return_value = "test-kid"
-
-        # Mock verified JWT claims for ID token
-        mock_jwt_decode.return_value = {
-            "sub": "keycloak-sub-789",
-            "preferred_username": "keycloakuser",
-            "email": "keycloak@example.com",
-            "name": "Keycloak User",
-            "groups": ["jarvis-registry-admin", "/users"],
-        }
-
-        oauth2_config = {
-            "providers": {
-                "keycloak": {
-                    "enabled": True,
-                    "client_id": "test-client",
-                    "client_secret": "test-secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
-                }
-            }
-        }
-
-        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
-            mock_settings.registry_url = "http://localhost:3000"
-            mock_settings.registry_app_name = "registry-internal-client"
-            mock_settings.auth_server_external_url = "http://localhost:8888"
-            mock_settings.auth_server_url = "http://localhost:8888"
-            mock_settings.auth_server_api_prefix = ""
-            mock_settings.oauth_session_ttl_seconds = 600
-            mock_settings.secret_key = "test-secret-key"
-            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
-            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
-
-            test_signer = URLSafeTimedSerializer("test-secret-key")
-
-            app.dependency_overrides = {}
-
-            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
-            app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
-
-            test_client = TestClient(app)
-
-            session_data = {
-                "state": "test-state-789",
-                "client_state": None,
-                "provider": "keycloak",
-                "redirect_uri": "http://localhost:3000/redirect",
-                "client_id": "mock-client-id",
-                "code_challenge": "123",
-                "code_challenge_method": "S256",
-                "client_redirect_uri": "http://localhost:3000/redirect",
-            }
-            temp_session = test_signer.dumps(session_data)
-
-            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
-            response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
-                params={"code": "keycloak_code", "state": "test-state-789"},
-                follow_redirects=False,
-            )
-
-            # Extract authorization code
-            import urllib.parse
-
-            location = response.headers["location"]
-            parsed_url = urllib.parse.urlparse(location)
-            query_params = urllib.parse.parse_qs(parsed_url.query)
-            auth_code = query_params.get("code", [None])[0]
-
-            # Verify user info from ID token
-            code_data = authorization_codes_storage[auth_code]
-            user_info = code_data["user_info"]
-            assert user_info["username"] == "keycloakuser"
-            assert user_info["email"] == "keycloak@example.com"
-            assert user_info["groups"] == ["jarvis-registry-admin", "/users"]
-            assert user_info["idp_id"] == "keycloak-sub-789"
-
-    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-    @patch("auth_server.routes.oauth_flow.get_user_info")
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
-    def test_oauth_callback_rejects_invalid_token_signature(
-        self,
-        mock_decode_jwt,
-        mock_get_token_kid,
-        mock_get_user_info,
-        mock_exchange_token,
-        clear_device_storage,
-        mock_user_service,
-    ):
-        """Invalid OIDC token signatures must not fall back to userInfo."""
-        mock_exchange_token.return_value = {"access_token": "keycloak_access", "id_token": "keycloak_id_token"}
-        mock_get_token_kid.return_value = "test-kid"
-        mock_decode_jwt.side_effect = InvalidSignatureError("bad signature")
-
-        oauth2_config = {
-            "providers": {
-                "keycloak": {
-                    "enabled": True,
-                    "client_id": "test-client",
-                    "client_secret": "test-secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
-                    "username_claim": "preferred_username",
-                    "email_claim": "email",
-                    "name_claim": "name",
-                    "groups_claim": "groups",
-                }
-            }
-        }
-
-        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
-            mock_settings.registry_url = "http://localhost:3000"
-            mock_settings.auth_server_external_url = "http://localhost:8888"
-            mock_settings.auth_server_url = "http://localhost:8888"
-            mock_settings.auth_server_api_prefix = ""
-            mock_settings.oauth_session_ttl_seconds = 600
-            mock_settings.secret_key = "test-secret-key"
-            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
-            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
-
-            test_signer = URLSafeTimedSerializer("test-secret-key")
-            app.dependency_overrides = {}
-            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
-            app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
-
-            test_client = TestClient(app)
-            session_data = {
-                "state": "test-state-invalid-signature",
-                "client_state": None,
-                "provider": "keycloak",
-                "redirect_uri": "http://localhost:3000/redirect",
-                "client_id": "mock-client-id",
-                "code_challenge": "123",
-                "code_challenge_method": "S256",
-                "client_redirect_uri": "http://localhost:3000/redirect",
-            }
-            temp_session = test_signer.dumps(session_data)
-
-            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
-            response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
-                params={"code": "keycloak_code", "state": "test-state-invalid-signature"},
-                follow_redirects=False,
-            )
-
-        assert response.status_code == 302
-        assert "Something+went+wrong+during+sign-in" in response.headers["location"]
-        mock_get_user_info.assert_not_called()
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
@@ -726,125 +533,31 @@ class TestOAuth2CallbackStandardFlow:
         assert "organization+is+not+authorized" in response.headers["location"]
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
-    def test_oauth_callback_verifies_access_token_when_id_token_missing(
-        self,
-        mock_decode_jwt,
-        mock_get_token_kid,
-        mock_exchange_token,
-        clear_device_storage,
-        mock_user_service,
-    ):
-        """Access-token-only provider responses are verified before claim mapping."""
-        mock_exchange_token.return_value = {"access_token": "keycloak_access"}
-        mock_get_token_kid.return_value = "test-kid"
-        mock_decode_jwt.return_value = {
-            "sub": "access-sub-123",
-            "username": "accessuser",
-            "email": "access@example.com",
-            "name": "Access User",
-            "groups": ["jarvis-registry-admin"],
-        }
-
-        oauth2_config = {
-            "providers": {
-                "keycloak": {
-                    "enabled": True,
-                    "client_id": "test-client",
-                    "client_secret": "test-secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
-                    "username_claim": "preferred_username",
-                    "email_claim": "email",
-                    "name_claim": "name",
-                    "groups_claim": "groups",
-                }
-            }
-        }
-
-        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
-            mock_settings.registry_url = "http://localhost:3000"
-            mock_settings.auth_server_external_url = "http://localhost:8888"
-            mock_settings.auth_server_url = "http://localhost:8888"
-            mock_settings.auth_server_api_prefix = ""
-            mock_settings.oauth_session_ttl_seconds = 600
-            mock_settings.secret_key = "test-secret-key"
-            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
-            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
-
-            test_signer = URLSafeTimedSerializer("test-secret-key")
-            app.dependency_overrides = {}
-            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
-            app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
-
-            test_client = TestClient(app)
-            session_data = {
-                "state": "test-state-access-token-only",
-                "client_state": None,
-                "provider": "keycloak",
-                "redirect_uri": "http://localhost:3000/redirect",
-                "client_id": "mock-client-id",
-                "code_challenge": "123",
-                "code_challenge_method": "S256",
-                "client_redirect_uri": "http://localhost:3000/redirect",
-            }
-            temp_session = test_signer.dumps(session_data)
-
-            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
-            response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
-                params={"code": "keycloak_code", "state": "test-state-access-token-only"},
-                follow_redirects=False,
-            )
-
-        assert response.status_code == 302
-        location = response.headers["location"]
-        assert "code=" in location
-
-        import urllib.parse
-
-        parsed_url = urllib.parse.urlparse(location)
-        query_params = urllib.parse.parse_qs(parsed_url.query)
-        auth_code = query_params.get("code", [None])[0]
-        user_info = authorization_codes_storage[auth_code]["user_info"]
-        assert user_info["username"] == "accessuser"
-        assert user_info["idp_id"] == "access-sub-123"
-
-    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
-    @patch("auth_server.routes.oauth_flow.get_token_kid")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_user_id_not_resolved(
         self,
-        mock_decode_jwt,
-        mock_get_token_kid,
         mock_get_user_info,
         mock_exchange,
         clear_device_storage,
     ):
-        """User not yet in MongoDB: JWKS verification succeeds; auth code is issued with user_id=None."""
+        """User not yet in MongoDB: provider get_user_info succeeds; auth code is issued with user_id=None."""
         mock_exchange.return_value = {"access_token": "token", "id_token": "id"}
-        mock_get_token_kid.return_value = "test-kid"
-        mock_decode_jwt.return_value = {
-            "sub": "new-user",
-            "preferred_username": "newuser",
+        user_info = {
+            "username": "newuser",
             "email": "new@example.com",
             "name": "New User",
+            "id": "new-user",
             "groups": ["jarvis-registry-admin"],
         }
 
         oauth2_config = {
             "providers": {
-                "keycloak": {
+                "entra": {
                     "enabled": True,
                     "client_id": "test",
                     "client_secret": "secret",
-                    "token_url": "http://keycloak/token",
-                    "user_info_url": "http://keycloak/userinfo",
+                    "token_url": "http://entra/token",
+                    "user_info_url": "http://entra/userinfo",
                     "username_claim": "preferred_username",
                     "email_claim": "email",
                     "name_claim": "name",
@@ -874,14 +587,14 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+            app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
             test_client = TestClient(app)
 
             session_data = {
                 "state": "test-state",
                 "client_state": None,
-                "provider": "keycloak",
+                "provider": "entra",
                 "redirect_uri": "http://localhost:3000/redirect",
                 "client_id": "mock-client-id",
                 "code_challenge": "123",
@@ -892,7 +605,7 @@ class TestOAuth2CallbackStandardFlow:
 
             test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "code", "state": "test-state"},
                 follow_redirects=False,
             )

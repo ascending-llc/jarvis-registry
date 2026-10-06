@@ -55,9 +55,9 @@ class TestCreateGoogleProvider:
 class TestGetAuthProviderDispatch:
     def test_google_branch_routes_to_google_provider(self):
         oauth2_config = {"providers": {"google": _google_config()}}
-        provider = get_auth_provider("google", Mock(), oauth2_config, Mock())
+        provider = get_auth_provider("google", oauth2_config, Mock())
         assert isinstance(provider, GoogleProvider)
 
     def test_unknown_provider_raises(self):
         with pytest.raises(ValueError, match="Unknown auth provider"):
-            get_auth_provider("nope", Mock(), {"providers": {}}, Mock())
+            get_auth_provider("nope", {"providers": {}}, Mock())

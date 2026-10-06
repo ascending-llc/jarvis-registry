@@ -14,24 +14,22 @@ class TestEnabledCoercion:
             "providers"
         ]
 
-        for name in ("keycloak", "cognito", "entra", "google"):
+        for name in ("entra", "google"):
             assert isinstance(providers[name]["enabled"], bool), name
 
     def test_every_provider_toggle_is_env_driven(self):
         providers = OAuth2ConfigLoader(
             AuthSettings(
-                keycloak_enabled="true",
-                cognito_enabled="true",
                 entra_enabled="true",
                 google_enabled="true",
             )
         ).get_config()["providers"]
 
         listed = {name for name, cfg in providers.items() if cfg["enabled"]}
-        assert listed == {"keycloak", "cognito", "entra", "google"}
+        assert listed == {"entra", "google"}
 
     def test_demo_case_only_google_and_entra(self):
-        # Demo env: GOOGLE_ENABLED=true; entra on by default; keycloak/cognito off by default.
+        # Demo env: GOOGLE_ENABLED=true; entra on by default.
         providers = OAuth2ConfigLoader(AuthSettings(google_enabled="true")).get_config()["providers"]
 
         listed = {name for name, cfg in providers.items() if cfg["enabled"]}
@@ -40,11 +38,7 @@ class TestEnabledCoercion:
     def test_blank_toggle_falls_back_to_default(self):
         # A blank env value (e.g. `ENTRA_ENABLED=`) is a valid string and must not crash startup;
         # `${VAR:-default}` then applies the default.
-        providers = OAuth2ConfigLoader(
-            AuthSettings(keycloak_enabled="", cognito_enabled="", entra_enabled="", google_enabled="")
-        ).get_config()["providers"]
+        providers = OAuth2ConfigLoader(AuthSettings(entra_enabled="", google_enabled="")).get_config()["providers"]
 
         assert providers["entra"]["enabled"] is True  # only entra defaults on
         assert providers["google"]["enabled"] is False
-        assert providers["keycloak"]["enabled"] is False
-        assert providers["cognito"]["enabled"] is False

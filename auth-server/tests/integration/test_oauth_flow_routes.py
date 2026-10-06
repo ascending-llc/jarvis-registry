@@ -23,6 +23,7 @@ from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from tests.conftest import test_consent_store, test_pending_consent_store
+from tests.support.auth_provider import _mock_entra_provider
 from tests.support.oauth_state_store import (
     authorization_codes_storage,
     device_codes_storage,
@@ -36,21 +37,6 @@ API_PREFIX = "/auth"
 
 OAUTH2_CONFIG = {
     "providers": {
-        "keycloak": {
-            "enabled": True,
-            "client_id": "provider-client",
-            "client_secret": "provider-secret",
-            "response_type": "code",
-            "grant_type": "authorization_code",
-            "scopes": ["openid", "profile", "email"],
-            "auth_url": "https://idp.example.com/authorize",
-            "token_url": "https://idp.example.com/token",
-            "user_info_url": "https://idp.example.com/userinfo",
-            "username_claim": "preferred_username",
-            "email_claim": "email",
-            "name_claim": "name",
-            "groups_claim": "groups",
-        },
         "entra": {
             "enabled": True,
             "client_id": "entra-provider-client",
@@ -106,14 +92,6 @@ def _configure_user_service(test_client: TestClient, user_id: str = "user-123") 
     return user_service
 
 
-def _mock_auth_provider_override() -> Mock:
-    return Mock()
-
-
-def _configure_auth_provider(test_client: TestClient) -> None:
-    test_client.app.dependency_overrides[get_auth_provider] = _mock_auth_provider_override
-
-
 def _seed_legacy_client_without_device_grant() -> None:
     test_oauth_state_store.save_client(
         "legacy-client",
@@ -152,7 +130,7 @@ def _approve_device_directly(device_code: str, resolved_scope: str = "mcp-proxy-
         "idp_id": "idp-123",
         "groups": ["registry-users"],
         "user_id": "user-123",
-        "provider": "keycloak",
+        "provider": "entra",
     }
     device_data["resolved_scope"] = [resolved_scope]
     device_codes_storage[device_code] = device_data
@@ -489,6 +467,18 @@ class TestA2ADynamicClientRegistration:
         assert token_data["scope"] == "a2a-proxy-ops"
         assert decode_jwt_unverified(token_data["access_token"])["scope"] == "a2a-proxy-ops"
         assert refresh_tokens_storage[token_data["refresh_token"]]["scope"] == "a2a-proxy-ops"
+
+
+@pytest.mark.integration
+@pytest.mark.oauth_flow
+@pytest.mark.parametrize(
+    "path",
+    ["/oauth2/login/keycloak", "/oauth2/login/cognito", "/oauth2/callback/keycloak", "/oauth2/callback/cognito"],
+)
+def test_removed_providers_are_rejected_by_path_validation(test_client: TestClient, path: str):
+    response = test_client.get(f"{API_PREFIX}{path}", follow_redirects=False)
+
+    assert response.status_code == 422
 
 
 @pytest.mark.integration
@@ -918,9 +908,9 @@ class TestDeviceFlowRoutes:
         )
 
         assert response.status_code == 302
-        assert response.headers["location"].startswith("https://idp.example.com/authorize?")
+        assert response.headers["location"].startswith("https://login.microsoftonline.com/authorize?")
         assert (
-            "redirect_uri=http%3A%2F%2Flocalhost%3A8888%2Fauth%2Foauth2%2Fcallback%2Fkeycloak"
+            "redirect_uri=http%3A%2F%2Flocalhost%3A8888%2Fauth%2Foauth2%2Fcallback%2Fentra"
             in response.headers["location"]
         )
 
@@ -1173,7 +1163,7 @@ class TestDeviceFlowCallbackAndConsent:
         clear_device_storage,
     ):
         _configure_oauth2(test_client)
-        _configure_auth_provider(test_client)
+        test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider()
         _configure_user_service(test_client)
         data = _start_device_flow(test_client, scope="servers-read")
         verify_response = test_client.post(
@@ -1192,7 +1182,7 @@ class TestDeviceFlowCallbackAndConsent:
         ):
             test_client.cookies.set("oauth2_temp_session", session_cookie)
             callback_response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "provider-code", "state": state_param},
                 follow_redirects=False,
             )
@@ -1220,7 +1210,7 @@ class TestDeviceFlowCallbackAndConsent:
         clear_device_storage,
     ):
         _configure_oauth2(test_client)
-        _configure_auth_provider(test_client)
+        test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider()
         _configure_user_service(test_client)
         data = _start_device_flow(test_client, scope="servers-read")
         verify_response = test_client.post(
@@ -1240,7 +1230,7 @@ class TestDeviceFlowCallbackAndConsent:
         ):
             test_client.cookies.set("oauth2_temp_session", session_cookie)
             callback_response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "provider-code", "state": state_param},
                 follow_redirects=False,
             )
@@ -1266,7 +1256,14 @@ class TestDeviceFlowCallbackAndConsent:
         clear_device_storage,
     ):
         _configure_oauth2(test_client)
-        _configure_auth_provider(test_client)
+        user_info = {
+            "username": "test-user",
+            "email": "test@example.com",
+            "name": "Test User",
+            "id": "idp-123",
+            "groups": ["registry-users"],
+        }
+        test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
         _configure_user_service(test_client)
         data = _start_device_flow(test_client, scope="servers-read")
         verify_response = test_client.post(
@@ -1280,26 +1277,18 @@ class TestDeviceFlowCallbackAndConsent:
         state_param = _extract_state_from_temp_session(session_cookie)
         with (
             patch("auth_server.routes.oauth_flow.exchange_code_for_token", new_callable=AsyncMock) as exchange_token,
-            patch("auth_server.routes.oauth_flow.get_user_info", new_callable=AsyncMock) as get_user_info,
             patch("auth_server.routes.oauth_flow.map_groups_to_scopes", return_value=["servers-read", "agents-read"]),
         ):
             exchange_token.return_value = {"access_token": "provider-token"}
-            get_user_info.return_value = {
-                "preferred_username": "test-user",
-                "email": "test@example.com",
-                "name": "Test User",
-                "sub": "idp-123",
-                "groups": ["registry-users"],
-            }
             test_client.cookies.set("oauth2_temp_session", session_cookie)
             response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "provider-code", "state": state_param},
             )
 
         assert response.status_code == 200
         exchange_token.assert_awaited_once()
-        assert exchange_token.await_args.args[3] == "http://localhost:8888/auth/oauth2/callback/keycloak"
+        assert exchange_token.await_args.args[3] == "http://localhost:8888/auth/oauth2/callback/entra"
         assert "Your device is connected" in response.text
         assert device_codes_storage[data["device_code"]]["status"] == "approved"
         assert device_codes_storage[data["device_code"]]["resolved_scope"] == ["servers-read"]
@@ -1310,7 +1299,14 @@ class TestDeviceFlowCallbackAndConsent:
         clear_device_storage,
     ):
         _configure_oauth2(test_client)
-        _configure_auth_provider(test_client)
+        user_info = {
+            "username": "test-user",
+            "email": "test@example.com",
+            "name": "Test User",
+            "id": "idp-123",
+            "groups": ["registry-users"],
+        }
+        test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
         _configure_user_service(test_client)
         test_consent_store.default_client_consent = False
         data = _start_device_flow(test_client, scope="servers-read")
@@ -1325,27 +1321,19 @@ class TestDeviceFlowCallbackAndConsent:
         state_param = _extract_state_from_temp_session(session_cookie)
         with (
             patch("auth_server.routes.oauth_flow.exchange_code_for_token", new_callable=AsyncMock) as exchange_token,
-            patch("auth_server.routes.oauth_flow.get_user_info", new_callable=AsyncMock) as get_user_info,
             patch("auth_server.routes.oauth_flow.map_groups_to_scopes", return_value=["servers-read", "agents-read"]),
         ):
             exchange_token.return_value = {"access_token": "provider-token"}
-            get_user_info.return_value = {
-                "preferred_username": "test-user",
-                "email": "test@example.com",
-                "name": "Test User",
-                "sub": "idp-123",
-                "groups": ["registry-users"],
-            }
             test_client.cookies.set("oauth2_temp_session", session_cookie)
             response = test_client.get(
-                f"{API_PREFIX}/oauth2/callback/keycloak",
+                f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "provider-code", "state": state_param},
                 follow_redirects=False,
             )
 
         assert response.status_code == 302
         exchange_token.assert_awaited_once()
-        assert exchange_token.await_args.args[3] == "http://localhost:8888/auth/oauth2/callback/keycloak"
+        assert exchange_token.await_args.args[3] == "http://localhost:8888/auth/oauth2/callback/entra"
         assert "/oauth2/consent?nonce=" in response.headers["location"]
         assert device_codes_storage[data["device_code"]]["status"] == "pending"
         assert len(test_pending_consent_store.pending) == 1
