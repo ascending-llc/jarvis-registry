@@ -9,6 +9,7 @@ interface User {
   userId?: string;
   email?: string;
   scopes?: string[];
+  tokenScopes?: string[];
   groups?: string[];
   authMethod?: string;
   provider?: string;
@@ -58,6 +59,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         userId: userData.userId,
         email: userData.email,
         scopes: userData.scopes || [],
+        tokenScopes: userData.tokenScopes || [],
         groups: userData.groups || [],
         authMethod: userData.authMethod || 'basic',
         provider: userData.provider,
