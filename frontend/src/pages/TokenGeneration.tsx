@@ -1,10 +1,10 @@
 import { CheckIcon, ClipboardIcon, ExclamationTriangleIcon, KeyIcon } from '@heroicons/react/24/outline';
-import { isAxiosError } from 'axios';
 import type React from 'react';
 import { useState } from 'react';
 import IconButton from '@/components/IconButton';
 import SERVICES from '@/services';
 import { type GetTokenRequest, type GetTokenResponse, TokenPurpose } from '@/services/auth/type';
+import type { RequestErrorPayload } from '@/services/request';
 import { useAuth } from '../contexts/AuthContext';
 
 const GENERIC_GENERATE_ERROR = 'Failed to generate token';
@@ -92,8 +92,9 @@ const TokenGeneration: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to generate token:', err);
-      // A 422 validation error carries a list detail; only show a detail the backend wrote as a message
-      const detail = isAxiosError<{ detail?: unknown }>(err) ? err.response?.data?.detail : undefined;
+      // request() rethrows the response body ({ detail, httpStatus }), not the AxiosError. A 422 validation
+      // error carries a list detail; only show a detail the backend wrote as a message
+      const detail = err && typeof err === 'object' ? (err as RequestErrorPayload).detail : undefined;
       setError(typeof detail === 'string' && detail ? detail : GENERIC_GENERATE_ERROR);
     } finally {
       setLoading(false);

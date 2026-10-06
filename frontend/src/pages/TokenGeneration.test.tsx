@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { AxiosError, AxiosHeaders, type AxiosResponse } from 'axios';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { GetTokenResponse } from '@/services/auth/type';
+import type { RequestErrorPayload } from '@/services/request';
 
 import TokenGeneration from './TokenGeneration';
 
@@ -31,16 +31,9 @@ const successResponse = (scope: string): GetTokenResponse => ({
   requestedScopes: mocks.user.tokenScopes,
 });
 
-const axiosErrorWithDetail = (status: number, detail: unknown): AxiosError => {
-  const response = {
-    status,
-    statusText: '',
-    data: { detail },
-    headers: {},
-    config: { headers: new AxiosHeaders() },
-  } as AxiosResponse;
-  return new AxiosError('Request failed', 'ERR_BAD_REQUEST', response.config, null, response);
-};
+// What request() throws on an HTTP error: the response body plus its status, not the AxiosError.
+const requestError = (httpStatus: number, detail: unknown): RequestErrorPayload =>
+  ({ detail, httpStatus }) as RequestErrorPayload;
 
 const generateButton = (): HTMLButtonElement => screen.getByRole('button', { name: /Generate Token/ });
 
@@ -91,7 +84,7 @@ describe('TokenGeneration', () => {
     submit();
     await screen.findByText('Token Generated Successfully');
 
-    mocks.getToken.mockRejectedValueOnce(axiosErrorWithDetail(400, 'None of your scopes can be granted'));
+    mocks.getToken.mockRejectedValueOnce(requestError(400, 'None of your scopes can be granted'));
     submit();
 
     const alert = await screen.findByRole('alert');
@@ -104,7 +97,7 @@ describe('TokenGeneration', () => {
   });
 
   test('a list detail falls back to the generic message', async () => {
-    mocks.getToken.mockRejectedValue(axiosErrorWithDetail(422, [{ loc: ['body'], msg: 'field required' }]));
+    mocks.getToken.mockRejectedValue(requestError(422, [{ loc: ['body'], msg: 'field required' }]));
     render(<TokenGeneration />);
 
     submit();
