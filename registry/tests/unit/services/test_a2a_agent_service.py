@@ -411,9 +411,8 @@ async def test_delete_agent_passes_session_to_delete():
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
-        result = await service.delete_agent(agent_id=str(PydanticObjectId()), session=_SENTINEL_SESSION)
+        await service.delete_agent(agent_id=str(PydanticObjectId()), session=_SENTINEL_SESSION)
 
-    assert result is True
     fake_agent.delete.assert_awaited_once()
     assert fake_agent.delete.await_args.kwargs["session"] is _SENTINEL_SESSION
 

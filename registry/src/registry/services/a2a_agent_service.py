@@ -450,7 +450,8 @@ class A2AAgentService:
             Agent document
 
         Raises:
-            ValueError: If agent not found or retrieval fails
+            ValueError: If agent not found
+            Other exceptions (e.g. database errors) propagate unchanged.
         """
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id))
@@ -524,6 +525,9 @@ class A2AAgentService:
 
         Raises:
             ValueError: If path already exists or validation fails
+            A2AAgentCardNotFoundException, A2AAgentCardTransportException, A2AAgentCardUpstreamException,
+            A2AAgentCardParseException: If the agent card cannot be fetched from the URL
+            Other exceptions (e.g. database errors) propagate unchanged.
         """
         # Guard first: block the Mongo write below when a reindex is in progress.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
@@ -615,7 +619,10 @@ class A2AAgentService:
             Updated agent document
 
         Raises:
-            ValueError: If agent not found or validation fails
+            ValueError: If agent not found, path already exists or validation fails
+            A2AAgentCardNotFoundException, A2AAgentCardTransportException, A2AAgentCardUpstreamException,
+            A2AAgentCardParseException: If the agent card cannot be fetched from a changed URL
+            Other exceptions (e.g. database errors) propagate unchanged.
         """
         # Guard first: block the Mongo write below when a reindex is in progress.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
@@ -763,15 +770,12 @@ class A2AAgentService:
         self,
         agent_id: str,
         session: AsyncClientSession | None = None,
-    ) -> bool:
+    ) -> None:
         """
         Delete an agent.
 
         Args:
             agent_id: Agent ID
-
-        Returns:
-            True if deleted successfully
 
         Raises:
             ValueError: If agent not found
@@ -788,7 +792,6 @@ class A2AAgentService:
         logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
 
         self._schedule_delete(agent_id, agent_name)
-        return True
 
     async def toggle_agent_status(
         self,
@@ -850,7 +853,7 @@ class A2AAgentService:
             Updated agent document with refreshed capabilities
 
         Raises:
-            ValueError: If agent not found, well-known not enabled, or sync fails
+            ValueError: If agent not found, well-known not enabled, or agent URL not configured
             A2AAgentCardNotFoundException: If agent card not found at well-known endpoint
             A2AAgentCardTransportException: If network/transport errors occur
             A2AAgentCardUpstreamException: If upstream returns non-404 errors
@@ -878,7 +881,10 @@ class A2AAgentService:
             Sync result with status and changes
 
         Raises:
-            ValueError: If agent not found, well-known not enabled, or sync fails
+            ValueError: If agent not found, well-known not enabled, or agent URL not configured
+            A2AAgentCardNotFoundException, A2AAgentCardTransportException, A2AAgentCardUpstreamException,
+            A2AAgentCardParseException: If the agent card cannot be fetched from the agent URL
+            Other exceptions (e.g. database errors) propagate unchanged.
         """
         # Guard before refetch/save: a well-known sync rewrites the agent + its vectors. This is the
         # shared chokepoint for both refresh_agent_capabilities and the direct /wellknown route.

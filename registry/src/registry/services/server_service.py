@@ -758,16 +758,13 @@ class ServerServiceV1:
         server_id: str,
         user_id: str | None = None,
         session: AsyncClientSession | None = None,
-    ) -> bool:
+    ) -> None:
         """
         Delete a server.
 
         Args:
             server_id: Server document ID
             user_id: Current user's ID (kept for compatibility but not used)
-
-        Returns:
-            True if deleted successfully
 
         Raises:
             ValueError: If server not found
@@ -789,7 +786,6 @@ class ServerServiceV1:
         asyncio.create_task(self.mcp_server_repo.delete_by_server_id(server_id, server.serverName))
         await server.delete(session=session)
         logger.info(f"Deleted server: {server.serverName} (ID: {server.id})")
-        return True
 
     async def _fetch_and_update_tools(
         self,

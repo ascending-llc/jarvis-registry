@@ -682,7 +682,7 @@ async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_contex
     agent_id = str(PydanticObjectId())
 
     a2a_agent_service = MagicMock()
-    a2a_agent_service.delete_agent = AsyncMock(return_value=True)
+    a2a_agent_service.delete_agent = AsyncMock()
 
     acl_service = MagicMock()
     acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
