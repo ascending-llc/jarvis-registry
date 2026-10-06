@@ -98,18 +98,22 @@ jobs:
             deployment_name: jarvis-registry-backend
             container_name: registry-backend
             image_name: registry
+            init_container_name: migrations
           - name: registry-frontend
             deployment_name: jarvis-registry-frontend
             container_name: registry-frontend
             image_name: registry-frontend
+            init_container_name: ""
           - name: auth-server
             deployment_name: jarvis-registry-auth-server
             container_name: auth-server
             image_name: auth-server
+            init_container_name: migrations-wait
           - name: workflow-worker
             deployment_name: jarvis-registry-workflow-worker
             container_name: registry-workflow-worker
             image_name: workflow-worker
+            init_container_name: migrations-wait
     env:
       DEPLOYMENT_NAME: ${{ matrix.deployment_name }}
     steps:
@@ -149,7 +153,11 @@ jobs:
         env:
           image: ghcr.io/${{ github.repository_owner }}/jarvis/${{ matrix.image_name }}:${{ github.sha }}
         run: |
-          kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} ${{ matrix.container_name }}=$image -n ${{ inputs.application  }}
+          ARGS="${{ matrix.container_name }}=$image"
+          if [ -n "${{ matrix.init_container_name }}" ]; then
+            ARGS="$ARGS ${{ matrix.init_container_name }}=$image"
+          fi
+          kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} $ARGS -n ${{ inputs.application }}
 
       - name: Check pod status
         run: |
