@@ -1449,7 +1449,6 @@ class TestOAuth2ProvidersListing:
             "providers": {
                 "entra": {"enabled": True, "display_name": "Microsoft Entra ID"},
                 "google": {"enabled": True, "display_name": "Google"},
-                "cognito": {"enabled": False, "display_name": "AWS Cognito"},
             }
         }
         test_client.app.dependency_overrides[get_oauth2_config] = lambda: config
