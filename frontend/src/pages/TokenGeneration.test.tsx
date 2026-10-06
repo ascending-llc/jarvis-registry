@@ -114,15 +114,18 @@ describe('TokenGeneration', () => {
   });
 
   test.each([
-    ['empty', ''],
-    ['whitespace only', '   '],
-    ['an empty array', '[]'],
-  ])('custom scopes that are %s disable submit and send no request', async (_label, value) => {
+    ['empty', '', 'Enter a JSON array with at least one scope'],
+    ['whitespace only', '   ', 'Enter a JSON array with at least one scope'],
+    ['an empty array', '[]', 'Enter a JSON array with at least one scope'],
+    ['an array with a number', '["mcp-proxy-ops", 1]', 'Scopes must be non-empty strings'],
+    ['an array with an object', '[{"a": 1}]', 'Scopes must be non-empty strings'],
+    ['an array with a blank string', '["mcp-proxy-ops", " "]', 'Scopes must be non-empty strings'],
+  ])('custom scopes that are %s disable submit and send no request', async (_label, value, message) => {
     render(<TokenGeneration />);
 
     selectCustomScopes(value);
 
-    expect(screen.getByText('Enter a JSON array with at least one scope')).toBeTruthy();
+    expect(screen.getByText(message)).toBeTruthy();
     expect(generateButton().disabled).toBe(true);
     fireEvent.submit(generateButton().closest('form') as HTMLFormElement);
     await waitFor(() => expect(mocks.getToken).not.toHaveBeenCalled());

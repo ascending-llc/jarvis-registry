@@ -30,6 +30,10 @@ const parseCustomScopes = (text: string): CustomScopesParseResult => {
   if (parsed.length === 0) {
     return { scopes: null, error: 'Enter a JSON array with at least one scope' };
   }
+  // The backend rejects non-string items with a 422, which would only surface as the generic error
+  if (!parsed.every((scope): scope is string => typeof scope === 'string' && scope.trim() !== '')) {
+    return { scopes: null, error: 'Scopes must be non-empty strings' };
+  }
   return { scopes: parsed, error: null };
 };
 
