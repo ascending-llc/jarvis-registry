@@ -732,3 +732,101 @@ class TestUpdateDisabledTools:
 
         assert result["status"] == "success"
         assert server.registryDisabledTools == ["read_file"]  # delete_file pruned
+
+
+class TestOAuthReAuthRequired:
+    """Enable/refresh must not orphan an OAuth flow and must surface a typed re-auth error."""
+
+    def _make_service(self) -> ServerServiceV1:
+        return ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=Mock(),
+        )
+
+    def _oauth_server(self) -> Mock:
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        server = Mock(spec=ExtendedMCPServer)
+        server.id = "srv-1"
+        server.serverName = "google-workspace"
+        server.config = {"url": "https://mcp.example.com/mcp", "oauth": {"client_id": "abc"}, "enabled": False}
+        server.lastError = None
+        server.errorMessage = None
+        server.save = AsyncMock()
+        return server
+
+    async def test_retrieve_from_server_runs_non_interactively_and_raises(self):
+        from registry_pkgs.oauth.errors import OAuthReAuthRequiredError
+
+        service = self._make_service()
+        server = self._oauth_server()
+        build = AsyncMock(side_effect=OAuthReAuthRequiredError("re-auth", server_name="google-workspace"))
+
+        with (
+            patch("registry.services.server_service.build_complete_headers_for_server", build),
+            patch("registry.core.mcp_client.get_tools_and_capabilities_from_server") as fetch,
+        ):
+            with pytest.raises(OAuthReAuthRequiredError) as exc_info:
+                await service.retrieve_from_server(server, user_id="user-1")
+
+        assert exc_info.value.auth_url is None
+        assert build.await_args.kwargs["interactive"] is False
+        fetch.assert_not_called()
+
+    async def test_toggle_enable_rolls_back_and_reraises(self):
+        from registry_pkgs.oauth.errors import OAuthReAuthRequiredError
+
+        service = self._make_service()
+        server = self._oauth_server()
+        service.get_server_by_id = AsyncMock(return_value=server)
+        error = OAuthReAuthRequiredError("re-auth", server_name="google-workspace")
+
+        with (
+            patch.object(service, "retrieve_from_server", AsyncMock(side_effect=error)),
+            patch.object(service, "_schedule_vector_sync") as sync,
+        ):
+            with pytest.raises(OAuthReAuthRequiredError) as exc_info:
+                await service.toggle_server_status(server_id="srv-1", enabled=True, user_id="user-1")
+
+        assert exc_info.value is error
+        assert server.config["enabled"] is False
+        server.save.assert_awaited_once()
+        sync.assert_not_called()
+
+    async def test_toggle_enable_other_fetch_failure_keeps_value_error(self):
+        service = self._make_service()
+        server = self._oauth_server()
+        service.get_server_by_id = AsyncMock(return_value=server)
+
+        with patch.object(
+            service, "retrieve_from_server", AsyncMock(return_value=(None, None, None, None, "Connection refused"))
+        ):
+            with pytest.raises(ValueError, match="Failed to fetch tools from server. Server remains disabled."):
+                await service.toggle_server_status(server_id="srv-1", enabled=True, user_id="user-1")
+
+        assert server.config["enabled"] is False
+        server.save.assert_awaited_once()
+
+    async def test_refresh_leaves_server_error_fields_untouched_and_does_not_save(self):
+        from registry_pkgs.oauth.errors import OAuthReAuthRequiredError
+
+        service = self._make_service()
+        server = self._oauth_server()
+        server.lastError = "previous"
+        server.errorMessage = "previous message"
+        service.get_server_by_id = AsyncMock(return_value=server)
+        build = AsyncMock(side_effect=OAuthReAuthRequiredError("re-auth", server_name="google-workspace"))
+
+        with (
+            patch("registry.services.server_service.build_complete_headers_for_server", build),
+            patch.object(service, "_schedule_vector_sync") as sync,
+        ):
+            with pytest.raises(OAuthReAuthRequiredError):
+                await service.refresh_server_capabilities(server_id="srv-1", user_id="user-1")
+
+        assert server.lastError == "previous"
+        assert server.errorMessage == "previous message"
+        server.save.assert_not_called()
+        sync.assert_not_called()

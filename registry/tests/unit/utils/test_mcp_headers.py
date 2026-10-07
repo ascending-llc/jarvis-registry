@@ -83,3 +83,12 @@ class TestBuildCompleteHeadersWrapper:
         assert result == {"Authorization": "Bearer y"}
         kwargs = delegate.await_args.kwargs
         assert isinstance(kwargs["cfg"], HeaderBuildConfig)
+        assert kwargs["interactive"] is True
+
+    @pytest.mark.asyncio
+    async def test_passes_interactive_false_through(self):
+        delegate = AsyncMock(return_value={})
+        with patch.object(mcp_headers, "_build_complete_headers_for_server", delegate):
+            await build_complete_headers_for_server(SimpleNamespace(), _server(), "user-1", interactive=False)
+
+        assert delegate.await_args.kwargs["interactive"] is False

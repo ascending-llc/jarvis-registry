@@ -17,6 +17,7 @@ from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
+from registry_pkgs.oauth.errors import OAuthReAuthRequiredError
 
 from ....auth.dependencies import CurrentUser
 from ....core.mcp_client import perform_health_check
@@ -56,6 +57,22 @@ router = APIRouter()
 def get_user_context(user_context: CurrentUser):
     """Extract user context from authentication dependency"""
     return user_context
+
+
+def _oauth_required_error(exc: OAuthReAuthRequiredError) -> HTTPException:
+    """Build the 400 oauth_required response for a per-user missing/unrefreshable OAuth token.
+
+    Must stay 400: the frontend treats any 401 as an expired Jarvis session. The message is
+    URL-free; the client starts the OAuth flow itself via /oauth/initiate.
+    """
+    server_name = exc.server_name or "this server"
+    return HTTPException(
+        status_code=http_status.HTTP_400_BAD_REQUEST,
+        detail=create_error_detail(
+            ErrorCode.OAUTH_REQUIRED,
+            f"Authorization required: connect your account to '{server_name}' first.",
+        ),
+    )
 
 
 def apply_connection_status_to_server(
@@ -638,6 +655,9 @@ async def toggle_server(
 
     except HTTPException:
         raise
+    except OAuthReAuthRequiredError as exc:
+        logger.info(f"OAuth authorization required to enable server {server_id}: {exc}")
+        raise _oauth_required_error(exc) from exc
     except Exception as e:
         logger.error(f"Error toggling server {server_id}: {e}", exc_info=True)
         raise HTTPException(
@@ -824,6 +844,9 @@ async def refresh_server_capabilities(
 
     except HTTPException:
         raise
+    except OAuthReAuthRequiredError as exc:
+        logger.info(f"OAuth authorization required to refresh server {server_id}: {exc}")
+        raise _oauth_required_error(exc) from exc
     except Exception as e:
         logger.error(f"Error refreshing capabilities for server {server_id}: {e}", exc_info=True)
         raise HTTPException(

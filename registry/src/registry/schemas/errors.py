@@ -91,6 +91,7 @@ class ErrorCode:
     TOOL_RETRIEVAL_FAILED = "tool_retrieval_failed"
     SERVER_CONNECTION_FAILED = "server_connection_failed"
     OAUTH_ERROR = "oauth_error"
+    OAUTH_REQUIRED = "oauth_required"
 
     CONFLICT = "conflict"
     NOT_FOUND = "not_found"

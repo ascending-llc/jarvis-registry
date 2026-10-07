@@ -260,6 +260,50 @@ async def test_refresh_server_capabilities_server_not_found():
     assert "not_found" in str(exc_info.value.detail)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["toggle", "refresh"])
+async def test_server_routes_map_oauth_reauth_required_to_400(route):
+    """Toggle and refresh return 400 oauth_required (never 401) with no auth URL in the body."""
+    from registry.api.v1.server.server_routes import refresh_server_capabilities, toggle_server
+    from registry.schemas.server_api_schemas import ServerToggleRequest
+    from registry_pkgs.oauth.errors import OAuthReAuthRequiredError
+
+    server_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+    auth_url = "https://accounts.example.com/authorize?state=secret"
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    error = OAuthReAuthRequiredError("re-auth required", auth_url=auth_url, server_name="google-workspace")
+    mock_server_service = MagicMock()
+    mock_server_service.toggle_server_status = AsyncMock(side_effect=error)
+    mock_server_service.refresh_server_capabilities = AsyncMock(side_effect=error)
+
+    with pytest.raises(HTTPException) as exc_info:
+        if route == "toggle":
+            await toggle_server(
+                server_id=server_id,
+                data=ServerToggleRequest(enabled=True),
+                user_context=user_context,
+                acl_service=mock_acl_service,
+                server_service=mock_server_service,
+            )
+        else:
+            await refresh_server_capabilities(
+                server_id=server_id,
+                user_context=user_context,
+                acl_service=mock_acl_service,
+                server_service=mock_server_service,
+            )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == {
+        "error": "oauth_required",
+        "message": "Authorization required: connect your account to 'google-workspace' first.",
+    }
+    assert "http" not in str(exc_info.value.detail)
+
+
 def _fake_mcp_server(*, enabled: bool = True):
     """Minimal ExtendedMCPServer stand-in for converter tests."""
     now = datetime.now(UTC)

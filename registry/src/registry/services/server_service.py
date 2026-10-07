@@ -801,6 +801,9 @@ class ServerServiceV1:
 
         Returns:
             True if tools were successfully fetched and updated, False otherwise
+
+        Raises:
+            OAuthReAuthRequiredError: the user must authorize this server before tools can be fetched.
         """
         # Use consolidated retrieve_from_server which handles both OAuth and apiKey
         logger.info(f"Fetching tools, resources, and prompts for server {server.serverName}")
@@ -865,6 +868,8 @@ class ServerServiceV1:
 
         Raises:
             ValueError: If server not found or user_id missing for OAuth server
+            OAuthReAuthRequiredError: the user must authorize this server before it can be enabled;
+                the server is left disabled.
         """
         # Guard before the Mongo write: the vector sync would fail during a reindex while Mongo
         # already changed, so block the toggle (503) until the reindex ends.
@@ -881,7 +886,13 @@ class ServerServiceV1:
 
         # If enabling the server, fetch tools and update toolFunctions
         if enabled:
-            success = await self._fetch_and_update_tools(server, user_id)
+            try:
+                success = await self._fetch_and_update_tools(server, user_id)
+            except OAuthReAuthRequiredError:
+                # Rollback enabled status; the route turns this into an oauth_required response
+                server.config["enabled"] = False
+                await server.save()
+                raise
             if not success:
                 # Rollback enabled status
                 server.config["enabled"] = False
@@ -1021,6 +1032,9 @@ class ServerServiceV1:
             - If successful: (tool_list, resource_list, prompt_list, capabilities_dict, None)
             - If failed: (None, None, None, None, error_message)
             - If include_capabilities=False: (tool_list, resource_list, prompt_list, None, None) or (None, None, None, None, error_message)
+
+        Raises:
+            OAuthReAuthRequiredError: the user must authorize this server before tools can be fetched.
         """
         config = server.config or {}
         url = config.get("url")
@@ -1047,20 +1061,17 @@ class ServerServiceV1:
             # Build complete headers with all authentication (OAuth, apiKey, custom)
             # This consolidates all auth logic in one place
             try:
+                # Non-interactive: nobody here can hand an auth URL to the user, so don't
+                # create an OAuth flow that would be orphaned in Redis
                 headers = await build_complete_headers_for_server(
                     self.oauth_service,
                     server,
                     user_id,
+                    interactive=False,
                 )
-            except OAuthReAuthRequiredError as e:
-                # OAuth re-authentication needed - return special error format
-                return (
-                    None,
-                    None,
-                    None,
-                    None,
-                    f"oauth_required:{e.auth_url or str(e)}",
-                )
+            except OAuthReAuthRequiredError:
+                # Must stay ahead of the AuthenticationError handler (it is a subclass)
+                raise
             except (OAuthTokenError, MissingUserIdError) as e:
                 # OAuth token errors or missing user ID
                 return None, None, None, None, f"Authentication error: {str(e)}"
@@ -1120,6 +1131,8 @@ class ServerServiceV1:
                 )
                 return result.tools, result.resources, result.prompts, None, None
 
+        except OAuthReAuthRequiredError:
+            raise
         except Exception as e:
             error_msg = f"Error: {type(e).__name__} - {str(e)}"
             logger.error(f"Retrieval error for server {server.serverName}: {e}")
@@ -1185,6 +1198,8 @@ class ServerServiceV1:
 
         Raises:
             ValueError: If server not found
+            OAuthReAuthRequiredError: the user must authorize this server first. This is a
+                per-user problem, so lastError/errorMessage are not written and nothing is saved.
         """
         # Guard before refetch/save: refresh rewrites the server + its vectors, so block it (503)
         # during a reindex to keep the sweep's source of truth stable.
