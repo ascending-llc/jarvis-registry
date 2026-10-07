@@ -262,7 +262,11 @@ async def test_refresh_server_capabilities_server_not_found():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["toggle", "refresh"])
-async def test_server_routes_map_oauth_reauth_required_to_400(route):
+@pytest.mark.parametrize(
+    ("server_name", "expected_name"),
+    [("google-workspace", "google-workspace"), (None, "this server")],
+)
+async def test_server_routes_map_oauth_reauth_required_to_400(route, server_name, expected_name):
     """Toggle and refresh return 400 oauth_required (never 401) with no auth URL in the body."""
     from registry.api.v1.server.server_routes import refresh_server_capabilities, toggle_server
     from registry.schemas.server_api_schemas import ServerToggleRequest
@@ -274,7 +278,7 @@ async def test_server_routes_map_oauth_reauth_required_to_400(route):
 
     mock_acl_service = MagicMock()
     mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
-    error = OAuthReAuthRequiredError("re-auth required", auth_url=auth_url, server_name="google-workspace")
+    error = OAuthReAuthRequiredError("re-auth required", auth_url=auth_url, server_name=server_name)
     mock_server_service = MagicMock()
     mock_server_service.toggle_server_status = AsyncMock(side_effect=error)
     mock_server_service.refresh_server_capabilities = AsyncMock(side_effect=error)
@@ -299,7 +303,7 @@ async def test_server_routes_map_oauth_reauth_required_to_400(route):
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == {
         "error": "oauth_required",
-        "message": "Authorization required: connect your account to 'google-workspace' first.",
+        "message": f"Authorization required: connect your account to '{expected_name}' first.",
     }
     assert "http" not in str(exc_info.value.detail)
 
