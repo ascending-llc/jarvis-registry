@@ -67,7 +67,7 @@ class TestFlowStateManager:
         # Encode/decode with flow_id and state_metadata
         flow_id = "test-flow-id"
         state_metadata: StateMetadata = {
-            "client_branding": ClientBranding.CLAUDE,
+            "client_branding": ClientBranding.VSCODE,
             "notify_elicitation_complete": False,
         }
         state = manager.encode_state(flow_id, state_metadata=state_metadata)
@@ -76,7 +76,7 @@ class TestFlowStateManager:
 
         assert state_dict["flow_id"] == flow_id
         assert isinstance(state_dict["security_token"], str)
-        assert state_dict["meta"]["client_branding"] == ClientBranding.CLAUDE
+        assert state_dict["meta"]["client_branding"] == ClientBranding.VSCODE
         assert state_dict["meta"]["notify_elicitation_complete"] == state_metadata["notify_elicitation_complete"]
         assert UUID(elicitation_id).version == 4
 

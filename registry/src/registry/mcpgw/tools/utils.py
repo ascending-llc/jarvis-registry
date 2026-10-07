@@ -87,8 +87,6 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     name = client_params.clientInfo.name.strip().lower()
     if name == "visual studio code":
         branding = ClientBranding.VSCODE
-    elif name.startswith("claude-ai") or name == "claude":
-        branding = ClientBranding.CLAUDE
     elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
         branding = ClientBranding.CURSOR
     else:
