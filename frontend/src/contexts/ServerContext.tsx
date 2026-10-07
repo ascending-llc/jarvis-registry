@@ -455,11 +455,16 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
             clearTimeout(timeoutRef.current[serverId]);
             delete timeoutRef.current[serverId];
 
-            const result = await SERVICES.SERVER.refreshServer(serverId);
-            handleServerUpdate(serverId, {
-              lastCheckedTime: result.lastConnected,
-              numTools: result.numTools,
-            });
+            // A failed refresh (e.g. oauth_required after a cancelled flow) must not skip the callback
+            try {
+              const result = await SERVICES.SERVER.refreshServer(serverId);
+              handleServerUpdate(serverId, {
+                lastCheckedTime: result.lastConnected,
+                numTools: result.numTools,
+              });
+            } catch (error) {
+              console.error(`Failed to refresh server ${serverId} after polling:`, error);
+            }
           }
         }
         callback?.(currentState);
