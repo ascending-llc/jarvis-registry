@@ -20,6 +20,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.poe]
+# Hide poe's "Poe => <command>" echo so successful runs stay minimal; `poe -v <task>` shows it.
+verbosity = -1
+
 [tool.poe.tasks]
 test = { shell = "uv run pytest tests" }
 test-cov = { shell = "uv run pytest tests --cov=workflow_worker --cov-report=term --cov-report=xml" }

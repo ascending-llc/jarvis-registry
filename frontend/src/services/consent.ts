@@ -33,8 +33,8 @@ export interface DownstreamErrorConsentContext {
 const MOCK_ENABLED = import.meta.env.VITE_MOCK_CONSENT_API === 'true';
 const MOCK_DEVICE_NONCE = 'mock-device-nonce';
 
-// MCP clients recognized for browser deep-link-back (matches OAuthCallback.tsx's list).
-export const DEEP_LINK_BRANDS = ['cursor', 'vscode', 'claude'];
+// MCP clients recognized for browser deep-link-back.
+export const DEEP_LINK_BRANDS = ['cursor', 'vscode'];
 
 const MOCK_DOWNSTREAM_CONTEXT: ConsentContext = {
   client_name: 'Claude Desktop (mock)',

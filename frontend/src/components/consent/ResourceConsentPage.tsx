@@ -81,7 +81,7 @@ const ResourceConsentPage: React.FC<ResourceConsentPageProps> = ({
     }
   }, [denyConsent, nonce]);
 
-  // Deep link back to the MCP client (VS Code, Claude, Cursor) once the decision is recorded
+  // Deep link back to the MCP client (VS Code, Cursor) once the decision is recorded
   // (approve or deny), mirroring OAuthCallback.tsx's post-authorization deep link. The MCP client
   // is only ever told "the human responded" either way — its retry is what surfaces the outcome.
   useEffect(() => {

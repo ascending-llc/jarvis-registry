@@ -70,6 +70,10 @@ exclude = ["registry_pkgs.testing*"]
 registry_pkgs = ["py.typed", "*.yml"]
 
 # Tasks of this specific workspace member should be run from the member directory, i.e. `registry-pkgs`.
+[tool.poe]
+# Hide poe's "Poe => <command>" echo so successful runs stay minimal; `poe -v <task>` shows it.
+verbosity = -1
+
 [tool.poe.tasks]
 # Run tests
 test = { shell = "uv run pytest tests" }

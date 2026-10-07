@@ -58,19 +58,14 @@ def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContex
 
 
 def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
-    """Return whether an MCP client supports URL-mode elicitation.
+    """Return whether an MCP client supports URL-mode elicitation, based only on its declared capability.
 
-    Claude Code CLI (clientInfo.name "claude-code") supports URL-mode elicitation but has a
-    long-standing upstream bug where it fails to declare the `elicitation.url` capability in its
-    `initialize` request (reported, auto-closed for inactivity, not scheduled to be fixed), so it's
-    trusted unconditionally. Claude Desktop ("claude-ai") declares this capability correctly and
-    needs no such override.
+    There are deliberately no per-client overrides keyed on clientInfo.name. Claude Code CLI and Claude
+    Desktop's Chat mode both identify as "claude-code" (observed October 2026), but Claude Desktop hangs
+    on a -32042 URL elicitation error response, while it handles the fallback `CallToolResult` correctly.
     """
     if client_params is None:
         return False
-
-    if client_params.clientInfo.name.strip().lower().startswith("claude-code"):
-        return True
 
     elicitation = client_params.capabilities.elicitation
     if elicitation is None:
@@ -92,8 +87,6 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     name = client_params.clientInfo.name.strip().lower()
     if name == "visual studio code":
         branding = ClientBranding.VSCODE
-    elif name.startswith("claude-ai"):
-        branding = ClientBranding.CLAUDE
     elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
         branding = ClientBranding.CURSOR
     else:

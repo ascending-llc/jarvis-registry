@@ -15,8 +15,6 @@ from registry.services.embedding_reindex_execution_service import (
 )
 from registry_pkgs.models.enums import EmbeddingReindexJobStatus
 
-pytestmark = pytest.mark.asyncio
-
 COMPLETED = EmbeddingReindexJobStatus.COMPLETED.value
 FAILED = EmbeddingReindexJobStatus.FAILED.value
 
@@ -324,7 +322,7 @@ async def test_resume_already_committed_skips_sweep_and_completes(monkeypatch):
 async def test_resume_completes_with_tz_naive_switched_at(monkeypatch):
     # Mongo returns datetimes tz-naive; the grace math must not crash subtracting from an aware now.
     job = _job(previous_generation=None)
-    job.switchedAt = datetime.utcnow()  # naive, as a reloaded document carries it
+    job.switchedAt = datetime.now(UTC).replace(tzinfo=None)  # naive, as a reloaded document carries it
     w = _wire(
         monkeypatch,
         servers=[],

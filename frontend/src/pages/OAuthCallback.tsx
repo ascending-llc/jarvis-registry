@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { AuthPageLayout } from '@/components/auth/AuthPageLayout';
+import { DEEP_LINK_BRANDS } from '@/services/consent';
 
 const OAuthCallback: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -20,9 +21,9 @@ const OAuthCallback: React.FC = () => {
     navigate('/');
   }, [navigate]);
 
-  // Handle deep link for supported clients (cursor, vscode, claude)
+  // Handle deep link for supported clients (cursor, vscode)
   useEffect(() => {
-    if (type === 'success' && ['cursor', 'vscode', 'claude'].includes(clientBranding)) {
+    if (type === 'success' && DEEP_LINK_BRANDS.includes(clientBranding)) {
       const deepLinkTimer = setTimeout(() => {
         const link = document.createElement('a');
         link.href = `${clientBranding}://`;

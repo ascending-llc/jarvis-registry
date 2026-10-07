@@ -4,13 +4,12 @@ from typing import NotRequired, TypedDict
 
 class ClientBranding(StrEnum):
     VSCODE = "vscode"
-    CLAUDE = "claude"
     CURSOR = "cursor"
     UNRECOGNIZED = "unrecognized"
 
 
 class StateMetadata(TypedDict):
-    # The brand of the AI agent connecting to our MCP server. In case it's VS Code, Claude Desktop or Cursor,
+    # The brand of the AI agent connecting to our MCP server. In case it's VS Code or Cursor,
     # we use browser deep-link to redirect user back to the AI app window from our OAuth callback page.
     client_branding: ClientBranding
 
