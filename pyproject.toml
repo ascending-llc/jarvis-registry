@@ -132,6 +132,10 @@ exclude_dirs = ["tests", "frontend", ".venv", "node_modules"]
 # B106: hardcoded_password_funcarg (false positives on 'Bearer' - this is the OAuth 2.0 standard token type)
 skips = ["B101", "B104", "B105", "B106"]
 
+[tool.poe]
+# Hide poe's "Poe => <command>" echo so successful runs stay minimal; `poe -v <task>` shows it.
+verbosity = -1
+
 # Version management
 [tool.poe.tasks.version]
 help = "Show versions across all projects"
