@@ -87,7 +87,10 @@ const ServerAuthorizationModal: React.FC<ServerAuthorizationModalProps> = ({
     try {
       setLoading(true);
       const result = await SERVICES.MCP.getOauthReinit(serverId);
-      if (result.success) {
+      if (result.oauth_required) {
+        // Start a fresh flow directly: polling could latch onto a leftover pending flow nobody can finish
+        await oauthInit();
+      } else if (result.success) {
         await getServerStatusByPolling?.(serverId, state => {
           if (state === ServerConnection.CONNECTED) {
             showToast?.(result?.message || 'Server reinitialized successfully', 'success');

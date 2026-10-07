@@ -2,7 +2,8 @@
 
 The shared, app-agnostic logic lives in ``registry_pkgs.oauth.headers`` (also used by
 workflow-worker); this module supplies the registry's config/scopes so callers never wire
-those up themselves. All registry header building runs interactively.
+those up themselves. Header building runs interactively by default; callers that cannot hand
+an auth URL to the user (e.g. server enable/refresh) opt out with ``interactive=False``.
 """
 
 from __future__ import annotations
@@ -76,12 +77,16 @@ async def build_complete_headers_for_server(
     *,
     state_metadata: StateMetadata | None = None,
     redis_client: Redis | None = None,
+    interactive: bool = True,
 ) -> dict[str, str]:
     """Build the OAuth/apiKey/AgentCore auth headers for a server, keyed by ``user_id``.
 
-    Injects the registry HeaderBuildConfig and delegates to the shared chain in interactive
-    mode. Unlike :func:`build_authenticated_headers` this does not add the gateway base
-    headers (X-User-Id / X-Scopes) and takes ``user_id`` rather than a full auth context.
+    Injects the registry HeaderBuildConfig and delegates to the shared chain. Unlike
+    :func:`build_authenticated_headers` this does not add the gateway base headers
+    (X-User-Id / X-Scopes) and takes ``user_id`` rather than a full auth context.
+
+    With ``interactive=False``, an unrefreshable OAuth token raises
+    ``OAuthReAuthRequiredError(auth_url=None)`` without creating an OAuth flow.
     """
     return await _build_complete_headers_for_server(
         oauth_service,
@@ -90,4 +95,5 @@ async def build_complete_headers_for_server(
         cfg=get_header_build_config(),
         state_metadata=state_metadata,
         redis_client=redis_client,
+        interactive=interactive,
     )

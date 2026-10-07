@@ -161,6 +161,7 @@ class TestMCPOAuthService:
         assert response_data["success"]
         assert response_data["server_name"] == "test_server"
         assert "reinitialized successfully" in response_data["message"]
+        assert response_data["oauth_required"] is False
 
     @pytest.mark.asyncio
     async def test_handle_reinitialize_auth_access_token_expired_refresh_valid(self, oauth_service, mock_server):
@@ -283,6 +284,7 @@ class TestMCPOAuthService:
         assert not needs_connection
         assert response_data["success"]
         assert "OAuth authorization required" in response_data["message"]
+        assert response_data["oauth_required"] is True
 
     @pytest.mark.asyncio
     async def test_handle_reinitialize_auth_refresh_failure(self, oauth_service, mock_server):

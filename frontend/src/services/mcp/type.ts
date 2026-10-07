@@ -36,9 +36,10 @@ export type GetOauthFlowStatusResponse = {
 export type GetServerAuthUrlResponse = {
   success: boolean;
   message: string;
-  oauthUrl: string;
-  serverName: string;
-  oauthRequired: boolean;
+  server_name: string;
+  requires_oauth: boolean;
+  // Omitted when the server has no OAuth config (success is false then)
+  oauth_required?: boolean;
 };
 
 export type CancelAuthResponse = {

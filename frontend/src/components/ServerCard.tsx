@@ -25,6 +25,9 @@ import ServerAuthorizationModal from './ServerAuthorizationModal';
 import ServerConfigModal from './ServerConfigModal';
 import ServerToolsModal from './ServerToolsModal';
 
+// The toggle/refresh routes reject with this code when the user must authorize the server first
+const isOAuthRequiredError = (error: any): boolean => error?.detail?.error === 'oauth_required';
+
 interface ServerCardProps {
   server: ServerInfo;
 }
@@ -112,7 +115,10 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
         showToast('Health status refreshed successfully', 'success');
       }
     } catch (error: any) {
-      if (showToast) {
+      if (isOAuthRequiredError(error)) {
+        showToast?.(error.detail.message, 'info');
+        onOpenAuthDialog();
+      } else if (showToast) {
         const errorMessage = error?.detail?.message || 'Failed to refresh health status';
         showToast(errorMessage.split('\n')[0], 'error');
       }
@@ -128,6 +134,11 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       handleServerUpdate(id, { enabled });
       showToast(`Server ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
     } catch (error: any) {
+      if (isOAuthRequiredError(error)) {
+        showToast(error.detail.message, 'info');
+        onOpenAuthDialog();
+        return;
+      }
       const errorMessage =
         error.detail?.message || (typeof error.detail === 'string' ? error.detail : 'Failed to toggle server');
       showToast(errorMessage.split('\n')[0], 'error');

@@ -743,10 +743,10 @@ class MCPOAuthService:
            │  ├─ Valid → CONNECTED, return success (Step 2.1)
            │  └─ Expired
            │     ├─ refresh_token exists and valid → Refresh → CONNECTED (Step 2.2.1.2)
-           │     └─ refresh_token invalid/missing → CONNECTING, return OAuth URL (Step 2.2.1.1)
+           │     └─ refresh_token invalid/missing → DISCONNECTED, return `oauth_required=True` (no flow created) (Step 2.2.1.1)
            └─ Not exists
               ├─ refresh_token exists and valid → Refresh → CONNECTED (Step 3.1.2)
-              └─ refresh_token invalid/missing → CONNECTING, return OAuth URL (Step 3.1.1/3.2)
+              └─ refresh_token invalid/missing → DISCONNECTED, return `oauth_required=True` (no flow created) (Step 3.1.1/3.2)
 
         Args:
             user_id: User ID
@@ -885,6 +885,7 @@ class MCPOAuthService:
             "serverId": str(server.id),
             "server_name": server.serverName,
             "requires_oauth": server.config.get("requiresOAuth", False),
+            "oauth_required": True,
         }
 
     def _build_success_response(self, server: ExtendedMCPServer) -> dict[str, Any]:
@@ -903,4 +904,5 @@ class MCPOAuthService:
             "server_id": str(server.id),
             "server_name": server.serverName,
             "requires_oauth": server.config.get("requiresOAuth", False),
+            "oauth_required": False,
         }
