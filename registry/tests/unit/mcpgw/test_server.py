@@ -346,12 +346,19 @@ def test_get_state_metadata_notify_flag_matches_url_elicitation_support(
     """notify_elicitation_complete must mirror _support_url_elicitation for every branding: a session
     is only ever registered in SessionStore (making a later notification possible) when the client
     supports URL mode elicitation, regardless of which brand it's recognized as. Claude Code CLI
-    ("claude-code") is always treated as supporting it regardless of what it declares."""
+    ("claude-code") is always treated as supporting it, and Claude Desktop ("claude-ai") never is,
+    regardless of what they declare."""
     client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
 
     result = utils._get_state_metadata(client_params)
 
-    expected_notify = supports_url_elicitation or client_name.strip().lower().startswith("claude-code")
+    normalized_name = client_name.strip().lower()
+    if normalized_name.startswith("claude-code"):
+        expected_notify = True
+    elif normalized_name.startswith("claude-ai"):
+        expected_notify = False
+    else:
+        expected_notify = supports_url_elicitation
     assert result["client_branding"] == expected_branding
     assert result["notify_elicitation_complete"] is expected_notify
 
@@ -367,12 +374,12 @@ def test_support_url_elicitation_claude_code_cli_always_supported(supports_url_e
 
 
 @pytest.mark.parametrize("supports_url_elicitation", [True, False])
-def test_support_url_elicitation_claude_desktop_follows_declared_capability(supports_url_elicitation):
-    """Claude Desktop ("claude-ai") declares this capability correctly, so unlike Claude Code CLI it
-    gets no override and simply follows what it declares."""
+def test_support_url_elicitation_claude_desktop_never_supported(supports_url_elicitation):
+    """Claude Desktop ("claude-ai") declares URL-mode elicitation but hangs on a -32042 response, so a
+    "claude-ai" client gets the CallToolResult fallback regardless of the declared capability."""
     client_params = _make_client_params("claude-ai/1.0", supports_url_elicitation=supports_url_elicitation)
 
-    assert utils._support_url_elicitation(client_params) is supports_url_elicitation
+    assert utils._support_url_elicitation(client_params) is False
 
 
 def test_support_url_elicitation_non_claude_client_follows_declared_capability():
