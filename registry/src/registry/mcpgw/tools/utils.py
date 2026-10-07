@@ -65,11 +65,11 @@ def _support_url_elicitation(client_params: InitializeRequestParams | None) -> b
     `initialize` request (reported, auto-closed for inactivity, not scheduled to be fixed), so it's
     trusted unconditionally.
 
-    Claude Desktop (clientInfo.name "claude-ai") has the reverse problem: it declares the
+    Claude Desktop (clientInfo.name "Claude") has the reverse problem: it declares the
     `elicitation.url` capability, but hangs on a -32042 URL elicitation error response while handling
-    the fallback `CallToolResult` correctly (observed October 2026), so it's never trusted. Other
-    clients that also identify as "claude-ai" (e.g. claude.ai web) get the fallback too. Re-test
-    Claude Desktop before removing this override.
+    the fallback `CallToolResult` correctly (observed October 2026), so it's never trusted. The name is
+    matched exactly, not as a prefix, so that "claude-code" and other "claude..." clients aren't caught.
+    Re-test Claude Desktop before removing this override.
     """
     if client_params is None:
         return False
@@ -77,7 +77,7 @@ def _support_url_elicitation(client_params: InitializeRequestParams | None) -> b
     name = client_params.clientInfo.name.strip().lower()
     if name.startswith("claude-code"):
         return True
-    if name.startswith("claude-ai"):
+    if name == "claude":
         return False
 
     elicitation = client_params.capabilities.elicitation
