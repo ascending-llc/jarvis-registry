@@ -330,10 +330,10 @@ def test_get_state_metadata_returns_unrecognized_and_no_notify_for_missing_clien
     ("client_name", "expected_branding"),
     [
         ("Visual Studio Code", utils.ClientBranding.VSCODE),
-        ("claude-ai/1.0", utils.ClientBranding.CLAUDE),
         ("probe (via mcp-remote 1.0)", utils.ClientBranding.CURSOR),
         ("mcp-stdio-client (via mcp-remote 1.0)", utils.ClientBranding.CURSOR),
         ("claude-code", utils.ClientBranding.UNRECOGNIZED),
+        ("claude-ai/1.0", utils.ClientBranding.CLAUDE),
         ("Claude", utils.ClientBranding.CLAUDE),
         ("some-other-client", utils.ClientBranding.UNRECOGNIZED),
     ],
@@ -346,48 +346,20 @@ def test_get_state_metadata_notify_flag_matches_url_elicitation_support(
 ):
     """notify_elicitation_complete must mirror _support_url_elicitation for every branding: a session
     is only ever registered in SessionStore (making a later notification possible) when the client
-    supports URL mode elicitation, regardless of which brand it's recognized as. Claude Code CLI
-    ("claude-code") is always treated as supporting it, and Claude Desktop ("Claude") never is,
-    regardless of what they declare."""
+    supports URL mode elicitation, regardless of which brand it's recognized as."""
     client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
 
     result = utils._get_state_metadata(client_params)
 
-    normalized_name = client_name.strip().lower()
-    if normalized_name.startswith("claude-code"):
-        expected_notify = True
-    elif normalized_name == "claude":
-        expected_notify = False
-    else:
-        expected_notify = supports_url_elicitation
     assert result["client_branding"] == expected_branding
-    assert result["notify_elicitation_complete"] is expected_notify
+    assert result["notify_elicitation_complete"] is supports_url_elicitation
 
 
+@pytest.mark.parametrize("client_name", ["claude-code", "claude-ai/1.0", "Claude"])
 @pytest.mark.parametrize("supports_url_elicitation", [True, False])
-def test_support_url_elicitation_claude_code_cli_always_supported(supports_url_elicitation):
-    """Claude Code CLI supports URL-mode elicitation but has an upstream bug where it fails to declare
-    the capability in `initialize`. A "claude-code" client is trusted regardless of the declared
-    capability."""
-    client_params = _make_client_params("claude-code", supports_url_elicitation=supports_url_elicitation)
-
-    assert utils._support_url_elicitation(client_params) is True
-
-
-@pytest.mark.parametrize("supports_url_elicitation", [True, False])
-def test_support_url_elicitation_claude_desktop_never_supported(supports_url_elicitation):
-    """Claude Desktop ("Claude") declares URL-mode elicitation but hangs on a -32042 response, so it
-    gets the CallToolResult fallback regardless of the declared capability."""
-    client_params = _make_client_params("Claude", supports_url_elicitation=supports_url_elicitation)
-
-    assert utils._support_url_elicitation(client_params) is False
-
-
-@pytest.mark.parametrize("client_name", ["claude-ai/1.0", "Claude Something"])
-@pytest.mark.parametrize("supports_url_elicitation", [True, False])
-def test_support_url_elicitation_claude_desktop_override_is_exact_match(client_name, supports_url_elicitation):
-    """The Claude Desktop override matches the name "Claude" exactly, so other names that merely start
-    with "claude" still follow what they declare."""
+def test_support_url_elicitation_claude_clients_follow_declared_capability(client_name, supports_url_elicitation):
+    """Claude Code CLI and Claude Desktop both identify as "claude-code", and only Claude Desktop hangs on
+    a -32042 response, so no Claude client name gets an override: each follows what it declares."""
     client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
 
     assert utils._support_url_elicitation(client_params) is supports_url_elicitation
