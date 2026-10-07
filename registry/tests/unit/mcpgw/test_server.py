@@ -334,7 +334,7 @@ def test_get_state_metadata_returns_unrecognized_and_no_notify_for_missing_clien
         ("probe (via mcp-remote 1.0)", utils.ClientBranding.CURSOR),
         ("mcp-stdio-client (via mcp-remote 1.0)", utils.ClientBranding.CURSOR),
         ("claude-code", utils.ClientBranding.UNRECOGNIZED),
-        ("Claude", utils.ClientBranding.UNRECOGNIZED),
+        ("Claude", utils.ClientBranding.CLAUDE),
         ("some-other-client", utils.ClientBranding.UNRECOGNIZED),
     ],
 )
