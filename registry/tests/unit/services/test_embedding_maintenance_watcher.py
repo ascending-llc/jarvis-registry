@@ -15,8 +15,6 @@ from registry.services.embedding_maintenance_watcher import (
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models.enums import EmbeddingReindexJobStatus
 
-pytestmark = pytest.mark.asyncio
-
 
 class _AList:
     """Minimal async-iterable for a mocked ``find()`` cursor."""
