@@ -131,7 +131,6 @@ def skill_sync_route_context():
     job_service.get_job = AsyncMock(return_value=job)
     job_service.get_active_job = AsyncMock(return_value=None)
     job_service.create_job = AsyncMock(return_value=job)
-    job_service.mark_not_implemented = AsyncMock(return_value=job)
     token_service = MagicMock()
     token_service.resolve_access_token = AsyncMock(return_value=None)
     token_service.delete_source_tokens = AsyncMock()

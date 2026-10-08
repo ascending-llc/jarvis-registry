@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,25 +27,32 @@ def _service(selection_service=None, federation_job_service=None):
     )
 
 
-# --- claim / heartbeat concurrency boundary ---
+# --- claim concurrency boundary (the lease itself is covered in test_leased_job.py) ---
 
 
 async def test_claim_job_uses_atomic_lease_update(monkeypatch):
     expected = SimpleNamespace(id=PydanticObjectId())
+    doc_id = PydanticObjectId()
     collection = MagicMock()
-    collection.find_one_and_update = AsyncMock(return_value={"_id": expected.id})
+    collection.find_one_and_update = AsyncMock(return_value={"_id": doc_id})
     monkeypatch.setattr(EmbeddingReindexJob, "get_pymongo_collection", lambda: collection)
     monkeypatch.setattr(EmbeddingReindexJob, "model_validate", lambda document: expected)
 
-    result = await _service().claim_job(lease_owner="worker-1", lease_duration=timedelta(minutes=5))
+    result = await _service().claim_job(owner="worker-1")
 
-    assert result is expected
+    assert result is not None
+    job, lease = result
+    assert job is expected
+    assert lease.owner == "worker-1"
+    assert lease.doc_id == doc_id
+    assert lease.token  # a fresh token was minted for this claim
     query, update = collection.find_one_and_update.await_args.args
-    # Only a RUNNING job that is unclaimed OR whose lease has expired is claimable (crash recovery).
+    # Only a RUNNING job that is unclaimed (no token yet) OR whose lease has expired is claimable.
     assert query["status"] == EmbeddingReindexJobStatus.RUNNING.value
-    assert {"leaseOwner": None} in query["$or"]
+    assert {"leaseToken": None} in query["$or"]
     assert any("leaseExpiresAt" in clause for clause in query["$or"])
     assert update["$set"]["leaseOwner"] == "worker-1"
+    assert update["$set"]["leaseToken"] == lease.token
     # Every claim counts as an attempt, in the same atomic update (drives the retry cap).
     assert update["$inc"] == {"attempts": 1}
     # NOT filtered on attempts: a used-up job must stay claimable to be finalized FAILED.
@@ -57,36 +64,9 @@ async def test_claim_job_returns_none_when_nothing_claimable(monkeypatch):
     collection.find_one_and_update = AsyncMock(return_value=None)
     monkeypatch.setattr(EmbeddingReindexJob, "get_pymongo_collection", lambda: collection)
 
-    result = await _service().claim_job(lease_owner="worker-1", lease_duration=timedelta(minutes=5))
+    result = await _service().claim_job(owner="worker-1")
 
     assert result is None
-
-
-async def test_heartbeat_only_renews_owned_running_job(monkeypatch):
-    collection = MagicMock()
-    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
-    monkeypatch.setattr(EmbeddingReindexJob, "get_pymongo_collection", lambda: collection)
-
-    renewed = await _service().heartbeat(
-        job_id=PydanticObjectId(), lease_owner="worker-1", lease_duration=timedelta(minutes=5)
-    )
-
-    assert renewed is True
-    query, _update = collection.update_one.await_args.args
-    assert query["status"] == EmbeddingReindexJobStatus.RUNNING.value
-    assert query["leaseOwner"] == "worker-1"
-
-
-async def test_heartbeat_returns_false_when_lease_lost(monkeypatch):
-    collection = MagicMock()
-    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=0))
-    monkeypatch.setattr(EmbeddingReindexJob, "get_pymongo_collection", lambda: collection)
-
-    renewed = await _service().heartbeat(
-        job_id=PydanticObjectId(), lease_owner="worker-1", lease_duration=timedelta(minutes=5)
-    )
-
-    assert renewed is False
 
 
 # --- trigger orchestration ---
