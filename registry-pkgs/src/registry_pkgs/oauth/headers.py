@@ -1,7 +1,6 @@
 import base64
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from redis import Redis
 
@@ -33,47 +32,6 @@ class HeaderBuildConfig:
     redis_key_prefix: str
     jwt_signing_config: JwtSigningConfig
     encryption_key: bytes | None
-
-
-def _validate_and_merge_oauth_metadata(
-    oauth_config: dict[str, Any] | None, oauth_metadata: dict[str, Any] | None
-) -> dict[str, Any]:
-    """
-    Merge OAuth metadata using database config.oauth as authoritative source.
-
-    Database config.oauth (configured by admin) always takes priority over
-    MCP server's .well-known metadata to prevent incorrect configurations.
-
-    Args:
-        oauth_config: OAuth configuration from registry database (config.oauth) - AUTHORITATIVE
-        oauth_metadata: OAuth metadata from MCP server's /.well-known endpoint
-
-    Returns:
-        Merged OAuth metadata with database config.oauth overriding server metadata
-
-    Example:
-        Database config.oauth.authorization_servers: ["https://accounts.google.com"]
-        Server metadata.authorization_servers: ["http://localhost:3080/"]  # WRONG
-        Result: authorization_servers = ["https://accounts.google.com"] (from database config)
-    """
-    # If neither metadata nor config is provided, return empty dict
-    if not oauth_metadata and not oauth_config:
-        return {}
-
-    # If no server metadata, return database config as-is
-    if not oauth_metadata and oauth_config:
-        return oauth_config.copy()
-
-    # If no database config, use server metadata as-is
-    if oauth_metadata and not oauth_config:
-        return oauth_metadata.copy()
-
-    # Both server metadata and database config exist:
-    # start with server metadata, then override with database config fields
-    merged_metadata: dict[str, Any] = oauth_metadata.copy()  # type: ignore[union-attr]
-    merged_metadata.update(oauth_config)  # type: ignore[arg-type]
-
-    return merged_metadata
 
 
 async def build_complete_headers_for_server(
@@ -178,25 +136,6 @@ async def build_complete_headers_for_server(
             )
 
         logger.info(f"Building OAuth headers for {server.serverName}")
-
-        # Validate and merge OAuth metadata with config.oauth as source of truth
-        # This ensures correct authorization_servers are used for token validation
-        oauth_config = decrypted_config.get("oauth")
-        raw_oauth_metadata = decrypted_config.get("oauthMetadata", {})
-
-        oauth_metadata = _validate_and_merge_oauth_metadata(
-            oauth_config=oauth_config, oauth_metadata=raw_oauth_metadata
-        )
-
-        # Update server's oauthMetadata in-memory for this request
-        # This ensures OAuth service uses correct authorization_servers
-        if oauth_metadata:
-            config["oauthMetadata"] = oauth_metadata
-            server.config = config
-            logger.debug(
-                f"Validated OAuth metadata for token retrieval: "
-                f"authorization_servers={oauth_metadata.get('authorization_servers')}"
-            )
 
         # Get OAuth token (handles refresh automatically)
         access_token, auth_url, error = await oauth_service.get_valid_access_token(

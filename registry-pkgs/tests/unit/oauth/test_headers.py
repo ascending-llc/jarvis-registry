@@ -6,7 +6,6 @@ import pytest
 
 from registry_pkgs.oauth.headers import (
     HeaderBuildConfig,
-    _validate_and_merge_oauth_metadata,
     build_complete_headers_for_server,
 )
 
@@ -543,120 +542,34 @@ class TestBuildCompleteHeaders:
             assert headers["Accept"] == "application/json, application/xml"
 
 
-class TestValidateAndMergeOAuthMetadata:
-    """Test suite for _validate_and_merge_oauth_metadata function."""
+class TestOAuthMetadataNotMerged:
+    """config.oauthMetadata is no longer read or rewritten; the OAuth service resolves everything."""
 
-    def test_both_empty_returns_empty_dict(self):
-        """Test that empty oauth_config and oauth_metadata returns empty dict."""
+    @pytest.mark.asyncio
+    async def test_oauth_headers_leave_config_untouched(self):
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        result = _validate_and_merge_oauth_metadata(None, None)
-
-        assert result == {}
-
-    def test_no_server_metadata_returns_database_config(self):
-        """Test that when no server metadata, returns database config as-is."""
-
-        oauth_config = {
-            "authorization_url": "https://oauth.example.com/authorize",
-            "token_url": "https://oauth.example.com/token",
-            "client_id": "client-123",
+        server = Mock(spec=ExtendedMCPServer)
+        server.serverName = "oauth-server"
+        server.config = {
+            "requiresOAuth": True,
+            "oauth": {"client_id": "abc", "client_secret": "plain-secret"},
+            "oauthMetadata": {"issuer": "https://stale.example.com"},
+        }
+        original_config = {
+            key: dict(value) if isinstance(value, dict) else value for key, value in server.config.items()
         }
 
-        result = _validate_and_merge_oauth_metadata(oauth_config, None)
+        oauth_service = AsyncMock()
+        oauth_service.get_valid_access_token = AsyncMock(return_value=("access-token-123", None, None))
 
-        assert result == oauth_config
-        # Ensure it's a copy, not the same object
-        assert result is not oauth_config
+        headers = await _bch(oauth_service, server, "user-123")
 
-    def test_no_database_config_returns_server_metadata(self):
-        """Test that when no database config, returns server metadata as-is."""
-
-        oauth_metadata = {
-            "authorization_servers": ["https://accounts.google.com"],
-            "token_endpoint": "https://oauth2.googleapis.com/token",
-            "issuer": "https://accounts.google.com",
-        }
-
-        result = _validate_and_merge_oauth_metadata(None, oauth_metadata)
-
-        assert result == oauth_metadata
-        # Ensure it's a copy, not the same object
-        assert result is not oauth_metadata
-
-    def test_merge_with_database_config_taking_priority(self):
-        """Test that database config overrides server metadata fields."""
-
-        # Server metadata from .well-known endpoint
-        oauth_metadata = {
-            "authorization_servers": ["http://localhost:3080/"],  # WRONG
-            "token_endpoint": "http://localhost:3080/oauth/token",
-            "issuer": "http://localhost:3080",
-            "scopes_supported": ["read", "write"],
-        }
-
-        # Database config (admin-configured, authoritative)
-        oauth_config = {
-            "authorization_servers": ["https://accounts.google.com"],  # CORRECT
-            "token_endpoint": "https://oauth2.googleapis.com/token",
-            "client_id": "client-123",
-            "client_secret": "secret-xyz",
-        }
-
-        result = _validate_and_merge_oauth_metadata(oauth_config, oauth_metadata)
-
-        # Database config should override server metadata
-        assert result["authorization_servers"] == ["https://accounts.google.com"]
-        assert result["token_endpoint"] == "https://oauth2.googleapis.com/token"
-
-        # Database-only fields should be present
-        assert result["client_id"] == "client-123"
-        assert result["client_secret"] == "secret-xyz"
-
-        # Server metadata fields not in database config should remain
-        assert result["issuer"] == "http://localhost:3080"
-        assert result["scopes_supported"] == ["read", "write"]
-
-    def test_merge_preserves_all_database_fields(self):
-        """Test that all database config fields are preserved in merge."""
-
-        oauth_metadata = {"issuer": "https://old-issuer.com"}
-
-        oauth_config = {
-            "authorization_url": "https://new.com/auth",
-            "token_url": "https://new.com/token",
-            "client_id": "new-client",
-            "scope": "openid email profile",
-        }
-
-        result = _validate_and_merge_oauth_metadata(oauth_config, oauth_metadata)
-
-        # All database config fields should be present
-        assert result["authorization_url"] == "https://new.com/auth"
-        assert result["token_url"] == "https://new.com/token"
-        assert result["client_id"] == "new-client"
-        assert result["scope"] == "openid email profile"
-
-        # Server metadata field should still be present
-        assert result["issuer"] == "https://old-issuer.com"
-
-    def test_merge_does_not_mutate_input(self):
-        """Test that merge operation doesn't mutate input dictionaries."""
-
-        oauth_metadata = {"issuer": "https://issuer.com", "authorization_servers": ["https://old.com"]}
-        oauth_metadata_copy = oauth_metadata.copy()
-
-        oauth_config = {"authorization_servers": ["https://new.com"]}
-        oauth_config_copy = oauth_config.copy()
-
-        result = _validate_and_merge_oauth_metadata(oauth_config, oauth_metadata)
-
-        # Inputs should not be mutated
-        assert oauth_metadata == oauth_metadata_copy
-        assert oauth_config == oauth_config_copy
-
-        # Result should be a new dict
-        assert result is not oauth_metadata
-        assert result is not oauth_config
+        assert headers["Authorization"] == "Bearer access-token-123"
+        assert server.config == original_config
+        oauth_service.get_valid_access_token.assert_awaited_once_with(
+            user_id="user-123", server=server, state_metadata=None, interactive=True
+        )
 
 
 class TestBuildCompleteHeadersExtra:

@@ -1,15 +1,20 @@
 """Unit tests for TokenService (token_service.py)."""
 
-import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from beanie import PydanticObjectId
 
+from registry_pkgs.core.crypto_utils import encrypt_value
 from registry_pkgs.models import Token, TokenType
-from registry_pkgs.oauth.schemas import OAuthClientInformation, OAuthTokens
-from registry_pkgs.oauth.token_service import TokenService
+from registry_pkgs.oauth.schemas import OAuthTokens
+from registry_pkgs.oauth.token_service import (
+    REGISTRY_TOKEN_IDENTIFIER_PREFIX,
+    TokenService,
+    registry_access_token_identifier,
+    registry_refresh_token_identifier,
+)
 
 _TEST_ENCRYPTION_KEY = bytes.fromhex("00" * 16)  # AES-128 test key
 
@@ -60,29 +65,29 @@ class TestTokenServiceBasicMethods:
 
             assert result == "507f1f77bcf86cd799439011"
 
-    def test_get_client_identifier(self, token_service):
-        """Test access token identifier format"""
-        result = token_service._get_client_identifier("notion")
-        assert result == "mcp:notion"
-
-        result = token_service._get_client_identifier("google-drive")
-        assert result == "mcp:google-drive"
+    def test_get_access_identifier(self, token_service):
+        """Registry-only access token identifier, distinct from Chat's mcp:<name>"""
+        assert token_service._get_access_identifier("notion") == "registry:mcp:notion"
+        assert token_service._get_access_identifier("google-drive") == "registry:mcp:google-drive"
 
     def test_get_refresh_identifier(self, token_service):
-        """Test refresh token identifier format"""
-        result = token_service._get_refresh_identifier("notion")
-        assert result == "mcp:notion:refresh"
+        """Registry-only refresh token identifier, distinct from Chat's mcp:<name>:refresh"""
+        assert token_service._get_refresh_identifier("notion") == "registry:mcp:notion:refresh"
+        assert token_service._get_refresh_identifier("slack") == "registry:mcp:slack:refresh"
 
-        result = token_service._get_refresh_identifier("slack")
-        assert result == "mcp:slack:refresh"
+    def test_public_identifier_builders(self):
+        assert REGISTRY_TOKEN_IDENTIFIER_PREFIX == "registry:mcp"
+        assert registry_access_token_identifier("atlassian") == "registry:mcp:atlassian"
+        assert registry_refresh_token_identifier("atlassian") == "registry:mcp:atlassian:refresh"
 
-    def test_get_client_creds_identifier(self, token_service):
-        """Test client credentials identifier format"""
-        result = token_service._get_client_creds_identifier("notion")
-        assert result == "mcp:notion:client"
-
-        result = token_service._get_client_creds_identifier("github")
-        assert result == "mcp:github:client"
+    def test_client_credential_methods_removed(self, token_service):
+        for name in (
+            "store_oauth_client_credentials",
+            "get_oauth_client_credentials",
+            "_get_client_creds_identifier",
+            "_get_client_identifier",
+        ):
+            assert not hasattr(token_service, name)
 
 
 class TestTokenServiceStoreTokens:
@@ -278,43 +283,91 @@ class TestTokenServiceDeleteTokens:
         return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
 
     @pytest.mark.asyncio
-    async def test_delete_oauth_tokens_all_three_types(self, token_service):
-        """Test deleting all OAuth tokens (access, refresh, client credentials)"""
-        access_token = Mock(spec=Token)
-        access_token.delete = AsyncMock()
-        refresh_token = Mock(spec=Token)
-        refresh_token.delete = AsyncMock()
-        client_creds = Mock(spec=Token)
-        client_creds.delete = AsyncMock()
+    async def test_delete_oauth_tokens_deletes_only_registry_identifiers(self, token_service):
+        """Only registry:mcp:<name> and registry:mcp:<name>:refresh; never Chat's mcp:* records."""
+        collection = Mock()
+        collection.delete_many = AsyncMock(return_value=Mock(deleted_count=2))
+        with (
+            patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")),
+            patch.object(Token, "get_pymongo_collection", Mock(return_value=collection)),
+        ):
+            result = await token_service.delete_oauth_tokens(user_id="test_user", service_name="notion")
 
-        with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
-
-            async def mock_find_one(query):
-                token_type = query.get("type")
-                if token_type == TokenType.MCP_OAUTH_ACCESS.value:
-                    return access_token
-                elif token_type == TokenType.MCP_OAUTH_REFRESH.value:
-                    return refresh_token
-                elif token_type == TokenType.MCP_OAUTH_CLIENT.value:
-                    return client_creds
-                return None
-
-            with patch.object(Token, "find_one", side_effect=mock_find_one):
-                result = await token_service.delete_oauth_tokens(user_id="test_user", service_name="notion")
-
-                assert result is True
-                access_token.delete.assert_awaited_once()
-                refresh_token.delete.assert_awaited_once()
-                client_creds.delete.assert_awaited_once()
+        assert result is True
+        query = collection.delete_many.await_args.args[0]
+        assert query["userId"] == PydanticObjectId("507f1f77bcf86cd799439011")
+        assert query["$or"] == [
+            {"type": TokenType.MCP_OAUTH_ACCESS.value, "identifier": "registry:mcp:notion"},
+            {"type": TokenType.MCP_OAUTH_REFRESH.value, "identifier": "registry:mcp:notion:refresh"},
+        ]
+        assert "mcp:notion" not in str(query).replace("registry:mcp:notion", "")
 
     @pytest.mark.asyncio
     async def test_delete_oauth_tokens_none_found(self, token_service):
         """Test deleting tokens when none exist"""
-        with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
-            with patch.object(Token, "find_one", AsyncMock(return_value=None)):
-                result = await token_service.delete_oauth_tokens(user_id="test_user", service_name="notion")
+        collection = Mock()
+        collection.delete_many = AsyncMock(return_value=Mock(deleted_count=0))
+        with (
+            patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")),
+            patch.object(Token, "get_pymongo_collection", Mock(return_value=collection)),
+        ):
+            result = await token_service.delete_oauth_tokens(user_id="test_user", service_name="notion")
 
-                assert result is False
+        assert result is False
+
+
+class TestDeleteAccessTokenIfMatches:
+    @pytest.fixture
+    def token_service(self):
+        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
+
+    def _record(self, plaintext: str) -> Mock:
+        record = Mock(spec=Token)
+        record.id = PydanticObjectId("65f000000000000000000009")
+        record.token = encrypt_value(plaintext, encryption_key=_TEST_ENCRYPTION_KEY)
+        return record
+
+    @pytest.mark.asyncio
+    async def test_deletes_when_stored_token_matches(self, token_service):
+        record = self._record("rejected-token")
+        collection = Mock()
+        collection.delete_one = AsyncMock(return_value=Mock(deleted_count=1))
+        with (
+            patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")),
+            patch.object(Token, "find_one", AsyncMock(return_value=record)) as find_one,
+            patch.object(Token, "get_pymongo_collection", Mock(return_value=collection)),
+        ):
+            assert await token_service.delete_access_token_if_matches("u", "atlassian", "rejected-token") is True
+
+        assert find_one.await_args.args[0]["identifier"] == "registry:mcp:atlassian"
+        # The delete filters on the ciphertext that was read, so a concurrently rotated token survives.
+        collection.delete_one.assert_awaited_once_with({"_id": record.id, "token": record.token})
+
+    @pytest.mark.asyncio
+    async def test_keeps_record_holding_a_different_token(self, token_service):
+        record = self._record("newer-token")
+        collection = Mock()
+        collection.delete_one = AsyncMock()
+        with (
+            patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")),
+            patch.object(Token, "find_one", AsyncMock(return_value=record)),
+            patch.object(Token, "get_pymongo_collection", Mock(return_value=collection)),
+        ):
+            assert await token_service.delete_access_token_if_matches("u", "atlassian", "rejected-token") is False
+
+        collection.delete_one.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reports_lost_race_when_ciphertext_changed(self, token_service):
+        record = self._record("rejected-token")
+        collection = Mock()
+        collection.delete_one = AsyncMock(return_value=Mock(deleted_count=0))
+        with (
+            patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")),
+            patch.object(Token, "find_one", AsyncMock(return_value=record)),
+            patch.object(Token, "get_pymongo_collection", Mock(return_value=collection)),
+        ):
+            assert await token_service.delete_access_token_if_matches("u", "atlassian", "rejected-token") is False
 
 
 class TestTokenServiceTokenStatus:
@@ -471,264 +524,6 @@ class TestTokenServiceHelperMethods:
         assert result is False
 
 
-class TestTokenServiceClientCredentials:
-    """Tests for OAuth client credentials storage (DCR support)"""
-
-    @pytest.fixture
-    def token_service(self):
-        """Create TokenService instance"""
-        return TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
-
-    @pytest.fixture
-    def mock_user(self):
-        """Mock user object"""
-        user = Mock()
-        user.id = PydanticObjectId("507f1f77bcf86cd799439011")
-        user.email = "test@example.com"
-        return user
-
-    @pytest.fixture
-    def mock_client_info(self):
-        """Mock OAuth client information"""
-        return OAuthClientInformation(
-            client_id="test_client_123",
-            client_secret="test_secret_abc",
-            redirect_uris=["https://registry.example.com/callback"],
-            scope="read write",
-            grant_types=["authorization_code", "refresh_token"],
-            token_endpoint_auth_method="client_secret_basic",
-        )
-
-    @pytest.fixture
-    def mock_metadata(self):
-        """Mock OAuth metadata"""
-        return {
-            "issuer": "https://example.com",
-            "authorization_endpoint": "https://example.com/oauth/authorize",
-            "token_endpoint": "https://example.com/oauth/token",
-            "registration_endpoint": "https://example.com/oauth/register",
-            "scopes_supported": ["read", "write"],
-            "grant_types_supported": ["authorization_code", "refresh_token"],
-        }
-
-    @pytest.mark.asyncio
-    async def test_store_oauth_client_credentials_new(self, token_service, mock_user, mock_client_info, mock_metadata):
-        """Test storing new OAuth client credentials"""
-        user_id = "test_user"
-        service_name = "test_service"
-
-        mock_token = Mock(spec=Token)
-        mock_token.token = "encrypted_iv:encrypted_ciphertext"
-        mock_token.type = TokenType.MCP_OAUTH_CLIENT.value
-        mock_token.identifier = "mcp:test_service:client"
-        mock_token.insert = AsyncMock()
-
-        # Mock user service
-        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            # Mock Token constructor and find_one
-            with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
-                MockToken.find_one = AsyncMock(return_value=None)
-                MockToken.return_value = mock_token
-
-                # Mock encrypt_value
-                with patch("registry_pkgs.oauth.token_service.encrypt_value") as mock_encrypt:
-                    mock_encrypt.return_value = "encrypted_iv:encrypted_ciphertext"
-
-                    result = await token_service.store_oauth_client_credentials(
-                        user_id=user_id,
-                        service_name=service_name,
-                        client_info=mock_client_info,
-                        metadata=mock_metadata,
-                    )
-
-                    # Verify encryption was called
-                    mock_encrypt.assert_called_once()
-                    encrypted_arg = mock_encrypt.call_args[0][0]
-
-                    # Verify the encrypted data is JSON string
-                    assert isinstance(encrypted_arg, str)
-                    decrypted_data = json.loads(encrypted_arg)
-                    assert decrypted_data["client_id"] == "test_client_123"
-                    assert decrypted_data["client_secret"] == "test_secret_abc"
-
-                    # Verify token document was created
-                    assert result.token == "encrypted_iv:encrypted_ciphertext"
-                    assert result.type == TokenType.MCP_OAUTH_CLIENT.value
-                    assert result.identifier == "mcp:test_service:client"
-
-    @pytest.mark.asyncio
-    async def test_store_oauth_client_credentials_update_existing(
-        self, token_service, mock_user, mock_client_info, mock_metadata
-    ):
-        """Test updating existing OAuth client credentials"""
-        user_id = "test_user"
-        service_name = "test_service"
-
-        # Mock existing token
-        existing_token = Mock(spec=Token)
-        existing_token.save = AsyncMock()
-
-        # Mock user service
-        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            # Mock Token.find_one to return existing token
-            with patch.object(Token, "find_one", AsyncMock(return_value=existing_token)):
-                # Mock encrypt_value
-                with patch("registry_pkgs.oauth.token_service.encrypt_value") as mock_encrypt:
-                    mock_encrypt.return_value = "updated_encrypted_iv:updated_ciphertext"
-
-                    result = await token_service.store_oauth_client_credentials(
-                        user_id=user_id,
-                        service_name=service_name,
-                        client_info=mock_client_info,
-                        metadata=mock_metadata,
-                    )
-
-                    # Verify existing token was updated
-                    assert result == existing_token
-                    assert existing_token.token == "updated_encrypted_iv:updated_ciphertext"
-                    assert existing_token.metadata == mock_metadata
-                    existing_token.save.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_get_oauth_client_credentials_success(
-        self, token_service, mock_user, mock_client_info, mock_metadata
-    ):
-        """Test retrieving OAuth client credentials"""
-        user_id = "test_user"
-        service_name = "test_service"
-
-        # Mock stored token with encrypted data
-        client_info_json = json.dumps(mock_client_info.model_dump())
-
-        mock_token = Mock(spec=Token)
-        mock_token.token = "encrypted_iv:encrypted_ciphertext"
-        mock_token.metadata = mock_metadata
-
-        # Mock user service
-        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            # Mock Token.find_one
-            with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
-                # Mock decrypt_auth_fields to return decrypted JSON
-                with patch("registry_pkgs.oauth.token_service.decrypt_value") as mock_decrypt:
-                    mock_decrypt.return_value = client_info_json
-
-                    client_info, metadata = await token_service.get_oauth_client_credentials(
-                        user_id=user_id, service_name=service_name
-                    )
-
-                    # Verify decryption was called
-                    mock_decrypt.assert_called_once_with(mock_token.token, encryption_key=_TEST_ENCRYPTION_KEY)
-
-                    # Verify result
-                    assert isinstance(client_info, OAuthClientInformation)
-                    assert client_info.client_id == "test_client_123"
-                    assert client_info.client_secret == "test_secret_abc"
-                    assert metadata == mock_metadata
-
-    @pytest.mark.asyncio
-    async def test_get_oauth_client_credentials_not_found(self, token_service, mock_user):
-        """Test retrieving OAuth client credentials when none exist"""
-        user_id = "test_user"
-        service_name = "test_service"
-
-        # Mock user service
-        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            # Mock Token.find_one to return None
-            with patch.object(Token, "find_one", AsyncMock(return_value=None)):
-                client_info, metadata = await token_service.get_oauth_client_credentials(
-                    user_id=user_id, service_name=service_name
-                )
-
-                # Verify None returned
-                assert client_info is None
-                assert metadata is None
-
-    @pytest.mark.asyncio
-    async def test_client_credentials_identifier_format(self, token_service):
-        """Test client credentials identifier format"""
-        result = token_service._get_client_creds_identifier("notion")
-        assert result == "mcp:notion:client"
-
-        result = token_service._get_client_creds_identifier("google-drive")
-        assert result == "mcp:google-drive:client"
-
-    @pytest.mark.asyncio
-    async def test_delete_oauth_tokens_includes_client_credentials(self, token_service, mock_user):
-        """Test deleting OAuth tokens also deletes client credentials"""
-        user_id = "test_user"
-        service_name = "test_service"
-
-        # Mock tokens
-        access_token = Mock(spec=Token)
-        access_token.delete = AsyncMock()
-        refresh_token = Mock(spec=Token)
-        refresh_token.delete = AsyncMock()
-        client_creds = Mock(spec=Token)
-        client_creds.delete = AsyncMock()
-
-        # Mock user service
-        with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value=str(mock_user.id))):
-            # Mock Token.find_one to return all three token types
-            async def mock_find_one(query):
-                token_type = query.get("type")
-                if token_type == TokenType.MCP_OAUTH_ACCESS.value:
-                    return access_token
-                elif token_type == TokenType.MCP_OAUTH_REFRESH.value:
-                    return refresh_token
-                elif token_type == TokenType.MCP_OAUTH_CLIENT.value:
-                    return client_creds
-                return None
-
-            with patch.object(Token, "find_one", side_effect=mock_find_one):
-                result = await token_service.delete_oauth_tokens(user_id=user_id, service_name=service_name)
-
-                # Verify all three were deleted
-                assert result is True
-                access_token.delete.assert_awaited_once()
-                refresh_token.delete.assert_awaited_once()
-                client_creds.delete.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_store_client_credentials_expiry_one_year(
-        self, token_service, mock_user, mock_client_info, mock_metadata
-    ):
-        """Test client credentials are stored with 1 year expiry"""
-        user_id = "test_user"
-        service_name = "test_service"
-
-        # Capture the Token constructor args
-        captured_args = {}
-
-        def capture_token_creation(**kwargs):
-            captured_args.update(kwargs)
-            mock_token = Mock(spec=Token)
-            mock_token.insert = AsyncMock()
-            for key, value in kwargs.items():
-                setattr(mock_token, key, value)
-            return mock_token
-
-        # Mock user service
-        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            with patch("registry_pkgs.oauth.token_service.Token", side_effect=capture_token_creation) as MockToken:
-                MockToken.find_one = AsyncMock(return_value=None)
-
-                with patch("registry_pkgs.oauth.token_service.encrypt_value", return_value="encrypted"):
-                    await token_service.store_oauth_client_credentials(
-                        user_id=user_id,
-                        service_name=service_name,
-                        client_info=mock_client_info,
-                        metadata=mock_metadata,
-                    )
-
-                    # Verify expiry is approximately 1 year from now
-                    assert "expiresAt" in captured_args
-                    now = datetime.now(UTC)
-                    one_year_later = now + timedelta(days=365)
-
-                    # Allow 5 seconds difference for test execution time
-                    assert abs((captured_args["expiresAt"] - one_year_later).total_seconds()) < 5
-
-
 class TestTokenServiceEncryption:
     """Tests for token encryption (bug fix validation)"""
 
@@ -754,43 +549,6 @@ class TestTokenServiceEncryption:
             token_type="Bearer",
             expires_in=3600,
         )
-
-    @pytest.mark.asyncio
-    async def test_encrypt_uses_encrypt_value_not_encrypt_auth_fields(self, token_service, mock_user):
-        """Test that store_oauth_client_credentials uses encrypt_value for encryption"""
-        client_info = OAuthClientInformation(
-            client_id="test_client",
-            client_secret="test_secret",
-        )
-
-        # Mock Token constructor to avoid Beanie initialization
-        mock_token = Mock(spec=Token)
-        mock_token.insert = AsyncMock()
-
-        # Mock encrypt_value to verify it's called
-        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
-            with patch("registry_pkgs.oauth.token_service.Token") as MockToken:
-                MockToken.find_one = AsyncMock(return_value=None)
-                MockToken.return_value = mock_token
-
-                with patch("registry_pkgs.oauth.token_service.encrypt_value") as mock_encrypt_value:
-                    mock_encrypt_value.return_value = "encrypted_value_result"
-
-                    await token_service.store_oauth_client_credentials(
-                        user_id="test_user",
-                        service_name="test_service",
-                        client_info=client_info,
-                        metadata={},
-                    )
-
-                    # Verify encrypt_value was called (correct function)
-                    mock_encrypt_value.assert_called_once()
-
-                    # Verify the argument is a JSON string containing credentials
-                    call_args = mock_encrypt_value.call_args[0][0]
-                    assert isinstance(call_args, str)
-                    assert "client_id" in call_args
-                    assert client_info.client_id in call_args
 
     @pytest.mark.asyncio
     async def test_store_oauth_access_token_encrypts_token(self, token_service, mock_user, mock_oauth_tokens):

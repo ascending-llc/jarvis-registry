@@ -1,3 +1,5 @@
+import json
+
 """Unit tests for OAuthClient (oauth_client.py)."""
 
 from unittest.mock import AsyncMock, Mock, patch
@@ -5,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
+from registry_pkgs.oauth.errors import OAuthTokenEndpointError
 from registry_pkgs.oauth.oauth_client import OAuthClient
 from registry_pkgs.oauth.schemas import (
     MCPOAuthFlowMetadata,
@@ -111,6 +114,7 @@ class TestOAuthClientRegisterClient:
                 server_url="https://example.com",
                 metadata=mock_metadata,
                 redirect_uri="https://registry.example.com/callback",
+                scope="read write",
             )
 
             # Verify result
@@ -150,10 +154,12 @@ class TestOAuthClientRegisterClient:
                 metadata=mock_metadata,
                 resource_metadata=mock_resource_metadata,
                 redirect_uri="https://registry.example.com/callback",
+                scope="read write",
             )
 
-            # Verify resource metadata scopes were used
-            assert result.scope == "api:read api:write"
+            # The registered scope is the caller's explicit scope, not derived from the metadata
+            assert mock_client.post.call_args[1]["json"]["scope"] == "read write"
+            assert result.scope == "api:read api:write"  # echoed by the provider
 
     @pytest.mark.asyncio
     async def test_register_client_no_registration_endpoint(self, oauth_client):
@@ -170,6 +176,7 @@ class TestOAuthClientRegisterClient:
                 server_url="https://example.com",
                 metadata=metadata_no_dcr,
                 redirect_uri="https://registry.example.com/callback",
+                scope="read write",
             )
 
     @pytest.mark.asyncio
@@ -192,6 +199,7 @@ class TestOAuthClientRegisterClient:
                     server_url="https://example.com",
                     metadata=mock_metadata,
                     redirect_uri="https://registry.example.com/callback",
+                    scope=None,
                 )
 
     @pytest.mark.asyncio
@@ -217,6 +225,7 @@ class TestOAuthClientRegisterClient:
                 metadata=mock_metadata,
                 redirect_uri="https://registry.example.com/callback",
                 token_exchange_method="client_secret_post",
+                scope=None,
             )
 
             # Verify registration was successful with correct client_id
@@ -244,6 +253,7 @@ class TestOAuthClientRegisterClient:
                 server_url="https://example.com",
                 metadata=mock_metadata,
                 redirect_uri="https://registry.example.com/callback",
+                scope="read write",
             )
 
             # Verify client_name was included in request
@@ -332,46 +342,6 @@ class TestOAuthClientDCRHelperMethods:
         result = oauth_client._negotiate_auth_method(metadata)
 
         assert result == "client_secret_basic"
-
-    def test_build_scope_from_metadata(self, oauth_client):
-        """Test scope building from metadata"""
-        metadata = OAuthMetadata(
-            authorization_endpoint="https://example.com/auth",
-            token_endpoint="https://example.com/token",
-            scopes_supported=["read", "write", "delete"],
-        )
-
-        result = oauth_client._build_scope(metadata, resource_metadata=None)
-
-        assert result == "read write delete"
-
-    def test_build_scope_from_resource_metadata(self, oauth_client):
-        """Test scope building prioritizes resource metadata"""
-        metadata = OAuthMetadata(
-            authorization_endpoint="https://example.com/auth",
-            token_endpoint="https://example.com/token",
-            scopes_supported=["read", "write"],
-        )
-        resource_metadata = OAuthProtectedResourceMetadata(
-            resource="https://api.example.com",
-            scopes_supported=["api:read", "api:write", "api:admin"],
-        )
-
-        result = oauth_client._build_scope(metadata, resource_metadata)
-
-        assert result == "api:read api:write api:admin"
-
-    def test_build_scope_none_when_no_scopes(self, oauth_client):
-        """Test scope building returns None when no scopes available"""
-        metadata = OAuthMetadata(
-            authorization_endpoint="https://example.com/auth",
-            token_endpoint="https://example.com/token",
-            scopes_supported=None,
-        )
-
-        result = oauth_client._build_scope(metadata, resource_metadata=None)
-
-        assert result is None
 
 
 class TestOAuthClientAuthorizationUrl:
@@ -471,6 +441,7 @@ class TestOAuthClientTokenExchange:
             }
         )
         mock_authlib_client.aclose = AsyncMock()
+        mock_authlib_client.register_compliance_hook = Mock()
 
         with patch.object(oauth_client, "_get_client", return_value=mock_authlib_client):
             tokens = await oauth_client.exchange_code_for_tokens(mock_flow_metadata, authorization_code)
@@ -536,6 +507,7 @@ class TestOAuthClientRefreshTokens:
             }
         )
         mock_authlib_client.aclose = AsyncMock()
+        mock_authlib_client.register_compliance_hook = Mock()
 
         with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client", return_value=mock_authlib_client):
             tokens = await oauth_client.refresh_tokens(oauth_config, refresh_token)
@@ -579,6 +551,7 @@ class TestOAuthClientRefreshTokens:
             }
         )
         mock_authlib_client.aclose = AsyncMock()
+        mock_authlib_client.register_compliance_hook = Mock()
 
         with patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client", return_value=mock_authlib_client):
             tokens = await oauth_client.refresh_tokens(oauth_config, old_refresh_token)
@@ -729,6 +702,7 @@ class TestExchangeCodeForTokensResourceIndicator:
             return_value={"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
         )
         mock_authlib_client.aclose = AsyncMock()
+        mock_authlib_client.register_compliance_hook = Mock()
 
         with patch.object(oauth_client, "_get_client", return_value=mock_authlib_client):
             await oauth_client.exchange_code_for_tokens(flow_metadata, "test_code")
@@ -745,6 +719,7 @@ class TestExchangeCodeForTokensResourceIndicator:
             return_value={"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
         )
         mock_authlib_client.aclose = AsyncMock()
+        mock_authlib_client.register_compliance_hook = Mock()
 
         with patch.object(oauth_client, "_get_client", return_value=mock_authlib_client):
             await oauth_client.exchange_code_for_tokens(flow_metadata, "test_code")
@@ -769,11 +744,221 @@ class TestExchangeCodeForTokensResourceIndicator:
         mock_authlib_client = AsyncMock()
         mock_authlib_client.fetch_token = AsyncMock(side_effect=http_error)
         mock_authlib_client.aclose = AsyncMock()
+        mock_authlib_client.register_compliance_hook = Mock()
 
         with patch.object(oauth_client, "_get_client", return_value=mock_authlib_client):
             tokens = await oauth_client.exchange_code_for_tokens(flow_metadata, "test_code")
 
         assert tokens is None
+
+
+def _mock_token_endpoint(handler):
+    """Patch AsyncOAuth2Client so the real Authlib client talks to an httpx.MockTransport."""
+    from authlib.integrations.httpx_client import AsyncOAuth2Client as RealAsyncOAuth2Client
+
+    def factory(**kwargs):
+        return RealAsyncOAuth2Client(transport=httpx.MockTransport(handler), **kwargs)
+
+    return patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client", side_effect=factory)
+
+
+def _form(request: httpx.Request) -> dict[str, str]:
+    from urllib.parse import parse_qsl
+
+    return dict(parse_qsl(request.content.decode()))
+
+
+class TestRegisterClientExplicitScope:
+    @pytest.fixture
+    def oauth_client(self):
+        return OAuthClient(registry_app_name="Test Registry")
+
+    @pytest.fixture
+    def metadata(self):
+        return OAuthMetadata(
+            issuer="https://as.example.com",
+            authorization_endpoint="https://as.example.com/authorize",
+            token_endpoint="https://as.example.com/token",
+            registration_endpoint="https://as.example.com/register",
+            scopes_supported=["a", "b", "c"],
+        )
+
+    async def _register(self, oauth_client, metadata, response_body, *, scope):
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201, json=response_body)
+
+        real_async_client = httpx.AsyncClient
+        with patch(
+            "registry_pkgs.oauth.oauth_client.httpx.AsyncClient",
+            side_effect=lambda **kw: real_async_client(transport=httpx.MockTransport(handler), **kw),
+        ):
+            result = await oauth_client.register_client(
+                server_url="https://mcp.example.com/mcp",
+                metadata=metadata,
+                redirect_uri="https://registry.example.com/callback",
+                scope=scope,
+            )
+        return result, json.loads(seen[0].content)
+
+    @pytest.mark.asyncio
+    async def test_sends_the_explicit_scope_not_metadata_scopes(self, oauth_client, metadata):
+        result, body = await self._register(
+            oauth_client, metadata, {"client_id": "c1", "scope": "b a"}, scope="read:me offline_access"
+        )
+        assert body["scope"] == "read:me offline_access"
+        assert result.client_id == "c1"
+
+    @pytest.mark.asyncio
+    async def test_omits_scope_when_none(self, oauth_client, metadata):
+        _, body = await self._register(oauth_client, metadata, {"client_id": "c1"}, scope=None)
+        assert "scope" not in body
+
+    @pytest.mark.asyncio
+    async def test_parses_client_secret_expires_at(self, oauth_client, metadata):
+        result, _ = await self._register(
+            oauth_client,
+            metadata,
+            {"client_id": "c1", "client_secret": "s", "client_secret_expires_at": 1893456000},
+            scope=None,
+        )
+        assert result.client_secret_expires_at == 1893456000
+
+    @pytest.mark.asyncio
+    async def test_parses_token_endpoint_auth_method(self, oauth_client, metadata):
+        result, _ = await self._register(
+            oauth_client, metadata, {"client_id": "c1", "token_endpoint_auth_method": "none"}, scope=None
+        )
+        assert result.token_endpoint_auth_method == "none"
+
+
+class TestRefreshTokensRequestAndErrors:
+    @pytest.fixture
+    def oauth_client(self):
+        return OAuthClient(registry_app_name="Test Registry")
+
+    CONFIG = {
+        "client_id": "client-1",
+        "client_secret": "secret-1",
+        "token_url": "https://as.example.com/token",
+        "scope": "read write",
+        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+    }
+
+    @pytest.mark.asyncio
+    async def test_refresh_body_has_resource_and_no_scope(self, oauth_client):
+        seen: list[dict[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(_form(request))
+            return httpx.Response(200, json={"access_token": "new", "token_type": "Bearer", "expires_in": 60})
+
+        with _mock_token_endpoint(handler):
+            tokens = await oauth_client.refresh_tokens(
+                self.CONFIG, "refresh-1", resource="https://mcp.atlassian.com/v2/mcp"
+            )
+
+        assert tokens is not None and tokens.access_token == "new"
+        assert tokens.refresh_token == "refresh-1"  # not rotated
+        assert seen[0]["grant_type"] == "refresh_token"
+        assert seen[0]["refresh_token"] == "refresh-1"
+        assert seen[0]["resource"] == "https://mcp.atlassian.com/v2/mcp"
+        assert "scope" not in seen[0]
+
+    @pytest.mark.asyncio
+    async def test_refresh_without_resource_omits_it(self, oauth_client):
+        seen: list[dict[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(_form(request))
+            return httpx.Response(200, json={"access_token": "new", "token_type": "Bearer"})
+
+        with _mock_token_endpoint(handler):
+            await oauth_client.refresh_tokens(self.CONFIG, "refresh-1")
+
+        assert "resource" not in seen[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "body", "code"),
+        [
+            (400, {"error": "invalid_grant"}, "invalid_grant"),
+            (401, {"error": "invalid_client", "error_description": "gone"}, "invalid_client"),
+            (400, None, None),
+        ],
+    )
+    async def test_refresh_4xx_raises_token_endpoint_error(self, oauth_client, status, body, code):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if body is None:
+                return httpx.Response(status, content=b"<html>bad</html>")
+            return httpx.Response(status, json=body)
+
+        with _mock_token_endpoint(handler), pytest.raises(OAuthTokenEndpointError) as exc_info:
+            await oauth_client.refresh_tokens(self.CONFIG, "refresh-1")
+
+        assert exc_info.value.error_code == code
+
+    @pytest.mark.asyncio
+    async def test_refresh_5xx_returns_none(self, oauth_client):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json={"error": "temporarily_unavailable"})
+
+        with _mock_token_endpoint(handler):
+            assert await oauth_client.refresh_tokens(self.CONFIG, "refresh-1") is None
+
+
+class TestExchangeCodeTokenEndpointErrors:
+    @pytest.mark.asyncio
+    async def test_exchange_4xx_raises_with_error_code(self):
+        oauth_client = OAuthClient(registry_app_name="Test Registry")
+        flow_metadata = MCPOAuthFlowMetadata(
+            server_name="atlassian",
+            server_path="/atlassian",
+            server_id="65f000000000000000000001",
+            user_id="user-1",
+            authorization_url="https://as.example.com/authorize",
+            state="state",
+            code_verifier="verifier-verifier-verifier-verifier-verifier",
+            client_info=OAuthClientInformation(
+                client_id="client-1", client_secret="s", redirect_uris=["https://registry.example.com/cb"]
+            ),
+            metadata=OAuthMetadata(
+                authorization_endpoint="https://as.example.com/authorize",
+                token_endpoint="https://as.example.com/token",
+                token_endpoint_auth_methods_supported=["client_secret_post"],
+            ),
+            resource_metadata=OAuthProtectedResourceMetadata(resource="https://mcp.example.com/mcp"),
+        )
+        seen: list[dict[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(_form(request))
+            return httpx.Response(401, json={"error": "invalid_client"})
+
+        from authlib.integrations.httpx_client import AsyncOAuth2Client as RealAsyncOAuth2Client
+
+        original_get_client = oauth_client._get_client
+
+        def get_client(flow, code_verifier=None):
+            client = original_get_client(flow, code_verifier)
+            real = RealAsyncOAuth2Client(
+                client_id=client.client_id,
+                client_secret=client.client_secret,
+                redirect_uri=client.redirect_uri,
+                token_endpoint_auth_method="client_secret_post",
+                code_challenge_method="S256",
+                transport=httpx.MockTransport(handler),
+            )
+            return real
+
+        with patch.object(oauth_client, "_get_client", side_effect=get_client):
+            with pytest.raises(OAuthTokenEndpointError) as exc_info:
+                await oauth_client.exchange_code_for_tokens(flow_metadata, "code-1")
+
+        assert exc_info.value.error_code == "invalid_client"
+        assert seen[0]["resource"] == "https://mcp.example.com/mcp"
 
 
 if __name__ == "__main__":

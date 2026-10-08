@@ -37,6 +37,10 @@ Additional Fields (stored at root level):
 - lastConnected: datetime (nullable) - Last successful connection timestamp
 - lastError: datetime (nullable) - Last error timestamp
 - errorMessage: string (nullable) - Last error message details
+- registryOAuth: object (optional) - Registry-owned OAuth state (RegistryOAuthState): discovery
+  result, Registry's own OAuth client and the config.url both are bound to. Excluded from Beanie
+  writes (save/save_changes/insert never touch it); MCPOAuthService writes it with targeted
+  compare-and-swap updates, and server_service unsets it on URL change.
 
 Key Principle:
 - Configuration Fields are stored in the config object
@@ -62,6 +66,7 @@ from ..core.config import ChunkingConfig
 from ..models.enums import McpAuthMode, MCPEntityType
 from ._generated import MCPServer
 from .federation_metadata import AgentCoreMcpFederationMetadata, extract_runtime_arn, extract_runtime_version
+from .mcp_server_oauth import RegistryOAuthState
 from .vector_doc_ids import assign_deterministic_doc_ids
 
 logger = logging.getLogger(__name__)
@@ -221,6 +226,11 @@ class ExtendedMCPServer(MCPServer):
         default_factory=list,
         description="Downstream tool names (mcpToolName) disabled by this server's OWNER. All tools are enabled by default.",
     )
+
+    # Registry-owned OAuth state. exclude=True keeps it out of every Beanie $set/$unset (keep_nulls is
+    # False, so a save of an older in-memory copy would otherwise remove it or roll back its revision)
+    # while reads still populate it. Only MCPOAuthService writes it. No index: it is read only by _id.
+    registryOAuth: RegistryOAuthState | None = Field(default=None, exclude=True)
 
     class Settings:
         name = "mcpservers"

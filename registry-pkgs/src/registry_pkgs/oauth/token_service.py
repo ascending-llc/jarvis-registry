@@ -1,4 +1,3 @@
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -8,10 +7,23 @@ from beanie import PydanticObjectId
 from registry_pkgs.models import Token, TokenType, User
 
 from ..core.crypto_utils import decrypt_value, encrypt_value
-from .schemas import OAuthClientInformation, OAuthTokens
+from .schemas import OAuthTokens
 from .user_service import UserService
 
 logger = logging.getLogger(__name__)
+
+# Registry-only token identifiers. Jarvis Chat owns `mcp:<serverName>*` in the shared `tokens`
+# collection and queries by (type, identifier), so a distinct prefix guarantees neither app reads
+# or overwrites the other's records.
+REGISTRY_TOKEN_IDENTIFIER_PREFIX = "registry:mcp"
+
+
+def registry_access_token_identifier(service_name: str) -> str:
+    return f"{REGISTRY_TOKEN_IDENTIFIER_PREFIX}:{service_name}"
+
+
+def registry_refresh_token_identifier(service_name: str) -> str:
+    return f"{REGISTRY_TOKEN_IDENTIFIER_PREFIX}:{service_name}:refresh"
 
 
 class TokenService:
@@ -37,22 +49,11 @@ class TokenService:
 
     def _get_access_identifier(self, service_name: str) -> str:
         """Build access token identifier"""
-        return f"mcp:{service_name}"
-
-    def _get_client_identifier(self, service_name: str) -> str:
-        """
-        Deprecated: Use _get_access_identifier instead.
-        This method is kept for backward compatibility.
-        """
-        return self._get_access_identifier(service_name)
+        return registry_access_token_identifier(service_name)
 
     def _get_refresh_identifier(self, service_name: str) -> str:
         """Build refresh token identifier"""
-        return f"mcp:{service_name}:refresh"
-
-    def _get_client_creds_identifier(self, service_name: str) -> str:
-        """Build client credentials identifier"""
-        return f"mcp:{service_name}:client"
+        return registry_refresh_token_identifier(service_name)
 
     async def store_oauth_access_token(
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
@@ -329,112 +330,68 @@ class TokenService:
 
     async def delete_oauth_tokens(self, user_id: str, service_name: str) -> bool:
         """
-        Delete user's OAuth tokens (access, refresh, and client credentials)
+        Delete the user's Registry access and refresh tokens for a service.
 
         Args:
             user_id: User ID
             service_name: Service name
 
         Returns:
-            Whether deletion was successful
+            Whether anything was deleted
         """
         user_obj_id = await self.get_user_by_user_id(user_id)
-
-        # Delete access token (mcp_oauth_access)
-        access_identifier = self._get_access_identifier(service_name)
-        client_result = await Token.find_one(
+        result = await Token.get_pymongo_collection().delete_many(
             {
                 "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH_ACCESS.value,
-                "identifier": access_identifier,
+                "$or": [
+                    {
+                        "type": TokenType.MCP_OAUTH_ACCESS.value,
+                        "identifier": self._get_access_identifier(service_name),
+                    },
+                    {
+                        "type": TokenType.MCP_OAUTH_REFRESH.value,
+                        "identifier": self._get_refresh_identifier(service_name),
+                    },
+                ],
             }
         )
 
-        # Delete refresh token (mcp_oauth_refresh)
-        refresh_identifier = self._get_refresh_identifier(service_name)
-        refresh_result = await Token.find_one(
-            {
-                "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH_REFRESH.value,
-                "identifier": refresh_identifier,
-            }
-        )
-
-        # Delete client credentials (mcp_oauth_client)
-        creds_identifier = self._get_client_creds_identifier(service_name)
-        creds_result = await Token.find_one(
-            {
-                "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH_CLIENT.value,
-                "identifier": creds_identifier,
-            }
-        )
-
-        deleted_count = 0
-        if client_result:
-            await client_result.delete()
-            deleted_count += 1
-
-        if refresh_result:
-            await refresh_result.delete()
-            deleted_count += 1
-
-        if creds_result:
-            await creds_result.delete()
-            deleted_count += 1
-
-        if deleted_count > 0:
-            logger.info(f"Deleted {deleted_count} tokens for user={user_id}, service={service_name}")
+        if result.deleted_count > 0:
+            logger.info(f"Deleted {result.deleted_count} tokens for user={user_id}, service={service_name}")
             return True
 
         return False
 
-    async def get_user_tokens(self, user_id: str, token_type: TokenType | None = None) -> list[Token]:
+    async def delete_access_token_if_matches(self, user_id: str, service_name: str, access_token: str) -> bool:
         """
-        Get all user tokens
+        Delete the user's Registry access token only if it still holds ``access_token``.
 
-        Args:
-            user_id: User ID
-            token_type: Optional token type filter (TokenType.MCP_OAUTH_CLIENT or TokenType.MCP_OAUTH_REFRESH)
+        The delete filters on the stored ciphertext, so a token another pod rotated in between the
+        read and the delete is never removed.
 
         Returns:
-            List of Token documents
+            Whether the record was deleted
         """
         user_obj_id = await self.get_user_by_user_id(user_id)
+        record = await Token.find_one(
+            {
+                "userId": PydanticObjectId(user_obj_id),
+                "type": TokenType.MCP_OAUTH_ACCESS.value,
+                "identifier": self._get_access_identifier(service_name),
+            }
+        )
+        if record is None or not record.token:
+            return False
 
-        query = {"userId": user_obj_id}
-        if token_type:
-            query["type"] = token_type.value
+        stored_ciphertext = record.token
+        if decrypt_value(stored_ciphertext, encryption_key=self._encryption_key) != access_token:
+            return False
 
-        tokens = await Token.find(query).to_list()
-
-        # Filter out expired tokens
-        valid_tokens = [token for token in tokens if not self._is_token_expired(token)]
-
-        return valid_tokens
-
-    async def cleanup_expired_tokens(self) -> int:
-        """
-        Clean up all expired tokens
-
-        Returns:
-            Number of tokens cleaned up
-        """
-        now = datetime.now(UTC)
-
-        # Find all expired tokens
-        expired_tokens = await Token.find({"expiresAt": {"$lt": now}}).to_list()
-
-        count = len(expired_tokens)
-
-        # Delete expired tokens
-        for token in expired_tokens:
-            await token.delete()
-
-        if count > 0:
-            logger.info(f"Cleaned up {count} expired tokens")
-
-        return count
+        result = await Token.get_pymongo_collection().delete_one({"_id": record.id, "token": stored_ciphertext})
+        deleted = result.deleted_count == 1
+        if deleted:
+            logger.info(f"Deleted rejected access token for user={user_id}, service={service_name}")
+        return deleted
 
     async def is_access_token_expired(self, user_id: str, service_name: str) -> bool:
         """
@@ -581,107 +538,3 @@ class TokenService:
             expires_at = token.expiresAt
 
         return expires_at <= (now + timedelta(seconds=3))
-
-    async def store_oauth_client_credentials(
-        self,
-        user_id: str,
-        service_name: str,
-        client_info: OAuthClientInformation,
-        metadata: dict[str, Any],
-    ) -> Token:
-        """
-        Store OAuth client credentials (client_id, client_secret, etc.)
-
-        Args:
-            user_id: User ID
-            service_name: Service name
-            client_info: OAuth client information (client_id, client_secret, etc.)
-            metadata: OAuth server metadata (endpoints, issuer, etc.)
-
-        Returns:
-            Token document
-        """
-        identifier = self._get_client_creds_identifier(service_name)
-        user = await self.get_user(user_id)
-        user_obj_id = str(user.id)
-
-        # 1. Serialize client_info to JSON
-        client_info_json = json.dumps(client_info.model_dump())
-
-        # 2. Encrypt the JSON directly (not using encrypt_auth_fields which only handles specific fields)
-        encrypted = encrypt_value(client_info_json, encryption_key=self._encryption_key)
-
-        # 3. Set 1 year expiry
-        expires_at = datetime.now(UTC) + timedelta(days=365)
-
-        # 4. Check if exists
-        existing = await Token.find_one(
-            {
-                "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH_CLIENT.value,
-                "identifier": identifier,
-            }
-        )
-
-        if existing:
-            # Update
-            existing.token = encrypted
-            existing.expiresAt = expires_at
-            existing.metadata = metadata
-            existing.email = user.email
-            await existing.save()
-            logger.info(f"Updated OAuth client credentials for user={user_id}, service={service_name}")
-            return existing
-        else:
-            # Create new
-            token_doc = Token(
-                userId=PydanticObjectId(user_obj_id),
-                type=TokenType.MCP_OAUTH_CLIENT.value,
-                identifier=identifier,
-                token=encrypted,
-                expiresAt=expires_at,
-                metadata=metadata,
-                email=user.email,
-            )
-            await token_doc.insert()
-            logger.info(f"Created OAuth client credentials for user={user_id}, service={service_name}")
-            return token_doc
-
-    async def get_oauth_client_credentials(
-        self, user_id: str, service_name: str
-    ) -> tuple[OAuthClientInformation | None, dict[str, Any] | None]:
-        """
-        Retrieve OAuth client credentials from MongoDB
-
-        Args:
-            user_id: User ID
-            service_name: Service name
-
-        Returns:
-            Tuple of (client_info, metadata) or (None, None) if not found
-        """
-        identifier = self._get_client_creds_identifier(service_name)
-        user = await self.get_user(user_id)
-        user_obj_id = str(user.id)
-
-        token_doc = await Token.find_one(
-            {
-                "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH_CLIENT.value,
-                "identifier": identifier,
-            }
-        )
-
-        if token_doc is None:
-            logger.debug(f"No client credentials found for user={user_id}, service={service_name}")
-            return None, None
-
-        # Decrypt
-        decrypted = decrypt_value(token_doc.token, encryption_key=self._encryption_key)
-
-        # Parse JSON to OAuthClientInformation
-        client_info_dict = json.loads(decrypted)
-        client_info = OAuthClientInformation(**client_info_dict)
-
-        logger.debug(f"Retrieved client credentials for user={user_id}, service={service_name}")
-        return client_info, token_doc.metadata

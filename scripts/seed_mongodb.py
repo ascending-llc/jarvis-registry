@@ -201,15 +201,18 @@ async def seed_keys(users):
 
 
 async def seed_tokens(users):
-    """Seed OAuth tokens for users."""
+    """Seed OAuth tokens for users.
+
+    Uses Registry's own `registry:mcp:*` identifiers; `mcp:*` identifiers belong to Jarvis Chat.
+    """
     print("Seeding tokens...")
 
     tokens_data = [
         {
             "userId": users[2].id,  # Jane Smith (GitHub user)
             "email": users[2].email,
-            "type": "oauth",
-            "identifier": "mcp:github:client",
+            "type": "mcp_oauth",
+            "identifier": "registry:mcp:github",
             "token": "gho_abcdefghijklmnopqrstuvwxyz1234567890",
             "createdAt": datetime.now(UTC),
             "expiresAt": datetime.now(UTC) + timedelta(hours=24),
@@ -222,8 +225,8 @@ async def seed_tokens(users):
         {
             "userId": users[3].id,  # OAuth User (Google)
             "email": users[3].email,
-            "type": "oauth",
-            "identifier": "mcp:google:client",
+            "type": "mcp_oauth",
+            "identifier": "registry:mcp:google",
             "token": "ya29.a0abcdefghijklmnopqrstuvwxyz123456789",
             "createdAt": datetime.now(UTC),
             "expiresAt": datetime.now(UTC) + timedelta(hours=1),
@@ -237,8 +240,8 @@ async def seed_tokens(users):
         {
             "userId": users[1].id,  # John Developer
             "email": users[1].email,
-            "type": "refresh",
-            "identifier": "mcp:local:refresh",
+            "type": "mcp_oauth_refresh",
+            "identifier": "registry:mcp:local:refresh",
             "token": "rt_dev_xyz123456789abcdefghijklmnopqrstuv",
             "createdAt": datetime.now(UTC),
             "expiresAt": datetime.now(UTC) + timedelta(days=30),

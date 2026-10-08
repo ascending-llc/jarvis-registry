@@ -153,6 +153,8 @@ def _build_mcp_headers_provider(redis_client: Any) -> McpHeadersProvider:
         registry_app_name=settings.registry_app_name,
         base_redirect_url=settings.registry_client_url,
         encryption_key=settings.encryption_key,
+        redis_client=redis_client,
+        redis_key_prefix=settings.redis_key_prefix,
     )
     cfg = HeaderBuildConfig(
         registry_app_name=settings.registry_app_name,

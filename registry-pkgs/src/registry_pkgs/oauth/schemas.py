@@ -101,6 +101,10 @@ class OAuthClientInformation(BaseModel):
     scope: str | None = Field(None, description="Authorization scope")
     grant_types: list[str] | None = Field(None, description="Grant type list")
     additional_params: dict[str, Any] | None = Field(None, description="Additional OAuth parameters")
+    token_endpoint_auth_method: str | None = Field(None, description="Token endpoint auth method (RFC 7591)")
+    client_secret_expires_at: int | None = Field(
+        None, description="RFC 7591 client_secret_expires_at (epoch seconds; 0 means never)"
+    )
 
 
 class OAuthMetadata(BaseModel):
