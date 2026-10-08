@@ -9,11 +9,11 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from registry_pkgs.database.leased_job import Lease, LeaseLostError
 from registry_pkgs.models import ExtendedSkill as Skill
 from registry_pkgs.models.enums import (
     SkillSyncJobErrorCode,
     SkillSyncJobPhase,
-    SkillSyncJobStateMachine,
     SkillSyncJobStatus,
     SkillSyncJobType,
     SkillSyncSourceStatus,
@@ -29,6 +29,7 @@ from .access_control_service import ACLService
 from .skill_sync_apply_service import SkillSyncApplyService
 from .skill_sync_discovery_service import SkillSyncDiscoveryService
 from .skill_sync_github_service import GitHubDownloadError, SkillSyncGitHubService
+from .skill_sync_job_service import skill_sync_repository
 from .skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .skill_sync_token_service import SkillSyncTokenService
 
@@ -61,7 +62,7 @@ class SkillSyncExecutionService:
         self._apply_service = apply_service
         self._acl_service = acl_service
 
-    async def run_claimed_job(self, job: SkillSyncJob) -> None:
+    async def run_claimed_job(self, job: SkillSyncJob, lease: Lease) -> None:
         """Validate persisted inputs and dispatch one job already owned by the runner.
 
         Full syncs reject a stale configuration revision before resolving credentials or
@@ -71,6 +72,7 @@ class SkillSyncExecutionService:
         if source is None:
             await self._finalize_job(
                 job,
+                lease,
                 SkillSyncJobStatus.FAILED,
                 SkillSyncJobPhase.FAILED,
                 error_code=SkillSyncJobErrorCode.INTERNAL_ERROR,
@@ -78,15 +80,16 @@ class SkillSyncExecutionService:
             )
             return
         if job.jobType == SkillSyncJobType.DELETE_SYNC:
-            await self._run_delete(source, job)
+            await self._run_delete(source, job, lease)
             return
         if not isinstance(job.requestSnapshot, SkillSyncFullRequestSnapshot):
-            await self._fail_job(source, job, "Full sync job has an invalid request snapshot")
+            await self._fail_job(source, job, lease, "Full sync job has an invalid request snapshot")
             return
         if job.requestSnapshot.configRevision != source.configRevision:
             await self._fail_job(
                 source,
                 job,
+                lease,
                 f"Source configuration changed from revision {job.requestSnapshot.configRevision} "
                 f"to {source.configRevision} before execution",
             )
@@ -103,11 +106,12 @@ class SkillSyncExecutionService:
             await self._fail_job(
                 source,
                 job,
+                lease,
                 "GitHub authorization is required before this sync can continue",
                 error_code=SkillSyncJobErrorCode.GITHUB_AUTH_FAILED,
             )
             return
-        await self._run_sync(source, job, job.triggeredBy, access_token, job.requestSnapshot)
+        await self._run_sync(source, job, lease, job.triggeredBy, access_token, job.requestSnapshot)
 
     async def recover_exhausted_job(self, job: SkillSyncJob) -> None:
         """Release source lifecycle state after the runner terminally fails an abandoned job."""
@@ -124,6 +128,7 @@ class SkillSyncExecutionService:
         self,
         source: SkillSyncSource,
         job: SkillSyncJob,
+        lease: Lease,
         user_id: str,
         access_token: str,
         request_snapshot: SkillSyncFullRequestSnapshot,
@@ -135,10 +140,11 @@ class SkillSyncExecutionService:
         """
         extraction_dir = tempfile.mkdtemp(prefix=f"skillsync-{job.id}-")
         try:
-            job.status = SkillSyncJobStateMachine.transition_to_syncing(job.status)
             job.phase = SkillSyncJobPhase.DOWNLOADING
             job.startedAt = datetime.now(UTC)
-            await job.save()
+            await skill_sync_repository.transition_or_raise(
+                lease, {"phase": job.phase.value, "startedAt": job.startedAt}
+            )
             source.syncStatus = SkillSyncStateMachine.transition_to_syncing(source.status, source.syncStatus)
             await source.save()
 
@@ -151,7 +157,7 @@ class SkillSyncExecutionService:
                 dest_path=tarball_path,
             )
             job.phase = SkillSyncJobPhase.EXTRACTING
-            await job.save()
+            await skill_sync_repository.transition_or_raise(lease, {"phase": job.phase.value})
             extraction = await asyncio.to_thread(
                 self._github_service.extract_skill_folders,
                 tarball_path,
@@ -159,23 +165,30 @@ class SkillSyncExecutionService:
                 extraction_dir=Path(extraction_dir),
             )
             job.phase = SkillSyncJobPhase.DISCOVERING
-            await job.save()
+            await skill_sync_repository.transition_or_raise(lease, {"phase": job.phase.value})
             discovery = await asyncio.to_thread(self._discovery_service.discover_skills, extraction)
             job.discoverySummary = discovery.summary
             job.skillErrors.extend(discovery.errors)
-            await job.save()
+            await skill_sync_repository.transition_or_raise(
+                lease,
+                {
+                    "discoverySummary": job.discoverySummary.model_dump(mode="json"),
+                    "skillErrors": [error.model_dump(mode="json") for error in job.skillErrors],
+                },
+            )
             if not discovery.skills:
                 # Never apply an empty discovery: it could turn an upstream/parser outage into mass deletion.
                 await self._fail_job(
                     source,
                     job,
+                    lease,
                     f"No valid skills found in configured paths; {len(discovery.errors)} errors during discovery",
                     error_code=SkillSyncJobErrorCode.NO_SKILLS_FOUND,
                 )
                 return
 
             job.phase = SkillSyncJobPhase.APPLYING
-            await job.save()
+            await skill_sync_repository.transition_or_raise(lease, {"phase": job.phase.value})
             apply_summary = await self._apply_service.apply_discovered_skills(
                 source=source,
                 job=job,
@@ -190,7 +203,7 @@ class SkillSyncExecutionService:
 
             has_errors = bool(job.skillErrors) or apply_summary.skillsFailed > 0
             final_status = SkillSyncJobStatus.PARTIAL_SUCCESS if has_errors else SkillSyncJobStatus.SUCCESS
-            await self._finalize_job(job, final_status, SkillSyncJobPhase.COMPLETED, error=acl_error)
+            await self._finalize_job(job, lease, final_status, SkillSyncJobPhase.COMPLETED, error=acl_error)
             source.syncStatus = (
                 SkillSyncStateMachine.transition_to_sync_partial_success(source.syncStatus)
                 if has_errors
@@ -210,10 +223,14 @@ class SkillSyncExecutionService:
             logger.exception("GitHub download failed for source %s", source.id)
             if exc.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED:
                 await self._token_service.delete_user_access_token(user_id=user_id, source_id=source.id)
-            await self._fail_job(source, job, str(exc), error_code=exc.error_code)
+            await self._fail_job(source, job, lease, str(exc), error_code=exc.error_code)
+        except LeaseLostError:
+            # Another owner re-claimed this job; the fence already blocks our writes. Hand it back to
+            # the runner instead of mislabelling the handoff as a sync failure (and don't touch source).
+            raise
         except Exception as exc:
             logger.exception("Sync failed for source %s", source.id)
-            await self._fail_job(source, job, f"Internal error: {exc}")
+            await self._fail_job(source, job, lease, f"Internal error: {exc}")
         finally:
             shutil.rmtree(extraction_dir, ignore_errors=True)
 
@@ -230,20 +247,21 @@ class SkillSyncExecutionService:
             return f"ACL inheritance failed for {len(live_skills)} skills: {exc}"
         return None
 
-    async def _run_delete(self, source: SkillSyncSource, job: SkillSyncJob) -> None:
+    async def _run_delete(self, source: SkillSyncSource, job: SkillSyncJob, lease: Lease) -> None:
         """Delete child resources first, then finalize the source only after cleanup succeeds."""
         try:
-            job.status = SkillSyncJobStateMachine.transition_to_syncing(job.status)
             job.phase = SkillSyncJobPhase.APPLYING
             job.startedAt = datetime.now(UTC)
-            await job.save()
+            await skill_sync_repository.transition_or_raise(
+                lease, {"phase": job.phase.value, "startedAt": job.startedAt}
+            )
             job.applySummary = await self._apply_service.delete_source_skills(source)
             await self._acl_service.delete_acl_entries_for_resource(
                 resource_type=RegistryResourceType.SKILL_SYNC_SOURCE,
                 resource_id=source.id,
             )
             await self._token_service.delete_source_tokens(source.id)
-            await self._finalize_job(job, SkillSyncJobStatus.SUCCESS, SkillSyncJobPhase.COMPLETED)
+            await self._finalize_job(job, lease, SkillSyncJobStatus.SUCCESS, SkillSyncJobPhase.COMPLETED)
             now = datetime.now(UTC)
             source.status = SkillSyncSourceStatus.DELETED
             source.syncStatus = SkillSyncStatus.SUCCESS
@@ -256,10 +274,15 @@ class SkillSyncExecutionService:
                 finishedAt=job.finishedAt,
             )
             await source.save()
+        except LeaseLostError:
+            # Another owner re-claimed this job; the fence already blocks our writes. Hand it back to
+            # the runner instead of mislabelling the handoff as a delete failure (and don't touch source).
+            raise
         except Exception as exc:
             logger.exception("Delete failed for source %s", source.id)
             await self._finalize_job(
                 job,
+                lease,
                 SkillSyncJobStatus.FAILED,
                 SkillSyncJobPhase.FAILED,
                 error_code=SkillSyncJobErrorCode.INTERNAL_ERROR,
@@ -271,6 +294,7 @@ class SkillSyncExecutionService:
         self,
         source: SkillSyncSource,
         job: SkillSyncJob,
+        lease: Lease,
         error: str,
         *,
         error_code: SkillSyncJobErrorCode = SkillSyncJobErrorCode.INTERNAL_ERROR,
@@ -278,6 +302,7 @@ class SkillSyncExecutionService:
         """Persist the same terminal failure on both the job and its owning source."""
         await self._finalize_job(
             job,
+            lease,
             SkillSyncJobStatus.FAILED,
             SkillSyncJobPhase.FAILED,
             error_code=error_code,
@@ -285,21 +310,36 @@ class SkillSyncExecutionService:
         )
         await self._source_crud_service.mark_sync_failed(source, error)
 
-    @staticmethod
     async def _finalize_job(
+        self,
         job: SkillSyncJob,
+        lease: Lease,
         status: SkillSyncJobStatus,
         phase: SkillSyncJobPhase,
         *,
         error_code: SkillSyncJobErrorCode | None = None,
         error: str | None = None,
     ) -> None:
-        """Finalize a job and release its lease so no heartbeat can retain ownership."""
+        """Finalize a job and release its lease, token-fenced so a stale execution cannot write.
+
+        ``skillErrors`` and ``applySummary`` are taken from the in-memory job: the apply service and
+        earlier phases accumulate them there, and this terminal write is what persists them.
+        """
         job.status = status
         job.phase = phase
         job.errorCode = error_code.value if error_code else None
         job.error = error
         job.finishedAt = datetime.now(UTC)
-        job.leaseOwner = None
-        job.leaseExpiresAt = None
-        await job.save()
+        await skill_sync_repository.transition_or_raise(
+            lease,
+            {
+                "status": status.value,
+                "phase": phase.value,
+                "errorCode": job.errorCode,
+                "error": error,
+                "finishedAt": job.finishedAt,
+                "skillErrors": [skill_error.model_dump(mode="json") for skill_error in job.skillErrors],
+                "applySummary": job.applySummary.model_dump(mode="json"),
+            },
+            release=True,
+        )

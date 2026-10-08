@@ -5,10 +5,10 @@ from bson.errors import InvalidId
 from pymongo import ReturnDocument
 from pymongo.asynchronous.client_session import AsyncClientSession
 
+from registry_pkgs.database.leased_job import CAMEL_CASE_LEASE_FIELDS, Lease, LeasedRepository, LeaseSpec
 from registry_pkgs.models.enums import (
     SkillSyncJobErrorCode,
     SkillSyncJobPhase,
-    SkillSyncJobStateMachine,
     SkillSyncJobStatus,
     SkillSyncJobType,
     SkillSyncTriggerType,
@@ -16,6 +16,19 @@ from registry_pkgs.models.enums import (
 from registry_pkgs.models.skill_sync_job import SkillSyncJob, SkillSyncRequestSnapshot
 
 _MAX_JOB_ATTEMPTS = 3
+_LEASE_DURATION = timedelta(minutes=2)
+_HEARTBEAT_INTERVAL = timedelta(seconds=30)
+
+SKILL_SYNC_LEASE: LeaseSpec[SkillSyncJob] = LeaseSpec(
+    document=SkillSyncJob,
+    fields=CAMEL_CASE_LEASE_FIELDS,
+    status_field="status",
+    leased_statuses=frozenset({SkillSyncJobStatus.SYNCING.value}),
+    duration=_LEASE_DURATION,
+    heartbeat_interval=_HEARTBEAT_INTERVAL,
+)
+
+skill_sync_repository: LeasedRepository[SkillSyncJob] = LeasedRepository(SKILL_SYNC_LEASE)
 
 
 class SkillSyncJobService:
@@ -27,22 +40,17 @@ class SkillSyncJobService:
     decide the business outcome of a sync pipeline.
     """
 
-    async def claim_next_job(
-        self,
-        *,
-        lease_owner: str,
-        lease_duration: timedelta,
-    ) -> SkillSyncJob | None:
-        """Atomically claim the oldest runnable job and establish a renewable worker lease.
+    async def claim_next_job(self, *, owner: str) -> tuple[SkillSyncJob, Lease] | None:
+        """Atomically claim the oldest runnable job and mint a fresh renewable lease token.
 
-        ``find_one_and_update`` is the concurrency boundary: competing registry instances
-        cannot both observe the same job as claimable. Expired syncing jobs are eligible for
-        recovery until the attempt limit is reached.
+        The claimable filter is the concurrency boundary: competing registry instances cannot both
+        observe the same job as claimable. Expired syncing jobs are eligible for recovery until the
+        attempt limit is reached.
         """
         now = datetime.now(UTC)
-        collection = SkillSyncJob.get_pymongo_collection()
-        document = await collection.find_one_and_update(
-            {
+        return await skill_sync_repository.claim(
+            owner=owner,
+            claimable_filter={
                 "$and": [
                     {
                         "$or": [
@@ -68,45 +76,10 @@ class SkillSyncJobService:
                     },
                 ]
             },
-            {
-                "$set": {
-                    "status": SkillSyncJobStatus.SYNCING.value,
-                    "leaseOwner": lease_owner,
-                    "leaseExpiresAt": now + lease_duration,
-                    "heartbeatAt": now,
-                    "updatedAt": now,
-                },
-                "$inc": {"attemptCount": 1},
-            },
+            set_fields={"status": SkillSyncJobStatus.SYNCING.value},
+            inc={"attemptCount": 1},
             sort=[("createdAt", 1)],
-            return_document=ReturnDocument.AFTER,
         )
-        return SkillSyncJob.model_validate(document) if document is not None else None
-
-    async def heartbeat(
-        self,
-        *,
-        job_id: PydanticObjectId,
-        lease_owner: str,
-        lease_duration: timedelta,
-    ) -> bool:
-        """Renew a lease only while the caller still owns the syncing job."""
-        now = datetime.now(UTC)
-        result = await SkillSyncJob.get_pymongo_collection().update_one(
-            {
-                "_id": job_id,
-                "status": SkillSyncJobStatus.SYNCING.value,
-                "leaseOwner": lease_owner,
-            },
-            {
-                "$set": {
-                    "leaseExpiresAt": now + lease_duration,
-                    "heartbeatAt": now,
-                    "updatedAt": now,
-                }
-            },
-        )
-        return result.modified_count == 1
 
     async def fail_next_exhausted_job(self) -> SkillSyncJob | None:
         """Finalize one expired job that exhausted retries so it cannot block its source forever."""
@@ -125,6 +98,7 @@ class SkillSyncJobService:
                     "error": f"Job abandoned after {_MAX_JOB_ATTEMPTS} worker attempts",
                     "finishedAt": now,
                     "leaseOwner": None,
+                    "leaseToken": None,
                     "leaseExpiresAt": None,
                     "updatedAt": now,
                 }
@@ -176,13 +150,4 @@ class SkillSyncJobService:
             requestSnapshot=request_snapshot,
         )
         await job.insert(session=session)
-        return job
-
-    async def mark_not_implemented(self, job: SkillSyncJob) -> SkillSyncJob:
-        job.status = SkillSyncJobStateMachine.transition_to_failed(job.status)
-        job.phase = SkillSyncJobPhase.FAILED
-        job.errorCode = SkillSyncJobErrorCode.SYNC_NOT_IMPLEMENTED.value
-        job.error = "Skill sync execution is not implemented yet"
-        job.finishedAt = datetime.now(UTC)
-        await job.save()
         return job

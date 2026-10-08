@@ -5,14 +5,15 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from beanie import PydanticObjectId
-from pymongo import ReturnDocument
-
 from registry.core.config import Settings
 from registry.core.vector_backend import smoke_test_embedding_model
 from registry.services.federation_job_service import FederationJobService
 from registry.services.model_gateway_selection_service import ModelGatewaySelectionService
-from registry_pkgs.database.embedding_reindex_job_repository import get_active_embedding_reindex_job
+from registry_pkgs.database.embedding_reindex_job_repository import (
+    embedding_reindex_repository,
+    get_active_embedding_reindex_job,
+)
+from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.database.model_gateway_selection_repository import get_model_gateway_selection
 from registry_pkgs.models.embedding_reindex_job import EmbeddingReindexJob
 from registry_pkgs.models.enums import EmbeddingReindexJobStatus
@@ -134,44 +135,20 @@ class EmbeddingReindexJobService:
             "was orphaned by a registry restart and must be marked FAILED in Mongo."
         )
 
-    async def claim_job(self, *, lease_owner: str, lease_duration: timedelta) -> EmbeddingReindexJob | None:
-        """Atomically claim an unclaimed or lease-expired RUNNING job and establish a renewable lease."""
-        now = datetime.now(UTC)
-        document = await EmbeddingReindexJob.get_pymongo_collection().find_one_and_update(
-            {
-                "status": EmbeddingReindexJobStatus.RUNNING.value,
-                "$or": [{"leaseOwner": None}, {"leaseExpiresAt": {"$lte": now}}],
-            },
-            {
-                "$set": {
-                    "leaseOwner": lease_owner,
-                    "leaseExpiresAt": now + lease_duration,
-                    "heartbeatAt": now,
-                    "updatedAt": now,
-                },
-                # Every claim counts as an attempt; the runner gives up once this exceeds _MAX_ATTEMPTS.
-                # NOT in the filter: a used-up job must still be claimable so it can be finalized FAILED.
-                "$inc": {"attempts": 1},
-            },
-            return_document=ReturnDocument.AFTER,
-        )
-        return EmbeddingReindexJob.model_validate(document) if document is not None else None
+    async def claim_job(self, *, owner: str) -> tuple[EmbeddingReindexJob, Lease] | None:
+        """Atomically claim an unclaimed or lease-expired RUNNING job and mint a fresh lease token.
 
-    async def heartbeat(self, *, job_id: PydanticObjectId, lease_owner: str, lease_duration: timedelta) -> bool:
-        """Renew the lease only while the caller still owns the running job."""
+        The ``leaseToken: None`` branch matches a freshly inserted job (``trigger_reindex`` leaves the
+        token unset); the ``leaseExpiresAt <= now`` branch reclaims a crashed owner's expired lease.
+        Every claim counts as an attempt; a used-up job stays claimable (not filtered on ``attempts``)
+        so the runner can finalize it FAILED.
+        """
         now = datetime.now(UTC)
-        result = await EmbeddingReindexJob.get_pymongo_collection().update_one(
-            {
-                "_id": job_id,
+        return await embedding_reindex_repository.claim(
+            owner=owner,
+            claimable_filter={
                 "status": EmbeddingReindexJobStatus.RUNNING.value,
-                "leaseOwner": lease_owner,
+                "$or": [{"leaseToken": None}, {"leaseExpiresAt": {"$lte": now}}],
             },
-            {
-                "$set": {
-                    "leaseExpiresAt": now + lease_duration,
-                    "heartbeatAt": now,
-                    "updatedAt": now,
-                }
-            },
+            inc={"attempts": 1},
         )
-        return result.modified_count == 1
