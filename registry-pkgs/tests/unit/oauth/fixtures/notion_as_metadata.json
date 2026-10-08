@@ -1,0 +1,45 @@
+{
+    "authorization_endpoint": "https://mcp.notion.com/authorize",
+    "authorization_grant_profiles_supported": [
+        "urn:ietf:params:oauth:grant-profile:id-jag"
+    ],
+    "authorization_response_iss_parameter_supported": true,
+    "client_id_metadata_document_supported": true,
+    "code_challenge_methods_supported": [
+        "S256"
+    ],
+    "grant_types_supported": [
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer"
+    ],
+    "introspection_endpoint": "https://mcp.notion.com/introspect",
+    "introspection_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post",
+        "none"
+    ],
+    "issuer": "https://mcp.notion.com",
+    "protected_resources": [
+        "https://mcp.notion.com",
+        "https://mcp.notion.com/mcp",
+        "https://mcp.notion.com/sse"
+    ],
+    "registration_endpoint": "https://mcp.notion.com/register",
+    "response_modes_supported": [
+        "query"
+    ],
+    "response_types_supported": [
+        "code"
+    ],
+    "revocation_endpoint": "https://mcp.notion.com/token",
+    "scopes_supported": [
+        "default"
+    ],
+    "token_endpoint": "https://mcp.notion.com/token",
+    "token_endpoint_auth_methods_supported": [
+        "client_secret_basic",
+        "client_secret_post",
+        "none"
+    ]
+}

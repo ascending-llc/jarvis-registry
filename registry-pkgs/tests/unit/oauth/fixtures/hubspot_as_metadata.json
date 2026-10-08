@@ -1,0 +1,33 @@
+{
+    "authorization_endpoint": "https://mcp.hubspot.com/oauth/authorize/user",
+    "code_challenge_methods_supported": [
+        "S256"
+    ],
+    "grant_types_supported": [
+        "authorization_code",
+        "refresh_token",
+        "client_credentials"
+    ],
+    "introspection_endpoint": "https://mcp.hubspot.com/oauth/v3/token/introspect",
+    "introspection_endpoint_auth_methods_supported": [
+        "client_secret_post"
+    ],
+    "introspection_endpoint_token_types_supported": [
+        "access_token",
+        "refresh_token",
+        "client_credentials"
+    ],
+    "issuer": "https://mcp.hubspot.com",
+    "response_modes_supported": [
+        "query"
+    ],
+    "response_types_supported": [
+        "code"
+    ],
+    "scopes_supported": [],
+    "service_documentation": "https://developers.hubspot.com/docs/guides/apps/authentication/oauth-quickstart-guide",
+    "token_endpoint": "https://mcp.hubspot.com/oauth/v3/token",
+    "token_endpoint_auth_methods_supported": [
+        "client_secret_post"
+    ]
+}

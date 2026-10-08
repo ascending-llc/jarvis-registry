@@ -15,6 +15,7 @@ exclude-path-patterns = [
 exclude-entropy-patterns = [
     {path-pattern = '\\.env\\.example$', pattern = 'JWT_PRIVATE_KEY=.*', reason = '.env.example JWT private key placeholder is not a credential'},
     {path-pattern = '\\.env\\.example$', pattern = 'JWT_PUBLIC_KEY=.*', reason = '.env.example JWT public key placeholder is not a credential'},
+    {path-pattern = '(registry-pkgs|registry)/tests/.*', pattern = '.*VCeDsk8ZHncYF1g234fKtc4lNipbBhu3.*', reason = "Atlassian MCP's public authorization-server tenant ID in captured discovery fixtures is not a credential"},
 ]
 
 exclude-signatures = [

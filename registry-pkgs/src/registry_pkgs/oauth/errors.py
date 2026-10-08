@@ -76,3 +76,29 @@ class ApiKeyError(AuthenticationError):
     def __init__(self, message: str, server_name: str | None = None):
         super().__init__(message)
         self.server_name = server_name
+
+
+class OAuthDiscoveryError(AuthenticationError):
+    """
+    MCP OAuth discovery (RFC 9728 protected-resource metadata, RFC 8414 authorization-server
+    metadata) failed: a transport error, an unparseable document, a resource or issuer that
+    fails validation, or no authorization-server metadata at any candidate URL.
+    """
+
+
+class OAuthTokenEndpointError(AuthenticationError):
+    """
+    The token endpoint answered a refresh or code exchange with an HTTP 4xx.
+
+    Attributes:
+        error_code: The RFC 6749 §5.2 ``error`` value (e.g. ``invalid_client``, ``invalid_grant``),
+            or None when the response carried none.
+    """
+
+    def __init__(self, message: str, error_code: str | None = None):
+        super().__init__(message)
+        self.error_code = error_code
+
+
+class RegistryOAuthStateConflictError(AuthenticationError):
+    """Concurrent writers kept winning the compare-and-swap on ``registryOAuth``."""
