@@ -324,8 +324,14 @@ async def keep_lease_alive[D: Document](repo: LeasedRepository[D], lease: Lease)
         if remaining <= 0:
             raise LeaseLostError(f"could not renew lease for {lease.doc_id} before expiry")
         await asyncio.sleep(min(interval, remaining))
+        remaining = (deadline - datetime.now(UTC)).total_seconds()
+        if remaining <= 0:
+            raise LeaseLostError(f"could not renew lease for {lease.doc_id} before expiry")
         try:
-            renewed = await repo.heartbeat(current)
+            renewed = await asyncio.wait_for(repo.heartbeat(current), timeout=remaining)
+        except TimeoutError:
+            # The heartbeat hung past the self-fence deadline: stop now so we never run past expiry.
+            raise LeaseLostError(f"could not renew lease for {lease.doc_id} before expiry") from None
         except Exception:
             logger.warning("Lease heartbeat for %s failed; will retry", current.doc_id, exc_info=True)
             continue

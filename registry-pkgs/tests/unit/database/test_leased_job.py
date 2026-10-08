@@ -236,6 +236,17 @@ async def test_keep_lease_alive_raises_immediately_when_heartbeat_returns_none()
         await keep_lease_alive(repo, lease)
 
 
+async def test_keep_lease_alive_self_fences_when_heartbeat_hangs():
+    async def _hang(_current):
+        await asyncio.Event().wait()  # never resolves
+
+    repo = _heartbeat_repo(AsyncMock(side_effect=_hang))
+    lease = Lease(PydanticObjectId(), "w", "t", datetime.now(UTC) + timedelta(seconds=0.06))
+
+    with pytest.raises(LeaseLostError, match="before expiry"):
+        await asyncio.wait_for(keep_lease_alive(repo, lease), timeout=2.0)  # outer guard: must not hang
+
+
 async def _forever():
     await asyncio.Event().wait()
 
