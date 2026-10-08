@@ -228,8 +228,13 @@ class MCPOAuthService:
         """Whether a client registered under ``bound_state`` still fits ``discovery`` (Change 4 step 2)."""
         old_metadata = bound_state.authorizationServerMetadata or {}
         new_metadata = discovery.authorization_server_metadata
-        if client.clientSecretExpiresAt is not None and client.clientSecretExpiresAt <= datetime.now(UTC):
-            return False
+        expires_at = client.clientSecretExpiresAt
+        if expires_at is not None:
+            # pymongo returns naive datetimes (holding UTC) because the client isn't tz_aware.
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at <= datetime.now(UTC):
+                return False
         return (
             _none_if_empty(bound_state.issuer) == _none_if_empty(discovery.issuer)
             and old_metadata.get("registration_endpoint") == new_metadata.get("registration_endpoint")

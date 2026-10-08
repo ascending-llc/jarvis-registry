@@ -430,6 +430,24 @@ class TestEnsureState:
         assert h.register.await_count == 3
 
     @pytest.mark.asyncio
+    async def test_naive_client_secret_expiry_from_mongo_is_compared_as_utc(self, h: Harness) -> None:
+        # pymongo isn't tz_aware, so a stored expiry reads back as a naive datetime holding UTC.
+        state = await h.bound_dcr_state()
+        assert state.client is not None
+        now_naive = datetime.now(UTC).replace(tzinfo=None)
+        future = state.client.model_copy(update={"clientSecretExpiresAt": now_naive + timedelta(days=1)})
+        h.collection.put_state(state.model_copy(update={"client": future}))
+
+        await h.service.ensure_registry_oauth_state(h.server(), force_discovery=True)
+        assert h.register.await_count == 1  # still valid: reused
+
+        past = state.client.model_copy(update={"clientSecretExpiresAt": now_naive - timedelta(days=1)})
+        h.collection.put_state(state.model_copy(update={"client": past}))
+
+        await h.service.ensure_registry_oauth_state(h.server(), force_discovery=True)
+        assert h.register.await_count == 2  # expired: replaced
+
+    @pytest.mark.asyncio
     async def test_refresh_mode_never_registers(self, h: Harness) -> None:
         state = await h.service.ensure_registry_oauth_state(h.server(), force_discovery=False)
 
