@@ -32,7 +32,7 @@ from beanie import PydanticObjectId
 
 from registry.container import RegistryContainer
 from registry.core.config import Settings
-from registry_pkgs.database import init_mongodb
+from registry_pkgs.database.mongodb import init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, RegistryAclEntry
 from registry_pkgs.models.extended_access_role import RegistryResourceType
