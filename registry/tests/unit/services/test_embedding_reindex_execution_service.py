@@ -13,10 +13,17 @@ from registry.services.embedding_reindex_execution_service import (
     EmbeddingReindexLeaseLostError,
     _Aborted,
 )
+from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.models.enums import EmbeddingReindexJobStatus
 
 COMPLETED = EmbeddingReindexJobStatus.COMPLETED.value
 FAILED = EmbeddingReindexJobStatus.FAILED.value
+
+
+def _lease() -> Lease:
+    # doc_id/token are irrelevant: the job collection's update_one/find_one are mocked and ignore the
+    # fence. The real LeasedRepository still runs, so the production write path is exercised.
+    return Lease(doc_id=PydanticObjectId(), owner="worker-1", token="tok-1", expires_at=datetime.now(UTC))
 
 
 class _AsyncIter:
@@ -55,13 +62,18 @@ class _FakeSession:
         return _FakeTxn()
 
 
-def _statuses(transition: AsyncMock) -> list[str]:
-    """The status values written via transition_embedding_reindex_job, in order."""
-    return [c.kwargs["set_fields"]["status"] for c in transition.await_args_list if "status" in c.kwargs["set_fields"]]
+def _sets(update_one: AsyncMock) -> list[dict]:
+    """The ``$set`` payloads of each lease-fenced update_one, in order."""
+    return [c.args[1]["$set"] for c in update_one.await_args_list]
 
 
-def _errors(transition: AsyncMock) -> list[str]:
-    return [c.kwargs["set_fields"]["error"] for c in transition.await_args_list if "error" in c.kwargs["set_fields"]]
+def _statuses(update_one: AsyncMock) -> list[str]:
+    """The status values written via the leased repository, in order."""
+    return [s["status"] for s in _sets(update_one) if "status" in s]
+
+
+def _errors(update_one: AsyncMock) -> list[str]:
+    return [s["error"] for s in _sets(update_one) if "error" in s]
 
 
 def _job(previous_generation=None, *, attempts=1, last_error=None, started_at=None):
@@ -140,14 +152,16 @@ def _wire(
     commit = AsyncMock(return_value=(selection if commit_result == "__ok__" else commit_result))
     monkeypatch.setattr(exec_module, "commit_embedding_generation", commit)
 
-    # Every job write is lease-checked; default to "we own the lease".
-    transition = AsyncMock(return_value=True)
-    monkeypatch.setattr(exec_module, "transition_embedding_reindex_job", transition)
     monkeypatch.setattr(exec_module.MongoDB, "get_client", lambda: SimpleNamespace(start_session=_FakeSession))
-    # The per-batch lease check reads the job; default to "still owned" (truthy doc).
+    # Every job write runs through the real LeasedRepository, whose update_one we mock here; default to
+    # "we own the lease" (modified_count 1). The per-batch lease check reads the job via find_one;
+    # default to "still owned" (truthy doc).
+    transition = AsyncMock(return_value=SimpleNamespace(modified_count=1))
     lease_probe = AsyncMock(return_value={"_id": "held"})
     monkeypatch.setattr(
-        exec_module.EmbeddingReindexJob, "get_pymongo_collection", lambda: SimpleNamespace(find_one=lease_probe)
+        exec_module.EmbeddingReindexJob,
+        "get_pymongo_collection",
+        lambda: SimpleNamespace(find_one=lease_probe, update_one=transition),
     )
 
     db_client = MagicMock()
@@ -190,7 +204,7 @@ async def test_happy_path_sweeps_new_generation_commits_and_completes(monkeypatc
     )
     job = _job(previous_generation=None)
 
-    await _service(w.db_client).run_claimed_job(job, lease_owner="worker-1")
+    await _service(w.db_client).run_claimed_job(job, lease=_lease())
 
     assert mcp_sync.await_count == 2
     assert a2a_sync.await_count == 1
@@ -216,7 +230,7 @@ async def test_sweep_processes_the_whole_corpus_across_batches(monkeypatch):
     a2a_sync = AsyncMock(return_value={"indexed": 1, "failed": 0, "error": None})
     w = _wire(monkeypatch, servers=servers, agents=[], mcp_sync=mcp_sync, a2a_sync=a2a_sync, current_generation=None)
 
-    await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+    await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     assert mcp_sync.await_count == 5  # 2 + 2 + 1 across three batches
     w.commit.assert_awaited_once()
@@ -237,7 +251,7 @@ async def test_partial_failure_drops_nothing_committed_and_fails(monkeypatch):
         monkeypatch, servers=servers, agents=agents, mcp_sync=mcp_sync, a2a_sync=a2a_sync, current_generation=None
     )
 
-    await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+    await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     assert mcp_sync.await_count == 2
     assert a2a_sync.await_count == 1
@@ -261,7 +275,7 @@ async def test_commit_lost_race_marks_superseded(monkeypatch):
         commit_result=None,  # CAS miss
     )
 
-    await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+    await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     w.commit.assert_awaited_once()
     assert FAILED in _statuses(w.transition)
@@ -275,10 +289,10 @@ async def test_commit_aborts_and_raises_when_lease_lost(monkeypatch):
     servers = [SimpleNamespace(id="s1")]
     mcp_sync = AsyncMock(return_value={"indexed_tools": 1, "failed_tools": 0, "error": None})
     w = _wire(monkeypatch, servers=servers, agents=[], mcp_sync=mcp_sync, a2a_sync=AsyncMock(), current_generation=None)
-    w.transition.return_value = False  # no longer our lease
+    w.transition.return_value = SimpleNamespace(modified_count=0)  # no longer our lease
 
     with pytest.raises(EmbeddingReindexLeaseLostError):
-        await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+        await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     w.commit.assert_not_awaited()  # aborted before the compare-and-set ran
     w.job_local_client.close.assert_called_once()
@@ -293,7 +307,7 @@ async def test_lease_loss_between_batches_stops_before_next_batch(monkeypatch):
     w.lease_probe.side_effect = [{"_id": "held"}, None]
 
     with pytest.raises(EmbeddingReindexLeaseLostError):
-        await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+        await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     assert mcp_sync.await_count == 1  # stopped before the second batch
     w.commit.assert_not_awaited()
@@ -312,7 +326,7 @@ async def test_resume_already_committed_skips_sweep_and_completes(monkeypatch):
         current_generation=str(job.id),
     )
 
-    await _service(w.db_client).run_claimed_job(job, lease_owner="worker-1")
+    await _service(w.db_client).run_claimed_job(job, lease=_lease())
 
     mcp_sync.assert_not_awaited()  # no sweep
     w.commit.assert_not_awaited()
@@ -332,7 +346,7 @@ async def test_resume_completes_with_tz_naive_switched_at(monkeypatch):
         current_generation=str(job.id),
     )
 
-    await _service(w.db_client).run_claimed_job(job, lease_owner="worker-1")
+    await _service(w.db_client).run_claimed_job(job, lease=_lease())
 
     assert COMPLETED in _statuses(w.transition)
 
@@ -343,7 +357,7 @@ async def test_superseded_before_sweep_fails(monkeypatch):
         monkeypatch, servers=[], agents=[], mcp_sync=AsyncMock(), a2a_sync=AsyncMock(), current_generation="genOTHER"
     )
 
-    await _service(w.db_client).run_claimed_job(job, lease_owner="worker-1")
+    await _service(w.db_client).run_claimed_job(job, lease=_lease())
 
     w.commit.assert_not_awaited()
     assert FAILED in _statuses(w.transition)
@@ -354,7 +368,7 @@ async def test_missing_target_model_source_fails(monkeypatch):
     w = _wire(monkeypatch, servers=[], agents=[], mcp_sync=AsyncMock(), a2a_sync=AsyncMock(), current_generation=None)
     monkeypatch.setattr(exec_module.ModelSource, "get", AsyncMock(return_value=None))
 
-    await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+    await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     w.commit.assert_not_awaited()
     assert FAILED in _statuses(w.transition)
@@ -367,7 +381,7 @@ async def test_job_local_client_closed_when_enumeration_fails(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="mongo blip"):
-        await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+        await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     w.job_local_client.close.assert_called_once()
     w.commit.assert_not_awaited()
@@ -384,7 +398,7 @@ async def test_finish_exhausted_job_completes_when_already_switched(monkeypatch)
         current_generation=str(job.id),  # the switch already committed
     )
 
-    await _service(w.db_client).finish_exhausted_job(job, lease_owner="worker-1")
+    await _service(w.db_client).finish_exhausted_job(job, lease=_lease())
 
     assert COMPLETED in _statuses(w.transition)
     assert FAILED not in _statuses(w.transition)
@@ -394,7 +408,7 @@ async def test_finish_exhausted_job_fails_with_last_error_when_not_switched(monk
     job = _job(last_error="embed provider 500")
     w = _wire(monkeypatch, servers=[], agents=[], mcp_sync=AsyncMock(), a2a_sync=AsyncMock(), current_generation=None)
 
-    await _service(w.db_client).finish_exhausted_job(job, lease_owner="worker-1")
+    await _service(w.db_client).finish_exhausted_job(job, lease=_lease())
 
     assert FAILED in _statuses(w.transition)
     errors = _errors(w.transition)
@@ -418,7 +432,7 @@ async def test_catch_up_resyncs_changed_docs_and_deletes_removed(monkeypatch):
         mongo_server_ids=["s1"],  # s2 no longer in Mongo
     )
 
-    await _service(w.db_client, w.federation).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+    await _service(w.db_client, w.federation).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     # The catch-up replaces the changed doc (is_delete=True) so a changed chunk count is reconciled.
     assert any(c.kwargs.get("is_delete") is True for c in mcp_sync.await_args_list)
@@ -448,7 +462,7 @@ async def test_catch_up_failure_counts_include_catch_up_docs(monkeypatch):
         changed_servers=changed,
     )
 
-    await _service(w.db_client, w.federation).run_claimed_job(_job(previous_generation=None), lease_owner="worker-1")
+    await _service(w.db_client, w.federation).run_claimed_job(_job(previous_generation=None), lease=_lease())
 
     w.commit.assert_not_awaited()
     assert FAILED in _statuses(w.transition)
@@ -467,7 +481,7 @@ async def test_await_pre_gate_writers_waits_out_min_delay(monkeypatch):
     )
     ensure_lease = AsyncMock()
 
-    await _service(MagicMock())._await_pre_gate_writers(job, ensure_lease, lease_owner="worker-1")
+    await _service(MagicMock())._await_pre_gate_writers(job, ensure_lease, lease=_lease())
 
     assert sleep.await_count == 1  # waited once before the delay elapsed
     assert ensure_lease.await_count == 2  # lease checked on every tick
@@ -484,7 +498,7 @@ async def test_await_pre_gate_writers_returns_immediately_when_delay_passed(monk
         SimpleNamespace(now=MagicMock(return_value=started + _CATCH_UP_MIN_DELAY + timedelta(seconds=1))),
     )
 
-    await _service(MagicMock())._await_pre_gate_writers(job, AsyncMock(), lease_owner="worker-1")
+    await _service(MagicMock())._await_pre_gate_writers(job, AsyncMock(), lease=_lease())
 
     sleep.assert_not_awaited()
 
@@ -497,7 +511,7 @@ async def test_await_pre_gate_writers_proceeds_after_federation_drains(monkeypat
     sleep = AsyncMock()
     monkeypatch.setattr(exec_module.asyncio, "sleep", sleep)
 
-    await _service(MagicMock(), fed)._await_pre_gate_writers(job, AsyncMock(), lease_owner="worker-1")
+    await _service(MagicMock(), fed)._await_pre_gate_writers(job, AsyncMock(), lease=_lease())
 
     assert fed.has_active_jobs.await_count == 2
     assert sleep.await_count == 1
@@ -509,11 +523,15 @@ async def test_await_pre_gate_writers_fails_reindex_on_federation_drain_timeout(
     job = _job()
     job.startedAt = started
     fed = SimpleNamespace(has_active_jobs=AsyncMock(return_value=True))
-    transition = AsyncMock(return_value=True)
-    monkeypatch.setattr(exec_module, "transition_embedding_reindex_job", transition)
+    transition = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    monkeypatch.setattr(
+        exec_module.EmbeddingReindexJob,
+        "get_pymongo_collection",
+        lambda: SimpleNamespace(update_one=transition),
+    )
 
     with pytest.raises(_Aborted):
-        await _service(MagicMock(), fed)._await_pre_gate_writers(job, AsyncMock(), lease_owner="worker-1")
+        await _service(MagicMock(), fed)._await_pre_gate_writers(job, AsyncMock(), lease=_lease())
 
     assert FAILED in _statuses(transition)
     assert any("Federation sync still active" in e for e in _errors(transition))
@@ -524,7 +542,7 @@ async def test_lease_loss_during_wait_stops_before_commit(monkeypatch):
     ensure_lease = AsyncMock(side_effect=EmbeddingReindexLeaseLostError("gone"))
 
     with pytest.raises(EmbeddingReindexLeaseLostError):
-        await _service(MagicMock())._await_pre_gate_writers(job, ensure_lease, lease_owner="worker-1")
+        await _service(MagicMock())._await_pre_gate_writers(job, ensure_lease, lease=_lease())
 
 
 def test_drop_collection_skips_when_missing():

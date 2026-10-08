@@ -6,6 +6,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry_pkgs.database import embedding_reindex_job_repository as repository
+from registry_pkgs.database.leased_job import Lease
 
 
 def _patch_collection(monkeypatch: pytest.MonkeyPatch, return_value) -> AsyncMock:
@@ -69,34 +70,48 @@ def _patch_update(monkeypatch: pytest.MonkeyPatch, modified_count: int) -> Async
     return collection
 
 
-@pytest.mark.asyncio
-async def test_transition_applies_write_when_owner_holds_running_lease(monkeypatch: pytest.MonkeyPatch) -> None:
-    collection = _patch_update(monkeypatch, 1)
+def _lease(doc_id: PydanticObjectId | None = None) -> Lease:
+    return Lease(doc_id=doc_id or PydanticObjectId(), owner="worker-1", token="tok-1", expires_at=datetime.now(UTC))
 
-    ok = await repository.transition_embedding_reindex_job(
-        job_id=PydanticObjectId(), lease_owner="worker-1", set_fields={"status": "completed"}
-    )
+
+@pytest.mark.asyncio
+async def test_transition_applies_write_when_token_holds_running_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    collection = _patch_update(monkeypatch, 1)
+    lease = _lease()
+
+    ok = await repository.embedding_reindex_repository.transition(lease, {"status": "completed"})
 
     assert ok is True
     flt, update = collection.update_one.await_args.args[0], collection.update_one.await_args.args[1]
-    # The lease gate: only a RUNNING job owned by this pod is writable.
-    assert flt["status"] == "running"
-    assert flt["leaseOwner"] == "worker-1"
+    # The lease gate fences on the per-claim token and the RUNNING status.
+    assert flt["_id"] == lease.doc_id
+    assert flt["leaseToken"] == lease.token
+    assert flt["status"] == {"$in": ["running"]}
     assert update["$set"]["status"] == "completed"
     assert "updatedAt" in update["$set"]
 
 
 @pytest.mark.asyncio
-async def test_transition_returns_false_when_not_owner_or_finished(monkeypatch: pytest.MonkeyPatch) -> None:
-    # modified_count == 0: the filter matched nothing (lease taken over, or the job is already
-    # COMPLETED/FAILED so status != RUNNING).
+async def test_transition_returns_false_when_token_stale_or_finished(monkeypatch: pytest.MonkeyPatch) -> None:
+    # modified_count == 0: the fence matched nothing (lease re-claimed with a new token, or the job is
+    # already COMPLETED/FAILED so status != RUNNING).
     _patch_update(monkeypatch, 0)
 
-    ok = await repository.transition_embedding_reindex_job(
-        job_id=PydanticObjectId(), lease_owner="worker-1", set_fields={"status": "failed"}
-    )
+    ok = await repository.embedding_reindex_repository.transition(_lease(), {"status": "failed"})
 
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_transition_release_clears_lease_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    collection = _patch_update(monkeypatch, 1)
+
+    await repository.embedding_reindex_repository.transition(_lease(), {"status": "completed"}, release=True)
+
+    sets = collection.update_one.await_args.args[1]["$set"]
+    assert sets["leaseOwner"] is None
+    assert sets["leaseToken"] is None
+    assert sets["leaseExpiresAt"] is None
 
 
 @pytest.mark.asyncio
@@ -104,8 +119,6 @@ async def test_transition_forwards_session(monkeypatch: pytest.MonkeyPatch) -> N
     collection = _patch_update(monkeypatch, 1)
     sentinel = object()
 
-    await repository.transition_embedding_reindex_job(
-        job_id=PydanticObjectId(), lease_owner="w", set_fields={"switchedAt": 1}, session=sentinel
-    )
+    await repository.embedding_reindex_repository.transition(_lease(), {"switchedAt": 1}, session=sentinel)
 
     assert collection.update_one.await_args.kwargs["session"] is sentinel
