@@ -927,6 +927,28 @@ class TestRecoverFromUnauthorized:
         assert token == "refreshed-from-r1"
 
     @pytest.mark.asyncio
+    async def test_parallel_401s_with_one_rejected_token_all_recover(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        h.tokens.put("atlassian", access="rejected", refresh="r1", metadata=h.dcr_binding(state))
+
+        async def slow_refresh(config: dict[str, Any], refresh_token: str, *, resource: str | None = None):
+            await asyncio.sleep(0.02)
+            return OAuthTokens(access_token="fresh", refresh_token="r2")
+
+        h.refresh.side_effect = slow_refresh
+        results = await asyncio.gather(
+            *(
+                h.service.recover_from_unauthorized(
+                    USER, h.server(), rejected_access_token="rejected", www_authenticate=None, is_retry=False
+                )
+                for _ in range(3)
+            )
+        )
+
+        assert results == ["fresh", "fresh", "fresh"]
+        assert h.refresh.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_first_401_refresh_failure_deletes_rejected_token(self, h: Harness) -> None:
         h.tokens.put("atlassian", access="rejected", refresh="r1", metadata={"clientId": "gone"})
         await h.bound_dcr_state()

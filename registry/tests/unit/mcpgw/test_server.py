@@ -4,10 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 from mcp.types import (
+    CallToolResult,
     ClientCapabilities,
     ElicitationCapability,
     Implementation,
     InitializeRequestParams,
+    TextContent,
     UrlElicitationCapability,
 )
 from opentelemetry import trace
@@ -17,7 +19,14 @@ from registry.core.config import settings
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
-from registry_pkgs.core.exceptions import InternalServerException
+from registry_pkgs.core.exceptions import (
+    DownstreamAuthRejectedException,
+    DownstreamHttpFailureException,
+    DownstreamUnauthorizedException,
+    InternalServerException,
+    UrlElicitationRequiredException,
+)
+from registry_pkgs.models.enums import McpAuthMode
 from registry_pkgs.telemetry.trace_propagation import (
     BAGGAGE_KEY_MCP_SERVER_ID,
     BAGGAGE_KEY_MCP_TOOL_NAME,
@@ -70,11 +79,16 @@ def _make_ctx(
     return ctx
 
 
-def _make_server(server_id: str | None = None, disabled_tools: list[str] | None = None):
+def _make_server(
+    server_id: str | None = None,
+    disabled_tools: list[str] | None = None,
+    auth_mode: McpAuthMode = McpAuthMode.NONE,
+):
     oid = PydanticObjectId(server_id) if server_id else PydanticObjectId()
     disabled = disabled_tools or []
     return SimpleNamespace(
         id=oid,
+        mcp_auth_mode=auth_mode,
         path="/github",
         serverName="github",
         config={
@@ -599,3 +613,177 @@ async def test_execute_tool_impl_enabled_tool_not_blocked(monkeypatch):
 
     assert not result.isError
     downstream_call.assert_awaited()
+
+
+# ----------------------------------------------------------------------
+# Downstream 401 recovery (AS-1929)
+# ----------------------------------------------------------------------
+
+_OK = {"result": {"content": [{"type": "text", "text": "ok"}]}}
+
+
+def _oauth_setup(monkeypatch, *, requires_init: bool = False):
+    """An OAuth server whose header builder hands out the current token from `tokens`."""
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    srv = _make_server(server_id, auth_mode=McpAuthMode.OAUTH)
+    srv.config["requiresInit"] = requires_init
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = srv
+    mcp_client = ctx.request_context.lifespan_context.mcp_client_service
+    mcp_client.get_session.return_value = None
+    oauth_service = ctx.request_context.lifespan_context.oauth_service
+    oauth_service.recover_from_unauthorized = AsyncMock(return_value=None)
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    tokens = ["t1"]
+
+    async def build_headers(**kwargs):
+        if not tokens:
+            raise UrlElicitationRequiredException("login", auth_url="https://login", server_name="github")
+        return {**kwargs["additional_headers"], "Authorization": f"Bearer {tokens[0]}"}
+
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(side_effect=build_headers))
+    return server_id, ctx, srv, mcp_client, oauth_service, tokens
+
+
+def _unauthorized() -> DownstreamUnauthorizedException:
+    return DownstreamUnauthorizedException("Error calling downstream MCP server.", www_authenticate="Bearer x")
+
+
+@pytest.mark.asyncio
+async def test_tool_401_then_refresh_retries_once_with_new_token(monkeypatch):
+    server_id, ctx, _, mcp_client, oauth_service, tokens = _oauth_setup(monkeypatch)
+
+    async def refreshed(*args, **kwargs):
+        tokens[0] = "t2"
+        return "t2"
+
+    oauth_service.recover_from_unauthorized.side_effect = refreshed
+    downstream = AsyncMock(side_effect=[_unauthorized(), _OK])
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+
+    assert not result.isError
+    assert downstream.await_count == 2
+    assert downstream.await_args_list[1].args[3]["Authorization"] == "Bearer t2"
+    kwargs = oauth_service.recover_from_unauthorized.await_args.kwargs
+    assert kwargs == {"rejected_access_token": "t1", "www_authenticate": "Bearer x", "is_retry": False}
+    mcp_client.clear_session.assert_called_once_with(f"507f1f77bcf86cd799439011:{server_id}")
+
+
+@pytest.mark.asyncio
+async def test_tool_401_then_failed_refresh_returns_url_elicitation(monkeypatch):
+    server_id, ctx, _, _, oauth_service, tokens = _oauth_setup(monkeypatch)
+
+    async def failed(*args, **kwargs):
+        tokens.clear()  # the rejected token was deleted; the rebuild starts a login
+        return None
+
+    oauth_service.recover_from_unauthorized.side_effect = failed
+    downstream = AsyncMock(side_effect=[_unauthorized()])
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+    elicitation_result = CallToolResult(content=[TextContent(type="text", text="open the URL")], isError=True)
+    elicitation = MagicMock(return_value=elicitation_result)
+    monkeypatch.setattr(server, "_build_url_elicitation_result", elicitation)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+
+    assert result is elicitation_result
+    assert elicitation.call_args.args[1] == "https://login"
+    assert downstream.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_second_401_loop_guard_returns_error_result(monkeypatch):
+    server_id, ctx, _, _, oauth_service, tokens = _oauth_setup(monkeypatch)
+    message = "github rejected a freshly issued access token; the server's OAuth configuration may be incompatible"
+
+    async def recover(*args, is_retry, **kwargs):
+        if is_retry:
+            raise DownstreamAuthRejectedException(message)
+        tokens[0] = "t2"
+        return "t2"
+
+    oauth_service.recover_from_unauthorized.side_effect = recover
+    downstream = AsyncMock(side_effect=[_unauthorized(), _unauthorized()])
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+
+    assert result.isError
+    assert result.content[0].text == message
+    assert downstream.await_count == 2
+    assert [c.kwargs["is_retry"] for c in oauth_service.recover_from_unauthorized.await_args_list] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_tool_recovery_none_but_rebuild_has_token_retries_then_limits_sends(monkeypatch):
+    server_id, ctx, _, _, oauth_service, tokens = _oauth_setup(monkeypatch)
+
+    async def other_pod_refreshed(*args, is_retry, **kwargs):
+        tokens[0] = "t-other" if not is_retry else "t-login"
+        return None
+
+    oauth_service.recover_from_unauthorized.side_effect = other_pod_refreshed
+    downstream = AsyncMock(side_effect=[_unauthorized(), _unauthorized(), _OK])
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+
+    assert result.isError
+    assert result.content[0].text == "Authorization for github changed during this call; retry it."
+    assert downstream.await_count == 2  # no third send
+    assert downstream.await_args_list[1].args[3]["Authorization"] == "Bearer t-other"
+
+
+@pytest.mark.asyncio
+async def test_tool_401_during_session_init_reaches_recovery(monkeypatch):
+    server_id, ctx, _, mcp_client, oauth_service, tokens = _oauth_setup(monkeypatch, requires_init=True)
+
+    async def refreshed(*args, **kwargs):
+        tokens[0] = "t2"
+        return "t2"
+
+    oauth_service.recover_from_unauthorized.side_effect = refreshed
+    mcp_client.initialize_mcp_session = AsyncMock(side_effect=[_unauthorized(), "sess-2"])
+    downstream = AsyncMock(return_value=_OK)
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+
+    assert not result.isError
+    assert oauth_service.recover_from_unauthorized.await_args.kwargs["rejected_access_token"] == "t1"
+    assert downstream.await_args.args[3]["mcp-Session-Id"] == "sess-2"
+    assert downstream.await_args.args[3]["Authorization"] == "Bearer t2"
+
+
+@pytest.mark.asyncio
+async def test_tool_401_for_non_oauth_server_is_not_recovered(monkeypatch):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.lifespan_context.oauth_service.recover_from_unauthorized = AsyncMock()
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={"Authorization": "Bearer k"}))
+    monkeypatch.setattr(server, "_downstream_tool_call", AsyncMock(side_effect=_unauthorized()))
+
+    with pytest.raises(DownstreamHttpFailureException):
+        await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+
+    ctx.request_context.lifespan_context.oauth_service.recover_from_unauthorized.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_downstream_tool_call_raises_unauthorized_with_challenge():
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, headers={"WWW-Authenticate": 'Bearer resource_metadata="https://x"'})
+
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context.proxy_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(DownstreamUnauthorizedException) as exc_info:
+        await server._downstream_tool_call(ctx, "https://mcp.example.com/mcp", {}, {})
+
+    assert exc_info.value.www_authenticate == 'Bearer resource_metadata="https://x"'
