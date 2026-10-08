@@ -6,6 +6,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -203,12 +204,17 @@ class SkillSyncExecutionService:
 
             has_errors = bool(job.skillErrors) or apply_summary.skillsFailed > 0
             final_status = SkillSyncJobStatus.PARTIAL_SUCCESS if has_errors else SkillSyncJobStatus.SUCCESS
-            await self._finalize_job(job, lease, final_status, SkillSyncJobPhase.COMPLETED, error=acl_error)
-            source.syncStatus = (
-                SkillSyncStateMachine.transition_to_sync_partial_success(source.syncStatus)
+            # Compute the source's new state before finalizing, so a failure here still fails the job normally.
+            sync_status_before = source.syncStatus
+            next_sync_status = (
+                SkillSyncStateMachine.transition_to_sync_partial_success(sync_status_before)
                 if has_errors
-                else SkillSyncStateMachine.transition_to_sync_success(source.syncStatus)
+                else SkillSyncStateMachine.transition_to_sync_success(sync_status_before)
             )
+            stats = await self._apply_service.build_source_stats(live_skills)
+            await self._finalize_job(job, lease, final_status, SkillSyncJobPhase.COMPLETED, error=acl_error)
+
+            source.syncStatus = next_sync_status
             source.syncMessage = acl_error
             source.lastSync = SkillSyncSourceLastSync(
                 jobId=str(job.id),
@@ -217,8 +223,14 @@ class SkillSyncExecutionService:
                 finishedAt=job.finishedAt,
                 commitSha=commit_sha,
             )
-            source.stats = await self._apply_service.build_source_stats(live_skills)
-            await source.save()
+            source.stats = stats
+
+            async def mark_source_failed(message: str) -> None:
+                # Undo the in-memory success transition so the state machine accepts FAILED.
+                source.syncStatus = sync_status_before
+                await self._source_crud_service.mark_sync_failed(source, message)
+
+            await self._save_source_after_finalize(source, on_failure=mark_source_failed)
         except GitHubDownloadError as exc:
             logger.exception("GitHub download failed for source %s", source.id)
             if exc.error_code == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED:
@@ -273,7 +285,13 @@ class SkillSyncExecutionService:
                 startedAt=job.startedAt,
                 finishedAt=job.finishedAt,
             )
-            await source.save()
+
+            async def restore_source(message: str) -> None:
+                # The source was not deleted after all; restore it as ACTIVE so the delete can be retried.
+                source.deletedAt = None
+                await self._source_crud_service.restore_after_delete_failure(source, message)
+
+            await self._save_source_after_finalize(source, on_failure=restore_source)
         except LeaseLostError:
             # Another owner re-claimed this job; the fence already blocks our writes. Hand it back to
             # the runner instead of mislabelling the handoff as a delete failure (and don't touch source).
@@ -289,6 +307,28 @@ class SkillSyncExecutionService:
                 error=str(exc),
             )
             await self._source_crud_service.restore_after_delete_failure(source, str(exc))
+
+    @staticmethod
+    async def _save_source_after_finalize(
+        source: SkillSyncSource,
+        *,
+        on_failure: Callable[[str], Awaitable[None]],
+    ) -> None:
+        """Save the source once its job is terminal, recording a failure on the source only.
+
+        ``_finalize_job`` released the lease, so this failure must not reach the job-failure handlers:
+        re-finalizing the job would raise ``LeaseLostError`` and leave the source SYNCING/DELETING for
+        good. ``on_failure`` moves the source to a retryable state instead; if that also fails, it is
+        logged only.
+        """
+        try:
+            await source.save()
+        except Exception as exc:
+            logger.exception("Saving source %s after finalizing its job failed", source.id)
+            try:
+                await on_failure(f"Internal error: {exc}")
+            except Exception:
+                logger.exception("Recording the failure on source %s failed", source.id)
 
     async def _fail_job(
         self,

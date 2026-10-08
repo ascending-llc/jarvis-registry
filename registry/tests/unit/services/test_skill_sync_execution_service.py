@@ -376,6 +376,81 @@ async def test_delete_failure_restores_source_and_fails_job():
     ctx.source_service.restore_after_delete_failure.assert_awaited_once_with(source, "delete failed")
 
 
+def _successful_discovery(ctx) -> None:
+    ctx.discovery_service.discover_skills.return_value = DiscoveryResult(
+        skills=[SimpleNamespace(upstream_id="skills/demo")],
+        errors=[],
+        summary=SkillSyncDiscoverySummary(discoveredSkillCount=1),
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_save_failure_after_finalize_marks_source_failed_without_refinalizing(fake_repo):
+    # The terminal write released the lease, so the failure must not go back through the job-failure path
+    # (which would raise LeaseLostError and strand the source in SYNCING).
+    source = _source()
+    source.save.side_effect = [None, RuntimeError("mongo down")]
+    ctx = _service(source)
+    _successful_discovery(ctx)
+    status_when_marked_failed = []
+    ctx.source_service.mark_sync_failed.side_effect = lambda src, message: status_when_marked_failed.append(
+        src.syncStatus
+    )
+    job = _job(source)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    assert job.status == SkillSyncJobStatus.SUCCESS
+    assert [write.release for write in fake_repo.writes].count(True) == 1
+    ctx.source_service.mark_sync_failed.assert_awaited_once_with(source, "Internal error: mongo down")
+    assert status_when_marked_failed == [SkillSyncStatus.SYNCING]
+
+
+@pytest.mark.asyncio
+async def test_source_stats_failure_fails_the_job_before_finalizing(fake_repo):
+    source = _source()
+    ctx = _service(source)
+    _successful_discovery(ctx)
+    ctx.apply_service.build_source_stats.side_effect = RuntimeError("stats failed")
+    job = _job(source)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    assert job.status == SkillSyncJobStatus.FAILED
+    assert [write.release for write in fake_repo.writes].count(True) == 1
+    ctx.source_service.mark_sync_failed.assert_awaited_once_with(source, "Internal error: stats failed")
+
+
+@pytest.mark.asyncio
+async def test_delete_source_save_failure_after_finalize_restores_source_without_refinalizing(fake_repo):
+    source = _source(deletedAt=None)
+    source.save.side_effect = RuntimeError("mongo down")
+    ctx = _service(source)
+    job = _job(source, jobType=SkillSyncJobType.DELETE_SYNC)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    assert job.status == SkillSyncJobStatus.SUCCESS
+    assert [write.release for write in fake_repo.writes].count(True) == 1
+    ctx.source_service.restore_after_delete_failure.assert_awaited_once_with(source, "Internal error: mongo down")
+    assert source.deletedAt is None
+
+
+@pytest.mark.asyncio
+async def test_source_recovery_failure_after_finalize_is_only_logged():
+    source = _source()
+    source.save.side_effect = [None, RuntimeError("mongo down")]
+    ctx = _service(source)
+    _successful_discovery(ctx)
+    ctx.source_service.mark_sync_failed.side_effect = RuntimeError("still down")
+    job = _job(source)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    assert job.status == SkillSyncJobStatus.SUCCESS
+    ctx.source_service.mark_sync_failed.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("job_type", "recovery_method"),
