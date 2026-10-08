@@ -193,3 +193,70 @@ async def test_collect_pending_authorizations_maps_oauth_error_to_400() -> None:
         "error": "invalid_request",
         "message": "OAuth token error for server 'broken-oauth': discovery failed",
     }
+
+
+def _real_oauth_service(access_record, state):
+    """A real MCPOAuthService whose token store and registryOAuth state are stubbed (AS-1929)."""
+    from registry_pkgs.oauth.oauth_service import MCPOAuthService
+
+    token_service = MagicMock()
+    token_service.get_oauth_access_token = AsyncMock(side_effect=lambda *a: access_record())
+    token_service.has_refresh_token = AsyncMock(return_value=False)
+    flow_manager = MagicMock(uses_redis=False)
+    flow_manager.generate_flow_id.side_effect = lambda user_id, server_id: f"{user_id}:{server_id}"
+    service = MCPOAuthService(
+        flow_manager=flow_manager,
+        token_service_instance=token_service,
+        registry_app_name="jarvis-registry",
+        base_redirect_url="http://localhost",
+        encryption_key=bytes(16),
+        redis_client=None,
+        redis_key_prefix="test",
+    )
+    service.ensure_registry_oauth_state = AsyncMock(return_value=state)
+    service.initiate_oauth_flow = AsyncMock(return_value=("flow", "https://auth.example/authorize", None))
+    return service
+
+
+@pytest.mark.asyncio
+async def test_preflight_requires_reauth_without_registry_tokens_or_with_old_as_token() -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from registry_pkgs.models.mcp_server_oauth import RegistryOAuthState
+
+    state = RegistryOAuthState(
+        revision="r",
+        serverUrl="https://mcp.atlassian.com/v2/mcp",
+        resource="https://mcp.atlassian.com/v2/mcp",
+        issuer="https://auth.atlassian.com/tenant",
+        authorizationServerMetadata={},
+        discoveredAt=datetime.now(UTC),
+    )
+    current = {"record": None}
+    service = _real_oauth_service(lambda: current["record"], state)
+    workflow = _workflow(_step("jira", "atlassian"))
+    server = _server("atlassian", {"url": "https://mcp.atlassian.com/v2/mcp", "requiresOAuth": True})
+
+    async def preflight():
+        with patch("registry.services.workflow_reauth_service.ExtendedMCPServer.find") as find:
+            find.return_value.to_list = AsyncMock(return_value=[server])
+            return await collect_pending_oauth_authorizations(workflow, user_id="user-1", oauth_service=service)
+
+    # No registry:mcp:* tokens at all.
+    pending = await preflight()
+    assert [p.authUrl for p in pending] == ["https://auth.example/authorize"]
+
+    # An access token bound to the old (v1) authorization server.
+    current["record"] = SimpleNamespace(
+        token="v1-token", metadata={"issuer": "https://auth.atlassian.com", "resource": None, "clientId": "c"}
+    )
+    pending = await preflight()
+    assert [p.authUrl for p in pending] == ["https://auth.example/authorize"]
+
+    # After the flow completes, the token carries the current binding.
+    current["record"] = SimpleNamespace(
+        token="v2-token",
+        metadata={"issuer": state.issuer, "resource": state.resource, "clientId": "c"},
+    )
+    assert await preflight() == []

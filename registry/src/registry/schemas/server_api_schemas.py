@@ -373,6 +373,21 @@ def _mask_apikey(apikey_config: dict[str, Any] | None) -> dict[str, Any] | None:
     return masked_apikey
 
 
+def _registry_oauth_metadata(server) -> dict[str, Any] | None:
+    """Discovered OAuth metadata for API responses, built from ``registryOAuth``.
+
+    Only the authorization-server metadata plus ``resource``: never the client (and its encrypted
+    secret), and never ``config.oauthMetadata``, whose legacy copies hold plaintext client secrets.
+    """
+    state = getattr(server, "registryOAuth", None)
+    if state is None or not state.authorizationServerMetadata:
+        return None
+    metadata = dict(state.authorizationServerMetadata)
+    if state.resource:
+        metadata["resource"] = state.resource
+    return convert_dict_keys_to_camel(metadata)
+
+
 def convert_to_list_item(
     server,
     acl_permission: ResourcePermissions | None = None,
@@ -404,7 +419,7 @@ def convert_to_list_item(
         headers=config.get("headers"),
         requiresOauth=config.get("requiresOAuth", False),
         capabilities=capabilities_str,
-        oauthMetadata=convert_dict_keys_to_camel(config.get("oauthMetadata")),
+        oauthMetadata=_registry_oauth_metadata(server),
         tools=tools_str,
         author=author_id,
         path=server.path,
@@ -459,7 +474,7 @@ def convert_to_detail(
         headers=config.get("headers"),
         requiresOauth=config.get("requiresOAuth", False),
         capabilities=capabilities_str,
-        oauthMetadata=convert_dict_keys_to_camel(config.get("oauthMetadata")),
+        oauthMetadata=_registry_oauth_metadata(server),
         tools=tools_str,
         toolFunctions=tool_functions,
         disabledTools=list(getattr(server, "registryDisabledTools", None) or []),

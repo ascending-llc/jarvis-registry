@@ -296,6 +296,37 @@ class TestOAuthRouter:
         assert response.json()["serverId"] == TEST_SERVER_ID
         assert "refreshed successfully" in response.json()["message"]
 
+    def test_refresh_oauth_tokens_for_dcr_server(self, client, monkeypatch):
+        """A DCR server (no config.oauth) refreshes through the real service instead of failing early."""
+        from registry_pkgs.oauth.oauth_service import MCPOAuthService
+
+        dcr_server = Mock()
+        dcr_server.id = ObjectId(TEST_SERVER_ID)
+        dcr_server.serverName = "atlassian"
+        dcr_server.config = {"url": "https://mcp.atlassian.com/v2/mcp", "requiresOAuth": True}
+        mock_container.server_service.get_server_by_id = AsyncMock(return_value=dcr_server)
+
+        token_service = Mock()
+        token_service.has_refresh_token = AsyncMock(return_value=True)
+        service = MCPOAuthService(
+            flow_manager=Mock(uses_redis=False),
+            token_service_instance=token_service,
+            registry_app_name="jarvis-registry",
+            base_redirect_url="http://localhost",
+            encryption_key=bytes(16),
+            redis_client=None,
+            redis_key_prefix="test",
+        )
+        refresh = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(service, "_refresh_with_lock", refresh)
+        monkeypatch.setattr(mock_mcp_service, "oauth_service", service)
+        mock_mcp_service.connection_service.get_connection = AsyncMock(return_value=Mock())
+
+        response = client.post(f"/mcp/oauth/refresh/{TEST_SERVER_ID}")
+
+        assert response.status_code == 200
+        refresh.assert_awaited_once_with("test_user", dcr_server)
+
     def test_refresh_oauth_tokens_failure(self, client):
         """Test failed refresh of OAuth tokens"""
         # Mock failed validation and refresh
@@ -809,6 +840,15 @@ class TestOAuthRouter:
         assert response_data["serverId"] == TEST_SERVER_ID
         assert response_data["userId"] == "test_user"
         assert "oauth delete successfully" in response_data["message"]
+
+    def test_delete_oauth_tokens_deletes_by_server_name_through_token_service(self, client):
+        """Disconnect goes through TokenService.delete_oauth_tokens, which only touches registry:mcp:*."""
+        mock_mcp_service.connection_service.disconnect_user_connection = AsyncMock(return_value=True)
+        mock_container.token_service.delete_oauth_tokens = AsyncMock(return_value=True)
+
+        client.delete(f"/mcp/oauth/token/{TEST_SERVER_ID}")
+
+        mock_container.token_service.delete_oauth_tokens.assert_awaited_once_with("test_user", "test_server")
 
     def test_delete_oauth_tokens_failure(self, client):
         """Test failed deletion of OAuth tokens"""

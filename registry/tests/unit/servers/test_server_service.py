@@ -830,3 +830,79 @@ class TestOAuthReAuthRequired:
         assert server.errorMessage == "previous message"
         server.save.assert_not_called()
         sync.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestRegistryOAuthLifecycleOnUpdate:
+    """Server create/update no longer run OAuth discovery; a URL change or OAuth removal unsets
+    registryOAuth, which save() can't touch (AS-1929)."""
+
+    def _make_service(self):
+        from types import SimpleNamespace
+
+        return ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=Mock(),
+            embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: False),
+        )
+
+    def _make_server(self, config):
+        from beanie import PydanticObjectId
+
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        return ExtendedMCPServer.model_construct(
+            id=PydanticObjectId("65f000000000000000000001"),
+            serverName="atlassian",
+            path="/atlassian",
+            tags=[],
+            config=config,
+            vectorContentHash=None,
+            numTools=0,
+        )
+
+    async def _update(self, server, data):
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        service = self._make_service()
+        service.get_server_by_id = AsyncMock(return_value=server)
+        service._schedule_vector_sync = Mock()
+        collection = Mock()
+        collection.update_one = AsyncMock()
+        with (
+            patch.object(ExtendedMCPServer, "save", AsyncMock()),
+            patch.object(ExtendedMCPServer, "get_pymongo_collection", Mock(return_value=collection)),
+        ):
+            await service.update_server(server_id=str(server.id), data=data)
+        return collection.update_one
+
+    async def test_url_change_unsets_registry_oauth(self):
+        server = self._make_server({"url": "https://mcp.atlassian.com/v1/sse", "requiresOAuth": True})
+
+        update_one = await self._update(server, ServerUpdateRequest(url="https://mcp.atlassian.com/v2/mcp"))
+
+        update_one.assert_awaited_once_with({"_id": server.id}, {"$unset": {"registryOAuth": ""}}, session=None)
+        assert "oauthMetadata" not in server.config
+
+    async def test_removing_oauth_unsets_registry_oauth(self):
+        server = self._make_server({"url": "https://mcp.example.com/mcp", "requiresOAuth": True})
+
+        update_one = await self._update(server, ServerUpdateRequest(requiresOauth=False))
+
+        update_one.assert_awaited_once()
+
+    async def test_unrelated_edit_keeps_registry_oauth(self):
+        server = self._make_server({"url": "https://mcp.example.com/mcp", "requiresOAuth": True})
+
+        update_one = await self._update(server, ServerUpdateRequest(title="Renamed"))
+
+        update_one.assert_not_awaited()
+
+    async def test_create_and_update_no_longer_run_discovery(self):
+        import registry.services.server_service as server_service_module
+
+        assert not hasattr(server_service_module, "get_oauth_metadata_from_server")
