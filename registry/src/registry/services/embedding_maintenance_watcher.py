@@ -13,6 +13,7 @@ from registry.core.config import Settings
 from registry.core.vector_backend import resolve_vector_backend_config
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.database.embedding_reindex_job_repository import get_active_embedding_reindex_job
+from registry_pkgs.database.leased_job import interruptible_sleep
 from registry_pkgs.database.model_gateway_selection_repository import get_model_gateway_selection
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.embedding_reindex_job import EmbeddingReindexJob
@@ -109,7 +110,7 @@ class EmbeddingMaintenanceWatcher:
                 raise
             except Exception:
                 logger.exception("Embedding maintenance watcher poll failed")
-            await self._wait_for_next_poll()
+            await interruptible_sleep(self._stop_event, _POLL_INTERVAL_SECONDS)
 
     async def _close_expired_adapters(self) -> None:
         """Close adapters retired more than the grace window ago; keep the rest for in-flight reads."""
@@ -169,12 +170,6 @@ class EmbeddingMaintenanceWatcher:
             self._retired.append((old_adapter, time.monotonic()))  # closed after the grace window
         self._stale = False
         logger.info("Watcher swapped this pod to embedding generation %s", target_generation)
-
-    async def _wait_for_next_poll(self) -> None:
-        try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=_POLL_INTERVAL_SECONDS)
-        except TimeoutError:
-            return
 
 
 def _generation_suffix(name: str, bases: tuple[str, ...]) -> str | None:

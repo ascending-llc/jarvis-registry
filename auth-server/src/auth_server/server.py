@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import database utilities
 from registry_pkgs.core.structured_logging import configure_structured_logging
-from registry_pkgs.database import close_mongodb, init_mongodb
+from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.telemetry import setup_metrics, shutdown_telemetry
 

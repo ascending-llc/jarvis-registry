@@ -4,10 +4,11 @@ from beanie import Document, PydanticObjectId
 from pydantic import ConfigDict, Field
 from pymongo import IndexModel
 
+from ..database.leased_job import LeasedDocumentMixin
 from .enums import EmbeddingReindexJobStatus
 
 
-class EmbeddingReindexJob(Document):
+class EmbeddingReindexJob(LeasedDocumentMixin, Document):
     """A persisted signal that an embedding-model reindex is running.
 
     "Active" is derived from the lease (``status == RUNNING`` and
@@ -28,6 +29,7 @@ class EmbeddingReindexJob(Document):
     lastError: str | None = None  # most recent attempt's exception text (for the give-up message)
     status: EmbeddingReindexJobStatus = EmbeddingReindexJobStatus.RUNNING
     leaseOwner: str | None = None
+    leaseToken: str | None = None  # fresh per claim; every lease-fenced write matches on it
     leaseExpiresAt: datetime | None = None
     heartbeatAt: datetime | None = None
     startedAt: datetime = Field(default_factory=lambda: datetime.now(UTC))
