@@ -114,6 +114,7 @@ class MCPOAuthService:
         self.flow_manager = flow_manager
         self.token_service = token_service_instance
         self.oauth_client = OAuthClient(registry_app_name)
+        self._registry_app_name = registry_app_name
         self._base_redirect_url = base_redirect_url
         self._encryption_key = encryption_key
         self._lock_redis_client = redis_client if getattr(flow_manager, "uses_redis", False) else None
@@ -218,7 +219,10 @@ class MCPOAuthService:
     async def _run_discovery(self, server_url: str, *, www_authenticate: str | None = None) -> DiscoveryResult:
         if not server_url:
             raise OAuthDiscoveryError("Server has no URL to discover OAuth metadata for")
-        async with httpx.AsyncClient() as http_client:
+        # Follow redirects like the mcp SDK's own client: providers may redirect well-known documents.
+        async with httpx.AsyncClient(
+            headers={"User-Agent": self._registry_app_name}, follow_redirects=True
+        ) as http_client:
             return await discover_mcp_oauth(server_url, http_client=http_client, www_authenticate=www_authenticate)
 
     @staticmethod

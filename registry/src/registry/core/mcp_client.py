@@ -1359,7 +1359,9 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
         return None
 
     try:
-        async with httpx.AsyncClient(headers={"User-Agent": settings.registry_app_name}) as http_client:
+        async with httpx.AsyncClient(
+            headers={"User-Agent": settings.registry_app_name}, follow_redirects=True
+        ) as http_client:
             result = await discover_mcp_oauth(base_url, http_client=http_client)
     except OAuthDiscoveryError as e:
         logger.info(f"No OAuth metadata discovered for {base_url}: {e}")

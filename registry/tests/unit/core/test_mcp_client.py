@@ -1118,6 +1118,7 @@ class TestGetOAuthMetadataFromServer:
             metadata = await get_oauth_metadata_from_server("https://mcp.atlassian.com/v2/mcp")
 
         assert discover.await_args.args == ("https://mcp.atlassian.com/v2/mcp",)
+        assert discover.await_args.kwargs["http_client"].follow_redirects is True
         assert metadata == {**result.authorization_server_metadata, "resource": "https://mcp.atlassian.com/v2/mcp"}
 
     @pytest.mark.asyncio

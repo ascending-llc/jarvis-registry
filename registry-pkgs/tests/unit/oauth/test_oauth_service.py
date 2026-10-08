@@ -430,6 +430,14 @@ class TestEnsureState:
         assert h.register.await_count == 3
 
     @pytest.mark.asyncio
+    async def test_discovery_client_follows_redirects(self, h: Harness) -> None:
+        await h.service.ensure_registry_oauth_state(h.server(), force_discovery=True)
+
+        http_client = h.discover.await_args.kwargs["http_client"]
+        assert http_client.follow_redirects is True
+        assert http_client.headers["User-Agent"] == "jarvis-registry"
+
+    @pytest.mark.asyncio
     async def test_naive_client_secret_expiry_from_mongo_is_compared_as_utc(self, h: Harness) -> None:
         # pymongo isn't tz_aware, so a stored expiry reads back as a naive datetime holding UTC.
         state = await h.bound_dcr_state()
