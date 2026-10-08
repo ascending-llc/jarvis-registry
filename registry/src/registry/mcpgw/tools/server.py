@@ -9,6 +9,7 @@ import json
 import logging
 import secrets
 from collections.abc import Callable
+from http import HTTPStatus
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -30,13 +31,17 @@ from pydantic.networks import AnyUrl
 
 from registry_pkgs.core.exceptions import (
     ConsentRequiredException,
+    DownstreamAuthRejectedException,
     DownstreamHttpFailureException,
+    DownstreamUnauthorizedException,
     InternalServerException,
     McpGatewayException,
     MisimplementedSpecException,
     UrlElicitationRequiredException,
 )
 from registry_pkgs.models import ResourceType
+from registry_pkgs.models.enums import McpAuthMode
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.telemetry.trace_propagation import (
     BAGGAGE_KEY_MCP_SERVER_ID,
     BAGGAGE_KEY_MCP_TOOL_NAME,
@@ -69,6 +74,8 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DOWNSTREAM_FAILURE_MESSAGE = "Error calling downstream MCP server."
 
 
 def _get_server_service(ctx: Context[ServerSession, McpAppContext]):
@@ -155,7 +162,11 @@ async def _downstream_tool_call(
                     f"Error calling downstream MCP: status code: {resp.status_code}, body: {raw_body.decode('utf-8')}"
                 )
 
-                raise DownstreamHttpFailureException("Error calling downstream MCP server.")
+                if resp.status_code == HTTPStatus.UNAUTHORIZED:
+                    raise DownstreamUnauthorizedException(
+                        _DOWNSTREAM_FAILURE_MESSAGE, www_authenticate=resp.headers.get("WWW-Authenticate")
+                    )
+                raise DownstreamHttpFailureException(_DOWNSTREAM_FAILURE_MESSAGE)
             elif resp.headers.get("content-type", "").startswith("application/json"):
                 # If content-type is application/json, read the whole response body and return the parsed dictionary.
                 raw_body = await resp.aread()
@@ -215,6 +226,142 @@ async def _downstream_tool_call(
         logger.exception(msg)  # Want stack trace here.
 
         raise InternalServerException(msg) from exc
+
+
+def _bearer_token(headers: dict[str, str]) -> str:
+    """The bearer value of the Authorization header a request carried ("" when absent)."""
+    for key, value in headers.items():
+        if key.lower() == "authorization" and value.lower().startswith("bearer "):
+            return value[len("bearer ") :]
+    return ""
+
+
+def _auth_changed_result(server_name: str) -> CallToolResult:
+    return CallToolResult(
+        content=[TextContent(type="text", text=f"Authorization for {server_name} changed during this call; retry it.")],
+        isError=True,
+    )
+
+
+async def _call_with_oauth_recovery(
+    ctx: Context[ServerSession, McpAppContext],
+    *,
+    server: ExtendedMCPServer,
+    user_context: UserContextDict,
+    session_key: str,
+    target_url: str,
+    base_headers: dict[str, str],
+    ctx_baggage: Any,
+    body: dict[str, Any],
+) -> dict | CallToolResult:
+    """Build headers, initialize the session if needed and call the tool, recovering from a downstream 401.
+
+    For OAuth servers, a 401 (on session init or the call) gets one refresh and one retry; a 401 on
+    the retry goes to the loop guard (``recover_from_unauthorized`` with ``is_retry=True``). At most
+    two downstream sends happen: if the header rebuild after the retry's 401 still yields a token
+    (a concurrent login wrote one), the caller gets a "changed during this call" result instead of
+    a third send.
+
+    Returns:
+        The downstream JSON-RPC response object, or a ``CallToolResult`` error for the send limit.
+
+    Raises:
+        UrlElicitationRequiredException: The header rebuild requires an interactive login.
+        DownstreamAuthRejectedException: The loop guard tripped.
+    """
+    lifespan = ctx.request_context.lifespan_context
+    oauth_service = lifespan.oauth_service
+    mcp_client_service = _get_mcp_client_service(ctx)
+    requires_init = server.config.get("requiresInit", True)
+    transport_type = server.config.get("type", "streamable-http")
+    state_metadata = _get_state_metadata(ctx.session.client_params)
+    oauth_enabled = server.mcp_auth_mode is McpAuthMode.OAUTH
+
+    async def build_headers(extra: dict[str, str]) -> dict[str, str]:
+        headers = await build_authenticated_headers(
+            oauth_service=oauth_service,
+            server=server,
+            auth_context=user_context,
+            additional_headers=extra,
+            state_metadata=state_metadata,
+            redis_client=lifespan.redis_client,
+        )
+        # Propagate W3C trace context to the downstream MCP server.
+        return inject_trace_context(headers, context=ctx_baggage)
+
+    sent_headers: dict[str, str] = {}
+
+    async def send() -> dict:
+        nonlocal sent_headers
+        additional_headers = dict(base_headers)
+        # Session management logic - only for streamable-http when initialization is required.
+        # For SSE we intentionally do not persist/reuse session IDs or messages URLs.
+        # Each SSE tool call opens a fresh stream and completes within _downstream_tool_call.
+        if requires_init and transport_type != "sse":
+            # Key format: "user_id:server_id" to track per-user, per-server sessions
+            session_info = mcp_client_service.get_session(session_key)
+            stored_session_id = None
+
+            if session_info:
+                # Existing session found - check if it's initialized
+                stored_session_id, session_initialized = session_info
+
+                if session_initialized:
+                    additional_headers["mcp-Session-Id"] = stored_session_id
+                    logger.info(f"Reusing initialized session for {server.serverName}: {stored_session_id}")
+
+            if not stored_session_id:
+                sent_headers = await build_headers(additional_headers)
+                session_id = await mcp_client_service.initialize_mcp_session(
+                    target_url,
+                    sent_headers,
+                    session_key,
+                    transport_type,
+                )
+
+                if session_id:
+                    additional_headers["mcp-Session-Id"] = session_id
+                else:
+                    logger.warning("Failed to initialize session, will attempt tool call without session")
+        elif transport_type == "sse":
+            logger.debug("SSE transport selected: using per-call ephemeral downstream session")
+        else:
+            logger.debug("Stateless server (requiresInit=False), skipping session management")
+
+        # Build final authenticated headers with session ID (if applicable)
+        sent_headers = await build_headers(additional_headers)
+        return await _downstream_tool_call(
+            ctx,
+            target_url,
+            body,
+            sent_headers,
+            transport_type=transport_type,
+            sse_url=target_url if transport_type == "sse" else None,
+        )
+
+    is_retry = False
+    while True:
+        try:
+            return await send()
+        except DownstreamUnauthorizedException as exc:
+            if not oauth_enabled:
+                raise
+            logger.info(f"Downstream {server.serverName} answered 401 (retry={is_retry}); running OAuth recovery")
+            await oauth_service.recover_from_unauthorized(
+                user_context["user_id"],
+                server,
+                rejected_access_token=_bearer_token(sent_headers),
+                www_authenticate=exc.www_authenticate,
+                is_retry=is_retry,
+            )
+            # A new token (refreshed or rebuilt) must not ride on a session opened with the rejected one.
+            mcp_client_service.clear_session(session_key)
+            if is_retry:
+                # Send limit: a rebuild that raises (login required) propagates; one that yields a
+                # token is not sent.
+                await build_headers(dict(base_headers))
+                return _auth_changed_result(server.serverName)
+            is_retry = True
 
 
 @trace_tool_execution
@@ -371,68 +518,6 @@ async def execute_tool_impl(
                 BAGGAGE_KEY_MCP_SERVER_ID, bounded_baggage_value(server_id), context=ctx_baggage
             )
 
-            # Check if server requires initialization (default True for safety/compatibility)
-            requires_init = server.config.get("requiresInit", True)
-            transport_type = server.config.get("type", "streamable-http")
-
-            state_metadata = _get_state_metadata(ctx.session.client_params)
-
-            # Session management logic - only for streamable-http when initialization is required.
-            # For SSE we intentionally do not persist/reuse session IDs or messages URLs.
-            # Each SSE tool call opens a fresh stream and completes within _downstream_tool_call.
-            if requires_init and transport_type != "sse":
-                # Key format: "user_id:server_id" to track per-user, per-server sessions
-                session_key = f"{user_id}:{server_id}"
-                session_info = _get_mcp_client_service(ctx).get_session(session_key)
-                stored_session_id = None
-
-                if session_info:
-                    # Existing session found - check if it's initialized
-                    stored_session_id, session_initialized = session_info
-
-                    if session_initialized:
-                        additional_headers["mcp-Session-Id"] = stored_session_id
-                        logger.info(f"Reusing initialized session for {server.serverName}: {stored_session_id}")
-
-                if not stored_session_id:
-                    init_headers = await build_authenticated_headers(
-                        oauth_service=ctx.request_context.lifespan_context.oauth_service,
-                        server=server,
-                        auth_context=user_context,
-                        additional_headers=additional_headers,
-                        state_metadata=state_metadata,
-                        redis_client=ctx.request_context.lifespan_context.redis_client,
-                    )
-                    init_headers = inject_trace_context(init_headers, context=ctx_baggage)
-                    session_id = await _get_mcp_client_service(ctx).initialize_mcp_session(
-                        target_url,
-                        init_headers,
-                        session_key,
-                        transport_type,
-                    )
-
-                    if session_id:
-                        additional_headers["mcp-Session-Id"] = session_id
-                    else:
-                        logger.warning("Failed to initialize session, will attempt tool call without session")
-            elif transport_type == "sse":
-                logger.debug("SSE transport selected: using per-call ephemeral downstream session")
-            else:
-                logger.debug("Stateless server (requiresInit=False), skipping session management")
-
-            # Build final authenticated headers with session ID (if applicable)
-            headers = await build_authenticated_headers(
-                oauth_service=ctx.request_context.lifespan_context.oauth_service,
-                server=server,
-                auth_context=user_context,
-                additional_headers=additional_headers,
-                state_metadata=state_metadata,
-                redis_client=ctx.request_context.lifespan_context.redis_client,
-            )
-
-            # Propagate W3C trace context to the downstream MCP server (reuses ctx_baggage above).
-            headers = inject_trace_context(headers, context=ctx_baggage)
-
             # Build MCP JSON-RPC request
             mcp_request_body = {
                 "jsonrpc": "2.0",
@@ -442,14 +527,19 @@ async def execute_tool_impl(
             }
             logger.info(f"MCP JSON-RPC request body: {json.dumps(mcp_request_body, indent=2)}")
 
-            resp_obj = await _downstream_tool_call(
+            resp_obj = await _call_with_oauth_recovery(
                 ctx,
-                target_url,
-                mcp_request_body,
-                headers,
-                transport_type=transport_type,
-                sse_url=target_url if transport_type == "sse" else None,
+                server=server,
+                user_context=user_context,
+                session_key=f"{user_id}:{server_id}",
+                target_url=target_url,
+                base_headers=additional_headers,
+                ctx_baggage=ctx_baggage,
+                body=mcp_request_body,
             )
+            if isinstance(resp_obj, CallToolResult):
+                metrics_ctx.set_error_type("downstream_auth_changed")
+                return resp_obj
 
             if "error" in resp_obj:
                 error_data = ErrorData.model_validate(resp_obj["error"])
@@ -499,6 +589,10 @@ async def execute_tool_impl(
                 human_message,
                 elicitation_id=exc.elicitation_id,
             )
+        except DownstreamAuthRejectedException as exc:
+            # Loop guard: a freshly issued token was rejected. Tell the LLM instead of starting another login.
+            metrics_ctx.set_error_type("downstream_auth_rejected")
+            return CallToolResult(content=[TextContent(type="text", text=str(exc))], isError=True)
         except (McpGatewayException, McpError):
             # These exceptions have been logged and should just bubble up to the caller as a way of communication.
             # __aexit__ records status=failure with error_type = exception class name.

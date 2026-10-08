@@ -1,0 +1,8 @@
+{
+    "authorization_servers": [
+        "https://mcp.hubspot.com"
+    ],
+    "resource": "https://mcp.hubspot.com",
+    "resource_documentation": "https://developers.hubspot.com/mcp",
+    "scopes_supported": []
+}

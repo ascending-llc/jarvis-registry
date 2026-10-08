@@ -24,6 +24,7 @@ from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
 )
+from registry_pkgs.models.enums import McpAuthMode
 from registry_pkgs.models.extended_mcp_server import normalize_server_name
 from registry_pkgs.oauth.errors import (
     AuthenticationError,
@@ -35,7 +36,6 @@ from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
-from ..core.mcp_client import get_oauth_metadata_from_server
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.server_api_schemas import (
     ServerCreateRequest,
@@ -612,21 +612,6 @@ class ServerServiceV1:
 
                 logger.info(f"Server {server.serverName} registered successfully. Tools will be fetched on-demand.")
 
-                if data.requiresOauth:
-                    logger.info(f"OAuth configuration detected for {server.serverName}, retrieving OAuth metadata...")
-
-                    oauth_metadata = await get_oauth_metadata_from_server(data.url)
-
-                    if oauth_metadata:
-                        config["oauthMetadata"] = oauth_metadata
-                        logger.info(f"Saved raw OAuth metadata for {server.serverName}: {json.dumps(oauth_metadata)}")
-                    else:
-                        # Save empty oauthMetadata if retrieval failed
-                        config["oauthMetadata"] = {}
-                        logger.info(
-                            f"No OAuth metadata available for {server.serverName} (server may not support OAuth autodiscovery), saved empty oauthMetadata"
-                        )
-
                 # Update numTools at root level (0 since tools not fetched yet)
                 server.numTools = 0
 
@@ -707,6 +692,7 @@ class ServerServiceV1:
 
         # Get current config
         config = server.config or {}
+        previous_url = config.get("url")
 
         # Check for duplicate tags if tags are being updated
         if data.tags is not None:
@@ -727,19 +713,6 @@ class ServerServiceV1:
         if data.oauth is not None or data.apiKey is not None:
             updated_config = encrypt_auth_fields(updated_config)
 
-        if data.requiresOauth:
-            logger.info(f"OAuth configuration detected for {server.serverName}, retrieving OAuth metadata...")
-            oauth_metadata = await get_oauth_metadata_from_server(data.url)
-            if oauth_metadata:
-                updated_config["oauthMetadata"] = oauth_metadata
-                logger.info(f"Saved raw OAuth metadata for {server.serverName}: {json.dumps(oauth_metadata)}")
-            else:
-                # Save empty oauthMetadata if retrieval failed
-                updated_config["oauthMetadata"] = {}
-                logger.info(
-                    f"No OAuth metadata available for {server.serverName} (server may not support OAuth autodiscovery), saved empty oauthMetadata"
-                )
-
         # If toolFunctions was updated, recalculate numTools
         if "toolFunctions" in updated_config:
             tool_functions = updated_config.get("toolFunctions", {})
@@ -749,6 +722,14 @@ class ServerServiceV1:
 
         old_hash = server.vectorContentHash
         await server.save(session=session)
+
+        if updated_config.get("url") != previous_url or server.mcp_auth_mode is not McpAuthMode.OAUTH:
+            # registryOAuth is bound to the old URL (or no longer applies). It is excluded from Beanie
+            # writes, so save() can't remove it.
+            await ExtendedMCPServer.get_pymongo_collection().update_one(
+                {"_id": server.id}, {"$unset": {"registryOAuth": ""}}, session=session
+            )
+            server.registryOAuth = None
 
         self._schedule_vector_sync(server, old_hash)
         return server

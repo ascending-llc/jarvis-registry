@@ -5,6 +5,8 @@ Dynamic MCP server proxy routes.
 import json
 import logging
 import secrets
+from collections.abc import Awaitable, Callable
+from http import HTTPStatus
 from typing import Any
 from uuid import uuid4
 
@@ -18,10 +20,14 @@ from opentelemetry import baggage, trace
 from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
-from registry_pkgs.core.exceptions import InternalServerException, UrlElicitationRequiredException
+from registry_pkgs.core.exceptions import (
+    DownstreamAuthRejectedException,
+    InternalServerException,
+    UrlElicitationRequiredException,
+)
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import NoSupportedTransportError
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, McpAuthMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.oauth.types import ClientBranding
@@ -226,6 +232,34 @@ def _get_elicitation_id(auth_url: str) -> str:
     return id_
 
 
+UnauthorizedCallback = Callable[[dict[str, str], str | None, bool], Awaitable[dict[str, str] | Response]]
+
+
+def _bearer_token(headers: dict[str, str]) -> str:
+    """The bearer value of the Authorization header a request carried ("" when absent)."""
+    for key, value in headers.items():
+        if key.lower() == "authorization" and value.lower().startswith("bearer "):
+            return value[len("bearer ") :]
+    return ""
+
+
+def _downstream_token_problem_response(detail: str) -> JSONResponse:
+    """Registry-realm RFC 9457 problem+json 401 for the GET stream (never the downstream's challenge)."""
+    return JSONResponse(
+        status_code=401,
+        headers={
+            "Content-Type": "application/problem+json",
+            "WWW-Authenticate": f'Bearer realm="{settings.jarvis_realm}", error="invalid_token"',
+        },
+        content={
+            "type": f"{settings.registry_client_url.rstrip('/')}/errors/token-expired",
+            "title": "Both access and refresh tokens of downstream MCP server have expired",
+            "status": 401,
+            "detail": detail,
+        },
+    )
+
+
 def _handle_url_elicitation_required(
     exc: UrlElicitationRequiredException,
     *,
@@ -355,11 +389,18 @@ async def _forward_to_downstream(
     target_url: str,
     proxy_client: httpx.AsyncClient,
     headers: dict[str, str],
+    server_name: str = "",
+    on_unauthorized: UnauthorizedCallback | None = None,
 ) -> Response:
     """Send the proxied request downstream and relay the response (buffered JSON or SSE stream).
 
     Owns the whole ``stream_context`` lifecycle: the buffered path closes it via the ``finally``
     here, the SSE path hands it to ``stream_sse`` which closes it once the client drains the stream.
+
+    With ``on_unauthorized`` (OAuth servers), a downstream 401 is never relayed: the callback gets
+    the rejected headers, the downstream ``WWW-Authenticate`` and ``is_retry``, and returns either
+    headers to resend with (once) or the final response. Headers returned for the retry's 401 are
+    not sent; the client gets a "changed during this call" error instead of a third send.
     """
     body = await request.body()
 
@@ -377,8 +418,29 @@ async def _forward_to_downstream(
                 ),
             )
 
-        stream_context = proxy_client.stream(request.method, target_url, headers=headers, content=body)
-        backend_response = await stream_context.__aenter__()
+        is_retry = False
+        while True:
+            stream_context = proxy_client.stream(request.method, target_url, headers=headers, content=body)
+            backend_response = await stream_context.__aenter__()
+            if backend_response.status_code != HTTPStatus.UNAUTHORIZED or on_unauthorized is None:
+                break
+
+            # Never relay the downstream challenge: it names the downstream's own PRM, and the
+            # client would try to authorize with the downstream server against our proxy URL.
+            www_authenticate = backend_response.headers.get("WWW-Authenticate")
+            await stream_context.__aexit__(None, None, None)
+            outcome = await on_unauthorized(headers, www_authenticate, is_retry)
+            if isinstance(outcome, Response):
+                return outcome
+            if is_retry:
+                return JSONResponse(
+                    status_code=200,
+                    content=_build_jsonrpc_error_result(
+                        request_id, f"Authorization for {server_name} changed during this call; retry it."
+                    ),
+                )
+            headers = outcome
+            is_retry = True
 
         backend_content_type = backend_response.headers.get("content-type", "")
         is_stream = "text/event-stream" in backend_content_type
@@ -514,12 +576,44 @@ async def proxy_to_mcp_server(
         if isinstance(headers, Response):
             return headers  # early auth / elicitation error
 
+        on_unauthorized: UnauthorizedCallback | None = None
+        if server.mcp_auth_mode is McpAuthMode.OAUTH:
+
+            async def on_unauthorized(
+                rejected_headers: dict[str, str], www_authenticate: str | None, is_retry: bool
+            ) -> dict[str, str] | Response:
+                try:
+                    await oauth_service.recover_from_unauthorized(
+                        auth_context["user_id"],
+                        server,
+                        rejected_access_token=_bearer_token(rejected_headers),
+                        www_authenticate=www_authenticate,
+                        is_retry=is_retry,
+                    )
+                except DownstreamAuthRejectedException as exc:
+                    # Even for handshake methods: a 401 challenge here would restart the login loop.
+                    return JSONResponse(status_code=200, content=_build_jsonrpc_error_result(request_id, str(exc)))
+                # Headers when a token is available (resend), else Registry's own 401 challenge for
+                # handshake methods or the URL elicitation for the rest.
+                return await _prepare_proxy_headers(
+                    request_id=request_id,
+                    request=request,
+                    auth_context=auth_context,
+                    server=server,
+                    oauth_service=oauth_service,
+                    redis_client=redis_client,
+                    mcp_method=mcp_method,
+                    tool_name=tool_name,
+                )
+
         return await _forward_to_downstream(
             request_id=request_id,
             request=request,
             target_url=target_url,
             proxy_client=proxy_client,
             headers=headers,
+            server_name=server.serverName,
+            on_unauthorized=on_unauthorized,
         )
 
 
@@ -1177,18 +1271,8 @@ async def dynamic_mcp_get_proxy(
             )
         except UrlElicitationRequiredException as exc:
             # If token expired for a GET request, follow RFC 9457 and RFC 7807.
-            return JSONResponse(
-                status_code=401,
-                headers={
-                    "Content-Type": "application/problem+json",
-                    "WWW-Authenticate": f'Bearer realm="{settings.jarvis_realm}", error="invalid_token"',
-                },
-                content={
-                    "type": f"{settings.registry_client_url.rstrip('/')}/errors/token-expired",
-                    "title": "Both access and refresh tokens of downstream MCP server have expired",
-                    "status": 401,
-                    "detail": f"Tokens of downstream MCP server have expired. Please re-authenticate at {exc.auth_url}.",
-                },
+            return _downstream_token_problem_response(
+                f"Tokens of downstream MCP server have expired. Please re-authenticate at {exc.auth_url}."
             )
         except InternalServerException:
             logger.exception("Internal server exception")
@@ -1230,6 +1314,17 @@ async def dynamic_mcp_get_proxy(
                 request.method, target_url, headers=headers, content=body, timeout=httpx.Timeout(300)
             )
             backend_response = await stream_context.__aenter__()
+
+            if backend_response.status_code == HTTPStatus.UNAUTHORIZED and server.mcp_auth_mode is McpAuthMode.OAUTH:
+                # No refresh or resend for the long-lived GET stream: drop the rejected token so the
+                # next POST refreshes, and answer with our own challenge instead of the downstream's.
+                await stream_context.__aexit__(None, None, None)
+                await oauth_service.token_service.delete_access_token_if_matches(
+                    auth_context["user_id"], server.serverName, _bearer_token(headers)
+                )
+                return _downstream_token_problem_response(
+                    "The downstream MCP server rejected its access token. Reconnect to obtain a new one."
+                )
 
             logger.info("Streaming SSE from backend")
 

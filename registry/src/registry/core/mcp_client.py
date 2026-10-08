@@ -13,18 +13,20 @@ from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from authlib.oauth2.rfc8414 import AuthorizationServerMetadata
 from httpx_sse import EventSource
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from redis import Redis
 
-from registry_pkgs.core.exceptions import MisimplementedSpecException
+from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
+from registry_pkgs.oauth.discovery import discover_mcp_oauth
+from registry_pkgs.oauth.errors import OAuthDiscoveryError
 
 from .config import settings
 
@@ -507,6 +509,9 @@ async def _initialize_mcp_session(
 
     Returns:
         Session ID if successful, None otherwise
+
+    Raises:
+        DownstreamUnauthorizedException: The server answered the initialize request with 401.
     """
     logger.info(f"🔄 Initializing MCP session using JSON-RPC ({transport_type} transport)")
 
@@ -531,6 +536,10 @@ async def _initialize_mcp_session(
         )
         return None
 
+    except DownstreamUnauthorizedException:
+        # A 401 must reach the caller's OAuth recovery instead of being swallowed.
+        _clear_session(session_key, redis_client=redis_client)
+        raise
     except Exception as e:
         logger.error(f"❌ Failed to initialize MCP session: {e}", exc_info=True)
         _clear_session(session_key, redis_client=redis_client)
@@ -550,6 +559,11 @@ async def _initialize_mcp_session_http(
     async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
         logger.info("📤 Sending initialize request")
         response = await http_client.post(target_url, json=init_request)
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
+            raise DownstreamUnauthorizedException(
+                "Downstream MCP server rejected the session initialize request with 401.",
+                www_authenticate=response.headers.get("WWW-Authenticate"),
+            )
         response.raise_for_status()
 
         # Extract session ID from response headers
@@ -1327,130 +1341,36 @@ async def get_tools_and_capabilities_from_server(
 
 async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
     """
-    Get OAuth metadata from MCP server's well-known endpoint using RFC 8414 discovery.
+    Preview a server's OAuth authorization-server metadata (used by ``GET …/oauth/discover``).
 
-    Manually fetches OAuth server metadata from well-known endpoints:
-    - /.well-known/oauth-authorization-server (RFC 8414)
-    - /.well-known/openid-configuration (OIDC Discovery)
-
-    Uses Authlib's AuthorizationServerMetadata to parse and validate the response.
+    A thin wrapper over the spec-compliant ``discover_mcp_oauth`` (RFC 9728 protected-resource
+    metadata, then RFC 8414 authorization-server metadata). Read-only: nothing is persisted; the
+    login flow runs discovery itself.
 
     Args:
-        base_url: The base URL of the MCP server (e.g., http://localhost:8000).
-        server_info: Optional server configuration dict (unused, kept for compatibility)
+        base_url: The MCP server URL (config.url).
 
     Returns:
-        OAuth metadata dictionary or None if failed/not available
+        The authorization-server metadata dict, plus ``resource`` when the server publishes
+        protected-resource metadata, or None when discovery fails.
     """
     if not base_url:
         logger.error("OAuth metadata retrieval: Base URL is empty.")
         return None
 
-    # Remove trailing slashes and path segments to get the base domain
-    parsed = urlparse(base_url.rstrip("/"))
-
-    # Validate URL: require http/https scheme and non-empty netloc
-    if parsed.scheme not in ["http", "https"]:
-        logger.error(f"OAuth metadata retrieval: Invalid URL scheme '{parsed.scheme}' (only http/https allowed)")
-        return None
-
-    if not parsed.netloc:
-        logger.error(f"OAuth metadata retrieval: Invalid URL - missing host/netloc in '{base_url}'")
-        return None
-
-    base_domain = f"{parsed.scheme}://{parsed.netloc}"
-
-    logger.info(f"Attempting OAuth metadata discovery for {base_domain}")
-
-    # Well-known endpoints to try (RFC 8414 and OIDC Discovery)
-    well_known_urls = [
-        f"{base_domain}/.well-known/oauth-authorization-server",
-        f"{base_domain}/.well-known/openid-configuration",
-    ]
-    protected_resource_url = f"{base_domain}/.well-known/oauth-protected-resource"
-
     try:
-        # Create httpx client with timeout and headers for better compatibility
         async with httpx.AsyncClient(
-            timeout=30.0,
-            headers={
-                "User-Agent": settings.registry_app_name,
-                "Accept": "application/json",
-            },
-            follow_redirects=True,
+            headers={"User-Agent": settings.registry_app_name}, follow_redirects=True
         ) as http_client:
-            # Fetch RFC 9728 protected resource metadata to get the canonical resource URL.
-            # This must be stored in oauthMetadata so that the RFC 8707 resource indicator
-            # is available for both the authorization request and the token exchange.
-            resource_url: str | None = None
-            try:
-                logger.debug(f"Trying OAuth protected resource endpoint: {protected_resource_url}")
-                pr_response = await http_client.get(protected_resource_url)
-                if pr_response.status_code == 200:
-                    pr_dict = pr_response.json()
-                    resource_url = pr_dict.get("resource")
-                    logger.info(
-                        f"Discovered OAuth protected resource metadata from {protected_resource_url}: "
-                        f"resource={resource_url}"
-                    )
-                else:
-                    logger.debug(
-                        f"Protected resource endpoint {protected_resource_url} "
-                        f"returned status {pr_response.status_code}"
-                    )
-            except Exception as e:
-                logger.debug(
-                    f"Protected resource discovery failed for {protected_resource_url}: {type(e).__name__} - {e}"
-                )
-
-            # Try each well-known endpoint
-            for url in well_known_urls:
-                try:
-                    logger.debug(f"Trying OAuth discovery endpoint: {url}")
-                    response = await http_client.get(url)
-
-                    if response.status_code == 200:
-                        metadata_dict = response.json()
-
-                        # Merge in the resource URL from the protected resource metadata (RFC 9728 / RFC 8707).
-                        # Only set when explicitly discovered via /.well-known/oauth-protected-resource;
-                        # never conflate the AS issuer with the protected resource identifier.
-                        if resource_url:
-                            metadata_dict["resource"] = resource_url
-
-                        # Validate using Authlib's RFC 8414 implementation
-                        try:
-                            metadata = AuthorizationServerMetadata(metadata_dict)
-                            metadata.validate()
-                            logger.info(f"Successfully discovered and validated OAuth metadata from {url}")
-                            logger.debug(f"OAuth metadata: {metadata_dict}")
-                            return metadata_dict
-                        except Exception as validation_error:
-                            logger.warning(
-                                f"OAuth metadata validation failed for {url}: {type(validation_error).__name__} - {validation_error}"
-                            )
-                            # Return anyway if validation fails (some servers may not be fully RFC 8414 compliant)
-                            logger.info(f"Returning unvalidated OAuth metadata from {url}")
-                            return metadata_dict
-                    else:
-                        logger.debug(f"Discovery endpoint {url} returned status {response.status_code}")
-
-                except Exception as e:
-                    logger.debug(f"Discovery failed for {url}: {type(e).__name__} - {e}")
-
-            # All endpoints failed
-            logger.info(
-                f"No OAuth metadata found for {base_domain} (this is normal for servers without OAuth autodiscovery)"
-            )
-            return None
-
-    except Exception as e:
-        # Discovery failure is normal for servers without OAuth support
-        logger.debug(f"OAuth discovery failed for {base_domain}: {type(e).__name__} - {e}")
-        logger.info(
-            f"No OAuth metadata found for {base_domain} (this is normal for servers without OAuth autodiscovery)"
-        )
+            result = await discover_mcp_oauth(base_url, http_client=http_client)
+    except OAuthDiscoveryError as e:
+        logger.info(f"No OAuth metadata discovered for {base_url}: {e}")
         return None
+
+    metadata = dict(result.authorization_server_metadata)
+    if result.resource:
+        metadata["resource"] = result.resource
+    return metadata
 
 
 class MCPClientService:

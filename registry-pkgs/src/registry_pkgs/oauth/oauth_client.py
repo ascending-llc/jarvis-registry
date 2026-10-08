@@ -8,6 +8,7 @@ import httpx
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
+from .errors import OAuthTokenEndpointError
 from .schemas import (
     MCPOAuthFlowMetadata,
     OAuthClientInformation,
@@ -17,6 +18,23 @@ from .schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_for_token_endpoint_4xx(resp: httpx.Response) -> httpx.Response:
+    """Authlib compliance hook: turn a token-endpoint 4xx into OAuthTokenEndpointError with its error code."""
+    if 400 <= resp.status_code < 500:
+        error_code: str | None = None
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and isinstance(body.get("error"), str):
+            error_code = body["error"]
+        raise OAuthTokenEndpointError(
+            f"Token endpoint returned {resp.status_code} ({error_code or 'no error code'})",
+            error_code=error_code,
+        )
+    return resp
 
 
 class OAuthClient:
@@ -47,13 +65,16 @@ class OAuthClient:
 
         Prefers client_secret_post over client_secret_basic for maximum compatibility
         with third-party MCP servers (e.g. HubSpot) that only accept POST body credentials.
-        Defaults to client_secret_post when no methods are advertised.
+        Defaults to client_secret_post when no methods are advertised. A list containing only
+        ``none`` (a public client registered through DCR) selects ``none``.
         """
         methods = supported_methods or []
         if "client_secret_post" in methods:
             return "client_secret_post"
         if "client_secret_basic" in methods:
             return "client_secret_basic"
+        if methods == ["none"]:
+            return "none"
         return "client_secret_post"  # safe default when server does not advertise methods
 
     def _get_client(self, flow_metadata: MCPOAuthFlowMetadata, code_verifier: str | None = None) -> AsyncOAuth2Client:
@@ -148,23 +169,26 @@ class OAuthClient:
             authorization_code: Authorization code from OAuth provider
 
         Returns:
-            OAuthTokens if successful, None otherwise
+            OAuthTokens if successful, None on a non-4xx failure
+
+        Raises:
+            OAuthTokenEndpointError: The token endpoint answered with an HTTP 4xx.
         """
+        if not flow_metadata.metadata or not flow_metadata.client_info:
+            logger.error("Missing metadata or client info for token exchange")
+            return None
+
+        token_url = flow_metadata.metadata.token_endpoint
+        if not token_url:
+            logger.error("No token endpoint in metadata")
+            return None
+
+        logger.debug(f"Exchanging code for tokens at {token_url}")
+
+        # Create client with code_verifier for PKCE
+        client = self._get_client(flow_metadata, flow_metadata.code_verifier)
+        client.register_compliance_hook("access_token_response", _raise_for_token_endpoint_4xx)
         try:
-            if not flow_metadata.metadata or not flow_metadata.client_info:
-                logger.error("Missing metadata or client info for token exchange")
-                return None
-
-            token_url = flow_metadata.metadata.token_endpoint
-            if not token_url:
-                logger.error("No token endpoint in metadata")
-                return None
-
-            logger.debug(f"Exchanging code for tokens at {token_url}")
-
-            # Create client with code_verifier for PKCE
-            client = self._get_client(flow_metadata, flow_metadata.code_verifier)
-
             # Additional parameters from config
             extra_params = {}
             if flow_metadata.client_info.additional_params:
@@ -194,57 +218,61 @@ class OAuthClient:
                 expires_at=token_response.get("expires_at"),  # Authlib calculates this automatically
             )
 
+        except OAuthTokenEndpointError as e:
+            logger.error(f"Token endpoint rejected the code exchange: {e}")
+            raise
         except Exception as e:
             logger.error(f"Failed to exchange code for tokens: {e}", exc_info=True)
             return None
         finally:
-            # Close the client connection
-            if "client" in locals():
-                await client.aclose()
+            await client.aclose()
 
-    async def refresh_tokens(self, oauth_config: dict[str, Any], refresh_token: str) -> OAuthTokens | None:
+    async def refresh_tokens(
+        self, oauth_config: dict[str, Any], refresh_token: str, *, resource: str | None = None
+    ) -> OAuthTokens | None:
         """
         Refresh OAuth tokens using refresh token.
 
+        No ``scope`` is sent, so the original grant's scopes are kept (RFC 6749 §6).
+
         Args:
-            oauth_config: OAuth configuration from MongoDB
+            oauth_config: Client and endpoint configuration (client_id, client_secret, token_url,
+                token_endpoint_auth_methods_supported)
             refresh_token: Current refresh token
+            resource: RFC 8707 resource indicator, sent when not None
 
         Returns:
-            New OAuthTokens if successful, None otherwise
+            New OAuthTokens if successful, None on a non-4xx failure
+
+        Raises:
+            OAuthTokenEndpointError: The token endpoint answered with an HTTP 4xx.
         """
+        token_url = oauth_config.get("token_url")
+        if not token_url:
+            logger.error("No token URL for refresh")
+            return None
+
+        # Determine client authentication method
+        auth_methods = oauth_config.get("token_endpoint_auth_methods_supported")
+        auth_method = self._select_auth_method(auth_methods)
+
+        # No scope: Authlib adds the client's scope to the refresh body when one is set.
+        client = AsyncOAuth2Client(
+            client_id=oauth_config.get("client_id", ""),
+            client_secret=oauth_config.get("client_secret"),
+            token_endpoint=token_url,
+            token_endpoint_auth_method=auth_method,
+            timeout=30.0,
+        )
+        client.register_compliance_hook("refresh_token_response", _raise_for_token_endpoint_4xx)
         try:
-            token_url = oauth_config.get("token_url")
-            if not token_url:
-                logger.error("No token URL for refresh")
-                return None
-
-            # Determine client authentication method
-            auth_methods = oauth_config.get("token_endpoint_auth_methods_supported")
-            auth_method = self._select_auth_method(auth_methods)
-
-            # Handle scope format (list or string)
-            scopes = oauth_config.get("scope")
-            if isinstance(scopes, list):
-                scope_str = " ".join(scopes)
-            else:
-                scope_str = scopes
-
-            # Create temporary client for token refresh
-            client = AsyncOAuth2Client(
-                client_id=oauth_config.get("client_id", ""),
-                client_secret=oauth_config.get("client_secret"),
-                token_endpoint=token_url,
-                token_endpoint_auth_method=auth_method,
-                scope=scope_str,
-                timeout=30.0,
-            )
-
             logger.debug(f"Refreshing tokens at {token_url}")
 
-            # Refresh tokens using Authlib
-            # Authlib automatically handles client authentication and token response parsing
-            token_response = await client.refresh_token(token_url, refresh_token=refresh_token)
+            extra_params: dict[str, str] = {}
+            if resource is not None:
+                extra_params["resource"] = resource
+
+            token_response = await client.refresh_token(token_url, refresh_token=refresh_token, **extra_params)
 
             logger.info("Token refresh successful")
 
@@ -257,13 +285,14 @@ class OAuthClient:
                 expires_at=token_response.get("expires_at"),  # Authlib calculates this automatically
             )
 
+        except OAuthTokenEndpointError as e:
+            logger.warning(f"Token endpoint rejected the refresh: {e}")
+            raise
         except Exception as e:
             logger.error(f"Failed to refresh tokens: {e}", exc_info=True)
             return None
         finally:
-            # Close the client connection
-            if "client" in locals():
-                await client.aclose()
+            await client.aclose()
 
     async def close(self):
         """Close all HTTP clients."""
@@ -278,6 +307,8 @@ class OAuthClient:
         resource_metadata: OAuthProtectedResourceMetadata | None = None,
         redirect_uri: str | None = None,
         token_exchange_method: str | None = None,
+        *,
+        scope: str | None,
     ) -> OAuthClientInformation:
         """
         Dynamically register OAuth client (RFC 7591).
@@ -288,6 +319,7 @@ class OAuthClient:
             resource_metadata: Protected resource metadata (optional)
             redirect_uri: Redirect URI for callbacks
             token_exchange_method: Preferred token endpoint auth method
+            scope: Scope to register, chosen by discovery (``DiscoveryResult.scope``); omitted when None
 
         Returns:
             OAuthClientInformation with registered client_id and client_secret
@@ -308,8 +340,9 @@ class OAuthClient:
             "grant_types": self._negotiate_grant_types(metadata),
             "response_types": metadata.response_types_supported or ["code"],
             "token_endpoint_auth_method": self._negotiate_auth_method(metadata, token_exchange_method),
-            "scope": self._build_scope(metadata, resource_metadata),
         }
+        if scope is not None:
+            client_metadata["scope"] = scope
 
         logger.debug(f"[DCR] Client metadata: {client_metadata}")
 
@@ -343,6 +376,7 @@ class OAuthClient:
             token_endpoint_auth_method=registration_response.get(
                 "token_endpoint_auth_method", client_metadata["token_endpoint_auth_method"]
             ),
+            client_secret_expires_at=registration_response.get("client_secret_expires_at"),
         )
 
         logger.info(
@@ -402,27 +436,3 @@ class OAuthClient:
 
         # Default if server doesn't advertise methods
         return "client_secret_basic"
-
-    def _build_scope(
-        self, metadata: OAuthMetadata, resource_metadata: OAuthProtectedResourceMetadata | None
-    ) -> str | None:
-        """
-        Build scope string from metadata.
-
-        Args:
-            metadata: OAuth server metadata
-            resource_metadata: Protected resource metadata (optional)
-
-        Returns:
-            Space-separated scope string or None
-        """
-        available_scopes = (
-            resource_metadata.scopes_supported
-            if resource_metadata and resource_metadata.scopes_supported
-            else metadata.scopes_supported
-        )
-
-        if available_scopes:
-            return " ".join(available_scopes)
-
-        return None

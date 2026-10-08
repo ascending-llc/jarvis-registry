@@ -11,7 +11,6 @@ from .core.config import AuthSettings
 from .core.types import AllowedProvider
 from .providers.factory import get_auth_provider
 from .services.client_registration_service import ClientRegistrationService
-from .services.downstream_token_service import DownstreamTokenCheckService
 from .services.server_service import ServerService
 from .services.token_grant_service import TokenGrantService
 from .services.user_service import UserService
@@ -39,10 +38,6 @@ class AuthContainer:
     @cached_property
     def user_service(self) -> UserService:
         return UserService()
-
-    @cached_property
-    def downstream_token_check(self) -> DownstreamTokenCheckService:
-        return DownstreamTokenCheckService()
 
     @cached_property
     def signer(self) -> URLSafeTimedSerializer:

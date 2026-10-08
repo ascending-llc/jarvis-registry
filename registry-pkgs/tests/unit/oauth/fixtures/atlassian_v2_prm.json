@@ -1,0 +1,50 @@
+{
+  "authorization_servers": [
+    "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ],
+  "resource": "https://mcp.atlassian.com/v2/mcp",
+  "resource_documentation": "https://www.atlassian.com/platform/remote-mcp-server",
+  "scopes_supported": [
+    "read:me",
+    "read:account",
+    "offline_access",
+    "email",
+    "read:jira:agent-interface",
+    "write:jira:agent-interface",
+    "search:jira:agent-interface",
+    "delete:jira:agent-interface",
+    "manage:jira:agent-interface",
+    "read:confluence:agent-interface",
+    "write:confluence:agent-interface",
+    "search:confluence:agent-interface",
+    "search:rovo:agent-interface",
+    "search:code:agent-interface",
+    "read:all:twg",
+    "write:all:twg",
+    "read:goals:agent-interface",
+    "write:goals:agent-interface",
+    "read:projects:agent-interface",
+    "write:projects:agent-interface",
+    "read:bitbucket:agent-interface",
+    "write:bitbucket:agent-interface",
+    "read:loom:agent-interface",
+    "write:loom:agent-interface",
+    "read:talent:agent-interface",
+    "write:talent:agent-interface",
+    "read:jira-align:agent-interface",
+    "write:jira-align:agent-interface",
+    "read:teams:agent-interface",
+    "write:teams:agent-interface",
+    "read:artifacts:agent-interface",
+    "write:artifacts:agent-interface",
+    "read:capacity-planning:agent-interface",
+    "write:capacity-planning:agent-interface",
+    "read:focus:agent-interface",
+    "write:focus:agent-interface",
+    "read:assets:agent-interface",
+    "write:assets:agent-interface"
+  ]
+}

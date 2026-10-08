@@ -15,9 +15,14 @@ exclude-path-patterns = [
 exclude-entropy-patterns = [
     {path-pattern = '\\.env\\.example$', pattern = 'JWT_PRIVATE_KEY=.*', reason = '.env.example JWT private key placeholder is not a credential'},
     {path-pattern = '\\.env\\.example$', pattern = 'JWT_PUBLIC_KEY=.*', reason = '.env.example JWT public key placeholder is not a credential'},
+    {path-pattern = '(registry-pkgs|registry)/tests/.*', pattern = '.*VCeDsk8ZHncYF1g234fKtc4lNipbBhu3.*', reason = "Atlassian MCP's public authorization-server tenant ID in captured discovery fixtures is not a credential"},
 ]
 
 exclude-signatures = [
+    {signature = '8be609f2b0278499ddd06ed0f5107d1a3041ed3a6c2d5c25d35b5b4fd53da410', reason = 'fake placeholder tokens in local seed script are not credentials'},
+    {signature = '6c6945a75f7423ce39a3c27035be4f309eb84959943c6e96108371726d3fb14e', reason = 'fake placeholder tokens in local seed script are not credentials'},
+    {signature = '0c4d515f31f78d50a21eabeb31829898128c713d3cc6b1aa665fe8a29cfa508a', reason = 'fake placeholder tokens in local seed script are not credentials'},
+    {signature = '91f8eafe583361034e7d5a3c2d7e870d7e8fc7798e8d63122a2c28e9ae9a85aa', reason = 'fake placeholder tokens in local seed script are not credentials'},
     {signature = '47fb299bc0bd758e8378ec964447969f3c73b01482fc87c77984163529f42f2d', reason = 'example user ID in token route unit test is not credential'},
     {signature = '8a7fec12564c8a3cc8c57f2041b5e2d5759246fe7cc71ec605a6238aee2dec7e', reason = 'OAuth client policy diff contains only public protocol constants'},
     {signature = '133f866ac4d1c086e5efc4f059cae9f2ad928462f1364c083a38b6a27ea5fb6a', reason = 'example server ID is not credential'},

@@ -1,0 +1,4 @@
+{
+  "status": 401,
+  "www-authenticate": "Bearer resource_metadata=\"https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp\""
+}

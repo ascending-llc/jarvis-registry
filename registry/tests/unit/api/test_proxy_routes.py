@@ -33,8 +33,9 @@ from registry.api.proxy_routes import (
 )
 from registry.core.config import settings
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
+from registry_pkgs.core.exceptions import DownstreamAuthRejectedException, UrlElicitationRequiredException
 from registry_pkgs.models.a2a_agent import NoSupportedTransportError
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, McpAuthMode
 from registry_pkgs.testing.federation_metadata import make_azure_foundry_metadata
 
 VALID_OBJECT_ID = "507f1f77bcf86cd799439011"
@@ -48,9 +49,10 @@ _AUTH_CONTEXT = {
 }
 
 
-def _make_server(*, enabled: bool = True):
+def _make_server(*, enabled: bool = True, auth_mode: McpAuthMode = McpAuthMode.NONE):
     return SimpleNamespace(
         id=PydanticObjectId(),
+        mcp_auth_mode=auth_mode,
         path="/github",
         serverName="github",
         config={"enabled": enabled, "type": "streamable-http", "url": "https://example.com/mcp"},
@@ -874,3 +876,253 @@ async def test_forward_a2a_strips_client_trace_headers_and_creates_span(monkeypa
     assert "attacker" not in headers.get("baggage", "")
     assert "tracestate" not in headers
     assert any(s.name == "proxy.forward_a2a" for s in exporter.get_finished_spans())
+
+
+# --- Downstream 401 recovery on the proxy routes (AS-1929) ---
+
+_DOWNSTREAM_CHALLENGE = (
+    'Bearer resource_metadata="https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp"'
+)
+
+
+class _FakeDownstream:
+    """proxy_client.stream stand-in that answers each send with the next queued (status, headers)."""
+
+    def __init__(self, *statuses: int) -> None:
+        self.statuses = list(statuses)
+        self.sent_headers: list[dict[str, str]] = []
+        self.closed = 0
+
+    def stream(self, method, url, headers=None, content=None, timeout=None):
+        self.sent_headers.append(dict(headers or {}))
+        status = self.statuses.pop(0)
+        downstream = self
+        response_headers = {"content-type": "application/json"}
+        if status == 401:
+            response_headers["www-authenticate"] = _DOWNSTREAM_CHALLENGE
+
+        class _Ctx:
+            async def __aenter__(self):
+                return SimpleNamespace(
+                    headers=httpx.Headers(response_headers),
+                    status_code=status,
+                    aread=AsyncMock(return_value=b'{"jsonrpc":"2.0","id":1,"result":{}}'),
+                    aiter_bytes=lambda: iter(()),
+                )
+
+            async def __aexit__(self, *args):
+                downstream.closed += 1
+                return False
+
+        return _Ctx()
+
+
+def _token_header_builder(monkeypatch, tokens: list[str]) -> None:
+    async def build(**kwargs):
+        if not tokens:
+            raise UrlElicitationRequiredException("login", auth_url="https://login.example", server_name="github")
+        return {**kwargs["additional_headers"], "Authorization": f"Bearer {tokens[0]}"}
+
+    monkeypatch.setattr(proxy_routes, "build_authenticated_headers", AsyncMock(side_effect=build))
+
+
+async def _proxy(downstream, server, oauth_service, method: str = "tools/call"):
+    return await proxy_routes.proxy_to_mcp_server(
+        request_id=1,
+        request=_proxy_post_request([]),
+        target_url="https://mcp.atlassian.com/v2/mcp",
+        auth_context=_AUTH_CONTEXT,
+        server=server,
+        oauth_service=oauth_service,
+        proxy_client=downstream,
+        redis_client=Mock(),
+        mcp_method=method,
+    )
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/list", "tools/call"])
+async def test_post_proxy_401_refresh_resends_once(monkeypatch, method):
+    tokens = ["t1"]
+    _token_header_builder(monkeypatch, tokens)
+    oauth_service = Mock()
+
+    async def refreshed(*args, **kwargs):
+        tokens[0] = "t2"
+        return "t2"
+
+    oauth_service.recover_from_unauthorized = AsyncMock(side_effect=refreshed)
+    downstream = _FakeDownstream(401, 200)
+
+    resp = await _proxy(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service, method)
+
+    assert resp.status_code == 200
+    assert "www-authenticate" not in {k.lower() for k in resp.headers}
+    assert [h["Authorization"] for h in downstream.sent_headers] == ["Bearer t1", "Bearer t2"]
+    assert oauth_service.recover_from_unauthorized.await_args.kwargs == {
+        "rejected_access_token": "t1",
+        "www_authenticate": _DOWNSTREAM_CHALLENGE,
+        "is_retry": False,
+    }
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/call"])
+async def test_post_proxy_401_failed_refresh_returns_registry_challenge_or_elicitation(monkeypatch, method):
+    tokens = ["t1"]
+    _token_header_builder(monkeypatch, tokens)
+    oauth_service = Mock()
+
+    async def failed(*args, **kwargs):
+        tokens.clear()
+        return None
+
+    oauth_service.recover_from_unauthorized = AsyncMock(side_effect=failed)
+    downstream = _FakeDownstream(401)
+
+    resp = await _proxy(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service, method)
+
+    if method == "initialize":
+        assert resp.status_code == 401
+        challenge = resp.headers["www-authenticate"]
+        assert settings.jarvis_realm in challenge
+        assert "mcp.atlassian.com" not in challenge
+    else:
+        assert resp.status_code == 200
+        body = json.loads(resp.body)
+        assert body["error"]["data"]["elicitations"][0]["url"] == "https://login.example"
+        assert "www-authenticate" not in {k.lower() for k in resp.headers}
+    assert len(downstream.sent_headers) == 1
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/call"])
+async def test_post_proxy_second_401_loop_guard(monkeypatch, method):
+    tokens = ["t1"]
+    _token_header_builder(monkeypatch, tokens)
+    oauth_service = Mock()
+    message = "github rejected a freshly issued access token; the server's OAuth configuration may be incompatible"
+
+    async def recover(*args, is_retry, **kwargs):
+        if is_retry:
+            raise DownstreamAuthRejectedException(message)
+        tokens[0] = "t2"
+        return "t2"
+
+    oauth_service.recover_from_unauthorized = AsyncMock(side_effect=recover)
+    downstream = _FakeDownstream(401, 401)
+
+    resp = await _proxy(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service, method)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["result"]["isError"] is True
+    assert message in json.dumps(body)
+    assert len(downstream.sent_headers) == 2
+
+
+async def test_post_proxy_second_401_changed_discovery_returns_login(monkeypatch):
+    tokens = ["t1"]
+    _token_header_builder(monkeypatch, tokens)
+    oauth_service = Mock()
+
+    async def recover(*args, is_retry, **kwargs):
+        if is_retry:
+            tokens.clear()  # changed discovery: Registry tokens deleted
+            return None
+        tokens[0] = "t2"
+        return "t2"
+
+    oauth_service.recover_from_unauthorized = AsyncMock(side_effect=recover)
+    downstream = _FakeDownstream(401, 401)
+
+    resp = await _proxy(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service, "initialize")
+
+    assert resp.status_code == 401
+    assert settings.jarvis_realm in resp.headers["www-authenticate"]
+
+
+async def test_post_proxy_no_third_send(monkeypatch):
+    tokens = ["t1"]
+    _token_header_builder(monkeypatch, tokens)
+    oauth_service = Mock()
+
+    async def other_pod(*args, is_retry, **kwargs):
+        tokens[0] = "t-login" if is_retry else "t2"
+        return None
+
+    oauth_service.recover_from_unauthorized = AsyncMock(side_effect=other_pod)
+    downstream = _FakeDownstream(401, 401, 200)
+
+    resp = await _proxy(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service)
+
+    assert len(downstream.sent_headers) == 2
+    body = json.loads(resp.body)
+    assert body["result"]["isError"] is True
+    assert "Authorization for github changed during this call; retry it." in json.dumps(body)
+
+
+async def test_post_proxy_non_oauth_401_is_relayed(monkeypatch):
+    tokens = ["api-key"]
+    _token_header_builder(monkeypatch, tokens)
+    oauth_service = Mock()
+    oauth_service.recover_from_unauthorized = AsyncMock()
+    downstream = _FakeDownstream(401)
+
+    resp = await _proxy(downstream, _make_server(), oauth_service)
+
+    assert resp.status_code == 401
+    assert resp.headers["www-authenticate"] == _DOWNSTREAM_CHALLENGE
+    oauth_service.recover_from_unauthorized.assert_not_awaited()
+
+
+async def _get(downstream, server, oauth_service):
+    return await dynamic_mcp_get_proxy(
+        request=Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "scheme": "http",
+                "server": ("testserver", 80),
+                "path": f"/proxy/server/{VALID_OBJECT_ID}/github",
+                "query_string": b"",
+                "headers": [(b"accept", b"text/event-stream")],
+                "path_params": {"user_id": VALID_OBJECT_ID, "server_path": "github"},
+            },
+            receive=_proxy_receive(),
+        ),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(server),
+        oauth_service=oauth_service,
+        proxy_client=downstream,
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+    )
+
+
+async def test_get_proxy_oauth_401_deletes_rejected_token_and_returns_problem(monkeypatch):
+    _token_header_builder(monkeypatch, ["t1"])
+    oauth_service = Mock()
+    oauth_service.token_service.delete_access_token_if_matches = AsyncMock(return_value=True)
+    downstream = _FakeDownstream(401)
+
+    resp = await _get(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service)
+
+    assert resp.status_code == 401
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert settings.jarvis_realm in resp.headers["www-authenticate"]
+    assert "mcp.atlassian.com" not in resp.headers["www-authenticate"]
+    oauth_service.token_service.delete_access_token_if_matches.assert_awaited_once_with(VALID_OBJECT_ID, "github", "t1")
+    assert downstream.closed == 1
+
+
+async def test_get_proxy_non_oauth_401_is_relayed(monkeypatch):
+    _token_header_builder(monkeypatch, ["api-key"])
+    oauth_service = Mock()
+    oauth_service.token_service.delete_access_token_if_matches = AsyncMock()
+    downstream = _FakeDownstream(401)
+
+    resp = await _get(downstream, _make_server(), oauth_service)
+
+    assert resp.status_code == 401
+    assert resp.headers["www-authenticate"] == _DOWNSTREAM_CHALLENGE
+    oauth_service.token_service.delete_access_token_if_matches.assert_not_awaited()

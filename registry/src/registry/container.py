@@ -270,6 +270,8 @@ class RegistryContainer:
             registry_app_name=self.settings.registry_app_name,
             base_redirect_url=self.settings.registry_client_url,
             encryption_key=self.settings.encryption_key,
+            redis_client=self.redis_client,
+            redis_key_prefix=self.settings.redis_key_prefix,
         )
 
     @cached_property

@@ -41,6 +41,21 @@ class DownstreamHttpFailureException(McpGatewayException):
     """Raised on >=300 downstream HTTP responses from proxied MCP calls."""
 
 
+class DownstreamUnauthorizedException(DownstreamHttpFailureException):
+    """Raised when a downstream MCP server answers 401, so the caller can run OAuth recovery."""
+
+    www_authenticate: str | None
+
+    def __init__(self, msg: str, /, *, www_authenticate: str | None = None):
+        super().__init__(msg)
+        self.www_authenticate = www_authenticate
+
+
+class DownstreamAuthRejectedException(McpGatewayException):
+    """Raised when a downstream server rejects a freshly issued access token and its OAuth discovery
+    is unchanged; starting another login would loop forever."""
+
+
 class MisimplementedSpecException(McpGatewayException):
     """Raised when a downstream server violates the MCP protocol contract."""
 

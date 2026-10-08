@@ -75,6 +75,11 @@ class FlowStateManager:
                 logger.error(f"Failed to initialize FlowStateManager: {e}")
                 raise
 
+    @property
+    def uses_redis(self) -> bool:
+        """Whether flows are stored in Redis (False when the memory fallback is in use)."""
+        return self._use_redis
+
     def generate_flow_id(self, user_id: str, server_id: str) -> str:
         """
         Generate OAuth flow ID
