@@ -1,33 +1,24 @@
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
-from beanie import PydanticObjectId
-from pymongo.asynchronous.client_session import AsyncClientSession
-
+from registry_pkgs.database.leased_job import CAMEL_CASE_LEASE_FIELDS, LeasedRepository, LeaseSpec
 from registry_pkgs.models.embedding_reindex_job import EmbeddingReindexJob
 from registry_pkgs.models.enums import EmbeddingReindexJobStatus
 
+# Longer than skill sync's 2 minutes: a full-corpus embedding sweep against a real provider API can
+# reasonably take several minutes before the lease would otherwise need renewing.
+_LEASE_DURATION = timedelta(minutes=5)
+_HEARTBEAT_INTERVAL = timedelta(seconds=30)
 
-async def transition_embedding_reindex_job(
-    *,
-    job_id: PydanticObjectId,
-    lease_owner: str,
-    set_fields: dict[str, Any],
-    session: AsyncClientSession | None = None,
-) -> bool:
-    """Atomically apply ``set_fields`` to a job only while this pod still owns its RUNNING lease.
+EMBEDDING_REINDEX_LEASE: LeaseSpec[EmbeddingReindexJob] = LeaseSpec(
+    document=EmbeddingReindexJob,
+    fields=CAMEL_CASE_LEASE_FIELDS,
+    status_field="status",
+    leased_statuses=frozenset({EmbeddingReindexJobStatus.RUNNING.value}),
+    duration=_LEASE_DURATION,
+    heartbeat_interval=_HEARTBEAT_INTERVAL,
+)
 
-    The filter ``{_id, status: RUNNING, leaseOwner}`` is the single safety gate for AS-1868:
-    ``status: RUNNING`` makes COMPLETED/FAILED final, and ``leaseOwner`` stops a pod whose lease was
-    taken over from overwriting the real owner's state. Returns True iff exactly one document was
-    updated; a False result means this pod no longer owns the job and must stop all writes for it.
-    """
-    result = await EmbeddingReindexJob.get_pymongo_collection().update_one(
-        {"_id": job_id, "status": EmbeddingReindexJobStatus.RUNNING.value, "leaseOwner": lease_owner},
-        {"$set": {**set_fields, "updatedAt": datetime.now(UTC)}},
-        session=session,
-    )
-    return result.modified_count == 1
+embedding_reindex_repository: LeasedRepository[EmbeddingReindexJob] = LeasedRepository(EMBEDDING_REINDEX_LEASE)
 
 
 async def get_active_embedding_reindex_job() -> EmbeddingReindexJob | None:

@@ -5,9 +5,8 @@ Re-embeds the corpus into a new collection generation (``<Base>_<jobId>``), then
 this pod's lease. Never swaps the shared adapter — every pod follows the selection via its own
 watcher. On failure nothing is committed; the abandoned generation is reclaimed later by GC.
 
-Every write to the job goes through ``transition_embedding_reindex_job`` (lease-checked), so a pod
-whose lease was taken over can neither commit nor overwrite a finished job — it raises
-``EmbeddingReindexLeaseLostError`` and stops.
+Every write to the job goes through the leased repository (token-fenced), so a pod whose lease was
+taken over can neither commit nor overwrite a finished job — it raises ``LeaseLostError`` and stops.
 """
 
 from __future__ import annotations
@@ -22,7 +21,8 @@ from registry.core.mcp_config import MCPClientConfig
 from registry.core.vector_backend import build_backend_config_from_model_source
 from registry.services.federation_job_service import FederationJobService
 from registry.utils.concurrency import run_bounded
-from registry_pkgs.database.embedding_reindex_job_repository import transition_embedding_reindex_job
+from registry_pkgs.database.embedding_reindex_job_repository import embedding_reindex_repository
+from registry_pkgs.database.leased_job import Lease, LeaseLostError
 from registry_pkgs.database.model_gateway_selection_repository import (
     commit_embedding_generation,
     get_model_gateway_selection,
@@ -62,8 +62,8 @@ _FEDERATION_DRAIN_TIMEOUT = timedelta(minutes=10)
 _FEDERATION_DRAIN_TIMEOUT_MSG = "Federation sync still active after 10 minutes; embedding model NOT switched"
 
 
-class EmbeddingReindexLeaseLostError(RuntimeError):
-    """The job's RUNNING lease is no longer held by this pod; it must stop all writes for the job."""
+# Kept as an alias so existing call sites/tests keep importing it; the lease machinery raises this.
+EmbeddingReindexLeaseLostError = LeaseLostError
 
 
 class _Superseded(Exception):
@@ -159,34 +159,19 @@ class EmbeddingReindexExecutionService:
         override = settings.embedding_reindex_catch_up_min_delay_seconds
         self._catch_up_min_delay = timedelta(seconds=override) if override is not None else _CATCH_UP_MIN_DELAY
 
-    async def _transition_or_lost(self, job: EmbeddingReindexJob, *, lease_owner: str, set_fields: dict) -> None:
-        """Apply a lease-checked write, or raise if this pod no longer owns the job."""
-        if not await transition_embedding_reindex_job(job_id=job.id, lease_owner=lease_owner, set_fields=set_fields):
-            raise EmbeddingReindexLeaseLostError(f"Lost lease for embedding reindex job {job.id}")
-
-    def _lease_checker(self, job: EmbeddingReindexJob, lease_owner: str) -> Callable[[], Awaitable[None]]:
-        async def _ensure() -> None:
-            owned = await EmbeddingReindexJob.get_pymongo_collection().find_one(
-                {"_id": job.id, "status": EmbeddingReindexJobStatus.RUNNING.value, "leaseOwner": lease_owner}
-            )
-            if owned is None:
-                raise EmbeddingReindexLeaseLostError(f"Lost lease for embedding reindex job {job.id}")
-
-        return _ensure
-
-    async def run_claimed_job(self, job: EmbeddingReindexJob, *, lease_owner: str) -> None:
+    async def run_claimed_job(self, job: EmbeddingReindexJob, lease: Lease) -> None:
         my_generation = str(job.id)
         selection = await get_model_gateway_selection(create_if_missing=True)
         current_generation = selection.embeddingCollectionGeneration if selection else None
 
         # Resume branch 1 — already committed (crash between the commit and the job's terminal save).
         if current_generation == my_generation:
-            await self._grace_then_complete(job, lease_owner=lease_owner)
+            await self._grace_then_complete(job, lease=lease)
             return
 
         # Resume branch 2 — superseded: live generation is neither ours nor our captured previous.
         if current_generation != job.previousCollectionGeneration:
-            await self._fail_job(job, "Superseded by a newer embedding reindex", lease_owner=lease_owner)
+            await self._fail_job(job, "Superseded by a newer embedding reindex", lease=lease)
             return
 
         # Sweep branch.
@@ -195,7 +180,7 @@ class EmbeddingReindexExecutionService:
             await self._fail_job(
                 job,
                 "Target embedding model source no longer exists; embedding model NOT switched",
-                lease_owner=lease_owner,
+                lease=lease,
             )
             return
 
@@ -219,7 +204,9 @@ class EmbeddingReindexExecutionService:
             await a2a_repo.ensure_collection()
 
             # Stream both collections in bounded batches, checking the lease before each batch.
-            ensure_lease = self._lease_checker(job, lease_owner)
+            async def ensure_lease() -> None:
+                await embedding_reindex_repository.assert_owned(lease)
+
             mcp_failed, mcp_total, swept_mcp_ids = await _sweep(
                 ExtendedMCPServer.find_all(), lambda s: _reindex_server(mcp_repo, s), ensure_lease
             )
@@ -232,7 +219,7 @@ class EmbeddingReindexExecutionService:
                 await self._fail_job(
                     job,
                     f"{failed}/{total} documents failed to re-embed; embedding model NOT switched",
-                    lease_owner=lease_owner,
+                    lease=lease,
                 )
                 return
 
@@ -241,7 +228,7 @@ class EmbeddingReindexExecutionService:
             # catch-up already marked the job FAILED (federation drain timeout).
             try:
                 catch_up_failed, catch_up_total = await self._catch_up(
-                    job, mcp_repo, a2a_repo, ensure_lease, swept_mcp_ids, swept_a2a_ids, lease_owner=lease_owner
+                    job, mcp_repo, a2a_repo, ensure_lease, swept_mcp_ids, swept_a2a_ids, lease=lease
                 )
             except _Aborted:
                 return
@@ -250,21 +237,21 @@ class EmbeddingReindexExecutionService:
                     job,
                     f"{catch_up_failed}/{total + catch_up_total} documents failed to re-embed; "
                     "embedding model NOT switched",
-                    lease_owner=lease_owner,
+                    lease=lease,
                 )
                 return
 
-            switched = await self._commit_generation(job, my_generation=my_generation, lease_owner=lease_owner)
+            switched = await self._commit_generation(job, my_generation=my_generation, lease=lease)
             if not switched:
-                await self._fail_job(job, "Superseded by a newer embedding reindex", lease_owner=lease_owner)
+                await self._fail_job(job, "Superseded by a newer embedding reindex", lease=lease)
                 return
             logger.info("Embedding reindex job %s committed generation %s", job.id, my_generation)
         finally:
             await asyncio.to_thread(job_local_client.close)
 
-        await self._grace_then_complete(job, lease_owner=lease_owner)
+        await self._grace_then_complete(job, lease=lease)
 
-    async def _commit_generation(self, job: EmbeddingReindexJob, *, my_generation: str, lease_owner: str) -> bool:
+    async def _commit_generation(self, job: EmbeddingReindexJob, *, my_generation: str, lease: Lease) -> bool:
         """Set ``switchedAt`` and flip the selection in ONE transaction, gated on the lease.
 
         Returns True on a committed switch, False when the compare-and-set lost the race (caller marks
@@ -275,10 +262,7 @@ class EmbeddingReindexExecutionService:
         try:
             async with MongoDB.get_client().start_session() as session:
                 async with await session.start_transaction():
-                    if not await transition_embedding_reindex_job(
-                        job_id=job.id, lease_owner=lease_owner, set_fields={"switchedAt": now}, session=session
-                    ):
-                        raise EmbeddingReindexLeaseLostError(f"Lost lease for embedding reindex job {job.id}")
+                    await embedding_reindex_repository.transition_or_raise(lease, {"switchedAt": now}, session=session)
                     committed = await commit_embedding_generation(
                         expected_generation=job.previousCollectionGeneration,
                         model_source_id=job.targetEmbeddingModelSourceId,
@@ -302,7 +286,7 @@ class EmbeddingReindexExecutionService:
         swept_mcp_ids: set[str],
         swept_a2a_ids: set[str],
         *,
-        lease_owner: str,
+        lease: Lease,
     ) -> tuple[int, int]:
         """Between the sweep and the commit, reconcile the new generation with Mongo.
 
@@ -311,7 +295,7 @@ class EmbeddingReindexExecutionService:
         Returns ``(failed, total)`` for the re-synced documents; raises ``_Aborted`` if it already
         failed the job (federation drain timeout), or ``EmbeddingReindexLeaseLostError`` on lease loss.
         """
-        await self._await_pre_gate_writers(job, ensure_lease, lease_owner=lease_owner)
+        await self._await_pre_gate_writers(job, ensure_lease, lease=lease)
 
         since = _as_utc(job.startedAt) - _CATCH_UP_WATERMARK_MARGIN
         mcp_failed, mcp_total, mcp_ids = await _sweep(
@@ -336,7 +320,7 @@ class EmbeddingReindexExecutionService:
         return 0, mcp_total + a2a_total
 
     async def _await_pre_gate_writers(
-        self, job: EmbeddingReindexJob, ensure_lease: Callable[[], Awaitable[None]], *, lease_owner: str
+        self, job: EmbeddingReindexJob, ensure_lease: Callable[[], Awaitable[None]], *, lease: Lease
     ) -> None:
         """Block until every write that passed the gate before it closed has committed.
 
@@ -356,7 +340,7 @@ class EmbeddingReindexExecutionService:
             if not waiting_on_requests and not federation_active:
                 return
             if federation_active and now >= drain_deadline:
-                await self._fail_job(job, _FEDERATION_DRAIN_TIMEOUT_MSG, lease_owner=lease_owner)
+                await self._fail_job(job, _FEDERATION_DRAIN_TIMEOUT_MSG, lease=lease)
                 raise _Aborted
             await asyncio.sleep(_CATCH_UP_POLL_SECONDS)
 
@@ -375,18 +359,16 @@ class EmbeddingReindexExecutionService:
         for gone in swept_a2a_ids - mongo_a2a_ids:
             await a2a_repo.delete_by_agent_id(gone)
 
-    async def finish_exhausted_job(self, job: EmbeddingReindexJob, *, lease_owner: str) -> None:
+    async def finish_exhausted_job(self, job: EmbeddingReindexJob, lease: Lease) -> None:
         """Finalize a job that has used up its retries: complete it if the switch already happened
         (every pod has swapped), otherwise fail it with the last error."""
         selection = await get_model_gateway_selection(create_if_missing=False)
         if selection is not None and selection.embeddingCollectionGeneration == str(job.id):
-            await self._grace_then_complete(job, lease_owner=lease_owner)
+            await self._grace_then_complete(job, lease=lease)
             return
-        await self._fail_job(
-            job, f"Gave up after {_MAX_ATTEMPTS} attempts; last error: {job.lastError}", lease_owner=lease_owner
-        )
+        await self._fail_job(job, f"Gave up after {_MAX_ATTEMPTS} attempts; last error: {job.lastError}", lease=lease)
 
-    async def _grace_then_complete(self, job: EmbeddingReindexJob, *, lease_owner: str) -> None:
+    async def _grace_then_complete(self, job: EmbeddingReindexJob, lease: Lease) -> None:
         """Keep the job RUNNING (writes 503'd) for the grace window, then complete — all under the lease.
 
         The previous generation is NOT dropped here — it stays readable for pods that have not swapped
@@ -394,38 +376,34 @@ class EmbeddingReindexExecutionService:
         """
         if job.switchedAt is None:
             now = datetime.now(UTC)
-            await self._transition_or_lost(job, lease_owner=lease_owner, set_fields={"switchedAt": now})
+            await embedding_reindex_repository.transition_or_raise(lease, {"switchedAt": now})
             job.switchedAt = now
         remaining = self._grace_seconds - (datetime.now(UTC) - _as_utc(job.switchedAt)).total_seconds()
         if remaining > 0:
             await asyncio.sleep(remaining)
 
-        await self._transition_or_lost(
-            job,
-            lease_owner=lease_owner,
-            set_fields={
+        await embedding_reindex_repository.transition_or_raise(
+            lease,
+            {
                 "status": EmbeddingReindexJobStatus.COMPLETED.value,
                 "finishedAt": datetime.now(UTC),
-                "leaseOwner": None,
-                "leaseExpiresAt": None,
             },
+            release=True,
         )
         logger.info("Embedding reindex job %s completed", job.id)
 
-    async def _fail_job(self, job: EmbeddingReindexJob, error: str, *, lease_owner: str) -> None:
+    async def _fail_job(self, job: EmbeddingReindexJob, error: str, lease: Lease) -> None:
         """Mark the job FAILED and release its lease; nothing was committed, so live state is intact.
 
         Raises ``EmbeddingReindexLeaseLostError`` if the lease is gone (another owner will finalize it).
         """
-        await self._transition_or_lost(
-            job,
-            lease_owner=lease_owner,
-            set_fields={
+        await embedding_reindex_repository.transition_or_raise(
+            lease,
+            {
                 "status": EmbeddingReindexJobStatus.FAILED.value,
                 "error": error,
                 "finishedAt": datetime.now(UTC),
-                "leaseOwner": None,
-                "leaseExpiresAt": None,
             },
+            release=True,
         )
         logger.error("Embedding reindex job %s failed: %s", job.id, error)

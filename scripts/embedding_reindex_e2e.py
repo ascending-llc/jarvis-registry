@@ -88,7 +88,7 @@ A2A_BASE = "A2a_agents"
 REGION = os.getenv("AWS_REGION", "us-east-1")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "amazon.titan-embed-text-v2:0")
 BAD_MODEL = "amazon.titan-embed-text-v2:0-INVALID-E2E"  # valid string, rejected by Bedrock at embed time
-JOB_TIMEOUT_SECONDS = float(os.getenv("REINDEX_JOB_TIMEOUT", "180"))
+JOB_TIMEOUT_SECONDS = float(os.getenv("REINDEX_JOB_TIMEOUT", "300"))
 
 _results: list[tuple[bool, str]] = []
 

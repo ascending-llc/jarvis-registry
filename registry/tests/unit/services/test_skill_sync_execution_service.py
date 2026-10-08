@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,6 +8,7 @@ from beanie import PydanticObjectId
 from registry.services.skill_sync_discovery_service import DiscoveryResult
 from registry.services.skill_sync_execution_service import SkillSyncExecutionService
 from registry.services.skill_sync_github_service import GitHubDownloadError
+from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.models.enums import (
     SkillSyncJobErrorCode,
     SkillSyncJobPhase,
@@ -61,6 +63,8 @@ def _job(source, **overrides):
         "status": SkillSyncJobStatus.SYNCING,
         "phase": SkillSyncJobPhase.QUEUED,
         "skillErrors": [],
+        "discoverySummary": SkillSyncDiscoverySummary(),
+        "applySummary": SkillSyncApplySummary(),
         "leaseOwner": "worker-1",
         "leaseExpiresAt": object(),
         "save": AsyncMock(),
@@ -112,21 +116,47 @@ def _service(source, *, access_token="access-token"):
     )
 
 
+def _lease(job) -> Lease:
+    return Lease(doc_id=job.id, owner="worker-1", token="tok-1", expires_at=datetime.now(UTC) + timedelta(minutes=2))
+
+
+class _RecordingRepo:
+    """Stand-in for the leased repository: records each fenced write instead of hitting Mongo."""
+
+    def __init__(self) -> None:
+        self.writes: list[SimpleNamespace] = []
+
+    async def transition_or_raise(self, lease, set_fields, *, unset=None, release=False, session=None) -> None:
+        self.writes.append(SimpleNamespace(set_fields=set_fields, release=release))
+
+    @property
+    def last_write(self) -> SimpleNamespace:
+        return self.writes[-1]
+
+
+@pytest.fixture(autouse=True)
+def fake_repo(monkeypatch):
+    recorder = _RecordingRepo()
+    monkeypatch.setattr("registry.services.skill_sync_execution_service.skill_sync_repository", recorder)
+    return recorder
+
+
 @pytest.fixture(autouse=True)
 def decrypt_stub(monkeypatch):
     monkeypatch.setattr("registry.services.skill_sync_execution_service.decrypt_value", lambda value: value)
 
 
 @pytest.mark.asyncio
-async def test_run_claimed_job_with_missing_source_fails_job_without_execution():
+async def test_run_claimed_job_with_missing_source_fails_job_without_execution(fake_repo):
     ctx = _service(None)
     job = _job(SimpleNamespace(id=PydanticObjectId()))
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.FAILED
     assert job.error == "Skill sync source no longer exists"
-    assert job.leaseOwner is None
+    # The terminal write releases the lease (clears owner/token/expiry) through the fenced repository.
+    assert fake_repo.last_write.release is True
     ctx.token_service.resolve_access_token.assert_not_awaited()
 
 
@@ -143,7 +173,7 @@ async def test_run_claimed_job_rejects_invalid_or_stale_snapshot(snapshot, sourc
     ctx = _service(source)
     job = _job(source, requestSnapshot=snapshot)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.FAILED
     assert message in job.error
@@ -157,7 +187,7 @@ async def test_run_claimed_job_without_token_sets_auth_failure():
     ctx = _service(source, access_token=None)
     job = _job(source)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.FAILED
     assert job.errorCode == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED.value
@@ -179,7 +209,7 @@ async def test_full_sync_success_uses_snapshot_and_finalizes_source():
     ctx.apply_service.build_source_stats.return_value = SkillSyncSourceStats(skillCount=1, fileCount=2)
     job = _job(source)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.SUCCESS
     assert job.phase == SkillSyncJobPhase.COMPLETED
@@ -210,7 +240,7 @@ async def test_full_sync_tolerates_acl_inheritance_failure():
     ctx.apply_service.inherit_source_acl_to_skills.side_effect = RuntimeError("ACL unavailable")
     job = _job(source)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     # The status stays as the skill writes decided; the failure is recorded like federation sync does.
     assert job.status == SkillSyncJobStatus.SUCCESS
@@ -233,7 +263,7 @@ async def test_full_sync_clears_a_previous_sync_message_when_acl_inheritance_suc
     )
     job = _job(source)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.SUCCESS
     assert job.error is None
@@ -258,7 +288,7 @@ async def test_full_sync_with_skill_error_finishes_partial_success():
     )
     job = _job(source)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.PARTIAL_SUCCESS
     assert source.syncStatus == SkillSyncStatus.PARTIAL_SUCCESS
@@ -276,7 +306,7 @@ async def test_full_sync_without_valid_skills_fails_before_apply():
     )
     job = _job(source)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.FAILED
     assert job.errorCode == SkillSyncJobErrorCode.NO_SKILLS_FOUND.value
@@ -293,7 +323,7 @@ async def test_github_auth_failure_deletes_invalid_user_token():
     )
     job = _job(source)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.errorCode == SkillSyncJobErrorCode.GITHUB_AUTH_FAILED.value
     ctx.token_service.delete_user_access_token.assert_awaited_once_with(
@@ -309,7 +339,7 @@ async def test_unexpected_sync_failure_sets_internal_error_and_cleans_up():
     ctx.github_service.download_tarball.side_effect = RuntimeError("disk unavailable")
     job = _job(source)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.FAILED
     assert job.errorCode == SkillSyncJobErrorCode.INTERNAL_ERROR.value
@@ -323,7 +353,7 @@ async def test_delete_job_cleans_children_acl_tokens_and_source():
     ctx = _service(source)
     job = _job(source, jobType=SkillSyncJobType.DELETE_SYNC)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.SUCCESS
     assert job.applySummary == SkillSyncApplySummary(skillsDeleted=2, filesDeleted=3)
@@ -340,10 +370,85 @@ async def test_delete_failure_restores_source_and_fails_job():
     ctx.apply_service.delete_source_skills.side_effect = RuntimeError("delete failed")
     job = _job(source, jobType=SkillSyncJobType.DELETE_SYNC)
 
-    await ctx.service.run_claimed_job(job)
+    await ctx.service.run_claimed_job(job, _lease(job))
 
     assert job.status == SkillSyncJobStatus.FAILED
     ctx.source_service.restore_after_delete_failure.assert_awaited_once_with(source, "delete failed")
+
+
+def _successful_discovery(ctx) -> None:
+    ctx.discovery_service.discover_skills.return_value = DiscoveryResult(
+        skills=[SimpleNamespace(upstream_id="skills/demo")],
+        errors=[],
+        summary=SkillSyncDiscoverySummary(discoveredSkillCount=1),
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_save_failure_after_finalize_marks_source_failed_without_refinalizing(fake_repo):
+    # The terminal write released the lease, so the failure must not go back through the job-failure path
+    # (which would raise LeaseLostError and strand the source in SYNCING).
+    source = _source()
+    source.save.side_effect = [None, RuntimeError("mongo down")]
+    ctx = _service(source)
+    _successful_discovery(ctx)
+    status_when_marked_failed = []
+    ctx.source_service.mark_sync_failed.side_effect = lambda src, message: status_when_marked_failed.append(
+        src.syncStatus
+    )
+    job = _job(source)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    assert job.status == SkillSyncJobStatus.SUCCESS
+    assert [write.release for write in fake_repo.writes].count(True) == 1
+    ctx.source_service.mark_sync_failed.assert_awaited_once_with(source, "Internal error: mongo down")
+    assert status_when_marked_failed == [SkillSyncStatus.SYNCING]
+
+
+@pytest.mark.asyncio
+async def test_source_stats_failure_fails_the_job_before_finalizing(fake_repo):
+    source = _source()
+    ctx = _service(source)
+    _successful_discovery(ctx)
+    ctx.apply_service.build_source_stats.side_effect = RuntimeError("stats failed")
+    job = _job(source)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    assert job.status == SkillSyncJobStatus.FAILED
+    assert [write.release for write in fake_repo.writes].count(True) == 1
+    ctx.source_service.mark_sync_failed.assert_awaited_once_with(source, "Internal error: stats failed")
+
+
+@pytest.mark.asyncio
+async def test_delete_source_save_failure_after_finalize_restores_source_without_refinalizing(fake_repo):
+    source = _source(deletedAt=None)
+    source.save.side_effect = RuntimeError("mongo down")
+    ctx = _service(source)
+    job = _job(source, jobType=SkillSyncJobType.DELETE_SYNC)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    assert job.status == SkillSyncJobStatus.SUCCESS
+    assert [write.release for write in fake_repo.writes].count(True) == 1
+    ctx.source_service.restore_after_delete_failure.assert_awaited_once_with(source, "Internal error: mongo down")
+    assert source.deletedAt is None
+
+
+@pytest.mark.asyncio
+async def test_source_recovery_failure_after_finalize_is_only_logged():
+    source = _source()
+    source.save.side_effect = [None, RuntimeError("mongo down")]
+    ctx = _service(source)
+    _successful_discovery(ctx)
+    ctx.source_service.mark_sync_failed.side_effect = RuntimeError("still down")
+    job = _job(source)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    assert job.status == SkillSyncJobStatus.SUCCESS
+    ctx.source_service.mark_sync_failed.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -373,3 +478,47 @@ async def test_recover_exhausted_job_ignores_removed_source():
 
     ctx.source_service.mark_sync_failed.assert_not_awaited()
     ctx.source_service.restore_after_delete_failure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phase_writes_never_carry_lease_expiry(fake_repo):
+    # The lease-reset regression: no phase write may set leaseExpiresAt, or it would clobber the
+    # heartbeat's renewals. Only the terminal release clears the lease fields.
+    source = _source()
+    ctx = _service(source)
+    ctx.discovery_service.discover_skills.return_value = DiscoveryResult(
+        skills=[SimpleNamespace(upstream_id="skills/demo")],
+        errors=[],
+        summary=SkillSyncDiscoverySummary(discoveredSkillCount=1),
+    )
+    job = _job(source)
+
+    await ctx.service.run_claimed_job(job, _lease(job))
+
+    non_terminal = [write for write in fake_repo.writes if not write.release]
+    assert non_terminal, "expected at least one phase write"
+    for write in non_terminal:
+        assert "leaseExpiresAt" not in write.set_fields
+        assert "leaseToken" not in write.set_fields
+
+
+@pytest.mark.asyncio
+async def test_phase_write_after_token_replaced_aborts_before_source_write(monkeypatch):
+    # Token-fenced: once another owner re-claims, the next phase write raises and no source write runs.
+    from registry_pkgs.database.leased_job import LeaseLostError
+
+    source = _source()
+    ctx = _service(source)
+    job = _job(source)
+
+    class _LostRepo:
+        async def transition_or_raise(self, *args, **kwargs):
+            raise LeaseLostError("re-claimed by another owner")
+
+    monkeypatch.setattr("registry.services.skill_sync_execution_service.skill_sync_repository", _LostRepo())
+
+    with pytest.raises(LeaseLostError):
+        await ctx.service.run_claimed_job(job, _lease(job))
+
+    source.save.assert_not_awaited()
+    ctx.source_service.mark_sync_failed.assert_not_awaited()

@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from registry.core.config import Settings
-from registry_pkgs.database import close_mongodb, init_mongodb
+from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.vector.client import create_database_client
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository

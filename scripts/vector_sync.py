@@ -34,7 +34,7 @@ from typing import Any
 
 from registry.container import RegistryContainer
 from registry.core.config import Settings
-from registry_pkgs.database import close_mongodb, init_mongodb
+from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer

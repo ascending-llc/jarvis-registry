@@ -11,7 +11,8 @@ from beanie import PydanticObjectId
 from pymongo import AsyncMongoClient
 
 from registry.services.skill_sync_apply_service import SkillSyncApplyService
-from registry.services.skill_sync_job_service import SkillSyncJobService
+from registry.services.skill_sync_job_service import SkillSyncJobService, skill_sync_repository
+from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.enums import (
     SkillSyncJobPhase,
@@ -61,38 +62,28 @@ async def test_two_workers_claim_reclaim_and_exhaust_one_job(monkeypatch):
 
     try:
         first_claims = await asyncio.gather(
-            service.claim_next_job(lease_owner="worker-1", lease_duration=timedelta(minutes=2)),
-            service.claim_next_job(lease_owner="worker-2", lease_duration=timedelta(minutes=2)),
+            service.claim_next_job(owner="worker-1"),
+            service.claim_next_job(owner="worker-2"),
         )
-        claimed = [job for job in first_claims if job is not None]
+        claimed = [result for result in first_claims if result is not None]
         assert len(claimed) == 1
-        first_owner = claimed[0].leaseOwner
+        _job, lease = claimed[0]
+        first_owner = lease.owner
         other_owner = "worker-2" if first_owner == "worker-1" else "worker-1"
-        assert (
-            await service.heartbeat(
-                job_id=job_id,
-                lease_owner=other_owner,
-                lease_duration=timedelta(minutes=2),
-            )
-            is False
-        )
-        assert (
-            await service.heartbeat(
-                job_id=job_id,
-                lease_owner=first_owner,
-                lease_duration=timedelta(minutes=2),
-            )
-            is True
-        )
+        # A lease carrying a different token (a stale or foreign claim) cannot renew.
+        stale = Lease(doc_id=job_id, owner=other_owner, token="wrong-token", expires_at=lease.expires_at)
+        assert await skill_sync_repository.heartbeat(stale) is None
+        assert await skill_sync_repository.heartbeat(lease) is not None
 
         await collection.update_one({"_id": job_id}, {"$set": {"leaseExpiresAt": now - timedelta(seconds=1)}})
-        reclaimed = await service.claim_next_job(
-            lease_owner=other_owner,
-            lease_duration=timedelta(minutes=2),
-        )
+        reclaimed = await service.claim_next_job(owner=other_owner)
         assert reclaimed is not None
-        assert reclaimed.leaseOwner == other_owner
-        assert reclaimed.attemptCount == 2
+        rejob, release = reclaimed
+        assert release.owner == other_owner
+        assert release.token != lease.token  # a fresh token per claim
+        assert rejob.attemptCount == 2
+        # The original owner's lease is now fenced out by the new token.
+        assert await skill_sync_repository.heartbeat(lease) is None
 
         await collection.update_one(
             {"_id": job_id},
