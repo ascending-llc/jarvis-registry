@@ -450,6 +450,9 @@ class MCPOAuthService:
         if static_config.get("client_id"):
             # Note that decrypt_auth_fields expects the `.config` field of an ExtendedMCPServer document object.
             oauth_config = decrypt_auth_fields({"oauth": static_config}, encryption_key=self._encryption_key)["oauth"]
+            # Strip like FlowStateManager._create_client_info, so the client_id a refresh sends and
+            # binds on equals the one the login used and stored in the token binding.
+            oauth_config["client_id"] = str(oauth_config["client_id"]).strip()
         else:
             client = state.client
             if client is None:

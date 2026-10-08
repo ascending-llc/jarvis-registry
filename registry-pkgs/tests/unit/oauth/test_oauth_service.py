@@ -904,6 +904,15 @@ class TestRefresh:
         assert h.refresh.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_static_client_id_with_whitespace_matches_stripped_login_binding(self, h: Harness) -> None:
+        static = {"client_id": " static-id\n", "token_url": "https://as/token"}
+        # The login flow strips client_id (FlowStateManager._create_client_info) before binding tokens.
+        h.tokens.put("atlassian", refresh="r1", metadata={"clientId": "static-id"})
+
+        assert await h.service.validate_and_refresh_tokens(USER, h.server(oauth=static)) == (True, None)
+        assert h.refresh.await_args.args[0]["client_id"] == "static-id"
+
+    @pytest.mark.asyncio
     async def test_static_access_token_skips_use_time_check(self, h: Harness) -> None:
         h.tokens.put("atlassian", access="a", metadata={"clientId": "static-id", "issuer": "whatever"})
 
