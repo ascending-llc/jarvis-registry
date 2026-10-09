@@ -452,6 +452,8 @@ class WorkflowRunner:
             # consumed them.  If acontinue_run (or the build/compile steps
             # before it) raise, the requirements survive in MongoDB so a
             # subsequent continue_run — e.g. after a pod restart — can retry.
+            # This write only lands while the run is still RUNNING; when the
+            # continuation already finished, the syncer's terminal write cleared them.
             await writer.write({"pending_requirements": []}, from_statuses={WorkflowRunStatus.RUNNING})
             run.pending_requirements = []
             await self._handle_run_output(run, result, writer)
