@@ -123,7 +123,7 @@ const ModelListView: React.FC<ModelListViewProps> = ({
     <div className='min-h-0 flex-1 overflow-x-auto'>
       <div className='grid min-w-[800px] grid-cols-[22px_minmax(0,1fr)_48px] items-center gap-3 border-b border-[color:var(--jarvis-border)] px-1 py-2.5 text-[13px] text-[var(--jarvis-muted)]'>
         <span className='sr-only'>Default model</span>
-        <div className='grid min-w-0 grid-cols-[minmax(300px,2fr)_160px_120px_100px] gap-3'>
+        <div className='col-start-2 grid min-w-0 grid-cols-[minmax(300px,420px)_160px_120px_100px] gap-3'>
           <span>Model</span>
           <span>Provider</span>
           <span>Mode</span>
@@ -209,7 +209,7 @@ const ModelListView: React.FC<ModelListViewProps> = ({
               <button
                 type='button'
                 onClick={() => onOpenModel(model.id)}
-                className='grid min-w-0 grid-cols-[minmax(300px,2fr)_160px_120px_100px] items-center gap-3 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--jarvis-primary)]'
+                className='grid min-w-0 grid-cols-[minmax(300px,420px)_160px_120px_100px] items-center gap-3 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--jarvis-primary)]'
               >
                 <span className='min-w-0'>
                   <span className='flex min-w-0 items-center gap-2'>
