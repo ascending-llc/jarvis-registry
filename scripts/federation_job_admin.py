@@ -31,7 +31,7 @@ from bson import ObjectId
 from pymongo import DESCENDING, MongoClient
 
 from registry.core.config import settings
-from registry_pkgs.database import close_mongodb, init_mongodb
+from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.federation import Federation
 from registry_pkgs.vector.client import create_database_client

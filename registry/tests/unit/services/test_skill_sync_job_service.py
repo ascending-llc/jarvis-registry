@@ -1,4 +1,3 @@
-from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,7 +6,6 @@ from beanie import PydanticObjectId
 
 from registry.services.skill_sync_job_service import SkillSyncJobService
 from registry_pkgs.models.enums import (
-    SkillSyncJobErrorCode,
     SkillSyncJobPhase,
     SkillSyncJobStatus,
     SkillSyncJobType,
@@ -181,61 +179,28 @@ async def test_create_job_passes_session_through(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mark_not_implemented_sets_failed_state():
-    service = SkillSyncJobService()
-    job = _make_job(SkillSyncJobStatus.SYNCING)
-
-    result = await service.mark_not_implemented(job)
-
-    assert result.status == SkillSyncJobStatus.FAILED
-    assert result.phase == SkillSyncJobPhase.FAILED
-    assert result.errorCode == SkillSyncJobErrorCode.SYNC_NOT_IMPLEMENTED.value
-    assert result.error == "Skill sync execution is not implemented yet"
-    assert result.finishedAt is not None
-    job.save.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_claim_next_job_uses_atomic_lease_update(monkeypatch):
     expected = SimpleNamespace(id=PydanticObjectId())
+    doc_id = PydanticObjectId()
     collection = MagicMock()
-    collection.find_one_and_update = AsyncMock(return_value={"_id": expected.id})
+    collection.find_one_and_update = AsyncMock(return_value={"_id": doc_id})
     monkeypatch.setattr(SkillSyncJob, "get_pymongo_collection", lambda: collection)
     monkeypatch.setattr(SkillSyncJob, "model_validate", lambda document: expected)
 
-    result = await SkillSyncJobService().claim_next_job(
-        lease_owner="worker-1",
-        lease_duration=timedelta(minutes=2),
-    )
+    result = await SkillSyncJobService().claim_next_job(owner="worker-1")
 
-    assert result is expected
+    assert result is not None
+    job, lease = result
+    assert job is expected
+    assert lease.owner == "worker-1"
+    assert lease.doc_id == doc_id
+    assert lease.token  # a fresh token was minted for this claim
     query, update = collection.find_one_and_update.await_args.args
     assert {"attemptCount": {"$exists": False}} in query["$and"][0]["$or"]
     assert update["$set"]["leaseOwner"] == "worker-1"
+    assert update["$set"]["leaseToken"] == lease.token
     assert update["$set"]["status"] == SkillSyncJobStatus.SYNCING.value
     assert update["$inc"] == {"attemptCount": 1}
-
-
-@pytest.mark.asyncio
-async def test_heartbeat_only_renews_owned_syncing_job(monkeypatch):
-    collection = MagicMock()
-    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
-    monkeypatch.setattr(SkillSyncJob, "get_pymongo_collection", lambda: collection)
-    job_id = PydanticObjectId()
-
-    renewed = await SkillSyncJobService().heartbeat(
-        job_id=job_id,
-        lease_owner="worker-1",
-        lease_duration=timedelta(minutes=2),
-    )
-
-    assert renewed is True
-    query = collection.update_one.await_args.args[0]
-    assert query == {
-        "_id": job_id,
-        "status": SkillSyncJobStatus.SYNCING.value,
-        "leaseOwner": "worker-1",
-    }
 
 
 @pytest.mark.asyncio
@@ -253,3 +218,5 @@ async def test_fail_next_exhausted_job_finalizes_atomically(monkeypatch):
     assert update["$set"]["status"] == SkillSyncJobStatus.FAILED.value
     assert update["$set"]["phase"] == SkillSyncJobPhase.FAILED.value
     assert update["$set"]["leaseOwner"] is None
+    # Exhaustion clears the token too, so a stale in-flight execution can no longer write.
+    assert update["$set"]["leaseToken"] is None

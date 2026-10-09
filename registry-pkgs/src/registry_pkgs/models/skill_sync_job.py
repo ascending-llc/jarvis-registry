@@ -5,6 +5,7 @@ from beanie import Document, Insert, PydanticObjectId, Replace, Save, before_eve
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo import IndexModel
 
+from ..database.leased_job import LeasedDocumentMixin
 from .enums import (
     SkillSyncJobPhase,
     SkillSyncJobStatus,
@@ -59,7 +60,7 @@ class SkillSyncDeleteRequestSnapshot(BaseModel):
 SkillSyncRequestSnapshot = SkillSyncFullRequestSnapshot | SkillSyncDeleteRequestSnapshot
 
 
-class SkillSyncJob(Document):
+class SkillSyncJob(LeasedDocumentMixin, Document):
     sourceId: PydanticObjectId
     jobType: SkillSyncJobType
     triggerType: SkillSyncTriggerType = SkillSyncTriggerType.MANUAL
@@ -75,6 +76,7 @@ class SkillSyncJob(Document):
     startedAt: datetime | None = None
     finishedAt: datetime | None = None
     leaseOwner: str | None = None
+    leaseToken: str | None = None  # fresh per claim; every lease-fenced write matches on it
     leaseExpiresAt: datetime | None = None
     heartbeatAt: datetime | None = None
     attemptCount: int = 0

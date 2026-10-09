@@ -886,4 +886,14 @@ SKILL_SYNC_MONGO_INTEGRATION_URI='mongodb://127.0.0.1:27017/?replicaSet=rs0' \
   uv run pytest registry/tests/integration/test_skill_sync_durability.py
 ```
 
-The integration file uses isolated, randomly named databases and removes them after every test.
+The shared lease library (`registry_pkgs.database.leased_job`) has its own real-MongoDB tests: two owners racing a
+claim, re-claim after expiry, same-owner re-claim rejecting the old lease token, `reap_one`, and lease release. They
+are gated on a separate variable:
+
+```bash
+MONGO_INTEGRATION_URI='mongodb://127.0.0.1:27017/?replicaSet=rs0' \
+  uv run pytest registry-pkgs/tests/integration/test_leased_job.py
+```
+
+Both integration files use isolated, randomly named databases and remove them after every test. Without their
+variable set, they skip.

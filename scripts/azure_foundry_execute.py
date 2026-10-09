@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 from registry.container import RegistryContainer
 from registry.core.config import settings
-from registry_pkgs.database import close_mongodb, init_mongodb
+from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import create_redis_client
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
