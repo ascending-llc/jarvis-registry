@@ -1,4 +1,4 @@
-import { GlobeAltIcon, QueueListIcon, WrenchScrewdriverIcon } from '@heroicons/react/24/outline';
+import { CpuChipIcon, GlobeAltIcon, QueueListIcon, WrenchScrewdriverIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -8,12 +8,18 @@ import AgentIcon from '@/assets/AgentIcon';
 import McpIcon from '@/assets/McpIcon';
 import { useServer } from '@/contexts/ServerContext';
 import { APP_ROUTES } from '@/routes';
-import type { ResourceStats, ResourceStatusFilter, SkillsNavigationConfig } from '@/types/layout';
+import type {
+  ModelsNavigationConfig,
+  ResourceStats,
+  ResourceStatusFilter,
+  SkillsNavigationConfig,
+} from '@/types/layout';
 
 interface NavMenuProps {
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
   skillsNavigation?: SkillsNavigationConfig;
+  modelsNavigation?: ModelsNavigationConfig;
 }
 
 /** Portal-based tooltip to escape overflow:hidden on the sidebar */
@@ -84,13 +90,14 @@ const filters = [
 
 const EMPTY_STATS: ResourceStats = { total: 0, enabled: 0, disabled: 0 };
 
-const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNavigation }) => {
+const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNavigation, modelsNavigation }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const {
     stats,
     agentStats,
     skillStats,
+    modelStats,
     federationStats,
     workflowStats,
     viewMode,
@@ -99,9 +106,11 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
     setActiveFilter,
   } = useServer();
   const isSkillsPage = location.pathname === APP_ROUTES.skills;
+  const isModelsPage = location.pathname === APP_ROUTES.models;
+  const isDashboardPage = !isSkillsPage && !isModelsPage;
 
   const handleNavigation = (mode: 'servers' | 'agents' | 'workflow' | 'external') => {
-    if (!isSkillsPage && viewMode === mode) {
+    if (isDashboardPage && viewMode === mode) {
       if (window.innerWidth >= 768) {
         setSidebarOpen(!sidebarOpen);
       } else {
@@ -111,6 +120,22 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
     }
     setViewMode(mode);
     navigate(mode === 'servers' ? APP_ROUTES.root : `${APP_ROUTES.root}?tab=${mode}`);
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  };
+
+  const handleModelsNavigation = () => {
+    if (isModelsPage) {
+      const params = new URLSearchParams(location.search);
+      if (params.has('id') || params.get('create') === 'true') {
+        navigate(APP_ROUTES.models);
+        if (window.innerWidth < 768) setSidebarOpen(false);
+        return;
+      }
+      if (window.innerWidth >= 768) setSidebarOpen(!sidebarOpen);
+      else setSidebarOpen(false);
+      return;
+    }
+    navigate(APP_ROUTES.models);
     if (window.innerWidth < 768) setSidebarOpen(false);
   };
 
@@ -132,6 +157,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
   };
 
   const displayedSkillStats = skillsNavigation?.stats ?? skillStats;
+  const displayedModelTotal = modelsNavigation?.total ?? modelStats.total;
   const displayedFilter: ResourceStatusFilter = isSkillsPage
     ? (skillsNavigation?.activeFilter ?? 'all')
     : (activeFilter as ResourceStatusFilter);
@@ -166,7 +192,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
         <NavButton
           label='MCP Servers'
           showTooltip={collapsed}
-          active={!isSkillsPage && viewMode === 'servers'}
+          active={isDashboardPage && viewMode === 'servers'}
           onClick={() => handleNavigation('servers')}
         >
           <McpIcon className='h-5 w-5 flex-shrink-0' />
@@ -185,7 +211,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
         <NavButton
           label='A2A Agents'
           showTooltip={collapsed}
-          active={!isSkillsPage && viewMode === 'agents'}
+          active={isDashboardPage && viewMode === 'agents'}
           onClick={() => handleNavigation('agents')}
         >
           <AgentIcon className='h-5 w-5 flex-shrink-0' />
@@ -218,7 +244,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
         <NavButton
           label='Workflow'
           showTooltip={collapsed}
-          active={!isSkillsPage && viewMode === 'workflow'}
+          active={isDashboardPage && viewMode === 'workflow'}
           onClick={() => handleNavigation('workflow')}
         >
           <QueueListIcon className='h-5 w-5 flex-shrink-0' />
@@ -234,10 +260,24 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
           </div>
         </NavButton>
 
+        <NavButton label='Models' showTooltip={collapsed} active={isModelsPage} onClick={handleModelsNavigation}>
+          <CpuChipIcon className='h-5 w-5 flex-shrink-0' />
+          <div
+            className={`flex flex-1 items-center justify-between overflow-hidden transition-all duration-300 ${
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
+            }`}
+          >
+            <span className='whitespace-nowrap'>Models</span>
+            <span className='rounded-full bg-[var(--jarvis-bg)] px-2 py-0.5 text-sm font-semibold text-[var(--jarvis-muted)]'>
+              {displayedModelTotal}
+            </span>
+          </div>
+        </NavButton>
+
         <NavButton
           label='External Providers'
           showTooltip={collapsed}
-          active={!isSkillsPage && viewMode === 'external'}
+          active={isDashboardPage && viewMode === 'external'}
           onClick={() => handleNavigation('external')}
         >
           <GlobeAltIcon className='h-5 w-5 flex-shrink-0' />
@@ -254,8 +294,44 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
         </NavButton>
       </div>
 
+      {isModelsPage && modelsNavigation?.showProviderFilters && (
+        <div
+          className={`space-y-1 overflow-hidden transition-all duration-300 ${
+            collapsed ? 'max-h-0 opacity-0 mt-0' : 'max-h-[500px] opacity-100 mt-6'
+          }`}
+        >
+          <div className='px-3 mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--jarvis-faint)]'>
+            Filter by provider
+          </div>
+          {(
+            [
+              ['all', 'All providers', 'bg-[var(--jarvis-primary)]'],
+              ['aws_bedrock', 'AWS Bedrock', 'bg-[var(--jarvis-orange)]'],
+              ['azure_openai', 'Azure OpenAI', 'bg-[var(--jarvis-blue)]'],
+            ] as const
+          ).map(([provider, label, dotClass]) => (
+            <button
+              key={provider}
+              type='button'
+              onClick={() => modelsNavigation.onProviderChange(provider)}
+              className={`w-full flex items-center rounded-md px-2 py-1.5 text-sm transition-colors ${
+                modelsNavigation.activeProvider === provider
+                  ? 'bg-black/[0.08] dark:bg-white/[0.10] text-[var(--jarvis-text)]'
+                  : 'text-[var(--jarvis-muted)] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] hover:text-[var(--jarvis-text)]'
+              }`}
+            >
+              <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+              <span className='ml-3 flex-1 text-left'>{label}</span>
+              <span className='rounded-full bg-[var(--jarvis-card-muted)] px-2 py-0.5 text-xs font-medium text-[var(--jarvis-text)]'>
+                {modelsNavigation.providerCounts[provider]}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Filter by status Section */}
-      {(!isSkillsPage || skillsNavigation?.showStatusFilters) && (
+      {!isModelsPage && (!isSkillsPage || skillsNavigation?.showStatusFilters) && (
         <div
           className={`space-y-1 overflow-hidden transition-all duration-300 ${
             collapsed ? 'max-h-0 opacity-0 mt-0' : 'max-h-[500px] opacity-100 mt-6'
