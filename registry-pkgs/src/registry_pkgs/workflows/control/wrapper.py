@@ -295,12 +295,23 @@ async def _wait_while_paused(
             next_directive = await _read_mongodb_directive(run_id)
 
         if next_directive == WorkflowDirective.RESUME:
-            await writer.ack_directive(
+            resumed = await writer.ack_directive(
                 WorkflowDirective.RESUME,
                 {"status": WorkflowRunStatus.RUNNING, "paused_at": None},
                 from_statuses={WorkflowRunStatus.PAUSED},
             )
-            logger.info("Node %r: RESUME received, continuing execution", node_name)
+            if resumed:
+                logger.info("Node %r: RESUME received, continuing execution", node_name)
+                return None
+            current = await _read_mongodb_directive(run_id)
+            if current == WorkflowDirective.CANCEL:
+                await writer.ack_directive(
+                    WorkflowDirective.CANCEL,
+                    from_statuses={WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED},
+                )
+                logger.info("Node %r: CANCEL superseded RESUME, aborting", node_name)
+                return "Workflow cancelled by user"
+            logger.info("Node %r: RESUME already applied (directive=%s), continuing", node_name, current)
             return None
 
         if next_directive == WorkflowDirective.CANCEL:

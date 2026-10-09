@@ -10,9 +10,12 @@ from registry_pkgs.workflows import run_repository
 from registry_pkgs.workflows.run_repository import NON_TERMINAL_RUN_STATUSES, RunStateWriter
 
 
-def _patch_update(monkeypatch: pytest.MonkeyPatch, modified_count: int) -> AsyncMock:
+def _patch_update(monkeypatch: pytest.MonkeyPatch, matched_count: int, modified_count: int | None = None) -> AsyncMock:
     collection = AsyncMock()
-    collection.update_one.return_value = SimpleNamespace(modified_count=modified_count)
+    collection.update_one.return_value = SimpleNamespace(
+        matched_count=matched_count,
+        modified_count=matched_count if modified_count is None else modified_count,
+    )
     monkeypatch.setattr(run_repository.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: collection))
     return collection
 
@@ -99,12 +102,22 @@ async def test_unset_moves_fields_to_dollar_unset(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.asyncio
 async def test_write_returns_false_when_guard_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_update(monkeypatch, 0)  # modified_count == 0 -> run left the expected state
+    _patch_update(monkeypatch, 0)  # matched_count == 0 -> run left the expected state
     writer = RunStateWriter(PydanticObjectId())
 
     ok = await writer.write({"status": WorkflowRunStatus.RUNNING}, from_statuses={WorkflowRunStatus.PENDING})
 
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_write_succeeds_on_matched_no_op(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_update(monkeypatch, matched_count=1, modified_count=0)
+    writer = RunStateWriter(PydanticObjectId())
+
+    ok = await writer.write({"status": WorkflowRunStatus.RUNNING}, from_statuses={WorkflowRunStatus.RUNNING})
+
+    assert ok is True
 
 
 @pytest.mark.asyncio
@@ -134,11 +147,13 @@ class _FakeCollection:
 
     async def update_one(self, flt, update, session=None):  # noqa: ANN001, ANN201
         if not self._matches(flt):
-            return SimpleNamespace(modified_count=0)
+            return SimpleNamespace(matched_count=0, modified_count=0)
+        before = dict(self.doc)
         self.doc.update(update.get("$set", {}))
         for key in update.get("$unset", {}):
             self.doc.pop(key, None)
-        return SimpleNamespace(modified_count=1)
+        modified = 0 if self.doc == before else 1
+        return SimpleNamespace(matched_count=1, modified_count=modified)
 
 
 @pytest.mark.asyncio

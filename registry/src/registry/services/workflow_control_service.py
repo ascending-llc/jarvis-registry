@@ -212,12 +212,12 @@ class WorkflowControlService:
             raise HTTPException(status_code=400, detail="Cannot pause a run with a pending cancel directive")
         if run.pending_directive == WorkflowDirective.RESUME:
             raise HTTPException(status_code=400, detail="Cannot pause a run with a pending resume directive")
-        # Idempotent, symmetric with send_cancel: a pause already pending needs no write. Without
-        # this, a duplicate pause re-$sets PAUSE to its current value (modified_count=0) and the
+        new_status = _apply(run, WorkflowDirective.PAUSE)
+        # Idempotent, symmetric with send_cancel: a pause already pending on a still-pausable run
+        # needs no write. Without this, a duplicate pause re-$sets PAUSE to its current value and the
         # conflict branch would raise a spurious 409 before the executor has entered the pause loop.
         if run.pending_directive == WorkflowDirective.PAUSE:
             return run
-        new_status = _apply(run, WorkflowDirective.PAUSE)
 
         if new_status == run.status:
             return run
@@ -254,9 +254,11 @@ class WorkflowControlService:
         run = await self._load_run(workflow_definition_id, run_id)
         if run.pending_directive == WorkflowDirective.CANCEL:
             raise HTTPException(status_code=400, detail="Cannot resume a run with a pending cancel directive")
+        # Validate status before the duplicate-directive check so a terminal run carrying a stale
+        # RESUME is rejected as a bad transition, not reported as "already has a pending resume".
+        _apply(run, WorkflowDirective.RESUME)
         if run.pending_directive == WorkflowDirective.RESUME:
             raise HTTPException(status_code=400, detail="Run already has a pending resume directive")
-        _apply(run, WorkflowDirective.RESUME)
         result = await WorkflowRun.get_pymongo_collection().update_one(
             {
                 "_id": run.id,
@@ -266,11 +268,11 @@ class WorkflowControlService:
             {"$set": {"pending_directive": WorkflowDirective.RESUME.value}},
         )
         if result.modified_count == 0:
-            await self._reload_run(run.id)
+            await self._reload_run(PydanticObjectId(run.id))
             raise HTTPException(status_code=409, detail="Run state changed concurrently; refresh and retry")
         self._queue.put(run_id, WorkflowDirective.RESUME)
         logger.info("WorkflowRun %s resume requested", run_id)
-        return await self._reload_run(run.id)
+        return await self._reload_run(PydanticObjectId(run.id))
 
     async def resolve_requirement(
         self,
@@ -405,6 +407,9 @@ class WorkflowControlService:
         Idempotent: cancelling an already-cancelled run returns 200.
         """
         run = await self._load_run(workflow_definition_id, run_id)
+        # Idempotency is intentionally before state validation here (unlike pause/resume): cancelling
+        # a run that already has CANCEL pending — including a terminal run that kept a stale CANCEL —
+        # is a harmless no-op, so returning 200 is the documented contract rather than a 4xx.
         if run.pending_directive == WorkflowDirective.CANCEL:
             return run
         new_status = _apply(run, WorkflowDirective.CANCEL)

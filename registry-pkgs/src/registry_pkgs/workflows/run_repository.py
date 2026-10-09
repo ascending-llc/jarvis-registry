@@ -141,7 +141,7 @@ class RunStateWriter:
             update,
             session=session,
         )
-        applied = result.modified_count == 1
+        applied = result.matched_count == 1
         logger.info(
             "WorkflowRun %s write %s: set=%s unset=%s (guard status in %s)",
             self._run_id,
@@ -163,7 +163,7 @@ class RunStateWriter:
 
         The ``pending_directive == consumed`` filter means the executor only clears the
         exact directive it processed; a newer directive written underneath it (e.g. PAUSE
-        replaced by CANCEL) leaves this a no-op (returns False) instead of being erased.
+        replaced by CANCEL) does not match, so this returns False instead of erasing it.
         """
         set_fields = set_fields or {}
         self._assert_executor_fields(set_fields)
@@ -177,7 +177,7 @@ class RunStateWriter:
             },
             {"$set": update_set},
         )
-        applied = result.modified_count == 1
+        applied = result.matched_count == 1
         logger.info(
             "WorkflowRun %s ack directive %s %s: set=%s (guard status in %s)",
             self._run_id,

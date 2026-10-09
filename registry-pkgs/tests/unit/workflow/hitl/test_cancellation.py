@@ -11,10 +11,15 @@ from registry_pkgs.workflows.hitl.cancellation import MongoBackedCancellationMan
 from registry_pkgs.workflows.run_repository import NON_TERMINAL_RUN_STATUSES
 
 
-def _stub_collection(monkeypatch: pytest.MonkeyPatch, modified_count: int) -> AsyncMock:
+def _stub_collection(
+    monkeypatch: pytest.MonkeyPatch, matched_count: int, modified_count: int | None = None
+) -> AsyncMock:
     """Stub WorkflowRun's pymongo collection so acancel_run's update_one needs no live DB."""
     collection = AsyncMock()
-    collection.update_one.return_value = SimpleNamespace(modified_count=modified_count)
+    collection.update_one.return_value = SimpleNamespace(
+        matched_count=matched_count,
+        modified_count=matched_count if modified_count is None else modified_count,
+    )
     monkeypatch.setattr(WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: collection))
     return collection
 
@@ -23,7 +28,7 @@ def _stub_collection(monkeypatch: pytest.MonkeyPatch, modified_count: int) -> As
 class TestAcancelRun:
     @pytest.mark.asyncio
     async def test_arms_cancel_only_while_non_terminal(self, monkeypatch: pytest.MonkeyPatch):
-        collection = _stub_collection(monkeypatch, modified_count=1)
+        collection = _stub_collection(monkeypatch, matched_count=1)
 
         ok = await MongoBackedCancellationManager().acancel_run(str(PydanticObjectId()))
 
@@ -35,10 +40,20 @@ class TestAcancelRun:
         assert update["$set"]["pending_directive"] == WorkflowDirective.CANCEL.value
 
     @pytest.mark.asyncio
+    async def test_returns_true_when_cancel_already_pending_non_terminal(self, monkeypatch: pytest.MonkeyPatch):
+        # A non-terminal run already carrying CANCEL is a matched no-op (modified_count=0) — still
+        # successfully armed, so it must report True (matched_count), not a false "not armed".
+        _stub_collection(monkeypatch, matched_count=1, modified_count=0)
+
+        ok = await MongoBackedCancellationManager().acancel_run(str(PydanticObjectId()))
+
+        assert ok is True
+
+    @pytest.mark.asyncio
     async def test_returns_false_when_run_is_terminal(self, monkeypatch: pytest.MonkeyPatch):
         # The non-terminal status filter matches nothing on a CANCELLED/COMPLETED run, so
         # _finalize_cancel cannot re-arm a stale CANCEL over a terminal state.
-        _stub_collection(monkeypatch, modified_count=0)
+        _stub_collection(monkeypatch, matched_count=0)
 
         ok = await MongoBackedCancellationManager().acancel_run(str(PydanticObjectId()))
 

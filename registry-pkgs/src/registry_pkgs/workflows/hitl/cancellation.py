@@ -45,7 +45,7 @@ class MongoBackedCancellationManager(BaseRunCancellationManager):
             {"_id": oid, "status": {"$in": [status.value for status in NON_TERMINAL_RUN_STATUSES]}},
             {"$set": {"pending_directive": WorkflowDirective.CANCEL.value}},
         )
-        modified = result.modified_count == 1
+        modified = result.matched_count == 1
         if modified and self._directive_queue is not None:
             try:
                 self._directive_queue.put(run_id, WorkflowDirective.CANCEL)

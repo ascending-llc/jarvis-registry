@@ -156,6 +156,36 @@ async def test_send_pause_already_pending_is_idempotent_without_write(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_send_pause_terminal_run_with_stale_pause_is_rejected(monkeypatch: pytest.MonkeyPatch):
+    run = SimpleNamespace(
+        id=PydanticObjectId(), status=WorkflowRunStatus.COMPLETED, pending_directive=WorkflowDirective.PAUSE
+    )
+    collection = _patch_collection(monkeypatch, 0)
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.send_pause("wf-1", str(run.id))
+    assert exc.value.status_code == 400
+    collection.update_one.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_resume_terminal_run_with_stale_resume_is_rejected(monkeypatch: pytest.MonkeyPatch):
+    run = SimpleNamespace(
+        id=PydanticObjectId(), status=WorkflowRunStatus.COMPLETED, pending_directive=WorkflowDirective.RESUME
+    )
+    collection = _patch_collection(monkeypatch, 0)
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.send_resume("wf-1", str(run.id))
+    assert exc.value.status_code == 400
+    collection.update_one.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_send_pause_success_writes_only_pending_directive(monkeypatch: pytest.MonkeyPatch):
     run_id = PydanticObjectId()
     run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
