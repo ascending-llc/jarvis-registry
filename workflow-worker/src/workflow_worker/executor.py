@@ -8,6 +8,7 @@ from registry_pkgs.models import WorkflowDefinition, WorkflowRun, WorkflowSchedu
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.helpers import extract_user_text
+from registry_pkgs.workflows.run_repository import NON_TERMINAL_RUN_STATUSES, RunStateWriter
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 from registry_pkgs.workflows.scheduling import calculate_next_run_at
@@ -144,14 +145,21 @@ async def _prepare_scheduled_run(
 
 
 async def _mark_run_failed(run: WorkflowRun, exc: Exception) -> None:
-    """Best-effort persistence of FAILED status when runner.run() throws."""
+    """Best-effort persistence of FAILED status when runner.run() throws.
+
+    Uses the guarded write path: the terminal mark only lands while the run is
+    still non-terminal, so it never overwrites a terminal outcome the runner already wrote
+    and never resurrects a deleted run via upsert.
+    """
     try:
-        persisted_run = await WorkflowRun.get(run.id)
-        failed_run = persisted_run or run
-        failed_run.status = WorkflowRunStatus.FAILED
-        failed_run.error_summary = str(exc)
-        failed_run.finished_at = datetime.now(UTC)
-        await failed_run.save()
+        await RunStateWriter(PydanticObjectId(run.id)).write(
+            {
+                "status": WorkflowRunStatus.FAILED,
+                "error_summary": str(exc),
+                "finished_at": datetime.now(UTC),
+            },
+            from_statuses=NON_TERMINAL_RUN_STATUSES,
+        )
     except Exception:
         logger.exception("Failed to persist failure status for workflow run %s", run.id)
 

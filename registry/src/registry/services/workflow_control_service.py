@@ -213,30 +213,70 @@ class WorkflowControlService:
         if run.pending_directive == WorkflowDirective.RESUME:
             raise HTTPException(status_code=400, detail="Cannot pause a run with a pending resume directive")
         new_status = _apply(run, WorkflowDirective.PAUSE)
+        # Idempotent, symmetric with send_cancel: a pause already pending on a still-pausable run
+        # needs no write. Without this, a duplicate pause re-$sets PAUSE to its current value and the
+        # conflict branch would raise a spurious 409 before the executor has entered the pause loop.
+        if run.pending_directive == WorkflowDirective.PAUSE:
+            return run
 
         if new_status == run.status:
             return run
 
-        run.pending_directive = WorkflowDirective.PAUSE
-        await run.save()
+        # Targeted guarded write: set only pending_directive, and only while the
+        # run is still RUNNING with no competing cancel/resume. A whole-document save() here
+        # could regress status or clobber a concurrent CANCEL.
+        result = await WorkflowRun.get_pymongo_collection().update_one(
+            {
+                "_id": run.id,
+                "status": WorkflowRunStatus.RUNNING.value,
+                "pending_directive": {"$nin": [WorkflowDirective.CANCEL.value, WorkflowDirective.RESUME.value]},
+            },
+            {"$set": {"pending_directive": WorkflowDirective.PAUSE.value}},
+        )
+        if result.modified_count == 0:
+            run = await self._reload_run(PydanticObjectId(run.id))
+            # Idempotent when the run already paused, or when a concurrent request armed PAUSE
+            # and the executor hasn't consumed it yet (that request's filter still matches, but
+            # sets nothing new). A terminal run with a leftover PAUSE is still a conflict.
+            pause_pending = run.status == WorkflowRunStatus.RUNNING and run.pending_directive == WorkflowDirective.PAUSE
+            if run.status == WorkflowRunStatus.PAUSED or pause_pending:
+                return run
+            raise HTTPException(status_code=409, detail="Run state changed concurrently; refresh and retry")
         self._queue.put(run_id, WorkflowDirective.PAUSE)
         logger.info("WorkflowRun %s pause requested", run_id)
 
-        return run
+        return await self._reload_run(PydanticObjectId(run.id))
 
     async def send_resume(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
-        """Resume a PAUSED workflow run."""
+        """Resume a PAUSED workflow run.
+
+        Deliberately stricter than pause/cancel: a fast duplicate is rejected by the
+        ``pending_directive == RESUME`` 400 below, and a resume that already fully landed
+        (status back to RUNNING) returns 409 rather than a 200. "RUNNING" is ambiguous — it
+        can mean a fresh run, not a resumed one — so we don't treat it as idempotent.
+        """
         run = await self._load_run(workflow_definition_id, run_id)
         if run.pending_directive == WorkflowDirective.CANCEL:
             raise HTTPException(status_code=400, detail="Cannot resume a run with a pending cancel directive")
+        # Validate status before the duplicate-directive check so a terminal run carrying a stale
+        # RESUME is rejected as a bad transition, not reported as "already has a pending resume".
+        _apply(run, WorkflowDirective.RESUME)
         if run.pending_directive == WorkflowDirective.RESUME:
             raise HTTPException(status_code=400, detail="Run already has a pending resume directive")
-        _apply(run, WorkflowDirective.RESUME)
-        run.pending_directive = WorkflowDirective.RESUME
-        await run.save()
+        result = await WorkflowRun.get_pymongo_collection().update_one(
+            {
+                "_id": run.id,
+                "status": WorkflowRunStatus.PAUSED.value,
+                "pending_directive": {"$nin": [WorkflowDirective.CANCEL.value, WorkflowDirective.RESUME.value]},
+            },
+            {"$set": {"pending_directive": WorkflowDirective.RESUME.value}},
+        )
+        if result.modified_count == 0:
+            await self._reload_run(PydanticObjectId(run.id))
+            raise HTTPException(status_code=409, detail="Run state changed concurrently; refresh and retry")
         self._queue.put(run_id, WorkflowDirective.RESUME)
         logger.info("WorkflowRun %s resume requested", run_id)
-        return run
+        return await self._reload_run(PydanticObjectId(run.id))
 
     async def resolve_requirement(
         self,
@@ -328,14 +368,31 @@ class WorkflowControlService:
 
     @staticmethod
     async def _fail_run_requiring_reauthentication(run: WorkflowRun) -> None:
-        """Fail an old paused run safely when its original client identity is unavailable."""
-        run.status = WorkflowRunStatus.FAILED
-        run.error_summary = (
+        """Fail an old paused run safely when its original client identity is unavailable.
+
+        Runs inside a background continue task, so it uses the same terminal guard as the
+        executor: the write only lands while the run is still AWAITING_APPROVAL (no executor
+        owns the run in that state), and never overwrites a run that moved on concurrently.
+        """
+        error_summary = (
             "Reauthentication required: this workflow run predates persisted client identity; retrigger the run"
         )
+        finished_at = datetime.now(UTC)
+        await WorkflowRun.get_pymongo_collection().update_one(
+            {"_id": run.id, "status": WorkflowRunStatus.AWAITING_APPROVAL.value},
+            {
+                "$set": {
+                    "status": WorkflowRunStatus.FAILED.value,
+                    "error_summary": error_summary,
+                    "pending_requirements": [],
+                    "finished_at": finished_at,
+                }
+            },
+        )
+        run.status = WorkflowRunStatus.FAILED
+        run.error_summary = error_summary
         run.pending_requirements = []
-        run.finished_at = datetime.now(UTC)
-        await run.save()
+        run.finished_at = finished_at
 
     async def send_cancel(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
         """Cancel a RUNNING / PAUSED / AWAITING_APPROVAL workflow run.
@@ -354,6 +411,9 @@ class WorkflowControlService:
         Idempotent: cancelling an already-cancelled run returns 200.
         """
         run = await self._load_run(workflow_definition_id, run_id)
+        # Idempotency is intentionally before state validation here (unlike pause/resume): cancelling
+        # a run that already has CANCEL pending — including a terminal run that kept a stale CANCEL —
+        # is a harmless no-op, so returning 200 is the documented contract rather than a 4xx.
         if run.pending_directive == WorkflowDirective.CANCEL:
             return run
         new_status = _apply(run, WorkflowDirective.CANCEL)
@@ -361,8 +421,19 @@ class WorkflowControlService:
         if new_status == run.status:
             return run
 
-        run.pending_directive = WorkflowDirective.CANCEL
-        await run.save()
+        result = await WorkflowRun.get_pymongo_collection().update_one(
+            {
+                "_id": run.id,
+                "status": {"$in": [status.value for status in WorkflowRunStateMachine.ACTIVE_STATUSES]},
+                "pending_directive": {"$ne": WorkflowDirective.CANCEL.value},
+            },
+            {"$set": {"pending_directive": WorkflowDirective.CANCEL.value}},
+        )
+        if result.modified_count == 0:
+            run = await self._reload_run(PydanticObjectId(run.id))
+            if run.pending_directive == WorkflowDirective.CANCEL:
+                return run  # another request already armed cancel — idempotent
+            raise HTTPException(status_code=409, detail="Run state changed concurrently; refresh and retry")
         self._queue.put(run_id, WorkflowDirective.CANCEL)
 
         # Reverse-bridge to agno's cancellation manager so any in-flight agno code
@@ -374,7 +445,7 @@ class WorkflowControlService:
 
         logger.info("WorkflowRun %s cancel requested", run_id)
 
-        return run
+        return await self._reload_run(PydanticObjectId(run.id))
 
     async def send_retry(
         self,
@@ -707,6 +778,8 @@ class WorkflowControlService:
         Args:
             workflow_definition_id: Must match ``run.workflow_definition_id``.
             run_id:                 The WorkflowRun to query.
+            auth_context:           Caller's auth context, used to refresh the run's credentials
+                                    if a timed-out requirement nudges ``continue_run``.
 
         Raises:
             HTTPException(404): Run not found or belongs to a different workflow.
@@ -763,6 +836,14 @@ class WorkflowControlService:
                 status_code=404,
                 detail=f"WorkflowRun {run_id!r} does not belong to workflow {workflow_definition_id!r}",
             )
+        return run
+
+    @staticmethod
+    async def _reload_run(run_id: PydanticObjectId) -> WorkflowRun:
+        """Re-read a run after a guarded write so callers return fresh state, never a stale copy."""
+        run = await WorkflowRun.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"WorkflowRun {str(run_id)!r} not found")
         return run
 
     @staticmethod

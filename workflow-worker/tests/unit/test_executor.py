@@ -292,18 +292,23 @@ async def test_prepare_scheduled_run_returns_claim_definition_and_run_on_happy_p
 
 
 @pytest.mark.asyncio
-async def test_mark_run_failed_updates_latest_persisted_run(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mark_run_failed_uses_guarded_terminal_write(monkeypatch: pytest.MonkeyPatch) -> None:
     run = SimpleNamespace(id=PydanticObjectId())
-    persisted_run = SimpleNamespace(save=AsyncMock())
-    monkeypatch.setattr(executor.WorkflowRun, "get", AsyncMock(return_value=persisted_run))
+    collection = AsyncMock()
+    collection.update_one.return_value = SimpleNamespace(modified_count=1)
+    monkeypatch.setattr(executor.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: collection))
     error = RuntimeError("execution failed")
 
     await executor._mark_run_failed(run, error)
 
-    assert persisted_run.status == WorkflowRunStatus.FAILED
-    assert persisted_run.error_summary == "execution failed"
-    assert persisted_run.finished_at.tzinfo is UTC
-    persisted_run.save.assert_awaited_once_with()
+    flt, update = collection.update_one.await_args.args
+    # Guarded on non-terminal statuses so a terminal outcome already written wins; only the
+    # terminal fields are $set — never a whole-document save, never upsert.
+    assert flt["_id"] == run.id
+    assert update["$set"]["status"] == WorkflowRunStatus.FAILED.value
+    assert update["$set"]["error_summary"] == "execution failed"
+    assert update["$set"]["finished_at"].tzinfo is UTC
+    assert "upsert" not in collection.update_one.await_args.kwargs
 
 
 @pytest.mark.asyncio

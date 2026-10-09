@@ -4,15 +4,239 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from beanie import PydanticObjectId
+from fastapi import HTTPException
 
 from registry.services import workflow_control_service as wcs
 from registry.services.workflow_control_service import WorkflowControlService
-from registry_pkgs.models.enums import RequirementResolution, WorkflowRunStatus
+from registry_pkgs.models.enums import RequirementResolution, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.workflows.control import DirectiveQueue
+
+
+def _control_service() -> WorkflowControlService:
+    return WorkflowControlService(directive_queue=DirectiveQueue(), auth_context_refresher=AsyncMock())
+
+
+def _patch_collection(monkeypatch: pytest.MonkeyPatch, modified_count: int) -> AsyncMock:
+    collection = AsyncMock()
+    collection.update_one.return_value = SimpleNamespace(modified_count=modified_count)
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: collection))
+    return collection
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_already_cancelled_is_idempotent(monkeypatch: pytest.MonkeyPatch):
+    run = SimpleNamespace(
+        id=PydanticObjectId(),
+        status=WorkflowRunStatus.RUNNING,
+        pending_directive=WorkflowDirective.CANCEL,
+    )
+    collection = _patch_collection(monkeypatch, 0)
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_cancel("wf-1", str(run.id))
+
+    assert result is run
+    collection.update_one.assert_not_awaited()  # already CANCEL → no write at all
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_conflict_returns_409(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    _patch_collection(monkeypatch, 0)  # run finished concurrently → nothing matched
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.COMPLETED, pending_directive=None)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.send_cancel("wf-1", str(run_id))
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_concurrent_cancel_is_idempotent_on_reload(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    _patch_collection(monkeypatch, 0)  # another request armed CANCEL first
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=WorkflowDirective.CANCEL)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_cancel("wf-1", str(run_id))
+
+    assert result is reloaded  # 200, idempotent
+
+
+@pytest.mark.asyncio
+async def test_send_pause_conflict_returns_409(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    _patch_collection(monkeypatch, 0)
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.COMPLETED, pending_directive=None)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.send_pause("wf-1", str(run_id))
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_send_pause_already_paused_on_reload_is_idempotent(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    _patch_collection(monkeypatch, 0)
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.PAUSED, pending_directive=WorkflowDirective.PAUSE)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_pause("wf-1", str(run_id))
+
+    assert result is reloaded  # 200, already paused
+
+
+@pytest.mark.asyncio
+async def test_send_pause_concurrent_duplicate_is_idempotent(monkeypatch: pytest.MonkeyPatch):
+    # Loaded before another request armed PAUSE; the executor hasn't entered the pause yet.
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    _patch_collection(monkeypatch, 0)
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=WorkflowDirective.PAUSE)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+    put = Mock()
+    monkeypatch.setattr(service._queue, "put", put)
+
+    result = await service.send_pause("wf-1", str(run_id))
+
+    assert result is reloaded
+    put.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_pause_terminal_run_with_leftover_pause_on_reload_is_409(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    _patch_collection(monkeypatch, 0)
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.COMPLETED, pending_directive=WorkflowDirective.PAUSE)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.send_pause("wf-1", str(run_id))
+
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_send_resume_success_writes_only_pending_directive(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.PAUSED, pending_directive=None)
+    collection = _patch_collection(monkeypatch, 1)
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=WorkflowDirective.RESUME)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_resume("wf-1", str(run_id))
+
+    assert result is reloaded
+    flt, update = collection.update_one.await_args.args
+    # Guarded on PAUSED; only pending_directive is set.
+    assert flt["status"] == WorkflowRunStatus.PAUSED.value
+    assert update == {"$set": {"pending_directive": WorkflowDirective.RESUME.value}}
+
+
+@pytest.mark.asyncio
+async def test_send_resume_conflict_returns_409(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.PAUSED, pending_directive=None)
+    _patch_collection(monkeypatch, 0)  # no longer PAUSED when the write ran
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.COMPLETED, pending_directive=None)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.send_resume("wf-1", str(run_id))
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_send_pause_already_pending_is_idempotent_without_write(monkeypatch: pytest.MonkeyPatch):
+    # A duplicate pause before the executor enters the loop (still RUNNING, PAUSE already
+    # pending) must return 200 without a write — not a spurious 409.
+    run = SimpleNamespace(
+        id=PydanticObjectId(), status=WorkflowRunStatus.RUNNING, pending_directive=WorkflowDirective.PAUSE
+    )
+    collection = _patch_collection(monkeypatch, 0)
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_pause("wf-1", str(run.id))
+
+    assert result is run
+    collection.update_one.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_pause_terminal_run_with_stale_pause_is_rejected(monkeypatch: pytest.MonkeyPatch):
+    run = SimpleNamespace(
+        id=PydanticObjectId(), status=WorkflowRunStatus.COMPLETED, pending_directive=WorkflowDirective.PAUSE
+    )
+    collection = _patch_collection(monkeypatch, 0)
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.send_pause("wf-1", str(run.id))
+    assert exc.value.status_code == 400
+    collection.update_one.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_resume_terminal_run_with_stale_resume_is_rejected(monkeypatch: pytest.MonkeyPatch):
+    run = SimpleNamespace(
+        id=PydanticObjectId(), status=WorkflowRunStatus.COMPLETED, pending_directive=WorkflowDirective.RESUME
+    )
+    collection = _patch_collection(monkeypatch, 0)
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.send_resume("wf-1", str(run.id))
+    assert exc.value.status_code == 400
+    collection.update_one.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_pause_success_writes_only_pending_directive(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    collection = _patch_collection(monkeypatch, 1)
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=WorkflowDirective.PAUSE)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_pause("wf-1", str(run_id))
+
+    assert result is reloaded
+    flt, update = collection.update_one.await_args.args
+    # Guarded on RUNNING; only pending_directive is set — never a whole-document save.
+    assert flt["status"] == WorkflowRunStatus.RUNNING.value
+    assert update == {"$set": {"pending_directive": WorkflowDirective.PAUSE.value}}
 
 
 @pytest.mark.asyncio
@@ -276,7 +500,7 @@ async def test_resolve_standard_requirement_dispatches_continue(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_continue_old_run_without_client_id_fails_safely():
+async def test_continue_old_run_without_client_id_fails_safely(monkeypatch: pytest.MonkeyPatch):
     run = SimpleNamespace(
         id=PydanticObjectId(),
         triggering_user_id="user-1",
@@ -286,6 +510,9 @@ async def test_continue_old_run_without_client_id_fails_safely():
         finished_at=None,
         save=AsyncMock(),
     )
+    collection = AsyncMock()
+    collection.update_one.return_value = SimpleNamespace(modified_count=1)
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: collection))
     runner = SimpleNamespace(continue_run=AsyncMock())
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
@@ -298,7 +525,11 @@ async def test_continue_old_run_without_client_id_fails_safely():
     assert run.pending_requirements == []
     assert "Reauthentication required" in run.error_summary
     assert run.finished_at is not None
-    run.save.assert_awaited_once()
+    # Terminal write is a guarded update_one on an AWAITING_APPROVAL run, not a whole save().
+    flt, update = collection.update_one.await_args.args
+    assert flt["status"] == WorkflowRunStatus.AWAITING_APPROVAL.value
+    assert update["$set"]["status"] == WorkflowRunStatus.FAILED.value
+    run.save.assert_not_awaited()
     runner.continue_run.assert_not_awaited()
 
 

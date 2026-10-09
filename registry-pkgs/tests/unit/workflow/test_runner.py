@@ -60,6 +60,18 @@ def _run() -> WorkflowRun:
     )
 
 
+def _writer() -> SimpleNamespace:
+    """A stand-in RunStateWriter whose guarded writes/acks succeed and are recorded."""
+    return SimpleNamespace(write=AsyncMock(return_value=True), ack_directive=AsyncMock(return_value=True))
+
+
+def _patch_writer(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Make runner.RunStateWriter(run_id) return a single fake writer, and return it."""
+    fake = _writer()
+    monkeypatch.setattr(runner, "RunStateWriter", lambda _run_id: fake)
+    return fake
+
+
 def _make_runner(**kwargs) -> runner.WorkflowRunner:
     """Return a WorkflowRunner with sensible test defaults."""
     from registry_pkgs.core.config import JwtSigningConfig
@@ -128,6 +140,7 @@ class TestWorkflowRunnerRun:
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
         monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value=fake_registry))
         monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+        fw = _patch_writer(monkeypatch)
 
         monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
         find_query = SimpleNamespace(to_list=AsyncMock(return_value=node_runs))
@@ -145,7 +158,9 @@ class TestWorkflowRunnerRun:
         assert actual_run is run_doc
         assert actual_nodes == node_runs
         runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, auth_context)
-        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None, None)
+        runner.WorkflowRunner._execute.assert_awaited_once_with(
+            run_doc, definition, "hello", fake_registry, fw, None, None
+        )
 
     @pytest.mark.asyncio
     async def test_run_uses_existing_definition_snapshot_instead_of_live_definition(
@@ -167,6 +182,7 @@ class TestWorkflowRunnerRun:
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
         monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value=fake_registry))
         monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+        _patch_writer(monkeypatch)
 
         monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
         find_query = SimpleNamespace(to_list=AsyncMock(return_value=node_runs))
@@ -206,6 +222,7 @@ class TestWorkflowRunnerRun:
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=existing_run))
         monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value=fake_registry))
         monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+        fw = _patch_writer(monkeypatch)
 
         monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
         find_query = SimpleNamespace(to_list=AsyncMock(return_value=node_runs))
@@ -223,13 +240,15 @@ class TestWorkflowRunnerRun:
         assert actual_nodes == node_runs
         assert existing_run.status == WorkflowRunStatus.RUNNING
         assert existing_run.definition_snapshot["name"] == definition.name
-        existing_run.save.assert_awaited_once()
+        # The PENDING→RUNNING transition is now a guarded write, not a whole-document save.
+        fw.write.assert_awaited_once()
+        existing_run.save.assert_not_awaited()
         runner.WorkflowRunner._build_registry.assert_awaited_once_with(
             definition,
             auth_context,
         )
         runner.WorkflowRunner._execute.assert_awaited_once_with(
-            existing_run, definition, "hello", fake_registry, None, None
+            existing_run, definition, "hello", fake_registry, fw, None, None
         )
 
 
@@ -323,6 +342,7 @@ class TestRunSetsRunningStatus:
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
         monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value={}))
         monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+        fw = _patch_writer(monkeypatch)
         monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
         find_query = SimpleNamespace(to_list=AsyncMock(return_value=[]))
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
@@ -332,7 +352,43 @@ class TestRunSetsRunningStatus:
 
         assert run_doc.status == WorkflowRunStatus.RUNNING
         assert run_doc.definition_snapshot["name"] == definition.name
-        run_doc.save.assert_awaited_once()
+        # Guarded PENDING→RUNNING write carries status + snapshot.
+        set_fields = fw.write.await_args.args[0]
+        assert set_fields["status"] == WorkflowRunStatus.RUNNING
+        assert set_fields["definition_snapshot"]["name"] == definition.name
+
+    @pytest.mark.asyncio
+    async def test_non_pending_run_does_not_execute_or_write(self, monkeypatch: pytest.MonkeyPatch):
+        """A run that is no longer PENDING (already started or cancelled) must not execute:
+        the start CAS is rejected, _execute is never called, and no further write happens."""
+        definition = _definition()
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.CANCELLED,
+            definition_snapshot=None,
+            sync=AsyncMock(),
+            save=AsyncMock(),
+        )
+        monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock())
+        monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *a, **k: SimpleNamespace(to_list=AsyncMock(return_value=[])))
+        fw = _writer()
+        fw.write = AsyncMock(return_value=False)  # CAS loses: run not PENDING
+        monkeypatch.setattr(runner, "RunStateWriter", lambda _id: fw)
+
+        actual_run, nodes = await _make_runner().run(
+            str(definition.id), "hello", auth_context=None, existing_run_id=str(run_doc.id)
+        )
+
+        assert actual_run is run_doc
+        assert nodes == []
+        runner.WorkflowRunner._build_registry.assert_not_awaited()
+        runner.WorkflowRunner._execute.assert_not_awaited()
+        # The only write attempted was the rejected start CAS; nothing else.
+        assert fw.write.await_count == 1
 
 
 @pytest.mark.unit
@@ -356,7 +412,7 @@ class TestExecute:
         monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
         r = _make_runner()
 
-        await r._execute(run_doc, _definition(), "hello", fake_registry)
+        await r._execute(run_doc, _definition(), "hello", fake_registry, _writer())
 
         workflow.arun.assert_awaited_once_with(
             input="hello",
@@ -386,12 +442,14 @@ class TestExecute:
             run_id="agno-run-1",
         )
 
-        await _make_runner()._handle_run_output(run_doc, result)
+        w = _writer()
+        await _make_runner()._handle_run_output(run_doc, result, w)
 
         assert run_doc.status == WorkflowRunStatus.FAILED
         assert run_doc.pending_requirements == []
         run_doc.sync.assert_awaited_once()
-        run_doc.save.assert_not_awaited()
+        # Terminal status already synced → no pause write happens.
+        w.write.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_successful_output_review_still_transitions_to_awaiting_approval(
@@ -418,13 +476,15 @@ class TestExecute:
         )
         monkeypatch.setattr(runner, "serialize_requirement", lambda req: {"step_id": req.step_id})
 
-        await _make_runner()._handle_run_output(run_doc, result)
+        w = _writer()
+        await _make_runner()._handle_run_output(run_doc, result, w)
 
         assert run_doc.status == WorkflowRunStatus.AWAITING_APPROVAL
         assert run_doc.pending_requirements == [{"step_id": "review-step"}]
         assert run_doc.agno_run_id == "agno-run-1"
         run_doc.sync.assert_awaited_once()
-        run_doc.save.assert_awaited_once()
+        # The pause transition is a guarded write, not a whole-document save.
+        w.write.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("review_target", ["step", "router"])
@@ -475,9 +535,14 @@ class TestExecute:
             sync=AsyncMock(),
             save=AsyncMock(),
         )
+        # One writer shared by the syncer and _handle_run_output: in the no-sync-failure
+        # branch the syncer persists FAILED through it; in the sync-failure branch the
+        # stopped-failure fallback in _handle_run_output does.
+        w = _writer()
         syncer = object.__new__(WorkflowRunSyncer)
         syncer._workflow_run = run_doc
         syncer._node_by_name = {}
+        syncer._run_writer = w
 
         if sync_failure:
             # The agno session was saved, but the Beanie transaction failed.
@@ -499,14 +564,15 @@ class TestExecute:
             syncer._sync_to_beanie.assert_awaited_once()
         else:
             await syncer._update_workflow_run(result, _flatten_step_results(result.step_results))
-        await _make_runner()._handle_run_output(run_doc, result)
+        await _make_runner()._handle_run_output(run_doc, result, w)
 
         assert result.is_paused
         assert run_doc.status == WorkflowRunStatus.FAILED
         assert run_doc.error_summary == "original auth error"
         assert run_doc.pending_requirements == []
         assert run_doc.finished_at is not None
-        run_doc.save.assert_awaited_once()
+        # The terminal FAILED state is persisted through the guarded writer, not save().
+        w.write.assert_awaited()
         assert executed == ["failure"]
 
     @pytest.mark.asyncio
@@ -526,14 +592,15 @@ class TestExecute:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([]))
         r = _make_runner()
 
+        w = _writer()
         with pytest.raises(RuntimeError, match="boom"):
-            await r._execute(run_doc, _definition(), "hello", {})
+            await r._execute(run_doc, _definition(), "hello", {}, w)
 
         assert run_doc.status == WorkflowRunStatus.FAILED
         assert run_doc.error_summary == "boom"
         assert isinstance(run_doc.finished_at, datetime)
         assert run_doc.finished_at.tzinfo == UTC
-        run_doc.save.assert_awaited_once()
+        w.write.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_marks_run_cancelled_when_workflow_is_cancelled(self, monkeypatch: pytest.MonkeyPatch):
@@ -553,13 +620,14 @@ class TestExecute:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([]))
         r = _make_runner()
 
-        await r._execute(run_doc, _definition(), "hello", {})
+        w = _writer()
+        await r._execute(run_doc, _definition(), "hello", {}, w)
 
         assert run_doc.status == WorkflowRunStatus.CANCELLED
         assert run_doc.error_summary == "Workflow cancelled by user"
         assert isinstance(run_doc.finished_at, datetime)
         assert run_doc.finished_at.tzinfo == UTC
-        run_doc.save.assert_awaited_once()
+        w.write.assert_awaited_once()
         run_doc.sync.assert_not_called()
 
     @pytest.mark.asyncio
@@ -600,7 +668,7 @@ class TestExecute:
 
         r = _make_runner()
         with pytest.raises(RuntimeError, match="llm broke"):
-            await r._execute(run_doc, _definition(), "hello", {})
+            await r._execute(run_doc, _definition(), "hello", {}, _writer())
 
         assert dangling_running.status == NodeRunStatus.FAILED
         assert dangling_running.error == "llm broke"
@@ -641,7 +709,7 @@ class TestExecute:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
 
         r = _make_runner()
-        await r._execute(run_doc, _definition(), "hello", {})
+        await r._execute(run_doc, _definition(), "hello", {}, _writer())
 
         assert dangling_node.status == NodeRunStatus.CANCELLED
         assert dangling_node.error == "user cancelled"
@@ -679,13 +747,14 @@ class TestExecute:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
 
         r = _make_runner()
+        w = _writer()
         with caplog.at_level(logging.WARNING, logger="registry_pkgs.workflows.runner"):
             with pytest.raises(RuntimeError, match="llm broke"):
-                await r._execute(run_doc, _definition(), "hello", {})
+                await r._execute(run_doc, _definition(), "hello", {}, w)
 
         assert run_doc.status == WorkflowRunStatus.FAILED
         assert run_doc.error_summary == "llm broke"
-        run_doc.save.assert_awaited_once()
+        w.write.assert_awaited_once()
         assert any("failed to clean up dangling NodeRuns" in record.message for record in caplog.records)
 
     @pytest.mark.asyncio
@@ -721,12 +790,13 @@ class TestExecute:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
 
         r = _make_runner()
+        w = _writer()
         with caplog.at_level(logging.WARNING, logger="registry_pkgs.workflows.runner"):
-            await r._execute(run_doc, _definition(), "hello", {})
+            await r._execute(run_doc, _definition(), "hello", {}, w)
 
         assert run_doc.status == WorkflowRunStatus.CANCELLED
         assert run_doc.error_summary == "user cancelled"
-        run_doc.save.assert_awaited_once()
+        w.write.assert_awaited_once()
         assert any("failed to clean up dangling NodeRuns" in record.message for record in caplog.records)
 
 
@@ -756,13 +826,14 @@ class TestStoppedFailureFallback:
         container = StepOutput(step_name="parallel", success=False, stop=True, steps=[failed])
         result = WorkflowRunOutput(status=RunStatus.completed, step_results=[container])
 
-        await _make_runner()._handle_run_output(stale_run, result)
+        w = _writer()
+        await _make_runner()._handle_run_output(stale_run, result, w)
 
         assert stale_run.status == WorkflowRunStatus.FAILED
         assert stale_run.error_summary == (error or "Step 'fetch' failed")
         assert stale_run.pending_requirements == []
         assert stale_run.finished_at is not None
-        stale_run.save.assert_awaited_once()
+        w.write.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("success", [False, True])
@@ -779,12 +850,13 @@ class TestStoppedFailureFallback:
         output = StepOutput(step_name="fetch", success=success, stop=True, error=None if success else "ignored")
         result = WorkflowRunOutput(status=RunStatus.paused, step_results=[output])
 
-        await _make_runner()._handle_run_output(stale_run, result)
+        w = _writer()
+        await _make_runner()._handle_run_output(stale_run, result, w)
 
         assert stale_run.status == WorkflowRunStatus.AWAITING_APPROVAL
         assert stale_run.error_summary is None
         assert stale_run.finished_at is None
-        stale_run.save.assert_awaited_once()
+        w.write.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cancellation_source", ["database", "agno"])
@@ -801,11 +873,12 @@ class TestStoppedFailureFallback:
         )
         original_status = stale_run.status
 
-        await _make_runner()._handle_run_output(stale_run, result)
+        w = _writer()
+        await _make_runner()._handle_run_output(stale_run, result, w)
 
         assert stale_run.status == original_status
         assert stale_run.error_summary is None
-        stale_run.save.assert_not_awaited()
+        w.write.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_fallback_save_error_propagates_without_publishing_approval(
@@ -813,21 +886,22 @@ class TestStoppedFailureFallback:
         stale_run: SimpleNamespace,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        stale_run.save.side_effect = AutoReconnect("database still unavailable")
         serialize = Mock()
         monkeypatch.setattr(runner, "serialize_requirement", serialize)
         result = WorkflowRunOutput(
             status=RunStatus.paused,
             step_results=[StepOutput(step_name="fetch", success=False, stop=True, error="auth error")],
         )
+        w = _writer()
+        w.write.side_effect = AutoReconnect("database still unavailable")
 
         with pytest.raises(AutoReconnect, match="database still unavailable"):
-            await _make_runner()._handle_run_output(stale_run, result)
+            await _make_runner()._handle_run_output(stale_run, result, w)
 
         assert stale_run.status == WorkflowRunStatus.FAILED
         assert stale_run.pending_requirements == []
         assert stale_run.error_summary == "auth error"
-        stale_run.save.assert_awaited_once()
+        w.write.assert_awaited_once()
         serialize.assert_not_called()
 
 
@@ -898,6 +972,7 @@ class TestContinueRunHydrationFailure:
         monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
         monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([]))
+        fw = _patch_writer(monkeypatch)
 
         r = _make_runner(db_client=_FakeClient())
 
@@ -908,4 +983,89 @@ class TestContinueRunHydrationFailure:
         assert run_doc.pending_requirements == original_pending
         # The run was finalized FAILED rather than left stranded as RUNNING.
         assert run_doc.status == WorkflowRunStatus.FAILED
-        run_doc.save.assert_awaited()
+        fw.write.assert_awaited()
+
+
+@pytest.mark.unit
+class TestRunnerWritesAgainstPersistedState:
+    """Drive runner paths through the real RunStateWriter against a fake run document."""
+
+    @pytest.mark.asyncio
+    async def test_finalize_failure_does_not_overwrite_completed_run(
+        self, monkeypatch: pytest.MonkeyPatch, fake_run_collection
+    ):
+        run_oid = PydanticObjectId()
+        # The syncer already persisted COMPLETED; this runner's in-memory copy is stale.
+        collection = fake_run_collection({"_id": run_oid, "status": "completed"})
+        run_doc = SimpleNamespace(
+            id=run_oid,
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            pending_requirements=[],
+        )
+        r = _make_runner()
+        monkeypatch.setattr(r, "_finalize_dangling_node_runs", AsyncMock())
+
+        await r._finalize_failure(run_doc, RuntimeError("late failure"), runner.RunStateWriter(run_oid))
+
+        assert collection.doc == {"_id": run_oid, "status": "completed"}
+
+    @pytest.mark.asyncio
+    async def test_continue_run_that_completes_clears_decided_requirements(
+        self, monkeypatch: pytest.MonkeyPatch, fake_run_collection
+    ):
+        run_oid = PydanticObjectId()
+        decided = [{"step_id": "review", "confirmed": True}]
+        collection = fake_run_collection(
+            {"_id": run_oid, "status": WorkflowRunStatus.AWAITING_APPROVAL.value, "pending_requirements": decided}
+        )
+
+        async def _reload() -> None:
+            run_doc.status = WorkflowRunStatus(collection.doc["status"])
+            run_doc.pending_requirements = collection.doc["pending_requirements"]
+
+        run_doc = SimpleNamespace(
+            id=run_oid,
+            status=WorkflowRunStatus.RUNNING,
+            definition_snapshot={"name": "demo"},
+            pending_requirements=list(decided),
+            agno_run_id="agno-run-1",
+            error_summary=None,
+            finished_at=None,
+            started_at=datetime.now(UTC),
+            final_output=None,
+            sync=_reload,
+        )
+
+        def _compile(*_args, run_writer, **_kwargs):
+            # Stand in for agno: the continuation completes and the real syncer persists it.
+            syncer = object.__new__(WorkflowRunSyncer)
+            syncer._workflow_run = run_doc
+            syncer._node_by_name = {}
+            syncer._run_writer = run_writer
+
+            async def _acontinue_run(**_kw):
+                output = WorkflowRunOutput(content="done", status=RunStatus.completed)
+                await syncer._update_workflow_run(output)
+                return output
+
+            return SimpleNamespace(acontinue_run=_acontinue_run)
+
+        client = {"jarvis": SimpleNamespace(get_collection=lambda name: collection)}
+        monkeypatch.setattr(runner.WorkflowRun, "get_settings", lambda: SimpleNamespace(name="workflow_runs"))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner, "definition_from_snapshot", lambda snapshot: SimpleNamespace(name="demo"))
+        monkeypatch.setattr(runner, "hydrate_requirement", lambda item: item)
+        monkeypatch.setattr(runner, "compile_workflow", _compile)
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(
+            runner.NodeRun, "find", lambda *args, **kwargs: SimpleNamespace(to_list=AsyncMock(return_value=[]))
+        )
+        r = _make_runner(db_client=client)
+        monkeypatch.setattr(r, "_build_registry", AsyncMock(return_value={}))
+
+        await r.continue_run(existing_run_id=str(run_oid), auth_context=None)
+
+        assert collection.doc["status"] == WorkflowRunStatus.COMPLETED.value
+        assert collection.doc["pending_requirements"] == []

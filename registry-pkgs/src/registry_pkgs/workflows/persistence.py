@@ -14,6 +14,11 @@ from pymongo.asynchronous.client_session import AsyncClientSession
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows.media_snapshot import serialize_step_output_media
+from registry_pkgs.workflows.run_repository import (
+    NON_TERMINAL_RUN_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    RunStateWriter,
+)
 from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY, is_skip_tolerated_failure
 
 logger = logging.getLogger(__name__)
@@ -26,12 +31,6 @@ _STATUS_MAP: dict[RunStatus, WorkflowRunStatus] = {
     RunStatus.running: WorkflowRunStatus.RUNNING,
     RunStatus.paused: WorkflowRunStatus.PAUSED,
 }
-
-# Statuses that represent a finished run (used for finished_at stamping and
-# transaction decisions).  Must stay in sync with WorkflowRunStateMachine.TERMINAL_STATUSES.
-_TERMINAL_STATUSES: frozenset[WorkflowRunStatus] = frozenset(
-    {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED}
-)
 
 _TERMINAL_NODE_RUN_STATUSES: frozenset[NodeRunStatus] = frozenset(
     {
@@ -53,6 +52,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
         db_client: Any,
         db_name: str,
         session_collection: str = "agno_workflow_sessions",
+        run_writer: RunStateWriter | None = None,
     ) -> None:
         super().__init__(
             db_client=db_client,
@@ -61,6 +61,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
         )
         self._workflow_run = workflow_run
         self._node_by_name = node_by_name
+        self._run_writer = run_writer or RunStateWriter(workflow_run.id)
 
     @override
     async def upsert_session(
@@ -106,7 +107,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
         step_outputs = _flatten_step_results(run_output.step_results)
         final_status = _resolve_workflow_run_status(run_output, step_outputs, self._node_by_name)
 
-        if final_status in _TERMINAL_STATUSES:
+        if final_status in TERMINAL_RUN_STATUSES:
             if session is not None:
                 await self._write_run_and_nodes(
                     run_output,
@@ -143,7 +144,12 @@ class WorkflowRunSyncer(AsyncMongoDb):
         session_data: dict[str, Any],
         session: AsyncClientSession | None,
     ) -> None:
-        await self._update_workflow_run(run_output, step_outputs, session=session)
+        written = await self._update_workflow_run(run_output, step_outputs, session=session)
+        if not written:
+            # The run left the non-terminal states (e.g. a concurrent cancel finalized it).
+            # Skip the NodeRun upserts for this pass rather than writing children of a run
+            # whose terminal outcome is already decided.
+            return
         for step_output in step_outputs:
             await self._upsert_node_run(
                 step_output,
@@ -156,28 +162,62 @@ class WorkflowRunSyncer(AsyncMongoDb):
         run_output: WorkflowRunOutput,
         step_outputs: list[StepOutput] | None = None,
         session: AsyncClientSession | None = None,
-    ) -> WorkflowRunStatus:
+    ) -> bool:
+        """Write the run's status and outputs with a single targeted, status-guarded update.
+
+        Only the executor-owned fields this sync computes are ``$set`` — never the whole
+        document — so a concurrent control-plane ``pending_directive`` (e.g. a user's CANCEL)
+        is preserved. ``from_statuses=NON_TERMINAL_RUN_STATUSES`` makes the first terminal
+        outcome final: a late sync can't overwrite a run the runner already finalized.
+
+        Returns True iff the write landed. A rejected write (the run became terminal
+        underneath this pass) is logged and returns False — it must not raise, because this
+        runs inside agno's ``upsert_session`` callback.
+        """
         run = self._workflow_run
         mapped_status = _resolve_workflow_run_status(run_output, step_outputs or [], self._node_by_name)
-        run.status = mapped_status
+
+        set_fields: dict[str, Any] = {"status": mapped_status}
+        unset: list[str] = []
         if mapped_status == WorkflowRunStatus.FAILED:
-            run.error_summary = _first_failure_error(step_outputs or [], self._node_by_name) or run.error_summary
-            if any(step.stop and _has_non_skip_failure(step, self._node_by_name) for step in step_outputs or []):
-                run.pending_requirements = []
-        if mapped_status in _TERMINAL_STATUSES:
-            if run.finished_at is None:
-                run.finished_at = datetime.now(UTC)
+            error_summary = _first_failure_error(step_outputs or [], self._node_by_name) or run.error_summary
+            if error_summary is not None:
+                set_fields["error_summary"] = error_summary
+        if mapped_status in TERMINAL_RUN_STATUSES:
+            set_fields["finished_at"] = run.finished_at or datetime.now(UTC)
+            # A finished run has no open decisions. This terminal write is the last one that
+            # lands, so it clears requirements left over from a HITL pause; the runner's later
+            # clear in continue_run is guarded on RUNNING and is rejected by then.
+            set_fields["pending_requirements"] = []
         else:
-            run.finished_at = None
+            unset.append("finished_at")
         if run_output.content is not None:
-            run.final_output = {"content": str(run_output.content)}
-        await run.save(session=session)
-        logger.info(
-            "WorkflowRun %s → status=%s",
-            run.id,
-            run.status,
+            set_fields["final_output"] = {"content": str(run_output.content)}
+
+        written = await self._run_writer.write(
+            set_fields,
+            from_statuses=NON_TERMINAL_RUN_STATUSES,
+            unset=unset,
+            session=session,
         )
-        return run.status
+
+        # Keep the in-memory mirror consistent so run.sync() consumers and _handle_run_output
+        # see the values this pass computed, whether or not the guarded write landed.
+        run.status = mapped_status
+        if "error_summary" in set_fields:
+            run.error_summary = set_fields["error_summary"]
+        if "pending_requirements" in set_fields:
+            run.pending_requirements = []
+        run.finished_at = set_fields.get("finished_at") if mapped_status in TERMINAL_RUN_STATUSES else None
+        if "final_output" in set_fields:
+            run.final_output = set_fields["final_output"]
+
+        if not written:
+            # The writer already logged the rejected field write; add the sync-specific
+            # consequence so it's clear why this pass stops here.
+            logger.warning("WorkflowRun %s sync skipped — run already terminal; NodeRun upserts skipped", run.id)
+            return False
+        return True
 
     async def _upsert_node_run(
         self,

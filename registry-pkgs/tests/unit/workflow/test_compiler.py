@@ -105,6 +105,40 @@ class TestWorkflowCompiler:
                 db_name="jarvis",
             )
 
+    def test_compile_workflow_threads_run_writer_to_syncer_and_control(self, monkeypatch: pytest.MonkeyPatch):
+        # The single run-write path must reach both persistence (syncer) and the control
+        # wrapper, so every WorkflowRun mutation goes through the writer the runner handed in.
+        import registry_pkgs.workflows.control as control_pkg
+
+        captured: dict[str, object] = {}
+
+        def fake_sync(**kwargs):
+            captured["syncer_writer"] = kwargs.get("run_writer")
+            return "db-sync"
+
+        def fake_with_control(executor, **kwargs):
+            captured["control_writer"] = kwargs.get("writer")
+            return executor
+
+        monkeypatch.setattr(compiler, "WorkflowRunSyncer", fake_sync)
+        monkeypatch.setattr(control_pkg, "with_control", fake_with_control)
+
+        definition = _workflow_definition([_step_node("fetch", "fetcher")])
+        sentinel = object()
+
+        compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry=_node_keyed_registry(definition, {"fetcher": _executor}),
+            db_client="client",
+            db_name="jarvis",
+            directive_queue=object(),  # non-None so STEP nodes get wrapped with_control
+            run_writer=sentinel,
+        )
+
+        assert captured["syncer_writer"] is sentinel
+        assert captured["control_writer"] is sentinel
+
     def test_compile_workflow_raises_for_missing_executor_key(self):
         definition = _workflow_definition([_step_node("first", "missing")])
 

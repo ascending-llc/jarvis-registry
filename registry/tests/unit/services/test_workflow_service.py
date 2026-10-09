@@ -1720,6 +1720,27 @@ async def test_toggle_workflow_status_enable_does_not_cascade(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
+async def test_cascade_disable_schedules_uses_guarded_bulk_update(monkeypatch: pytest.MonkeyPatch):
+    """The cascade bulk-update runs through the raw collection (concrete UpdateResult) and
+    targets only the workflow's enabled schedules, disabling them and clearing lease fields."""
+    workflow_id = PydanticObjectId()
+    collection = AsyncMock()
+    collection.update_many.return_value = SimpleNamespace(modified_count=2)
+    monkeypatch.setattr(
+        workflow_service.WorkflowSchedule, "get_pymongo_collection", classmethod(lambda cls: collection)
+    )
+    session = object()
+
+    await WorkflowService._cascade_disable_schedules(workflow_id, session=session)
+
+    flt, update = collection.update_many.await_args.args
+    assert flt == {"workflow_definition_id": workflow_id, "enabled": True}
+    assert update["$set"]["enabled"] is False
+    assert update["$set"]["lease_token"] is None
+    assert collection.update_many.await_args.kwargs["session"] is session
+
+
+@pytest.mark.asyncio
 async def test_toggle_workflow_status_idempotent_skip(monkeypatch: pytest.MonkeyPatch):
     """Toggling to the current state must return immediately without DB write."""
     fake_wf = _FakeWorkflow()

@@ -58,6 +58,14 @@ def _configure_fake_node_run() -> _FakeNodeRun:
     return node_run
 
 
+def _fake_writer() -> SimpleNamespace:
+    """A stand-in RunStateWriter: directive acks/writes succeed and are recorded for assertions."""
+    return SimpleNamespace(
+        ack_directive=AsyncMock(return_value=True),
+        write=AsyncMock(return_value=True),
+    )
+
+
 @pytest.mark.unit
 class TestControlWrapper:
     @pytest.mark.asyncio
@@ -75,6 +83,7 @@ class TestControlWrapper:
             save=AsyncMock(),
         )
 
+        writer = _fake_writer()
         executor = AsyncMock(return_value=SimpleNamespace(success=True, content="ok", error=None))
         wrapped = with_control(
             executor,
@@ -83,6 +92,7 @@ class TestControlWrapper:
             node_name="fetch",
             step_config=None,
             directive_queue=queue,
+            writer=writer,
         )
 
         monkeypatch.setattr(
@@ -106,17 +116,24 @@ class TestControlWrapper:
 
         assert result.success is True
         assert result.content == "ok"
-        assert fake_run.status == WorkflowRunStatus.RUNNING
-        assert fake_run.pending_directive is None
-        assert fake_run.paused_at is None
+        # Pause then resume are acknowledged by compare-and-set, not a whole-document save.
+        acked = [call.args[0] for call in writer.ack_directive.await_args_list]
+        assert acked == [WorkflowDirective.PAUSE, WorkflowDirective.RESUME]
         executor.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_cancel_before_attempt_raises_cancelled_error(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_pause_entry_race_with_cancel_aborts_without_pausing(self, monkeypatch: pytest.MonkeyPatch):
+        """If PAUSE is superseded by CANCEL before the pause-entry ack lands, the wrapper
+        must abort with the cancellation reason and never write status=PAUSED."""
         run_id = str(PydanticObjectId())
         queue = DirectiveQueue()
         queue.register(run_id)
-        queue.put(run_id, WorkflowDirective.CANCEL)
+        queue.put(run_id, WorkflowDirective.PAUSE)
+
+        writer = _fake_writer()
+        # The PAUSE-entry ack is rejected (directive changed underneath); the subsequent
+        # CANCEL ack succeeds.
+        writer.ack_directive = AsyncMock(side_effect=[False, True])
 
         executor = AsyncMock(return_value=SimpleNamespace(success=True, content="ok", error=None))
         wrapped = with_control(
@@ -126,6 +143,83 @@ class TestControlWrapper:
             node_name="fetch",
             step_config=None,
             directive_queue=queue,
+            writer=writer,
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=WorkflowDirective.CANCEL),
+        )
+        monkeypatch.setattr("registry_pkgs.workflows.control.wrapper._record_attempt_start", AsyncMock())
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper.WorkflowRun.get",
+            AsyncMock(return_value=SimpleNamespace(pause_timeout_seconds=60, paused_at=None, save=AsyncMock())),
+        )
+
+        with pytest.raises(WorkflowCancelledError, match="Workflow cancelled by user"):
+            await wrapped(SimpleNamespace(input="hello"), {})
+
+        executor.assert_not_awaited()
+        acked = [call.args[0] for call in writer.ack_directive.await_args_list]
+        assert acked == [WorkflowDirective.PAUSE, WorkflowDirective.CANCEL]
+        # Never a plain status=PAUSED write via write().
+        writer.write.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resume_superseded_by_cancel_aborts_without_executing(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        queue.put(run_id, WorkflowDirective.PAUSE)
+        queue.put(run_id, WorkflowDirective.RESUME)
+
+        writer = _fake_writer()
+        # PAUSE-entry ack ok; RESUME ack rejected (CANCEL landed first); CANCEL ack ok.
+        writer.ack_directive = AsyncMock(side_effect=[True, False, True])
+
+        executor = AsyncMock(return_value=SimpleNamespace(success=True, content="ok", error=None))
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="fetch",
+            step_config=None,
+            directive_queue=queue,
+            writer=writer,
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=WorkflowDirective.CANCEL),
+        )
+        monkeypatch.setattr("registry_pkgs.workflows.control.wrapper._record_attempt_start", AsyncMock())
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper.WorkflowRun.get",
+            AsyncMock(return_value=SimpleNamespace(pause_timeout_seconds=60, paused_at=None, save=AsyncMock())),
+        )
+
+        with pytest.raises(WorkflowCancelledError, match="Workflow cancelled by user"):
+            await wrapped(SimpleNamespace(input="hello"), {})
+
+        executor.assert_not_awaited()
+        acked = [call.args[0] for call in writer.ack_directive.await_args_list]
+        assert acked == [WorkflowDirective.PAUSE, WorkflowDirective.RESUME, WorkflowDirective.CANCEL]
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_attempt_raises_cancelled_error(self, monkeypatch: pytest.MonkeyPatch):
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        queue.put(run_id, WorkflowDirective.CANCEL)
+
+        writer = _fake_writer()
+        executor = AsyncMock(return_value=SimpleNamespace(success=True, content="ok", error=None))
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="fetch",
+            step_config=None,
+            directive_queue=queue,
+            writer=writer,
         )
 
         monkeypatch.setattr(
@@ -136,15 +230,12 @@ class TestControlWrapper:
             "registry_pkgs.workflows.control.wrapper._record_attempt_start",
             AsyncMock(),
         )
-        monkeypatch.setattr(
-            "registry_pkgs.workflows.control.wrapper._update_run_control_state",
-            AsyncMock(),
-        )
 
         with pytest.raises(WorkflowCancelledError, match="Workflow cancelled by user"):
             await wrapped(SimpleNamespace(input="hello"), {})
 
         executor.assert_not_awaited()
+        assert writer.ack_directive.await_args.args[0] == WorkflowDirective.CANCEL
 
     @pytest.mark.asyncio
     async def test_executor_exception_converted_to_failed_step_output(self, monkeypatch: pytest.MonkeyPatch):
@@ -623,6 +714,7 @@ class TestWithControlHaltsAgnoWorkflow:
         queue.register(run_id)
         queue.put(run_id, WorkflowDirective.PAUSE)
 
+        writer = _fake_writer()
         executor = AsyncMock(return_value=SimpleNamespace(success=True, content="ok", error=None))
         wrapped = with_control(
             executor,
@@ -631,6 +723,7 @@ class TestWithControlHaltsAgnoWorkflow:
             node_name="fetch",
             step_config=None,
             directive_queue=queue,
+            writer=writer,
         )
 
         monkeypatch.setattr("registry_pkgs.workflows.control.wrapper.PAUSE_POLL_INTERVAL", 0.0)
@@ -644,10 +737,6 @@ class TestWithControlHaltsAgnoWorkflow:
             AsyncMock(),
         )
         monkeypatch.setattr(
-            "registry_pkgs.workflows.control.wrapper._update_run_control_state",
-            AsyncMock(),
-        )
-        monkeypatch.setattr(
             "registry_pkgs.workflows.control.wrapper.WorkflowRun.get",
             AsyncMock(return_value=SimpleNamespace(pause_timeout_seconds=0, paused_at=None, save=AsyncMock())),
         )
@@ -656,6 +745,8 @@ class TestWithControlHaltsAgnoWorkflow:
             await wrapped(SimpleNamespace(input="hello"), {})
 
         executor.assert_not_awaited()
+        # On timeout we clear paused_at but leave pending_directive for the cancel path.
+        assert writer.write.await_args.args[0] == {"paused_at": None}
 
     @pytest.mark.asyncio
     async def test_identity_baggage_visible_to_executor_and_attempt_varies(self, monkeypatch: pytest.MonkeyPatch):
