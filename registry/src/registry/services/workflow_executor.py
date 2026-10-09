@@ -5,12 +5,14 @@ This module provides functions to execute workflows asynchronously using Backgro
 """
 
 import logging
+from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowRun
 from registry_pkgs.workflows.helpers import extract_user_text
+from registry_pkgs.workflows.run_repository import NON_TERMINAL_RUN_STATUSES, RunStateWriter
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 from ..auth.dependencies import UserContextDict
@@ -64,17 +66,19 @@ async def execute_workflow_run_background(
     except Exception as e:
         logger.exception("Error executing workflow run %s", run_id_str)
 
-        # Try to mark run as failed
+        # Try to mark run as failed through the guarded write path: a terminal
+        # outcome the runner already persisted must win, and a stale fallback marker must
+        # never overwrite it or resurrect a deleted run.
         try:
-            run = await WorkflowRun.get(PydanticObjectId(run_id))
-            if run:
-                run.status = WorkflowRunStatus.FAILED
-                run.error_summary = f"Execution error: {str(e)}"
-                from datetime import UTC, datetime
-
-                run.finished_at = datetime.now(UTC)
-                await run.save()
-                logger.info(f"Marked workflow run {run_id_str} as FAILED")
+            await RunStateWriter(PydanticObjectId(run_id)).write(
+                {
+                    "status": WorkflowRunStatus.FAILED,
+                    "error_summary": f"Execution error: {str(e)}",
+                    "finished_at": datetime.now(UTC),
+                },
+                from_statuses=NON_TERMINAL_RUN_STATUSES,
+            )
+            logger.info(f"Marked workflow run {run_id_str} as FAILED")
         except Exception:
             logger.exception("Failed to update run status")
 
