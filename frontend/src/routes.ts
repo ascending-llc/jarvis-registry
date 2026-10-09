@@ -19,6 +19,7 @@ export const APP_ROUTES = {
   skillSyncSourceDetail: '/skill-sync-sources/:id',
   workflowRegistry: '/workflow-registry',
   workflowEdit: '/workflow-edit',
+  models: '/models',
   skills: '/skills',
   generateToken: '/generate-token',
 } as const;

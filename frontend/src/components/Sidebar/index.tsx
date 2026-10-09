@@ -3,7 +3,7 @@ import { XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { Fragment } from 'react';
 
-import type { SkillsNavigationConfig } from '@/types/layout';
+import type { ModelsNavigationConfig, SkillsNavigationConfig } from '@/types/layout';
 import Content from './Content';
 
 interface SidebarProps {
@@ -11,9 +11,16 @@ interface SidebarProps {
   setSidebarOpen: (open: boolean) => void;
   isSubPage: boolean;
   skillsNavigation?: SkillsNavigationConfig;
+  modelsNavigation?: ModelsNavigationConfig;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, isSubPage, skillsNavigation }) => {
+const Sidebar: React.FC<SidebarProps> = ({
+  sidebarOpen,
+  setSidebarOpen,
+  isSubPage,
+  skillsNavigation,
+  modelsNavigation,
+}) => {
   return (
     <>
       {/* Mobile sidebar only */}
@@ -64,6 +71,7 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, isSubPag
                       setSidebarOpen={setSidebarOpen}
                       isSubPage={isSubPage}
                       skillsNavigation={skillsNavigation}
+                      modelsNavigation={modelsNavigation}
                     />
                   </div>
                 </Dialog.Panel>
@@ -85,6 +93,7 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, isSubPag
             sidebarOpen={!isSubPage && sidebarOpen}
             isSubPage={isSubPage}
             skillsNavigation={skillsNavigation}
+            modelsNavigation={modelsNavigation}
           />
         </div>
       </div>
