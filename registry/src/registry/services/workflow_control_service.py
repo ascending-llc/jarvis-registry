@@ -778,7 +778,8 @@ class WorkflowControlService:
         Args:
             workflow_definition_id: Must match ``run.workflow_definition_id``.
             run_id:                 The WorkflowRun to query.
-            auth_context:           auth_context
+            auth_context:           Caller's auth context, used to refresh the run's credentials
+                                    if a timed-out requirement nudges ``continue_run``.
 
         Raises:
             HTTPException(404): Run not found or belongs to a different workflow.
