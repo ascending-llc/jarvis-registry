@@ -351,3 +351,23 @@ def test_runner_records_only_terminal_run_with_end_to_end_duration(mock_record):
         status="completed",
         duration_seconds=25.0,
     )
+
+
+@patch("registry_pkgs.workflows.runner.record_workflow_run")
+def test_runner_records_duration_for_naive_started_at(mock_record):
+    # started_at loaded from MongoDB has no tzinfo (the client isn't tz_aware), while the
+    # finalizers stamp finished_at with UTC; the duration must still be recorded.
+    started_at = datetime.now(UTC) - timedelta(seconds=30)
+    failed_run = SimpleNamespace(
+        status=WorkflowRunStatus.FAILED,
+        started_at=started_at.replace(tzinfo=None),
+        finished_at=started_at + timedelta(seconds=12),
+    )
+
+    WorkflowRunner._record_run_metrics("my-workflow", failed_run)
+
+    mock_record.assert_called_once_with(
+        workflow_name="my-workflow",
+        status="failed",
+        duration_seconds=12.0,
+    )

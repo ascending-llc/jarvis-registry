@@ -102,7 +102,7 @@ async def _create_scheduled_run(
     """
     next_run_at = calculate_next_run_at(claimed.cron_expression, claimed.timezone)
     run = WorkflowRun(
-        workflow_definition_id=PydanticObjectId(definition.id),
+        workflow_definition_id=definition.id,
         workflow_version=definition.version,
         status=WorkflowRunStatus.PENDING,
         trigger_source="schedule",
