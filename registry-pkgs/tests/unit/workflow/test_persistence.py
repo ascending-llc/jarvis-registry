@@ -35,7 +35,7 @@ class _FieldExpr:
         return (self.name, "==", other)
 
 
-def _sync_with_fake_run():
+def _sync_with_fake_run(write_result: bool = True):
     sync = object.__new__(persistence.WorkflowRunSyncer)
     sync._workflow_run = SimpleNamespace(
         id=PydanticObjectId(),
@@ -47,6 +47,10 @@ def _sync_with_fake_run():
         save=AsyncMock(),
     )
     sync._node_by_name = {}
+    # The syncer now writes through a RunStateWriter rather than run.save(); a mock
+    # writer lets these unit tests assert on the computed in-memory state and on the
+    # exact $set payload without a live Mongo collection.
+    sync._run_writer = SimpleNamespace(write=AsyncMock(return_value=write_result))
     return sync
 
 
@@ -106,7 +110,10 @@ class TestWorkflowPersistence:
         assert sync._workflow_run.status == WorkflowRunStatus.RUNNING
         assert sync._workflow_run.finished_at is None
         assert sync._workflow_run.final_output == {"content": "still running"}
-        sync._workflow_run.save.assert_awaited_once_with(session=None)
+        # A non-terminal update $unsets finished_at and never saves the whole document.
+        _args, kwargs = sync._run_writer.write.await_args
+        assert "finished_at" in kwargs["unset"]
+        sync._workflow_run.save.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_update_workflow_run_sets_finished_at_once_for_terminal_status(self):
@@ -324,7 +331,7 @@ class TestWorkflowPersistence:
         assert sync._workflow_run.error_summary is None
 
     @pytest.mark.asyncio
-    async def test_update_workflow_run_passes_session_to_save(self):
+    async def test_update_workflow_run_passes_session_to_writer(self):
         sync = _sync_with_fake_run()
         mongo_session = object()
 
@@ -333,7 +340,36 @@ class TestWorkflowPersistence:
             session=mongo_session,
         )
 
-        sync._workflow_run.save.assert_awaited_once_with(session=mongo_session)
+        assert sync._run_writer.write.await_args.kwargs["session"] is mongo_session
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_run_sets_only_executor_fields_not_whole_doc(self):
+        sync = _sync_with_fake_run()
+
+        await sync._update_workflow_run(
+            WorkflowRunOutput(content="done", status=RunStatus.completed),
+        )
+
+        set_fields = sync._run_writer.write.await_args.args[0]
+        # Targeted write: only the fields this sync computes, never pending_directive.
+        assert set(set_fields) <= {"status", "error_summary", "pending_requirements", "finished_at", "final_output"}
+        assert "pending_directive" not in set_fields
+
+    @pytest.mark.asyncio
+    async def test_rejected_update_skips_node_run_upserts(self):
+        # A rejected guarded write (run went terminal) must not raise and must skip
+        # the NodeRun upserts for this pass.
+        sync = _sync_with_fake_run(write_result=False)
+        sync._upsert_node_run = AsyncMock()
+
+        await sync._write_run_and_nodes(
+            WorkflowRunOutput(content="late", status=RunStatus.completed),
+            [StepOutput(step_name="a", content="A")],
+            session_data={},
+            session=None,
+        )
+
+        sync._upsert_node_run.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_upsert_node_run_creates_new_node_run(self, monkeypatch: pytest.MonkeyPatch):

@@ -56,6 +56,7 @@ from registry_pkgs.telemetry.trace_propagation import (
 )
 from registry_pkgs.workflows.control.queue import DirectiveQueue
 from registry_pkgs.workflows.hitl import PendingDirectiveProjection
+from registry_pkgs.workflows.run_repository import RunStateWriter
 from registry_pkgs.workflows.types import is_skip_tolerated_failure
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ def with_control(
     node_name: str,
     step_config: StepConfig | None,
     directive_queue: DirectiveQueue,
+    writer: RunStateWriter | None = None,
 ) -> StepExecutor:
     """Wrap *executor* with directive checking and retry-backoff logic.
 
@@ -92,10 +94,14 @@ def with_control(
         step_config:     Per-step retry / error-handling policy, or ``None`` for
                          the safe production default (no retry, fail-fast).
         directive_queue: The shared in-process DirectiveQueue.
+        writer:          Shared run-write path; directive acknowledgements go through
+                         its compare-and-set so they never clobber other fields. The
+                         compiler hands one in; a default keeps standalone callers working.
 
     Returns:
         A new async callable with the same signature as *executor*.
     """
+    run_writer = writer or RunStateWriter(PydanticObjectId(run_id))
     if step_config and step_config.on_error == "retry":
         max_attempts = 1 + max(step_config.max_retries, 0)
         backoff_base = step_config.backoff_base_seconds
@@ -112,6 +118,7 @@ def with_control(
                 run_id=run_id,
                 node_name=node_name,
                 directive_queue=directive_queue,
+                writer=run_writer,
             )
             if cancel_reason is not None:
                 raise WorkflowCancelledError(cancel_reason)
@@ -186,6 +193,7 @@ async def _check_and_handle_directive(
     run_id: str,
     node_name: str,
     directive_queue: DirectiveQueue,
+    writer: RunStateWriter,
 ) -> str | None:
     """Inspect the directive queue and block if paused.
 
@@ -202,12 +210,19 @@ async def _check_and_handle_directive(
         return None
 
     if directive == WorkflowDirective.CANCEL:
-        await _update_run_control_state(run_id, pending_directive=None)
+        # Compare-and-set on the CANCEL we consumed: clears only that directive, never a
+        # newer one written underneath, and leaves every other field untouched.
+        await writer.ack_directive(
+            WorkflowDirective.CANCEL,
+            from_statuses={WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED},
+        )
         logger.info("Node %r: CANCEL directive received, aborting step", node_name)
         return "Workflow cancelled by user"
 
     if directive == WorkflowDirective.PAUSE:
-        return await _wait_while_paused(run_id=run_id, node_name=node_name, directive_queue=directive_queue)
+        return await _wait_while_paused(
+            run_id=run_id, node_name=node_name, directive_queue=directive_queue, writer=writer
+        )
 
     return None
 
@@ -235,6 +250,7 @@ async def _wait_while_paused(
     run_id: str,
     node_name: str,
     directive_queue: DirectiveQueue,
+    writer: RunStateWriter,
 ) -> str | None:
     """Block in a polling loop until RESUME or CANCEL, or until timeout.
 
@@ -247,14 +263,28 @@ async def _wait_while_paused(
     if run is None:
         raise RuntimeError(f"WorkflowRun {run_id!r} not found while entering pause — data integrity error")
 
-    await _update_run_control_state(
-        run_id,
-        status=WorkflowRunStatus.PAUSED,
-        pending_directive=None,
-        paused_at=datetime.now(UTC),
+    paused_at = datetime.now(UTC)
+    entered = await writer.ack_directive(
+        WorkflowDirective.PAUSE,
+        {"status": WorkflowRunStatus.PAUSED, "paused_at": paused_at},
+        from_statuses={WorkflowRunStatus.RUNNING},
     )
+    if not entered:
+        # The directive changed underneath us between the queue read and this write —
+        # typically PAUSE was replaced by CANCEL. Re-read and act on the current directive
+        # instead of entering the pause loop on stale information.
+        current = await _read_mongodb_directive(run_id)
+        if current == WorkflowDirective.CANCEL:
+            await writer.ack_directive(
+                WorkflowDirective.CANCEL,
+                from_statuses={WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED},
+            )
+            logger.info("Node %r: CANCEL superseded PAUSE before entering pause, aborting", node_name)
+            return "Workflow cancelled by user"
+        logger.info("Node %r: PAUSE no longer applies (directive=%s), continuing", node_name, current)
+        return None
+
     timeout_secs = float(run.pause_timeout_seconds)
-    paused_at = run.paused_at or datetime.now(UTC)
 
     poll_count = 0
     while True:
@@ -265,23 +295,23 @@ async def _wait_while_paused(
             next_directive = await _read_mongodb_directive(run_id)
 
         if next_directive == WorkflowDirective.RESUME:
-            await _update_run_control_state(
-                run_id,
-                status=WorkflowRunStatus.RUNNING,
-                pending_directive=None,
-                paused_at=None,
+            await writer.ack_directive(
+                WorkflowDirective.RESUME,
+                {"status": WorkflowRunStatus.RUNNING, "paused_at": None},
+                from_statuses={WorkflowRunStatus.PAUSED},
             )
             logger.info("Node %r: RESUME received, continuing execution", node_name)
             return None
 
         if next_directive == WorkflowDirective.CANCEL:
-            await _update_run_control_state(run_id, pending_directive=None)
+            await writer.ack_directive(WorkflowDirective.CANCEL, from_statuses={WorkflowRunStatus.PAUSED})
             logger.info("Node %r: CANCEL received while paused, aborting", node_name)
             return "Workflow cancelled by user"
 
         elapsed = (datetime.now(UTC) - paused_at).total_seconds()
         if elapsed >= timeout_secs:
-            await _update_run_control_state(run_id, pending_directive=None, paused_at=None)
+            # Leave pending_directive alone — the run is cancelled through the returned reason.
+            await writer.write({"paused_at": None}, from_statuses={WorkflowRunStatus.PAUSED})
             logger.warning(
                 "Node %r: pause timeout (%.0fs) exceeded, auto-cancelling",
                 node_name,
@@ -360,21 +390,3 @@ async def _record_attempt_result(
             node_id,
             node_name,
         )
-
-
-async def _update_run_control_state(
-    run_id: str,
-    *,
-    status: WorkflowRunStatus | None = None,
-    pending_directive: WorkflowDirective | None = None,
-    paused_at: datetime | None = None,
-) -> None:
-    """Persist control-related WorkflowRun fields without touching unrelated state."""
-    run = await WorkflowRun.get(PydanticObjectId(run_id))
-    if run is None:
-        return
-    if status is not None:
-        run.status = status
-    run.pending_directive = pending_directive
-    run.paused_at = paused_at
-    await run.save()

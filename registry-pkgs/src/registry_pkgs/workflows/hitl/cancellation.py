@@ -10,6 +10,7 @@ from beanie import PydanticObjectId
 from registry_pkgs.models.enums import WorkflowDirective
 from registry_pkgs.models.workflow import WorkflowRun
 from registry_pkgs.workflows.hitl.projections import PendingDirectiveProjection
+from registry_pkgs.workflows.run_repository import NON_TERMINAL_RUN_STATUSES
 
 if TYPE_CHECKING:
     from registry_pkgs.workflows.control.queue import DirectiveQueue
@@ -38,10 +39,13 @@ class MongoBackedCancellationManager(BaseRunCancellationManager):
         except Exception as exc:
             logger.warning("acancel_run: invalid run_id %s: %s", run_id, exc)
             return False
-        result = await WorkflowRun.find_one(WorkflowRun.id == oid).update(
-            {"$set": {"pending_directive": WorkflowDirective.CANCEL.value}}
+        # Only arm CANCEL on a run that is still non-terminal: once a run has finished,
+        # _finalize_cancel must not re-arm a stale CANCEL on top of the terminal state.
+        result = await WorkflowRun.get_pymongo_collection().update_one(
+            {"_id": oid, "status": {"$in": [status.value for status in NON_TERMINAL_RUN_STATUSES]}},
+            {"$set": {"pending_directive": WorkflowDirective.CANCEL.value}},
         )
-        modified = bool(getattr(result, "modified_count", 0))
+        modified = result.modified_count == 1
         if modified and self._directive_queue is not None:
             try:
                 self._directive_queue.put(run_id, WorkflowDirective.CANCEL)

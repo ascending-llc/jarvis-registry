@@ -120,6 +120,7 @@ async def test_manual_router_continuation_honors_stop(
     syncer = object.__new__(WorkflowRunSyncer)
     syncer._workflow_run = run_doc
     syncer._node_by_name = {item.name: item for item in nodes}
+    syncer._run_writer = SimpleNamespace(write=AsyncMock(return_value=True))
     await syncer._update_workflow_run(result, _flatten_step_results(result.step_results))
 
     if outcome not in {"skip", "success"}:
