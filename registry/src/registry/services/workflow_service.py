@@ -704,10 +704,13 @@ class WorkflowService:
         workflow_id: PydanticObjectId,
         session: AsyncClientSession | None = None,
     ) -> None:
-        """Bulk-disable all enabled schedules for a workflow, clearing lease fields."""
-        result = await WorkflowSchedule.find(
+        """Bulk-disable all enabled schedules for a workflow, clearing lease fields.
+
+        Uses the raw pymongo collection so the result is a concrete ``UpdateResult`` with a
+        reliable ``modified_count`` (Beanie's ``find().update_many()`` awaits to a union type).
+        """
+        result = await WorkflowSchedule.get_pymongo_collection().update_many(
             {"workflow_definition_id": workflow_id, "enabled": True},
-        ).update_many(
             {
                 "$set": {
                     "enabled": False,
