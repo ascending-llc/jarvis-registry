@@ -19,6 +19,7 @@ exclude-entropy-patterns = [
 ]
 
 exclude-signatures = [
+    {signature = '72aebf5598fdd67bc0367e7da771287d6a628ac37c9168cb7838a84303b1c993', reason = 'workflow launcher keyword argument interrupted_reason=_REGISTRY_SHUTDOWN_REASON is code, not a credential'},
     {signature = '8be609f2b0278499ddd06ed0f5107d1a3041ed3a6c2d5c25d35b5b4fd53da410', reason = 'fake placeholder tokens in local seed script are not credentials'},
     {signature = '6c6945a75f7423ce39a3c27035be4f309eb84959943c6e96108371726d3fb14e', reason = 'fake placeholder tokens in local seed script are not credentials'},
     {signature = '0c4d515f31f78d50a21eabeb31829898128c713d3cc6b1aa665fe8a29cfa508a', reason = 'fake placeholder tokens in local seed script are not credentials'},

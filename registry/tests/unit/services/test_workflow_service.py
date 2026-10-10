@@ -958,6 +958,45 @@ async def test_trigger_run_resolves_requested_historical_version(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_trigger_run_inserts_lease_fields_when_lease_supplied(monkeypatch: pytest.MonkeyPatch):
+    """When the route passes a lease, the run is inserted already leased (id + lease fields)."""
+    from datetime import UTC, datetime, timedelta
+
+    from beanie import PydanticObjectId
+
+    from registry_pkgs.database.leased_job import Lease
+
+    fake_wf = _FakeWorkflow(version=1)
+
+    async def fake_get(self, workflow_id, session=None):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    captured: dict = {}
+
+    class _FakeRun:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.id = kwargs.get("id") or PydanticObjectId()
+
+        async def insert(self):
+            return None
+
+    monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeRun)
+
+    run_id = PydanticObjectId()
+    lease = Lease(doc_id=run_id, owner="registry-1", token="tok-1", expires_at=datetime.now(UTC) + timedelta(minutes=2))
+
+    await WorkflowService(acl_service=AsyncMock()).trigger_workflow_run(workflow_id=str(fake_wf.id), lease=lease)
+
+    assert captured["id"] == run_id
+    assert captured["lease_token"] == "tok-1"
+    assert captured["lease_owner"] == "registry-1"
+    assert captured["lease_expires_at"] == lease.expires_at
+
+
+@pytest.mark.asyncio
 async def test_prepare_workflow_run_definition_resolves_historical_definition(monkeypatch: pytest.MonkeyPatch):
     workflow = _FakeWorkflow(version=3)
     snapshot = _historical_snapshot(workflow.id, executor_key="historical-oauth")

@@ -37,6 +37,7 @@ from .services.skill_sync_service import SkillSyncService
 from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .services.skill_sync_token_service import SkillSyncTokenService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_run_launcher import WorkflowRunLauncher
 from .services.workflow_schedule_service import WorkflowScheduleService
 from .services.workflow_service import WorkflowService
 
@@ -217,3 +218,7 @@ def get_workflow_schedule_service(
 def get_workflow_runner(container: RegistryContainer = Depends(get_container)) -> WorkflowRunner:
     """Get WorkflowRunner instance."""
     return container.workflow_runner
+
+
+def get_workflow_run_launcher(container: RegistryContainer = Depends(get_container)) -> WorkflowRunLauncher:
+    return container.workflow_run_launcher

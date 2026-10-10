@@ -9,7 +9,7 @@ import math
 from typing import Annotated, Literal
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
 from registry.auth.dependencies import CurrentUser, UserContextDict, effective_scopes_from_context
@@ -18,7 +18,7 @@ from registry.deps import (
     get_acl_service,
     get_oauth_service,
     get_workflow_control_service,
-    get_workflow_runner,
+    get_workflow_run_launcher,
     get_workflow_service,
 )
 from registry.schemas.acl_schema import ResourcePermissions
@@ -47,15 +47,15 @@ from registry.schemas.workflow_api_schemas import (
 from registry.schemas.workflow_schemas import NodeRunListResponse, NodeRunSummary, RunStatusResponse
 from registry.services.access_control_service import ACLService
 from registry.services.workflow_control_service import WorkflowControlService
-from registry.services.workflow_executor import execute_workflow_run_background
 from registry.services.workflow_reauth_service import collect_pending_oauth_authorizations
+from registry.services.workflow_run_launcher import WorkflowRunLauncher
 from registry.services.workflow_service import WorkflowService
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.oauth.oauth_service import MCPOAuthService
-from registry_pkgs.workflows.runner import WorkflowRunner
+from registry_pkgs.workflows.helpers import extract_user_text
 
 logger = logging.getLogger(__name__)
 
@@ -547,10 +547,9 @@ async def list_workflow_versions(
 async def trigger_workflow_run(
     workflow_id: str,
     data: WorkflowRunTriggerRequest,
-    background_tasks: BackgroundTasks,
     user_context: CurrentUser,
     workflow_service: WorkflowService = Depends(get_workflow_service),
-    workflow_runner: WorkflowRunner = Depends(get_workflow_runner),
+    launcher: WorkflowRunLauncher = Depends(get_workflow_run_launcher),
     acl_service: ACLService = Depends(get_acl_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
 ):
@@ -579,7 +578,11 @@ async def trigger_workflow_run(
                 pendingAuthorizations=pending_authorizations,
             )
 
-        # Create workflow run record (status=PENDING)
+        # Pre-allocate the run id and mint a lease so the run is inserted already owned by this pod.
+        run_id = PydanticObjectId()
+        lease = launcher.new_lease(run_id)
+
+        # Create workflow run record (status=PENDING), already leased.
         run = await workflow_service.trigger_workflow_run(
             workflow_id=workflow_id,
             trigger_source=data.triggerSource,
@@ -592,16 +595,25 @@ async def trigger_workflow_run(
             triggering_scopes=effective_scopes_from_context(user_context),
             triggering_client_id=user_context.get("client_id"),
             prepared_definition=prepared_definition,
+            lease=lease,
         )
 
-        # Schedule background execution
-        # This updates the run status as it progresses through the workflow state machine.
-        background_tasks.add_task(
-            execute_workflow_run_background,
-            run_id=run.id,
-            workflow_runner=workflow_runner,
-            auth_context=user_context,
-        )
+        # Launch the leased, tracked execution. After shutdown has begun the tracker refuses the
+        # spawn (and fails the just-inserted run), which we surface as 503.
+        try:
+            await launcher.launch_run(
+                lease=lease,
+                definition_id=workflow_id,
+                user_text=extract_user_text(run.initial_input),
+                auth_context=user_context,
+                existing_run_id=str(run.id),
+                definition_snapshot=run.definition_snapshot,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Registry is shutting down; retry"),
+            ) from exc
 
         logger.info(f"Workflow run {run.id} queued for execution (workflow: {workflow_id})")
 

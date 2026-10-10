@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
-from functools import cached_property
+from datetime import timedelta
+from functools import cached_property, partial
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import httpx
 from beanie import PydanticObjectId
@@ -25,6 +27,7 @@ from registry_pkgs.workflows.a2a_headers_provider import A2aHeadersProvider, mak
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
 from registry_pkgs.workflows.model_resolution import AzureModelCredential, build_legacy_bedrock_model
+from registry_pkgs.workflows.run_lease import reap_expired_runs
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 
@@ -36,6 +39,7 @@ from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
+from .services.background_task_tracker import BackgroundTaskTracker
 from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, gc_stale_embedding_generations
 from .services.embedding_reindex_execution_service import EmbeddingReindexExecutionService
 from .services.embedding_reindex_job_runner import EmbeddingReindexJobRunner
@@ -51,6 +55,7 @@ from .services.group_directory_client import (
     IdPGroupDirectoryClient,
 )
 from .services.group_service import GroupService
+from .services.lease_reaper import LeaseReaper
 from .services.model_gateway_selection_service import ModelGatewaySelectionService
 from .services.model_source_crud_service import ModelSourceCrudService
 from .services.oauth.connection_service import MCPConnectionService
@@ -71,9 +76,9 @@ from .services.skill_sync_service import SkillSyncService
 from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .services.skill_sync_token_service import SkillSyncTokenService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_run_launcher import WorkflowRunLauncher
 from .services.workflow_schedule_service import WorkflowScheduleService
 from .services.workflow_service import WorkflowService
-from .services.workflow_shutdown import cancel_in_flight_runs
 from .utils.mcp_headers import get_header_build_config
 
 if TYPE_CHECKING:
@@ -96,6 +101,8 @@ class RegistryContainer:
         self.db_client = db_client
         self.redis_client = redis_client
         self.directive_queue = DirectiveQueue()
+        # Pod-wide lease owner, so a run's lease (and the job runners' leases) names the pod in logs.
+        self.lease_owner = f"registry-{uuid4()}"
         self.role_cache: dict[tuple[str, int], PydanticObjectId] = {}
         # Write chokepoint: all vector writes resolve db_client.write_adapter, so this one wiring
         # blocks every writer during a reindex. Reads (db_client.adapter) are never blocked.
@@ -413,10 +420,29 @@ class RegistryContainer:
             raise
 
     @cached_property
+    def background_task_tracker(self) -> BackgroundTaskTracker:
+        """One shared tracker for all background tasks; a single shutdown covers them all."""
+        return BackgroundTaskTracker()
+
+    @cached_property
+    def workflow_run_launcher(self) -> WorkflowRunLauncher:
+        return WorkflowRunLauncher(
+            runner=self.workflow_runner,
+            lease_owner=self.lease_owner,
+            tracker=self.background_task_tracker,
+        )
+
+    @cached_property
+    def lease_reaper(self) -> LeaseReaper:
+        return LeaseReaper(
+            [("workflow_runs", partial(reap_expired_runs, legacy_cutover_age=timedelta(seconds=300)))],
+        )
+
+    @cached_property
     def workflow_control_service(self) -> WorkflowControlService:
         return WorkflowControlService(
             directive_queue=self.directive_queue,
-            runner_factory=lambda: self.workflow_runner,
+            launcher=self.workflow_run_launcher,
         )
 
     @cached_property
@@ -493,6 +519,7 @@ class RegistryContainer:
         return SkillSyncJobRunner(
             job_service=self.skill_sync_job_service,
             execution_service=self.skill_sync_execution_service,
+            lease_owner=self.lease_owner,
         )
 
     @cached_property
@@ -516,6 +543,7 @@ class RegistryContainer:
         return EmbeddingReindexJobRunner(
             job_service=self.embedding_reindex_job_service,
             execution_service=self.embedding_reindex_execution_service,
+            lease_owner=self.lease_owner,
         )
 
     @cached_property
@@ -599,12 +627,18 @@ class RegistryContainer:
         logger.info("Starting embedding reindex job runner...")
         await self.embedding_reindex_job_runner.start()
 
+        logger.info("Starting lease reaper...")
+        await self.lease_reaper.start()
+
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
+        # Stop the reaper first so it doesn't race the tracker's own finalization of in-flight runs.
+        await self.lease_reaper.shutdown()
         await self.skill_sync_job_runner.shutdown()
         await self.embedding_reindex_job_runner.shutdown()
         await self.embedding_maintenance_watcher.shutdown()
-        await cancel_in_flight_runs()
+        # Cancel and finalize all tracked background runs (replaces the cluster-wide shutdown sweep).
+        await self.background_task_tracker.shutdown()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()
