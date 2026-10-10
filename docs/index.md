@@ -2,7 +2,7 @@
 <img src="img/jarvis_vertical_logo_w_text_light_bkg.svg" alt="Jarvis Registry Logo" width="2000" height="480" style="width:100%;height:auto;">
 </div>
 
-**Jarvis Registry is a self-hostable enterprise AI gateway and registry for connecting AI clients to governed mcps(tools), agents, and private skills.** Deploy it in your environment and use its identity, access-control, and observability features to manage how clients reach registered resources.
+**Jarvis Registry is a self-hostable enterprise AI gateway and registry for connecting AI clients to governed MCP servers(tools), agents, and private skills.** Deploy it in your environment and use its identity, access-control, and observability features to manage how clients reach registered resources.
 
 ---
 
