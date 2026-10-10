@@ -15,7 +15,7 @@ async def test_spawn_runs_and_tracks_task() -> None:
         ran.set()
 
     task = tracker.spawn(work(), name="w")
-    await task
+    _ = await task
     assert ran.is_set()
 
 
@@ -110,5 +110,5 @@ async def test_shutdown_only_cancels_tracked_tasks() -> None:
     assert pending == 0
     assert tracked_cancelled.is_set()  # our task was cancelled
 
-    await foreign_task  # the untracked task was never cancelled and finished normally
+    _ = await foreign_task  # the untracked task was never cancelled and finished normally
     assert foreign_ran_to_completion.is_set()

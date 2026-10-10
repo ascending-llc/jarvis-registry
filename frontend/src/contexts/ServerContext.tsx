@@ -6,10 +6,12 @@ import type { AgentItem } from '@/services/agent/type';
 import type { ExternalProviderEntity } from '@/services/externalProvider/type';
 import type { Federation } from '@/services/federation/type';
 import { ServerConnection } from '@/services/mcp/type';
+import type { ModelGatewaySelection, ModelSourceListItem } from '@/services/model/type';
 import type { PermissionType, Server } from '@/services/server/type';
 import type { SkillMetadata } from '@/services/skill/type';
 import type { SkillSyncSource } from '@/services/skillSyncSource/type';
 import type { WorkflowItem } from '@/services/workflow/type';
+import { getErrorMessage } from '@/utils/getErrorMessage';
 
 import { collectExternalProviderResults } from './externalProviderResults';
 
@@ -52,6 +54,17 @@ interface SkillStats {
   disabled: number;
 }
 
+interface ModelStats {
+  total: number;
+  aws_bedrock: number;
+  azure_openai: number;
+}
+
+const EMPTY_MODEL_SELECTION: ModelGatewaySelection = {
+  defaultWorkflowModelSourceId: null,
+  embeddingModelSourceId: null,
+};
+
 export interface FederationListStats {
   total: number;
   enabled: number;
@@ -86,6 +99,16 @@ interface ServerContextType {
   skillLoading: boolean;
   skillError: string | null;
 
+  // Model state
+  models: ModelSourceListItem[];
+  setModels: React.Dispatch<React.SetStateAction<ModelSourceListItem[]>>;
+  modelStats: ModelStats;
+  modelLoading: boolean;
+  modelError: string | null;
+  modelSelection: ModelGatewaySelection;
+  setModelSelection: React.Dispatch<React.SetStateAction<ModelGatewaySelection>>;
+  modelSelectionError: string | null;
+
   // Federation state
   federations: Federation[];
   setFederations: React.Dispatch<React.SetStateAction<Federation[]>>;
@@ -115,6 +138,7 @@ interface ServerContextType {
   refreshServerData: (notLoading?: boolean) => Promise<ServerInfo[]>;
   refreshAgentData: (notLoading?: boolean) => Promise<void>;
   refreshSkillData: (notLoading?: boolean) => Promise<void>;
+  refreshModelData: (notLoading?: boolean) => Promise<void>;
   refreshFederationData: (notLoading?: boolean) => Promise<void>;
   refreshWorkflowData: (notLoading?: boolean) => Promise<void>;
   handleServerUpdate: (id: string, updates: Partial<ServerInfo>) => void;
@@ -143,6 +167,8 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [skills, setSkills] = useState<SkillMetadata[]>([]);
+  const [models, setModels] = useState<ModelSourceListItem[]>([]);
+  const [modelSelection, setModelSelection] = useState<ModelGatewaySelection>(EMPTY_MODEL_SELECTION);
   const [federations, setFederations] = useState<Federation[]>([]);
   const [skillSyncSources, setSkillSyncSources] = useState<SkillSyncSource[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
@@ -153,11 +179,14 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [serverLoading, setServerLoading] = useState(true);
   const [agentLoading, setAgentLoading] = useState(true);
   const [skillLoading, setSkillLoading] = useState(true);
+  const [modelLoading, setModelLoading] = useState(true);
   const [federationsLoading, setFederationsLoading] = useState(true);
   const [workflowLoading, setWorkflowLoading] = useState(true);
   const [serverError, setServerError] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [skillError, setSkillError] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
   const [federationsError, setFederationsError] = useState<string | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const timeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
@@ -189,6 +218,15 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       disabled: skills.filter(skill => !skill.enabled).length,
     }),
     [skills],
+  );
+
+  const modelStats = useMemo<ModelStats>(
+    () => ({
+      total: models.length,
+      aws_bedrock: models.filter(model => model.providerType === 'aws_bedrock').length,
+      azure_openai: models.filter(model => model.providerType === 'azure_openai').length,
+    }),
+    [models],
   );
 
   // Calculate workflow stats
@@ -330,6 +368,25 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     }
   }, []);
 
+  const refreshModelData = useCallback(async (notLoading?: boolean) => {
+    if (!notLoading) setModelLoading(true);
+    setModelError(null);
+    setModelSelectionError(null);
+    try {
+      const [modelsResult, selectionResult] = await Promise.allSettled([
+        SERVICES.MODEL.getAllModelSources(),
+        SERVICES.MODEL.getGatewaySelection(),
+      ]);
+      if (modelsResult.status === 'fulfilled') setModels(modelsResult.value);
+      else setModelError(getErrorMessage(modelsResult.reason, 'Failed to fetch models'));
+
+      if (selectionResult.status === 'fulfilled') setModelSelection(selectionResult.value);
+      else setModelSelectionError(getErrorMessage(selectionResult.reason, 'Failed to fetch default model status'));
+    } finally {
+      setModelLoading(false);
+    }
+  }, []);
+
   const handleFederationUpdate = (id: string, updates: Partial<Federation>) => {
     setFederations(prev => prev.map(fed => (fed.id === id ? { ...fed, ...updates } : fed)));
   };
@@ -399,6 +456,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       setServerLoading(false);
       setAgentLoading(false);
       setSkillLoading(false);
+      setModelLoading(false);
       setFederationsLoading(false);
       setWorkflowLoading(false);
       return () => {
@@ -411,6 +469,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     refreshServerData();
     refreshAgentData();
     refreshSkillData();
+    refreshModelData();
     refreshFederationData();
     refreshWorkflowData();
     return () => {
@@ -419,7 +478,14 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       });
       timeoutRef.current = {};
     };
-  }, [refreshAgentData, refreshFederationData, refreshServerData, refreshSkillData, refreshWorkflowData]);
+  }, [
+    refreshAgentData,
+    refreshFederationData,
+    refreshModelData,
+    refreshServerData,
+    refreshSkillData,
+    refreshWorkflowData,
+  ]);
 
   const getServerStatusById = useCallback(async (serverId: string): Promise<ServerConnection | undefined> => {
     try {
@@ -508,6 +574,15 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     skillLoading,
     skillError,
 
+    models,
+    setModels,
+    modelStats,
+    modelLoading,
+    modelError,
+    modelSelection,
+    setModelSelection,
+    modelSelectionError,
+
     federations,
     setFederations,
     externalProviders,
@@ -533,6 +608,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     refreshServerData,
     refreshAgentData,
     refreshSkillData,
+    refreshModelData,
     refreshFederationData,
     refreshWorkflowData,
     handleServerUpdate,

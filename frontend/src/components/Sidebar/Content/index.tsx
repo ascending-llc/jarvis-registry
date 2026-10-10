@@ -2,7 +2,7 @@ import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import type { SkillsNavigationConfig } from '@/types/layout';
+import type { ModelsNavigationConfig, SkillsNavigationConfig } from '@/types/layout';
 import NavMenu from './NavMenu';
 import UserProfileMenu from './UserProfileMenu';
 
@@ -11,6 +11,7 @@ interface ContentProps {
   sidebarOpen?: boolean;
   isSubPage?: boolean;
   skillsNavigation?: SkillsNavigationConfig;
+  modelsNavigation?: ModelsNavigationConfig;
 }
 
 const Content: React.FC<ContentProps> = ({
@@ -18,6 +19,7 @@ const Content: React.FC<ContentProps> = ({
   sidebarOpen = true,
   isSubPage = false,
   skillsNavigation,
+  modelsNavigation,
 }) => {
   const navigate = useNavigate();
 
@@ -52,7 +54,12 @@ const Content: React.FC<ContentProps> = ({
       ) : (
         /* Dashboard: nav menu + user profile */
         <>
-          <NavMenu sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} skillsNavigation={skillsNavigation} />
+          <NavMenu
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
+            skillsNavigation={skillsNavigation}
+            modelsNavigation={modelsNavigation}
+          />
           <UserProfileMenu sidebarOpen={sidebarOpen} />
         </>
       )}

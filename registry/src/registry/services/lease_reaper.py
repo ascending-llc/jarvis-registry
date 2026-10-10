@@ -62,7 +62,7 @@ class LeaseReaper:
         self._stop_event.set()
         task.cancel()
         with suppress(asyncio.CancelledError):
-            await task
+            _ = await task
         self._task = None
 
     async def _loop(self) -> None:

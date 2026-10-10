@@ -1050,3 +1050,87 @@ class TestInjectedRunWriter:
             )
 
         collection.update_one.assert_not_called()
+
+
+class TestRunnerWritesAgainstPersistedState:
+    """Drive runner paths through the real RunStateWriter against a fake run document."""
+
+    @pytest.mark.asyncio
+    async def test_finalize_failure_does_not_overwrite_completed_run(
+        self, monkeypatch: pytest.MonkeyPatch, fake_run_collection
+    ):
+        run_oid = PydanticObjectId()
+        # The syncer already persisted COMPLETED; this runner's in-memory copy is stale.
+        collection = fake_run_collection({"_id": run_oid, "status": "completed"})
+        run_doc = SimpleNamespace(
+            id=run_oid,
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            pending_requirements=[],
+        )
+        r = _make_runner()
+        monkeypatch.setattr(r, "_finalize_dangling_node_runs", AsyncMock())
+
+        await r._finalize_failure(run_doc, RuntimeError("late failure"), runner.RunStateWriter(run_oid))
+
+        assert collection.doc == {"_id": run_oid, "status": "completed"}
+
+    @pytest.mark.asyncio
+    async def test_continue_run_that_completes_clears_decided_requirements(
+        self, monkeypatch: pytest.MonkeyPatch, fake_run_collection
+    ):
+        run_oid = PydanticObjectId()
+        decided = [{"step_id": "review", "confirmed": True}]
+        collection = fake_run_collection(
+            {"_id": run_oid, "status": WorkflowRunStatus.AWAITING_APPROVAL.value, "pending_requirements": decided}
+        )
+
+        async def _reload() -> None:
+            run_doc.status = WorkflowRunStatus(collection.doc["status"])
+            run_doc.pending_requirements = collection.doc["pending_requirements"]
+
+        run_doc = SimpleNamespace(
+            id=run_oid,
+            status=WorkflowRunStatus.RUNNING,
+            definition_snapshot={"name": "demo"},
+            pending_requirements=list(decided),
+            agno_run_id="agno-run-1",
+            error_summary=None,
+            finished_at=None,
+            started_at=datetime.now(UTC),
+            final_output=None,
+            sync=_reload,
+        )
+
+        def _compile(*_args, run_writer, **_kwargs):
+            # Stand in for agno: the continuation completes and the real syncer persists it.
+            syncer = object.__new__(WorkflowRunSyncer)
+            syncer._workflow_run = run_doc
+            syncer._node_by_name = {}
+            syncer._run_writer = run_writer
+
+            async def _acontinue_run(**_kw):
+                output = WorkflowRunOutput(content="done", status=RunStatus.completed)
+                await syncer._update_workflow_run(output)
+                return output
+
+            return SimpleNamespace(acontinue_run=_acontinue_run)
+
+        client = {"jarvis": SimpleNamespace(get_collection=lambda name: collection)}
+        monkeypatch.setattr(runner.WorkflowRun, "get_settings", lambda: SimpleNamespace(name="workflow_runs"))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner, "definition_from_snapshot", lambda snapshot: SimpleNamespace(name="demo"))
+        monkeypatch.setattr(runner, "hydrate_requirement", lambda item: item)
+        monkeypatch.setattr(runner, "compile_workflow", _compile)
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(
+            runner.NodeRun, "find", lambda *args, **kwargs: SimpleNamespace(to_list=AsyncMock(return_value=[]))
+        )
+        r = _make_runner(db_client=client)
+        monkeypatch.setattr(r, "_build_registry", AsyncMock(return_value={}))
+
+        await r.continue_run(existing_run_id=str(run_oid), auth_context=None)
+
+        assert collection.doc["status"] == WorkflowRunStatus.COMPLETED.value
+        assert collection.doc["pending_requirements"] == []

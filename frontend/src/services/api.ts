@@ -7,6 +7,8 @@ const FEDERATION_BASE_URL = `${BASE_URL}/federations`;
 const WORKFLOW_BASE_URL = `${BASE_URL}/workflows`;
 const SKILL_BASE_URL = `${BASE_URL}/skills`;
 const SKILL_SYNC_SOURCE_BASE_URL = `${BASE_URL}/skill-sync-sources`;
+const MODEL_SOURCE_BASE_URL = `${BASE_URL}/model-sources`;
+const MODEL_GATEWAY_SELECTION_BASE_URL = `${BASE_URL}/model-gateway/selection`;
 
 const API = {
   // auth
@@ -118,6 +120,17 @@ const API = {
   initiateSkillSyncSourceOauth: (id: string) => `${SKILL_SYNC_SOURCE_BASE_URL}/${id}/oauth/initiate`,
   skillSyncSourceOauthCallback: `${SKILL_SYNC_SOURCE_BASE_URL}/oauth/callback`,
   getSkillSyncJob: (sourceId: string, jobId: string) => `${SKILL_SYNC_SOURCE_BASE_URL}/${sourceId}/jobs/${jobId}`,
+
+  // model sources
+  getModelSources: MODEL_SOURCE_BASE_URL,
+  getModelSourceDetail: (id: string) => `${MODEL_SOURCE_BASE_URL}/${id}`,
+  createModelSource: MODEL_SOURCE_BASE_URL,
+  updateModelSource: (id: string) => `${MODEL_SOURCE_BASE_URL}/${id}`,
+  deleteModelSource: (id: string) => `${MODEL_SOURCE_BASE_URL}/${id}`,
+  getModelGatewaySelection: MODEL_GATEWAY_SELECTION_BASE_URL,
+  setDefaultWorkflowModel: `${MODEL_GATEWAY_SELECTION_BASE_URL}/default-workflow-model`,
+  setEmbeddingModel: `${MODEL_GATEWAY_SELECTION_BASE_URL}/embedding-model`,
+  getEmbeddingReindexJobs: `${MODEL_GATEWAY_SELECTION_BASE_URL}/embedding-model/reindex-jobs`,
 
   // acl (permissions)
   searchPrincipals: `${BASE_URL}/permissions/search-principals`,

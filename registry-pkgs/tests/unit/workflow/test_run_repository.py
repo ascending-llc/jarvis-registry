@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -132,36 +131,11 @@ async def test_ack_directive_filters_on_consumed_directive(monkeypatch: pytest.M
     assert flt["pending_directive"] == "cancel"
 
 
-class _FakeCollection:
-    """Minimal in-memory collection honouring _id + status-$in + pending_directive filters."""
-
-    def __init__(self, doc: dict[str, Any]) -> None:
-        self.doc = doc
-
-    def _matches(self, flt: dict[str, Any]) -> bool:
-        return (
-            flt["_id"] == self.doc["_id"]
-            and self.doc["status"] in flt["status"]["$in"]
-            and ("pending_directive" not in flt or self.doc.get("pending_directive") == flt["pending_directive"])
-        )
-
-    async def update_one(self, flt, update, session=None):  # noqa: ANN001, ANN201
-        if not self._matches(flt):
-            return SimpleNamespace(matched_count=0, modified_count=0)
-        before = dict(self.doc)
-        self.doc.update(update.get("$set", {}))
-        for key in update.get("$unset", {}):
-            self.doc.pop(key, None)
-        modified = 0 if self.doc == before else 1
-        return SimpleNamespace(matched_count=1, modified_count=modified)
-
-
 @pytest.mark.asyncio
-async def test_targeted_write_preserves_concurrently_written_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_targeted_write_preserves_concurrently_written_cancel(fake_run_collection) -> None:
     run_id = PydanticObjectId()
     # The control plane wrote CANCEL after the executor loaded its stale copy.
-    collection = _FakeCollection({"_id": run_id, "status": "running", "pending_directive": "cancel"})
-    monkeypatch.setattr(run_repository.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: collection))
+    collection = fake_run_collection({"_id": run_id, "status": "running", "pending_directive": "cancel"})
 
     # The executor updates only its own field — the old save() would have stamped
     # pending_directive=None over the whole doc and lost the cancel.
@@ -172,10 +146,9 @@ async def test_targeted_write_preserves_concurrently_written_cancel(monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_terminal_write_is_rejected_once_run_is_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_terminal_write_is_rejected_once_run_is_terminal(fake_run_collection) -> None:
     run_id = PydanticObjectId()
-    collection = _FakeCollection({"_id": run_id, "status": "completed"})
-    monkeypatch.setattr(run_repository.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: collection))
+    collection = fake_run_collection({"_id": run_id, "status": "completed"})
 
     # A late failure finalizer must not overwrite a run that already completed.
     ok = await RunStateWriter(run_id).write(

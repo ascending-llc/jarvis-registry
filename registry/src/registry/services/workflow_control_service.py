@@ -124,8 +124,12 @@ class WorkflowControlService:
         )
         if result.modified_count == 0:
             run = await self._reload_run(PydanticObjectId(run.id))
-            if run.status == WorkflowRunStatus.PAUSED:
-                return run  # already paused — idempotent
+            # Idempotent when the run already paused, or when a concurrent request armed PAUSE
+            # and the executor hasn't consumed it yet (that request's filter still matches, but
+            # sets nothing new). A terminal run with a leftover PAUSE is still a conflict.
+            pause_pending = run.status == WorkflowRunStatus.RUNNING and run.pending_directive == WorkflowDirective.PAUSE
+            if run.status == WorkflowRunStatus.PAUSED or pause_pending:
+                return run
             raise HTTPException(status_code=409, detail="Run state changed concurrently; refresh and retry")
         self._queue.put(run_id, WorkflowDirective.PAUSE)
         logger.info("WorkflowRun %s pause requested", run_id)
@@ -700,7 +704,8 @@ class WorkflowControlService:
         Args:
             workflow_definition_id: Must match ``run.workflow_definition_id``.
             run_id:                 The WorkflowRun to query.
-            auth_context:           auth_context
+            auth_context:           Caller's auth context, used to refresh the run's credentials
+                                    if a timed-out requirement nudges ``continue_run``.
 
         Raises:
             HTTPException(404): Run not found or belongs to a different workflow.

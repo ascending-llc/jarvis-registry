@@ -183,10 +183,12 @@ class WorkflowRunSyncer(AsyncMongoDb):
             error_summary = _first_failure_error(step_outputs or [], self._node_by_name) or run.error_summary
             if error_summary is not None:
                 set_fields["error_summary"] = error_summary
-            if any(step.stop and _has_non_skip_failure(step, self._node_by_name) for step in step_outputs or []):
-                set_fields["pending_requirements"] = []
         if mapped_status in TERMINAL_RUN_STATUSES:
             set_fields["finished_at"] = run.finished_at or datetime.now(UTC)
+            # A finished run has no open decisions. This terminal write is the last one that
+            # lands, so it clears requirements left over from a HITL pause; the runner's later
+            # clear in continue_run is guarded on RUNNING and is rejected by then.
+            set_fields["pending_requirements"] = []
         else:
             unset.append("finished_at")
         if run_output.content is not None:
