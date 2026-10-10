@@ -34,6 +34,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from beanie import PydanticObjectId
+
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 from agno.workflow import StepInput, StepOutput
@@ -41,6 +43,8 @@ from agno.workflow.step import StepExecutor
 from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 
+from registry.services.background_task_tracker import BackgroundTaskTracker
+from registry.services.workflow_run_launcher import WorkflowRunLauncher
 from registry_pkgs.workflows.model_resolution import build_legacy_bedrock_model
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -306,7 +310,7 @@ async def test_retry_completed(queue: DirectiveQueue) -> bool:
     # Run to completion first
     print("  Running to completion ...")
     seed_run = WorkflowRun(
-        workflow_definition_id=definition.id,
+        workflow_definition_id=PydanticObjectId(definition.id),
         status=WorkflowRunStatus.PENDING,
         trigger_source="e2e",
         initial_input={"user_text": "e2e retry seed"},
@@ -318,9 +322,10 @@ async def test_retry_completed(queue: DirectiveQueue) -> bool:
 
     # Retry from first node
     first_node_id = definition.nodes[0].id
+
     svc = WorkflowControlService(
         directive_queue=queue,
-        runner_factory=lambda: _make_runner(queue),
+        launcher=WorkflowRunLauncher(runner=_make_runner(queue), lease_owner="e2e", tracker=BackgroundTaskTracker()),
     )
     child = await svc.send_retry(
         def_id,
