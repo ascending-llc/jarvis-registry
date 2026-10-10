@@ -81,11 +81,21 @@ from registry_pkgs.workflows.persistence import (
     _flatten_step_results,
     _resolve_workflow_run_status,
 )
+from registry_pkgs.workflows.run_repository import (
+    NON_TERMINAL_RUN_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    RunStateWriter,
+)
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_RUN_STATUSES = frozenset({WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED})
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Return a UTC-aware datetime: naive values (as MongoDB returns them) are assumed UTC."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def definition_from_snapshot(snapshot: dict[str, Any]) -> WorkflowDefinition:
@@ -226,9 +236,21 @@ class WorkflowRunner:
             if definition is None:
                 raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
 
+        writer = RunStateWriter(PydanticObjectId(run.id))
+        snapshot_json = definition.model_dump(mode="json")
+        # Compare-and-set PENDING → RUNNING: a run that already started or was cancelled
+        # before we got here must not execute. First writer to claim it wins.
+        started = await writer.write(
+            {"status": WorkflowRunStatus.RUNNING, "definition_snapshot": snapshot_json},
+            from_statuses={WorkflowRunStatus.PENDING},
+        )
+        if not started:
+            await run.sync()
+            logger.info("[run=%s] run() skipped — no longer PENDING (status=%s)", run.id, run.status)
+            node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
+            return run, node_runs
         run.status = WorkflowRunStatus.RUNNING
-        run.definition_snapshot = definition.model_dump(mode="json")
-        await run.save()
+        run.definition_snapshot = snapshot_json
 
         node_names = [n.name for n in flatten_workflow_nodes(definition.nodes) if n.executor_key or n.a2a_pool]
         logger.info(
@@ -246,10 +268,7 @@ class WorkflowRunner:
             try:
                 executor_registry = await self._build_registry(definition, auth_context)
             except WorkflowConfigError as exc:
-                run.status = WorkflowRunStatus.FAILED
-                run.error_summary = str(exc)
-                run.finished_at = datetime.now(UTC)
-                await run.save()
+                await self._write_terminal_state(run, writer, WorkflowRunStatus.FAILED, str(exc))
                 logger.warning(
                     "[run=%s] ✗ workflow cannot start — configuration error: %s",
                     run.id,
@@ -257,13 +276,12 @@ class WorkflowRunner:
                 )
                 raise
             except Exception as exc:
-                run.status = WorkflowRunStatus.FAILED
-                run.error_summary = str(exc)
-                run.finished_at = datetime.now(UTC)
-                await run.save()
+                await self._write_terminal_state(run, writer, WorkflowRunStatus.FAILED, str(exc))
                 logger.error("[run=%s] ✗ failed to build executor registry: %s", run.id, exc, exc_info=True)
                 raise
-            await self._execute(run, definition, user_text, executor_registry, injected_outputs, stop_after_node_id)
+            await self._execute(
+                run, definition, user_text, executor_registry, writer, injected_outputs, stop_after_node_id
+            )
         finally:
             if self._directive_queue is not None:
                 self._directive_queue.unregister(str(run.id))
@@ -277,12 +295,16 @@ class WorkflowRunner:
         workflow_name: str,
         run: WorkflowRun,
     ) -> None:
-        if run.status not in _TERMINAL_RUN_STATUSES:
+        if run.status not in TERMINAL_RUN_STATUSES:
             return
 
         try:
-            finished_at = run.finished_at or datetime.now(UTC)
-            duration_seconds = max(0.0, (finished_at - run.started_at).total_seconds())
+            # Datetimes loaded from MongoDB come back naive (pymongo is not tz-aware by default),
+            # while freshly-set ones are UTC-aware; normalize both before subtracting so the
+            # duration calc never raises "can't subtract offset-naive and offset-aware".
+            finished_at = _as_utc(run.finished_at) or datetime.now(UTC)
+            started_at = _as_utc(run.started_at) or finished_at
+            duration_seconds = max(0.0, (finished_at - started_at).total_seconds())
             record_workflow_run(
                 workflow_name=workflow_name,
                 status=run.status.value.lower(),
@@ -390,6 +412,8 @@ class WorkflowRunner:
         if run is None:
             raise ValueError(f"WorkflowRun {existing_run_id!r} not found")
 
+        writer = RunStateWriter(run_oid)
+
         if not run.definition_snapshot:
             raise RuntimeError(
                 f"WorkflowRun {existing_run_id!r} has no definition_snapshot — cannot rebuild for continue_run"
@@ -414,6 +438,7 @@ class WorkflowRunner:
                 db_client=self._db_client,
                 db_name=self._db_name,
                 directive_queue=self._directive_queue,
+                run_writer=writer,
             )
             # agno needs its own internal run_id (the UUID it generated inside
             # ``arun``), not our WorkflowRun ObjectId.
@@ -427,13 +452,15 @@ class WorkflowRunner:
             # consumed them.  If acontinue_run (or the build/compile steps
             # before it) raise, the requirements survive in MongoDB so a
             # subsequent continue_run — e.g. after a pod restart — can retry.
+            # This write only lands while the run is still RUNNING; when the
+            # continuation already finished, the syncer's terminal write cleared them.
+            await writer.write({"pending_requirements": []}, from_statuses={WorkflowRunStatus.RUNNING})
             run.pending_requirements = []
-            await run.save()
-            await self._handle_run_output(run, result)
+            await self._handle_run_output(run, result, writer)
         except (WorkflowCancelledError, RunCancelledException) as exc:
-            await self._finalize_cancel(run, exc)
+            await self._finalize_cancel(run, exc, writer)
         except Exception as exc:
-            await self._finalize_failure(run, exc)
+            await self._finalize_failure(run, exc, writer)
             raise
         finally:
             if self._directive_queue is not None:
@@ -444,12 +471,39 @@ class WorkflowRunner:
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
         return run, node_runs
 
+    @staticmethod
+    async def _write_terminal_state(
+        run: WorkflowRun,
+        writer: RunStateWriter,
+        status: WorkflowRunStatus,
+        error_summary: str | None,
+        *,
+        clear_requirements: bool = False,
+    ) -> None:
+        """Mirror a terminal outcome in memory, then persist it with the first-terminal-wins guard.
+
+        In-memory first so a rejected or raising write still leaves the run marked terminal —
+        callers treat the run as finished regardless of the persist outcome. The
+        ``NON_TERMINAL_RUN_STATUSES`` guard means a late finalizer can't overwrite a terminal
+        state the syncer already wrote.
+        """
+        finished_at = run.finished_at or datetime.now(UTC)
+        run.status = status
+        run.error_summary = error_summary
+        run.finished_at = finished_at
+        set_fields: dict[str, Any] = {"status": status, "error_summary": error_summary, "finished_at": finished_at}
+        if clear_requirements:
+            run.pending_requirements = []
+            set_fields["pending_requirements"] = []
+        await writer.write(set_fields, from_statuses=NON_TERMINAL_RUN_STATUSES)
+
     async def _execute(
         self,
         run: WorkflowRun,
         definition: WorkflowDefinition,
         user_text: str,
         executor_registry: dict[str, StepExecutor],
+        writer: RunStateWriter,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
     ) -> None:
@@ -470,6 +524,7 @@ class WorkflowRunner:
             directive_queue=self._directive_queue,
             injected_outputs=injected_outputs,
             stop_after_node_id=stop_after_node_id,
+            run_writer=writer,
         )
         try:
             result = await workflow.arun(
@@ -479,16 +534,16 @@ class WorkflowRunner:
                 # run (e.g. for custom logging or future retry reconstruction).
                 session_state={"user_text": user_text, "_workflow_run_id": str(run.id)},
             )
-            await self._handle_run_output(run, result)
+            await self._handle_run_output(run, result, writer)
         except (WorkflowCancelledError, RunCancelledException) as exc:
-            await self._finalize_cancel(run, exc)
+            await self._finalize_cancel(run, exc, writer)
         except Exception as exc:
             # agno may not call upsert_session on a hard failure; write the error
             # directly so the record is never left dangling as RUNNING.
-            await self._finalize_failure(run, exc)
+            await self._finalize_failure(run, exc, writer)
             raise
 
-    async def _handle_run_output(self, run: WorkflowRun, result: Any) -> None:
+    async def _handle_run_output(self, run: WorkflowRun, result: Any, writer: RunStateWriter) -> None:
         """Route the WorkflowRunOutput returned by arun / acontinue_run.
 
         Reload the state written by WorkflowRunSyncer first: a terminal step
@@ -505,10 +560,10 @@ class WorkflowRunner:
         # agno checks post-execution output review before StepOutput.stop. A
         # failing step may therefore report a pause after the syncer has already
         # persisted FAILED; that terminal outcome must win over human review.
-        if run.status in _TERMINAL_RUN_STATUSES:
+        if run.status in TERMINAL_RUN_STATUSES:
             return
 
-        if await self._persist_stopped_failure(run, result):
+        if await self._persist_stopped_failure(run, result, writer):
             return
 
         if getattr(result, "is_paused", False):
@@ -523,15 +578,22 @@ class WorkflowRunner:
                         getattr(req, "step_id", "?"),
                         exc,
                     )
-            run.status = WorkflowRunStatus.AWAITING_APPROVAL
-            run.pending_requirements = serialized
             # Capture agno's internal run_id so ``continue_run`` can locate the
             # persisted RunOutput in agno_workflow_sessions on resume.  We use
             # str() because agno generates UUID strings.
             agno_id = getattr(result, "run_id", None)
+            pause_fields: dict[str, Any] = {
+                "status": WorkflowRunStatus.AWAITING_APPROVAL,
+                "pending_requirements": serialized,
+            }
+            if agno_id:
+                pause_fields["agno_run_id"] = str(agno_id)
+            # The syncer maps agno's paused state to PAUSED first, so accept either.
+            await writer.write(pause_fields, from_statuses={WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED})
+            run.status = WorkflowRunStatus.AWAITING_APPROVAL
+            run.pending_requirements = serialized
             if agno_id:
                 run.agno_run_id = str(agno_id)
-            await run.save()
             logger.info(
                 "[run=%s] ⏸ HITL pause — %d requirement(s) awaiting decision",
                 run.id,
@@ -543,6 +605,7 @@ class WorkflowRunner:
         self,
         run: WorkflowRun,
         result: Any,
+        writer: RunStateWriter,
     ) -> bool:
         """Persist a terminal step failure even when the session mirror failed.
 
@@ -563,21 +626,17 @@ class WorkflowRunner:
         if _resolve_workflow_run_status(result, step_outputs, node_by_name) != WorkflowRunStatus.FAILED:
             return False
 
-        run.status = WorkflowRunStatus.FAILED
-        run.error_summary = _first_failure_error(step_outputs, node_by_name) or run.error_summary
-        run.pending_requirements = []
-        run.finished_at = run.finished_at or datetime.now(UTC)
-        await run.save()
+        error_summary = _first_failure_error(step_outputs, node_by_name) or run.error_summary
+        await self._write_terminal_state(run, writer, WorkflowRunStatus.FAILED, error_summary, clear_requirements=True)
         return True
 
-    async def _finalize_cancel(self, run: WorkflowRun, exc: BaseException) -> None:
+    async def _finalize_cancel(self, run: WorkflowRun, exc: BaseException, writer: RunStateWriter) -> None:
         """Mark the run CANCELLED and reverse-notify agno (M2)."""
-        run.status = WorkflowRunStatus.CANCELLED
-        run.error_summary = str(exc)
-        run.finished_at = datetime.now(UTC)
-        await run.save()
+        await self._write_terminal_state(run, writer, WorkflowRunStatus.CANCELLED, str(exc))
         try:
-            await self._finalize_dangling_node_runs(run.id, str(exc), target_status=NodeRunStatus.CANCELLED)
+            await self._finalize_dangling_node_runs(
+                PydanticObjectId(run.id), str(exc), target_status=NodeRunStatus.CANCELLED
+            )
         except Exception as inner:
             logger.warning("[run=%s] failed to clean up dangling NodeRuns: %s", run.id, inner)
         # Bridge back to agno so its in-memory cancellation state flips too —
@@ -589,14 +648,11 @@ class WorkflowRunner:
             logger.warning("[run=%s] reverse agno cancel failed: %s", run.id, inner)
         logger.info("[run=%s] ✗ workflow cancelled: %s", run.id, exc)
 
-    async def _finalize_failure(self, run: WorkflowRun, exc: BaseException) -> None:
+    async def _finalize_failure(self, run: WorkflowRun, exc: BaseException, writer: RunStateWriter) -> None:
         """Mark the run FAILED directly (so a half-finished run never stays RUNNING)."""
-        run.status = WorkflowRunStatus.FAILED
-        run.error_summary = str(exc)
-        run.finished_at = datetime.now(UTC)
-        await run.save()
+        await self._write_terminal_state(run, writer, WorkflowRunStatus.FAILED, str(exc))
         try:
-            await self._finalize_dangling_node_runs(run.id, str(exc))
+            await self._finalize_dangling_node_runs(PydanticObjectId(run.id), str(exc))
         except Exception as inner:
             logger.warning("[run=%s] failed to clean up dangling NodeRuns: %s", run.id, inner)
         logger.error("[run=%s] ✗ workflow failed: %s", run.id, exc, exc_info=True)

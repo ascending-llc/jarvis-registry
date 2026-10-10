@@ -17,6 +17,7 @@ from agno.workflow import (
 )
 from agno.workflow.step import OnError, StepExecutor
 from agno.workflow.types import HumanReview
+from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy, WorkflowNodeType
 from registry_pkgs.models.workflow import (
@@ -41,6 +42,7 @@ from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_STEP_OBJECTIVE,
     ADDITIONAL_DATA_WORKFLOW_DESCRIPTION,
 )
+from registry_pkgs.workflows.run_repository import RunStateWriter
 from registry_pkgs.workflows.serialization import json_safe, try_parse_json
 from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY, POOL_KEY_PREFIX
 
@@ -249,6 +251,7 @@ def compile_workflow(
     directive_queue: DirectiveQueue | None = None,
     injected_outputs: dict[str, dict[str, Any]] | None = None,
     stop_after_node_id: str | None = None,
+    run_writer: RunStateWriter | None = None,
 ) -> Workflow:
     """Compile a WorkflowDefinition + WorkflowRun into an agno Workflow.
 
@@ -271,6 +274,9 @@ def compile_workflow(
                              this node ID.  Downstream nodes are excluded from the agno
                              Workflow entirely, so they produce no NodeRun records.
                              Only top-level (non-nested) nodes are supported.
+        run_writer:          Guarded WorkflowRun writer shared by the syncer and the
+                             control wrapper. Defaults to an unleased ``RunStateWriter``
+                             for ``run.id``.
     """
     if (db_client is None) != (db_name is None):
         raise ValueError("compile_workflow requires db_client and db_name together")
@@ -280,6 +286,12 @@ def compile_workflow(
     node_by_name: dict[str, WorkflowNode] = {n.name: n for n in flatten_workflow_nodes(definition.nodes)}
     implicit_previous_step_names = _build_implicit_previous_step_names(definition.nodes)
 
+    # Single run-write path: the syncer and the control wrapper share one
+    # writer so every WorkflowRun mutation is a targeted, status-guarded update_one
+    # instead of a whole-document save(). The runner hands in the writer in production;
+    # a default keeps standalone compile_workflow callers (tests) working.
+    writer = run_writer or RunStateWriter(PydanticObjectId(run.id))
+
     db: WorkflowRunSyncer | None = None
     if db_client is not None and db_name is not None:
         db = WorkflowRunSyncer(
@@ -287,6 +299,7 @@ def compile_workflow(
             node_by_name=node_by_name,
             db_client=db_client,
             db_name=db_name,
+            run_writer=writer,
         )
 
     _injected = injected_outputs or {}
@@ -374,6 +387,7 @@ def compile_workflow(
                     node_name=node.name,
                     step_config=node.step_config,
                     directive_queue=directive_queue,
+                    writer=writer,
                 )
             return Step(
                 name=node.name,

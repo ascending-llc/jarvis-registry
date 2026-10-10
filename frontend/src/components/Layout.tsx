@@ -12,7 +12,7 @@ import { Link, useLocation } from 'react-router-dom';
 import IconButton from '@/components/IconButton';
 import ServerConfigModal from '@/components/ServerConfigModal';
 import SERVICES from '@/services';
-import type { LayoutSearchConfig, SkillsNavigationConfig } from '@/types/layout';
+import type { LayoutSearchConfig, ModelsNavigationConfig, SkillsNavigationConfig } from '@/types/layout';
 import logoDark from '../assets/jarvis_logo_w_text_dark_bkg.svg';
 import logoLight from '../assets/jarvis_logo_w_text_light_bkg.svg';
 import { useServer } from '../contexts/ServerContext';
@@ -23,6 +23,7 @@ interface LayoutProps {
   children: React.ReactNode;
   searchConfig?: LayoutSearchConfig;
   skillsNavigation?: SkillsNavigationConfig;
+  modelsNavigation?: ModelsNavigationConfig;
 }
 
 const isSubPagePath = (pathname: string): boolean => {
@@ -39,7 +40,7 @@ const isSubPagePath = (pathname: string): boolean => {
   );
 };
 
-const Layout: React.FC<LayoutProps> = ({ children, searchConfig, skillsNavigation }) => {
+const Layout: React.FC<LayoutProps> = ({ children, searchConfig, skillsNavigation, modelsNavigation }) => {
   const { theme, toggleTheme } = useTheme();
   const { viewMode, searchTerm, setSearchTerm, committedQuery, setCommittedQuery } = useServer();
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -224,6 +225,7 @@ const Layout: React.FC<LayoutProps> = ({ children, searchConfig, skillsNavigatio
           setSidebarOpen={setSidebarOpen}
           isSubPage={isSubPage}
           skillsNavigation={skillsNavigation}
+          modelsNavigation={modelsNavigation}
         />
 
         {/* Main content */}

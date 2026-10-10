@@ -109,6 +109,45 @@ async def test_pause_run_raises_http_exception(wf_id, sample_user_context, mock_
 
 
 @pytest.mark.asyncio
+async def test_pause_run_propagates_409_conflict(wf_id, sample_user_context, mock_service, mock_acl):
+    # A concurrent state change surfaces as 409 from the service; the route must pass it
+    # through unchanged (not re-wrap it as a 500).
+    mock_service.send_pause.side_effect = HTTPException(
+        status_code=409, detail="Run state changed concurrently; refresh and retry"
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pause_run(
+            workflow_id=wf_id,
+            run_id="run-1",
+            current_user=sample_user_context,
+            service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "concurrently" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_propagates_409_conflict(wf_id, sample_user_context, mock_service, mock_acl):
+    mock_service.send_cancel.side_effect = HTTPException(
+        status_code=409, detail="Run state changed concurrently; refresh and retry"
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await cancel_run(
+            workflow_id=wf_id,
+            run_id="run-1",
+            current_user=sample_user_context,
+            service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_pause_run_wraps_unexpected_exception(wf_id, sample_user_context, mock_service, mock_acl):
     mock_service.send_pause.side_effect = RuntimeError("boom")
 

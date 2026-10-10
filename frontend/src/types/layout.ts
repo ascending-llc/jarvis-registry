@@ -19,3 +19,13 @@ export type SkillsNavigationConfig = {
   onFilterChange: (filter: ResourceStatusFilter) => void;
   showStatusFilters: boolean;
 };
+
+export type ModelProviderFilter = 'all' | 'aws_bedrock' | 'azure_openai';
+
+export type ModelsNavigationConfig = {
+  total: number;
+  providerCounts: Record<ModelProviderFilter, number>;
+  activeProvider: ModelProviderFilter;
+  onProviderChange: (provider: ModelProviderFilter) => void;
+  showProviderFilters: boolean;
+};
