@@ -8,14 +8,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def log_group_resolution_failure(provider: str, identifier: str, exc: Exception) -> None:
-    """Log an IdP group-source-of-truth outage with one consistent, greppable signature."""
+def log_group_resolution_failure(provider: str, exc: Exception) -> None:
+    """Log group outages without user identifiers, tokens or untrusted response bodies."""
     logger.error(
-        "Group resolution failed for provider=%s identifier=%s; proceeding with empty groups: %s",
+        "Group resolution failed for provider=%s error_type=%s; proceeding with empty groups",
         provider,
-        identifier,
-        exc,
-        exc_info=True,
+        type(exc).__name__,
     )
 
 

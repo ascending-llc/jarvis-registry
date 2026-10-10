@@ -88,13 +88,15 @@ in `admin.google.com`:
 
 ### 1.6 Group naming convention
 
-Each Google Workspace group the client creates must be named `<group-name>@<client-domain>`, where
+Each Google Workspace group the client creates must be named `<group-name>@<GOOGLE_ALLOWED_HD>`, where
 `<group-name>` is exactly one of the four keys under `group_mappings` in
 `registry-pkgs/src/registry_pkgs/scopes.yml` (lines 16–83): `jarvis-registry-admin`,
 `jarvis-registry-power-user`, `jarvis-registry-user`, `jarvis-registry-read-only`. No client-specific
-config file — `GoogleProvider` strips the domain off every Cloud Identity group email before scope
-mapping, so `jarvis-registry-admin@clientdomain.com` resolves to the `jarvis-registry-admin` key
-automatically, regardless of which domain it was created under.
+config file is needed. Before scope mapping, the group's complete email domain must equal
+`GOOGLE_ALLOWED_HD` (case-insensitive). Groups on other domains, including subdomains, are ignored.
+For example, `jarvis-registry-admin@clientdomain.com` resolves to `jarvis-registry-admin` only when
+`GOOGLE_ALLOWED_HD=clientdomain.com`. With `GOOGLE_ALLOWED_HD` unset, no Google group grants scopes.
+The same rule applies when a workflow resumes using synchronized group memberships.
 
 **Double-check the name before creating the group.** We hit this ourselves during dogfooding — a test
 group was created as `jarvis-demo` and had to be renamed to `jarvis-registry-user` after the fact once the
@@ -108,7 +110,10 @@ synced by External Secrets Operator; Azure: individual Key Vault secrets). Add a
 
 | Category | Keys | Notes |
 |---|---|---|
-| **Identity Provider (Google)** | `GOOGLE_ENABLED`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_ALLOWED_HD`, `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`, `GOOGLE_GROUP_SYNC_ENABLED` | `GOOGLE_ALLOWED_HD` = client's domain. `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` = the full JSON key pasted verbatim as downloaded — do not trim unused fields (`project_id`, `client_id`, etc. are harmless; `private_key_id` is useful for tracking key rotation later). |
+| **Identity Provider (Google)** | `GOOGLE_ENABLED`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_ALLOWED_HD`, `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`, `GOOGLE_GROUP_SYNC_ENABLED` | `GOOGLE_ALLOWED_HD` = client's domain; **required for scope grants**. `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` = the full JSON key pasted verbatim as downloaded — do not trim unused fields (`project_id`, `client_id`, etc. are harmless; `private_key_id` is useful for tracking key rotation later). |
+
+For a Google-only deployment, set `AUTH_PROVIDER=google` and `ENTRA_ENABLED=false`. If Entra remains
+enabled, auth-server also requires the four bindings described in [Entra scope groups](entra-scope-groups.md).
 
 Secrets must be in place **before** the Helm chart deploys (Phase 4 precedes Phase 5).
 
@@ -122,21 +127,13 @@ Secrets must be in place **before** the Helm chart deploys (Phase 4 precedes Pha
       failure page.
 - [ ] A Workspace group, shared to a resource via the ShareModal UI, correctly shares that resource with a
       member of that group.
-- [ ] **Revoking the service account's Workspace role does not cleanly degrade — test both login paths
-      separately, and expect different outcomes.** There's no cached/synced group data this path falls
-      back to: `GoogleProvider.get_user_info` calls Cloud Identity live on every login, with no internal
-      error handling around that call. A failure there is caught only because `oauth_flow.py`'s OAuth
-      callback has a broad `except Exception:` (meant for unrelated token-parsing edge cases) that falls
-      through to a generic OIDC userinfo call (logged as `"Falling back to userInfo on token parsing
-      error"`), which returns `groups: []`.
-      - **Plain browser login (no requested scope)**: a session is created, but resolves to **zero
-        scopes** — the account can do nothing until the role is restored and the user logs in again. Not
-        "reduced" access; no access.
-      - **Any MCP/device flow that requests specific scopes** (including this runbook's Part 3 flip-test):
-        scope negotiation fails outright and the login is rejected with `invalid_scope`/`scope_denied` —
-        it does **not** succeed.
-      This is an accidental byproduct of a catch-all written for a different failure mode, not a designed
-      fallback — see "Open follow-ups" below.
+- [ ] Revoke the service account's Workspace role and verify that group resolution fails closed.
+      `GoogleProvider` logs `Group resolution failed for provider=google` and returns empty groups;
+      it does not fall back to cached memberships or generic OIDC userinfo for a group-query failure.
+      Plain browser login with no scopes is blocked with the no-permissions page. A browser or device
+      flow requesting scopes is rejected with `invalid_scope` / `scope_denied`. A device flow without
+      requested scopes can continue with zero scopes; it must never gain privileges from the failure.
+      Restore the role and sign in again before continuing verification.
 
 ---
 

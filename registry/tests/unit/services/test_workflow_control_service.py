@@ -146,7 +146,18 @@ async def test_refresh_triggering_auth_context_uses_current_groups_not_persisted
     monkeypatch.setattr(
         wcs.ExtendedGroup,
         "find",
-        lambda query: SimpleNamespace(to_list=AsyncMock(return_value=[SimpleNamespace(name="workflow-users")])),
+        lambda query: SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        name="renamed-directory-group",
+                        source="entra",
+                        email=None,
+                        idOnTheSource=wcs.settings.jarvis_registry_user_group_object_id,
+                    )
+                ]
+            )
+        ),
     )
     monkeypatch.setattr(wcs, "map_groups_to_scopes", MagicMock(return_value=["workflows-read"]))
 
@@ -156,12 +167,68 @@ async def test_refresh_triggering_auth_context_uses_current_groups_not_persisted
         "user_id": user_id,
         "client_id": "client-1",
         "username": "alice-current",
-        "groups": ["workflow-users"],
+        "groups": ["jarvis-registry-user"],
         "scopes": ["workflows-read"],
         "auth_method": "service",
         "provider": "workflow",
         "auth_source": "workflow_resume",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "source_id", "email", "grants_admin"),
+    [
+        ("entra", "configured", None, True),
+        ("entra", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", None, False),
+        ("entra", None, None, False),
+        ("google", None, "jarvis-registry-admin@EXAMPLE.COM", True),
+        ("google", None, "jarvis-registry-admin@evil.com", False),
+        ("google", None, None, False),
+        ("local", "configured", "jarvis-registry-admin@example.com", False),
+    ],
+)
+async def test_workflow_resume_grants_scopes_only_from_trusted_group_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    source_id: str | None,
+    email: str | None,
+    grants_admin: bool,
+) -> None:
+    run = SimpleNamespace(
+        triggering_user_id="666666666666666666666666",
+        triggering_username="user",
+        triggering_client_id="client",
+        triggering_scopes=["servers-write"],
+    )
+    monkeypatch.setattr(wcs.settings, "google_allowed_hd", "example.com")
+    if source_id == "configured":
+        source_id = wcs.settings.jarvis_registry_admin_group_object_id.upper()
+    group = SimpleNamespace(name="jarvis-registry-admin", source=source, idOnTheSource=source_id, email=email)
+    monkeypatch.setattr(wcs.User, "get", AsyncMock(return_value=SimpleNamespace(username="user", idOnTheSource="oid")))
+    monkeypatch.setattr(
+        wcs.ExtendedGroup, "find", lambda query: SimpleNamespace(to_list=AsyncMock(return_value=[group]))
+    )
+
+    context = await wcs._refresh_triggering_auth_context(run)
+
+    assert ("servers-write" in context["scopes"]) is grants_admin
+    assert context["groups"] == (["jarvis-registry-admin"] if grants_admin else [])
+
+
+def test_workflow_google_groups_grant_nothing_without_allowed_domain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(wcs.settings, "google_allowed_hd", "")
+    group = SimpleNamespace(source="google", email="jarvis-registry-admin@example.com", idOnTheSource=None)
+    assert wcs._scope_groups_from_current_groups([group]) == []
+
+
+def test_workflow_group_resolution_deduplicates_mixed_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(wcs.settings, "google_allowed_hd", "example.com")
+    groups = [
+        SimpleNamespace(source="entra", idOnTheSource=wcs.settings.jarvis_registry_admin_group_object_id),
+        SimpleNamespace(source="google", email="jarvis-registry-admin@example.com"),
+    ]
+    assert wcs._scope_groups_from_current_groups(groups) == ["jarvis-registry-admin"]
 
 
 @pytest.mark.asyncio

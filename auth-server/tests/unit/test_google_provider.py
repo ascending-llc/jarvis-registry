@@ -6,9 +6,9 @@ from auth_server.providers.google import (
     GoogleDomainNotAllowedError,
     GoogleEmailNotVerifiedError,
     GoogleProvider,
-    _group_local_part,
 )
 from registry_pkgs.core.jwt_utils import InvalidSignatureError
+from registry_pkgs.core.scopes import map_groups_to_scopes
 from registry_pkgs.google.cloud_identity_client import GoogleWorkspaceGroupInfo
 
 
@@ -40,16 +40,42 @@ def _claims(**overrides) -> dict:
 @pytest.mark.unit
 @pytest.mark.auth
 class TestGoogleGetUserInfo:
+    @pytest.mark.parametrize(
+        ("group_domain", "allowed_hd", "grants_admin"),
+        [
+            ("example.com", "example.com", True),
+            ("EXAMPLE.COM", "example.com", True),
+            ("evil.com", "example.com", False),
+            ("example.com", "", False),
+        ],
+    )
+    async def test_group_domain_controls_admin_scopes(
+        self, group_domain: str, allowed_hd: str, grants_admin: bool
+    ) -> None:
+        provider = _provider(allowed_hd=allowed_hd)
+        provider._verify_id_token = AsyncMock(return_value=_claims())
+        provider._cloud_identity_client.list_transitive_groups_for_member = AsyncMock(
+            return_value=[
+                GoogleWorkspaceGroupInfo(
+                    email=f"jarvis-registry-admin@{group_domain}", display_name="Admin", resource_name="groups/1"
+                )
+            ]
+        )
+        info = await provider.get_user_info("access-token", id_token="id-token")
+        assert ("servers-write" in map_groups_to_scopes(info["groups"])) is grants_admin
+
     @pytest.mark.asyncio
-    async def test_returns_group_local_parts_from_cloud_identity(self):
-        """Cloud Identity groups are email-addressed, but scopes.yml's group_mappings keys
-        are bare role names — get_user_info must strip the domain before returning groups."""
-        provider = _provider()
+    async def test_returns_group_local_parts_only_for_allowed_domain(self):
+        """Only groups on the configured domain can contribute abstract scope groups."""
+        provider = _provider(allowed_hd="example.com")
         provider._verify_id_token = AsyncMock(return_value=_claims())
         provider._cloud_identity_client.list_transitive_groups_for_member = AsyncMock(
             return_value=[
                 GoogleWorkspaceGroupInfo(email="eng@example.com", display_name="Eng", resource_name="groups/1"),
                 GoogleWorkspaceGroupInfo(email="all@example.com", display_name="All", resource_name="groups/2"),
+                GoogleWorkspaceGroupInfo(
+                    email="jarvis-registry-admin@evil.com", display_name="Admin", resource_name="groups/3"
+                ),
             ]
         )
 
@@ -77,7 +103,7 @@ class TestGoogleGetUserInfo:
 
         assert info["email"] == "user@example.com"
         assert info["groups"] == []
-        mock_log.assert_called_once_with("google", "user@example.com", exc)
+        mock_log.assert_called_once_with("google", exc)
 
     @pytest.mark.asyncio
     async def test_rejects_unverified_email_before_group_lookup(self):
@@ -174,16 +200,3 @@ class TestGoogleJwksCaching:
         assert first == jwks
         assert second == jwks
         mock_client.get.assert_awaited_once()  # second call served from cache
-
-
-@pytest.mark.unit
-@pytest.mark.auth
-class TestGroupLocalPart:
-    def test_strips_domain(self):
-        assert _group_local_part("jarvis-registry-admin@example.com") == "jarvis-registry-admin"
-
-    def test_strips_only_first_at(self):
-        assert _group_local_part("a@b@example.com") == "a"
-
-    def test_leaves_bare_string_unchanged(self):
-        assert _group_local_part("jarvis-registry-admin") == "jarvis-registry-admin"
