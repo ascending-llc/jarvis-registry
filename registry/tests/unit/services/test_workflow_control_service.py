@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from beanie import PydanticObjectId
@@ -118,6 +118,41 @@ async def test_send_pause_already_paused_on_reload_is_idempotent(monkeypatch: py
     result = await service.send_pause("wf-1", str(run_id))
 
     assert result is reloaded  # 200, already paused
+
+
+@pytest.mark.asyncio
+async def test_send_pause_concurrent_duplicate_is_idempotent(monkeypatch: pytest.MonkeyPatch):
+    # Loaded before another request armed PAUSE; the executor hasn't entered the pause yet.
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    _patch_collection(monkeypatch, 0)
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=WorkflowDirective.PAUSE)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+    put = Mock()
+    monkeypatch.setattr(service._queue, "put", put)
+
+    result = await service.send_pause("wf-1", str(run_id))
+
+    assert result is reloaded
+    put.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_pause_terminal_run_with_leftover_pause_on_reload_is_409(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    _patch_collection(monkeypatch, 0)
+    reloaded = SimpleNamespace(id=run_id, status=WorkflowRunStatus.COMPLETED, pending_directive=WorkflowDirective.PAUSE)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=reloaded))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.send_pause("wf-1", str(run_id))
+
+    assert exc_info.value.status_code == 409
 
 
 @pytest.mark.asyncio

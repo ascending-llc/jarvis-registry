@@ -464,6 +464,8 @@ class WorkflowRunner:
             # consumed them.  If acontinue_run (or the build/compile steps
             # before it) raise, the requirements survive in MongoDB so a
             # subsequent continue_run — e.g. after a pod restart — can retry.
+            # This write only lands while the run is still RUNNING; when the
+            # continuation already finished, the syncer's terminal write cleared them.
             await writer.write({"pending_requirements": []}, from_statuses={WorkflowRunStatus.RUNNING})
             run.pending_requirements = []
             await self._handle_run_output(run, result, writer)
@@ -644,7 +646,7 @@ class WorkflowRunner:
         """Mark the run CANCELLED and reverse-notify agno (M2)."""
         await self._write_terminal_state(run, writer, WorkflowRunStatus.CANCELLED, str(exc))
         try:
-            await self.finalize_dangling_node_runs(
+            await self._finalize_dangling_node_runs(
                 PydanticObjectId(run.id), str(exc), target_status=NodeRunStatus.CANCELLED
             )
         except Exception as inner:
@@ -662,13 +664,13 @@ class WorkflowRunner:
         """Mark the run FAILED directly (so a half-finished run never stays RUNNING)."""
         await self._write_terminal_state(run, writer, WorkflowRunStatus.FAILED, str(exc))
         try:
-            await self.finalize_dangling_node_runs(PydanticObjectId(run.id), str(exc))
+            await self._finalize_dangling_node_runs(PydanticObjectId(run.id), str(exc))
         except Exception as inner:
             logger.warning("[run=%s] failed to clean up dangling NodeRuns: %s", run.id, inner)
         logger.error("[run=%s] ✗ workflow failed: %s", run.id, exc, exc_info=True)
 
     @staticmethod
-    async def finalize_dangling_node_runs(
+    async def _finalize_dangling_node_runs(
         run_id: PydanticObjectId,
         error: str,
         target_status: NodeRunStatus = NodeRunStatus.FAILED,

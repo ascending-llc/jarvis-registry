@@ -16,6 +16,7 @@ import Dashboard from './pages/Dashboard';
 import DeviceVerify from './pages/DeviceVerify';
 import FederationRegistryOrEdit from './pages/FederationRegistryOrEdit';
 import Login from './pages/Login';
+import ModelsPage from './pages/Models';
 import NotFound from './pages/NotFound';
 import OAuthCallback from './pages/OAuthCallback';
 import ServerRegistryOrEdit from './pages/ServerRegistryOrEdit';
@@ -178,6 +179,14 @@ const router = createBrowserRouter(
           <Layout>
             <WorkflowRegistryOrEdit />
           </Layout>
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: APP_ROUTES.models,
+      element: (
+        <ProtectedRoute>
+          <ModelsPage />
         </ProtectedRoute>
       ),
     },

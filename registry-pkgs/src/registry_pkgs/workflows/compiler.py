@@ -274,7 +274,9 @@ def compile_workflow(
                              this node ID.  Downstream nodes are excluded from the agno
                              Workflow entirely, so they produce no NodeRun records.
                              Only top-level (non-nested) nodes are supported.
-        run_writer:
+        run_writer:          Guarded WorkflowRun writer shared by the syncer and the
+                             control wrapper. Defaults to an unleased ``RunStateWriter``
+                             for ``run.id``.
     """
     if (db_client is None) != (db_name is None):
         raise ValueError("compile_workflow requires db_client and db_name together")
