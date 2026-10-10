@@ -27,6 +27,12 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException
 
 from registry.auth.dependencies import UserContextDict, effective_scopes_from_context
+from registry.core.config import settings
+from registry_pkgs.core.scope_groups import (
+    entra_scope_group_ids,
+    scope_group_for_google_email,
+    scope_groups_for_entra_ids,
+)
 from registry_pkgs.core.scopes import map_groups_to_scopes
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedGroup, User
@@ -39,6 +45,7 @@ from registry_pkgs.models.enums import (
     WorkflowRunStateMachine,
     WorkflowRunStatus,
 )
+from registry_pkgs.models.extended_group import ExtendedGroupSource
 from registry_pkgs.models.workflow import NodeRun, ResolvedDependency, WorkflowRun
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue
@@ -939,6 +946,23 @@ async def _atomic_write_decision(
         )
 
 
+def _scope_groups_from_current_groups(current_groups: list[ExtendedGroup]) -> list[str]:
+    """Use the same IdP bindings as login when rebuilding workflow authorization."""
+    entra_ids = [
+        group.idOnTheSource
+        for group in current_groups
+        if group.source == ExtendedGroupSource.ENTRA and group.idOnTheSource
+    ]
+    groups = scope_groups_for_entra_ids(entra_ids, entra_scope_group_ids(settings)) if entra_ids else []
+    groups.extend(
+        scope_group
+        for group in current_groups
+        if group.source == ExtendedGroupSource.GOOGLE
+        and (scope_group := scope_group_for_google_email(group.email, settings.google_allowed_hd))
+    )
+    return list(dict.fromkeys(groups))
+
+
 async def _refresh_triggering_auth_context(
     run: WorkflowRun,
     current_auth_context: UserContextDict | None = None,
@@ -963,7 +987,7 @@ async def _refresh_triggering_auth_context(
     groups: list[str] = []
     if user.idOnTheSource:
         current_groups = await ExtendedGroup.find({"memberIds": user.idOnTheSource}).to_list()
-        groups = [group.name for group in current_groups]
+        groups = _scope_groups_from_current_groups(current_groups)
 
     return {
         "user_id": run.triggering_user_id,

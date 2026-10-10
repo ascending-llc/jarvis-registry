@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key, l
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from .scope_groups import SCOPE_GROUP_OBJECT_ID_FIELDS, validate_scope_group_object_ids
 from .scopes import load_scopes_config
 
 INTERACTIVE_TOKEN_CLIENT_ID = "user-generated"
@@ -296,10 +297,15 @@ class JarvisBaseSettings(MongoSettings):
     entra_tenant_id: str | None = None
     entra_client_id: str | None = None
     entra_client_secret: str | None = None
+    jarvis_registry_admin_group_object_id: str | None = None
+    jarvis_registry_power_user_group_object_id: str | None = None
+    jarvis_registry_user_group_object_id: str | None = None
+    jarvis_registry_read_only_group_object_id: str | None = None
 
     # ==================== Google Cloud Identity Groups (service account) ====================
     # Raw JSON key content for the Workspace Groups Reader service account
     google_service_account_key_json: str = ""
+    google_allowed_hd: str = ""
 
     # ==================== Model Validation ====================
     # Skip model validation if set to "disabled". Disabling should only happen for import checks in CI.
@@ -395,6 +401,17 @@ class JarvisBaseSettings(MongoSettings):
         except ValueError as exc:
             # Do not include the key value — it would leak (near-)secret material into logs.
             raise ValueError("CREDS_KEY must be a valid hex string.") from exc
+        return self
+
+    def _normalize_scope_group_object_ids(self) -> None:
+        values = {field: getattr(self, field) for field in SCOPE_GROUP_OBJECT_ID_FIELDS.values()}
+        for field, value in validate_scope_group_object_ids(values).items():
+            setattr(self, field, value)
+
+    @model_validator(mode="after")
+    def _validate_entra_scope_group_object_ids(self) -> Self:
+        if self.auth_provider == "entra" and self.x_jarvis_registry_import_checks != "disabled":
+            self._normalize_scope_group_object_ids()
         return self
 
     @cached_property

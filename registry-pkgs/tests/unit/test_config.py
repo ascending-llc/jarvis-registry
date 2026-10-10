@@ -6,7 +6,8 @@ import pytest
 from pydantic import ValidationError
 
 from registry_pkgs.core.config import DISABLE_DOTENV_ENV_VAR, JarvisBaseSettings, MongoConfig, MongoSettings
-from registry_pkgs.testing.fixtures import disable_dotenv_loading
+from registry_pkgs.core.scope_groups import SCOPE_GROUP_OBJECT_ID_FIELDS
+from registry_pkgs.testing.fixtures import TEST_SCOPE_GROUP_OBJECT_IDS, disable_dotenv_loading
 
 
 @pytest.mark.unit
@@ -237,3 +238,48 @@ def test_auth_provider_env_keycloak_raises() -> None:
     env = {"AUTH_PROVIDER": "keycloak", "X_JARVIS_REGISTRY_IMPORT_CHECKS": "disabled", DISABLE_DOTENV_ENV_VAR: "1"}
     with patch.dict(os.environ, env, clear=True), pytest.raises(ValidationError, match="auth_provider"):
         JarvisBaseSettings()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", SCOPE_GROUP_OBJECT_ID_FIELDS.values())
+@pytest.mark.parametrize("value", [None, "", "  ", "not-a-uuid"])
+def test_entra_scope_group_settings_reject_missing_or_invalid_binding(field: str, value: str | None) -> None:
+    with pytest.raises(ValidationError, match=field.upper()):
+        JarvisBaseSettings(**(TEST_SCOPE_GROUP_OBJECT_IDS | {field: value}), x_jarvis_registry_import_checks="enabled")
+
+
+@pytest.mark.unit
+def test_entra_scope_group_settings_reject_duplicate_ids_after_normalization() -> None:
+    values = dict(TEST_SCOPE_GROUP_OBJECT_IDS)
+    fields = list(values)
+    values[fields[1]] = values[fields[0]].upper().replace("-", "")
+    with pytest.raises(ValidationError, match="distinct") as error:
+        JarvisBaseSettings(**values, x_jarvis_registry_import_checks="enabled")
+    assert fields[0].upper() in str(error.value)
+    assert fields[1].upper() in str(error.value)
+
+
+@pytest.mark.unit
+def test_entra_scope_group_settings_store_canonical_ids() -> None:
+    values = {field: value.upper() for field, value in TEST_SCOPE_GROUP_OBJECT_IDS.items()}
+    settings = JarvisBaseSettings(**values, x_jarvis_registry_import_checks="enabled")
+    assert {field: getattr(settings, field) for field in values} == TEST_SCOPE_GROUP_OBJECT_IDS
+
+
+@pytest.mark.unit
+def test_google_settings_do_not_require_entra_scope_group_ids() -> None:
+    settings = JarvisBaseSettings(
+        auth_provider="google",
+        google_allowed_hd="example.com",
+        x_jarvis_registry_import_checks="enabled",
+        **dict.fromkeys(SCOPE_GROUP_OBJECT_ID_FIELDS.values()),
+    )
+    assert settings.google_allowed_hd == "example.com"
+
+
+@pytest.mark.unit
+def test_import_checks_disable_scope_group_validation() -> None:
+    settings = JarvisBaseSettings(
+        x_jarvis_registry_import_checks="disabled", **dict.fromkeys(SCOPE_GROUP_OBJECT_ID_FIELDS.values())
+    )
+    assert settings.jarvis_registry_admin_group_object_id is None

@@ -12,11 +12,14 @@ import time
 from http.cookies import SimpleCookie
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
+from auth_server.core.config import settings
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_token_grant_service, get_user_service
+from auth_server.providers.factory import _create_entra_provider
 from auth_server.routes.consent_templates import render_device_server_error_page
 from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
 from auth_server.services.token_grant_service import TokenGrantService
@@ -1156,6 +1159,73 @@ class TestDeviceFlowRoutes:
 @pytest.mark.device_flow
 class TestDeviceFlowCallbackAndConsent:
     """Tests for the real IdP callback and client consent gate in device flow."""
+
+    @pytest.mark.parametrize("membership", ["configured", "unknown", "empty", "outage"])
+    def test_callback_grants_scopes_only_for_configured_entra_membership(
+        self, test_client: TestClient, clear_device_storage, membership: str
+    ) -> None:
+        """Use the real provider and scope mapper; mock only IdP verification/HTTP and storage."""
+        _configure_oauth2(test_client)
+        _configure_user_service(test_client)
+        provider = _create_entra_provider(
+            OAUTH2_CONFIG["providers"]["entra"]
+            | {
+                "tenant_id": "tenant",
+                "jwks_url": "https://example.com/jwks",
+                "logout_url": "https://example.com/logout",
+            },
+            settings,
+        )
+        provider._verify_user_info_token = AsyncMock(
+            return_value={
+                "preferred_username": "test-user",
+                "email": "test@example.com",
+                "oid": "idp-123",
+                "groups": ["jarvis-registry-admin"],
+            }
+        )
+        test_client.app.dependency_overrides[get_auth_provider] = lambda: provider
+        data = _start_device_flow(test_client, scope="servers-read")
+        verify_response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/verify",
+            data={"user_code": data["user_code"]},
+            follow_redirects=False,
+        )
+        session_cookie = verify_response.cookies.get("oauth2_temp_session")
+        state = _extract_state_from_temp_session(session_cookie)
+        group_ids = {
+            "configured": [settings.jarvis_registry_admin_group_object_id],
+            "unknown": ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+            "empty": [],
+            "outage": [],
+        }[membership]
+        response = httpx.Response(
+            503 if membership == "outage" else 200,
+            json={"value": group_ids},
+            request=httpx.Request("POST", "https://graph.microsoft.com/v1.0/me/checkMemberGroups"),
+        )
+        with (
+            patch("auth_server.routes.oauth_flow.exchange_code_for_token", new_callable=AsyncMock) as exchange,
+            patch("auth_server.providers.entra.httpx.AsyncClient") as http_client,
+            patch("auth_server.routes.oauth_flow.get_user_info", new_callable=AsyncMock) as fallback,
+        ):
+            exchange.return_value = {"access_token": "provider-token", "id_token": "id-token"}
+            http_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=response)
+            test_client.cookies.set("oauth2_temp_session", session_cookie)
+            callback = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/entra",
+                params={"code": "provider-code", "state": state},
+            )
+        fallback.assert_not_awaited()
+        device = device_codes_storage[data["device_code"]]
+        if membership == "configured":
+            assert callback.status_code == 200
+            assert device["status"] == "approved"
+            assert device["resolved_scope"] == ["servers-read"]
+            assert device["mapped_user"]["groups"] == ["jarvis-registry-admin"]
+        else:
+            assert device["status"] == "scope_denied"
+            assert not device.get("resolved_scope")
 
     def test_device_callback_exception_is_terminal(
         self,

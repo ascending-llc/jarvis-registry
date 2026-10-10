@@ -11,11 +11,12 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
-from registry_pkgs.testing.fixtures import disable_dotenv_loading, setup_test_rsa_keys
+from registry_pkgs.testing.fixtures import disable_dotenv_loading, setup_test_rsa_keys, setup_test_scope_group_ids
 
 # Set environment variables BEFORE importing the app
 # This ensures settings are loaded with correct values
 disable_dotenv_loading()
+setup_test_scope_group_ids()
 os.environ["AUTH_SERVER_EXTERNAL_URL"] = "http://localhost:8888"
 os.environ["AUTH_SERVER_API_PREFIX"] = "/auth"
 os.environ["AUTH_PROVIDER"] = "entra"

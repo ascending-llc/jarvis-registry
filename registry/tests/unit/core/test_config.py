@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import ValidationError
 
 from registry.core.config import Settings
+from registry_pkgs.testing.fixtures import TEST_SCOPE_GROUP_OBJECT_IDS
 
 _GOVERNANCE_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abcdefghijkl"
 
@@ -19,6 +20,7 @@ _GOVERNANCE_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:123456789012:application
 _TEST_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 _SETTINGS_ENV = {
+    **{field.upper(): value for field, value in TEST_SCOPE_GROUP_OBJECT_IDS.items()},
     "JWT_PRIVATE_KEY": _TEST_RSA_KEY.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.TraditionalOpenSSL,

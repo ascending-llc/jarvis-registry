@@ -9,6 +9,7 @@ from registry_pkgs.core.jwt_utils import (
     find_matching_jwk,
     get_token_kid,
 )
+from registry_pkgs.core.scope_groups import scope_group_for_google_email
 from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
 
 from .base import AuthProvider, log_group_resolution_failure
@@ -17,15 +18,6 @@ logger = logging.getLogger(__name__)
 
 _VALID_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 _JWKS_CACHE_TTL_SECONDS = 3600
-
-
-def _group_local_part(group_email: str) -> str:
-    """Cloud Identity groups are always email-addressed (``groupKey.id``), but scopes.yml's
-    group_mappings keys are bare, provider-agnostic role names. Take the local part before
-    "@" so a Workspace group like "jarvis-registry-admin@example.com" matches the role name
-    "jarvis-registry-admin" regardless of which Workspace domain it was created in.
-    """
-    return group_email.split("@", 1)[0]
 
 
 class GoogleEmailNotVerifiedError(ValueError):
@@ -105,7 +97,7 @@ class GoogleProvider(AuthProvider):
 
         Returns the same shape as ``EntraIdProvider.get_user_info``:
         ``{"username", "email", "name", "id", "groups"}`` — with ``groups`` set to the
-        list of Cloud Identity group **email addresses**.
+        list of group local parts on the configured Workspace domain.
         """
         if not id_token:
             raise ValueError("Google login requires an id_token")
@@ -125,7 +117,7 @@ class GoogleProvider(AuthProvider):
         try:
             groups = await self._cloud_identity_client.list_transitive_groups_for_member(email)
         except Exception as exc:
-            log_group_resolution_failure("google", email, exc)
+            log_group_resolution_failure("google", exc)
             groups = []
 
         return {
@@ -133,5 +125,5 @@ class GoogleProvider(AuthProvider):
             "email": email,
             "name": claims.get("name"),
             "id": claims.get("sub"),
-            "groups": [_group_local_part(g.email) for g in groups],
+            "groups": [group for g in groups if (group := scope_group_for_google_email(g.email, self.allowed_hd))],
         }
