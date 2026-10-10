@@ -214,6 +214,7 @@ def trace_workflow_run[ResultT](
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
         definition_snapshot: dict[str, Any] | None = None,
+        run_writer: Any = None,
     ) -> ResultT:
         attributes = _build_workflow_attributes(
             operation_type="workflow_execution",
@@ -240,6 +241,7 @@ def trace_workflow_run[ResultT](
                 injected_outputs=injected_outputs,
                 stop_after_node_id=stop_after_node_id,
                 definition_snapshot=definition_snapshot,
+                run_writer=run_writer,
             ),
         )
 
@@ -257,6 +259,7 @@ def trace_workflow_continuation[ResultT](
         *,
         existing_run_id: str,
         auth_context: UserContextDict | None,
+        run_writer: Any = None,
     ) -> ResultT:
         attributes = _build_workflow_attributes(
             operation_type="workflow_continue",
@@ -276,6 +279,7 @@ def trace_workflow_continuation[ResultT](
                 runner,
                 existing_run_id=existing_run_id,
                 auth_context=auth_context,
+                run_writer=run_writer,
             ),
         )
 

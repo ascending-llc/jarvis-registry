@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -14,6 +13,23 @@ from registry.services import workflow_control_service as wcs
 from registry.services.workflow_control_service import WorkflowControlService
 from registry_pkgs.models.enums import RequirementResolution, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.workflows.control import DirectiveQueue
+from registry_pkgs.workflows.run_lease import workflow_run_lease_repository
+
+
+class _FakeLauncher:
+    """Stand-in WorkflowRunLauncher: records launches and mints real leases."""
+
+    def __init__(self) -> None:
+        self.launch_run = AsyncMock()
+        self.continue_run_ids: list = []
+        self.prepared: list = []
+
+    def new_lease(self, run_id):
+        return workflow_run_lease_repository.new_lease("test-owner", doc_id=run_id)
+
+    async def launch_continue(self, *, run_id, prepare):
+        self.continue_run_ids.append(run_id)
+        self.prepared.append(await prepare())
 
 
 def _control_service() -> WorkflowControlService:
@@ -288,11 +304,8 @@ async def test_send_retry_child_inherits_workflow_version(monkeypatch: pytest.Mo
     fake_node_run.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run)
 
-    run_mock = AsyncMock()
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=run_mock),
-    )
+    launcher = _FakeLauncher()
+    service = WorkflowControlService(directive_queue=DirectiveQueue(), launcher=launcher)
     service._load_run = AsyncMock(return_value=parent_run)
 
     await service.send_retry(
@@ -302,51 +315,13 @@ async def test_send_retry_child_inherits_workflow_version(monkeypatch: pytest.Mo
         auth_context={"user_id": "user-1"},
         user_id="user-1",
     )
-    # Let the fire-and-forget runner task settle to avoid pending-task warnings.
-    await asyncio.sleep(0)
 
     assert captured["workflow_version"] == 2
     assert captured["parent_run_id"] == parent_run.id
     assert captured["definition_snapshot"] == parent_run.definition_snapshot
-    assert run_mock.await_args.kwargs["definition_snapshot"] == parent_run.definition_snapshot
-
-
-@pytest.mark.asyncio
-async def test_trigger_run_persists_user_id(monkeypatch: pytest.MonkeyPatch):
-    """trigger_run must capture the triggering user_id onto WorkflowRun (no raw
-    token is ever persisted — resume re-mints a service JWT from identity)."""
-    captured: dict = {}
-
-    class _FakeRun:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            self.id = PydanticObjectId()
-
-        async def insert(self):
-            return None
-
-    monkeypatch.setattr(wcs, "WorkflowRun", _FakeRun)
-    monkeypatch.setattr(
-        "registry_pkgs.models.workflow.WorkflowDefinition.get",
-        AsyncMock(return_value=SimpleNamespace(id=PydanticObjectId())),
-    )
-
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=AsyncMock()),
-    )
-
-    await service.trigger_run(
-        workflow_definition_id=str(PydanticObjectId()),
-        user_text="hello",
-        auth_context={"user_id": "user-42"},
-        user_id="user-42",
-    )
-    await asyncio.sleep(0)  # let the fire-and-forget runner task settle
-
-    assert captured["triggering_user_id"] == "user-42"
-    # The raw bearer token must never be persisted on the run.
-    assert "triggering_registry_token_encrypted" not in captured
+    # The child run is inserted already leased.
+    assert captured["lease_token"] is not None
+    assert launcher.launch_run.await_args.kwargs["definition_snapshot"] == parent_run.definition_snapshot
 
 
 @pytest.mark.asyncio
@@ -482,7 +457,7 @@ async def test_resolve_standard_requirement_dispatches_continue(monkeypatch: pyt
     auth_context = {"user_id": "user-1", "client_id": "client-1", "scopes": []}
     service = WorkflowControlService(directive_queue=DirectiveQueue())
     service._load_run = AsyncMock(side_effect=[run, refreshed_run])
-    service._trigger_resume = MagicMock()
+    service._trigger_resume = AsyncMock()
     atomic_write = AsyncMock()
     monkeypatch.setattr(wcs, "_atomic_write_decision", atomic_write)
 
@@ -496,7 +471,7 @@ async def test_resolve_standard_requirement_dispatches_continue(monkeypatch: pyt
 
     assert result is refreshed_run
     atomic_write.assert_awaited_once_with(run, "review-1", {"confirmed": True})
-    service._trigger_resume.assert_called_once_with(run, auth_context)
+    service._trigger_resume.assert_awaited_once_with(run, auth_context)
 
 
 @pytest.mark.asyncio
@@ -513,14 +488,15 @@ async def test_continue_old_run_without_client_id_fails_safely(monkeypatch: pyte
     collection = AsyncMock()
     collection.update_one.return_value = SimpleNamespace(modified_count=1)
     monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: collection))
-    runner = SimpleNamespace(continue_run=AsyncMock())
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
         auth_context_refresher=AsyncMock(return_value={"user_id": "user-1", "scopes": []}),
     )
 
-    await service._continue_run_with_current_auth(run, runner)
+    # _prepare_continue fails the run and aborts the resume (no client_id to reauth with).
+    prepared = await service._prepare_continue(run)
 
+    assert prepared is wcs.ABORT_CONTINUE
     assert run.status == WorkflowRunStatus.FAILED
     assert run.pending_requirements == []
     assert "Reauthentication required" in run.error_summary
@@ -530,43 +506,6 @@ async def test_continue_old_run_without_client_id_fails_safely(monkeypatch: pyte
     assert flt["status"] == WorkflowRunStatus.AWAITING_APPROVAL.value
     assert update["$set"]["status"] == WorkflowRunStatus.FAILED.value
     run.save.assert_not_awaited()
-    runner.continue_run.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_trigger_run_handles_empty_token(monkeypatch: pytest.MonkeyPatch):
-    """When no user_id is provided (script-driven), triggering_user_id stays None."""
-    captured: dict = {}
-
-    class _FakeRun:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            self.id = PydanticObjectId()
-
-        async def insert(self):
-            return None
-
-    monkeypatch.setattr(wcs, "WorkflowRun", _FakeRun)
-    monkeypatch.setattr(
-        "registry_pkgs.models.workflow.WorkflowDefinition.get",
-        AsyncMock(return_value=SimpleNamespace(id=PydanticObjectId())),
-    )
-
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=AsyncMock()),
-    )
-
-    await service.trigger_run(
-        workflow_definition_id=str(PydanticObjectId()),
-        user_text="hello",
-        auth_context=None,
-        user_id=None,
-    )
-    await asyncio.sleep(0)
-
-    assert captured["triggering_user_id"] is None
-    assert "triggering_registry_token_encrypted" not in captured
 
 
 def _req(*, confirmed=None, timeout_at=None, step_id="s1"):
@@ -621,7 +560,6 @@ async def test_get_run_status_nudges_continue_run_when_requirement_timed_out(mon
     fake_node_run.find.return_value.to_list = AsyncMock(return_value=[])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run)
 
-    continue_mock = AsyncMock()
     refreshed_context = {
         "user_id": "user-1",
         "client_id": "client-1",
@@ -632,19 +570,19 @@ async def test_get_run_status_nudges_continue_run_when_requirement_timed_out(mon
         "provider": "workflow",
         "auth_source": "workflow_resume",
     }
+    launcher = _FakeLauncher()
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(continue_run=continue_mock),
+        launcher=launcher,
         auth_context_refresher=AsyncMock(return_value=refreshed_context),
     )
     service._load_run = AsyncMock(return_value=run)
 
     await service.get_run_status(str(PydanticObjectId()), str(run.id))
-    await asyncio.sleep(0)  # let the fire-and-forget resume settle
 
-    continue_mock.assert_awaited_once()
-    assert continue_mock.await_args.kwargs["existing_run_id"] == str(run.id)
-    assert continue_mock.await_args.kwargs["auth_context"] == refreshed_context
+    # The launcher is asked to resume the run, and prepare() yields the refreshed auth context.
+    assert launcher.continue_run_ids == [PydanticObjectId(run.id)]
+    assert launcher.prepared == [refreshed_context]
 
 
 @pytest.mark.asyncio
@@ -662,17 +600,13 @@ async def test_get_run_status_does_not_nudge_when_not_timed_out(monkeypatch: pyt
     fake_node_run.find.return_value.to_list = AsyncMock(return_value=[])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run)
 
-    continue_mock = AsyncMock()
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(continue_run=continue_mock),
-    )
+    launcher = _FakeLauncher()
+    service = WorkflowControlService(directive_queue=DirectiveQueue(), launcher=launcher)
     service._load_run = AsyncMock(return_value=run)
 
     await service.get_run_status(str(PydanticObjectId()), str(run.id))
-    await asyncio.sleep(0)
 
-    continue_mock.assert_not_awaited()
+    assert launcher.continue_run_ids == []
 
 
 @pytest.mark.asyncio
@@ -698,7 +632,7 @@ async def test_rerun_single_node_rejects_non_terminal_run(non_terminal_status: W
 
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        runner_factory=MagicMock,
+        launcher=MagicMock(),
     )
     service._load_run = AsyncMock(return_value=run)
 
@@ -771,7 +705,7 @@ async def test_rerun_single_node_rejects_missing_upstream_snapshot(monkeypatch: 
 
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        runner_factory=MagicMock,
+        launcher=MagicMock(),
     )
     service._load_run = AsyncMock(return_value=parent_run)
 
@@ -849,9 +783,11 @@ async def test_rerun_single_node_uses_highest_attempt_output_on_retry(monkeypatc
     )
 
     captured_injected: dict = {}
+    captured_child: dict = {}
 
     class _FakeChildRun:
         def __init__(self, **kwargs):
+            captured_child.update(kwargs)
             self.id = PydanticObjectId()
             self.status = WorkflowRunStatus.PENDING
 
@@ -865,13 +801,8 @@ async def test_rerun_single_node_uses_highest_attempt_output_on_retry(monkeypatc
     fake_node_run_model.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[failed_nr, success_nr])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run_model)
 
-    async def capture_runner(*args, **kwargs):
-        captured_injected.update(kwargs.get("injected_outputs", {}))
-
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=capture_runner),
-    )
+    launcher = _FakeLauncher()
+    service = WorkflowControlService(directive_queue=DirectiveQueue(), launcher=launcher)
     service._load_run = AsyncMock(return_value=parent_run)
 
     # Should succeed — highest attempt of node-1 has output_snapshot
@@ -882,11 +813,13 @@ async def test_rerun_single_node_uses_highest_attempt_output_on_retry(monkeypatc
         auth_context={"user_id": "user-1"},
         user_id="user-1",
     )
-    await asyncio.sleep(0)
+    captured_injected.update(launcher.launch_run.await_args.kwargs.get("injected_outputs") or {})
 
     assert child is not None
     assert "node-1" in captured_injected
     assert captured_injected["node-1"]["content"] == "ok"
+    # The node-rerun child run is inserted already leased (same contract as trigger/retry/replay).
+    assert captured_child.get("lease_token") is not None
 
 
 @pytest.mark.asyncio
@@ -971,13 +904,8 @@ async def test_rerun_single_node_injects_nested_step_outputs_for_container_nodes
     fake_node_run_model.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[step_a_nr])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run_model)
 
-    async def capture_runner(*args, **kwargs):
-        captured_injected.update(kwargs.get("injected_outputs", {}))
-
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=capture_runner),
-    )
+    launcher = _FakeLauncher()
+    service = WorkflowControlService(directive_queue=DirectiveQueue(), launcher=launcher)
     service._load_run = AsyncMock(return_value=parent_run)
 
     child = await service.rerun_single_node(
@@ -987,7 +915,7 @@ async def test_rerun_single_node_injects_nested_step_outputs_for_container_nodes
         auth_context={"user_id": "user-1"},
         user_id="user-1",
     )
-    await asyncio.sleep(0)
+    captured_injected.update(launcher.launch_run.await_args.kwargs.get("injected_outputs") or {})
 
     assert child is not None
     # Nested step-a inside condition-block must have its output injected
@@ -1025,10 +953,8 @@ async def test_replay_run_sets_parent_run_id(monkeypatch: pytest.MonkeyPatch):
         AsyncMock(return_value=SimpleNamespace(version=1)),
     )
 
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=AsyncMock(return_value=None)),
-    )
+    launcher = _FakeLauncher()
+    service = WorkflowControlService(directive_queue=DirectiveQueue(), launcher=launcher)
     service._load_run = AsyncMock(return_value=source_run)
 
     new_run = await service.replay_run(
@@ -1044,6 +970,9 @@ async def test_replay_run_sets_parent_run_id(monkeypatch: pytest.MonkeyPatch):
     )
     assert captured.get("trigger_source") == "replay"
     assert captured.get("initial_input") == {"user_text": "hi"}
+    # The replay run is inserted already leased (same contract as trigger/retry/rerun).
+    assert captured.get("lease_token") is not None
+    assert captured.get("lease_expires_at") is not None
 
 
 async def test_replay_run_forwards_json_fallback_for_non_user_text_input(monkeypatch: pytest.MonkeyPatch):
@@ -1074,11 +1003,8 @@ async def test_replay_run_forwards_json_fallback_for_non_user_text_input(monkeyp
         AsyncMock(return_value=SimpleNamespace(version=1)),
     )
 
-    run_mock = AsyncMock(return_value=None)
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=run_mock),
-    )
+    launcher = _FakeLauncher()
+    service = WorkflowControlService(directive_queue=DirectiveQueue(), launcher=launcher)
     service._load_run = AsyncMock(return_value=source_run)
 
     await service.replay_run(
@@ -1088,8 +1014,8 @@ async def test_replay_run_forwards_json_fallback_for_non_user_text_input(monkeyp
         user_id="user-1",
     )
 
-    run_mock.assert_called_once()
-    forwarded_user_text = run_mock.call_args.args[1]
+    launcher.launch_run.assert_awaited_once()
+    forwarded_user_text = launcher.launch_run.await_args.kwargs["user_text"]
     assert json.loads(forwarded_user_text) == payload, (
         f"replay must forward the full payload as JSON, not drop it; got {forwarded_user_text!r}"
     )

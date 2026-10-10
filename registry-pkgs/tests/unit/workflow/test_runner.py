@@ -987,6 +987,71 @@ class TestContinueRunHydrationFailure:
 
 
 @pytest.mark.unit
+class TestInjectedRunWriter:
+    """run()/continue_run() take an injected writer; continue skips its own CAS then."""
+
+    @pytest.mark.asyncio
+    async def test_run_uses_injected_writer_for_start_cas(self, monkeypatch: pytest.MonkeyPatch):
+        definition = _definition()
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.PENDING,
+            definition_snapshot=None,
+            sync=AsyncMock(),
+            save=AsyncMock(),
+        )
+        monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock())
+        monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *a, **k: SimpleNamespace(to_list=AsyncMock(return_value=[])))
+
+        # If the injected writer is used, runner.RunStateWriter must never be constructed.
+        def _boom(_id):
+            raise AssertionError("run() built its own RunStateWriter instead of using the injected one")
+
+        monkeypatch.setattr(runner, "RunStateWriter", _boom)
+
+        injected = _writer()
+        injected.write = AsyncMock(return_value=False)  # CAS loses → stop early, no execute
+
+        actual_run, nodes = await _make_runner().run(
+            str(definition.id),
+            "hello",
+            auth_context=None,
+            existing_run_id=str(run_doc.id),
+            run_writer=injected,
+        )
+
+        assert actual_run is run_doc
+        injected.write.assert_awaited_once()
+        runner.WorkflowRunner._execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_continue_run_skips_cas_when_writer_injected(self, monkeypatch: pytest.MonkeyPatch):
+        run_oid = PydanticObjectId()
+        # No definition_snapshot → continue_run raises right after the (skipped) CAS,
+        # which is enough to prove the CAS update_one was never issued.
+        run_doc = SimpleNamespace(id=run_oid, status=WorkflowRunStatus.RUNNING, definition_snapshot=None)
+        collection = SimpleNamespace(update_one=AsyncMock(return_value=SimpleNamespace(modified_count=1)))
+        client = {"jarvis": SimpleNamespace(get_collection=lambda name: collection)}
+        monkeypatch.setattr(runner.WorkflowRun, "get_settings", lambda: SimpleNamespace(name="workflow_runs"))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+
+        def _boom(_id):
+            raise AssertionError("continue_run built its own RunStateWriter instead of using the injected one")
+
+        monkeypatch.setattr(runner, "RunStateWriter", _boom)
+
+        with pytest.raises(RuntimeError, match="no definition_snapshot"):
+            await _make_runner(db_client=client).continue_run(
+                existing_run_id=str(run_oid), auth_context=None, run_writer=_writer()
+            )
+
+        collection.update_one.assert_not_called()
+
+
 class TestRunnerWritesAgainstPersistedState:
     """Drive runner paths through the real RunStateWriter against a fake run document."""
 

@@ -10,24 +10,25 @@ Responsibilities
 4. Notify the in-process ``DirectiveQueue`` so the running executor wrapper
    receives the directive without waiting for the next MongoDB poll cycle.
 5. For the *retry* directive: build a child ``WorkflowRun`` with
-   ``resolved_dependencies`` filled in, then fire-and-forget the runner via
-   ``asyncio.create_task``.
+   ``resolved_dependencies`` filled in, insert it already leased, then launch it
+   through ``WorkflowRunLauncher`` (tracked + lease-heartbeated).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any
 
 from agno.run.cancel import acancel_run as agno_acancel_run
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 
 from registry.auth.dependencies import UserContextDict, effective_scopes_from_context
+from registry.services.workflow_run_launcher import ABORT_CONTINUE, WorkflowRunLauncher
 from registry_pkgs.core.scopes import map_groups_to_scopes
+from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedGroup, User
 from registry_pkgs.models.enums import (
@@ -44,7 +45,7 @@ from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.helpers import extract_user_text
 from registry_pkgs.workflows.media_snapshot import MEDIA_SNAPSHOT_KEYS
-from registry_pkgs.workflows.types import WorkflowConfigError
+from registry_pkgs.workflows.run_lease import workflow_run_lease_repository
 
 logger = logging.getLogger(__name__)
 
@@ -69,137 +70,25 @@ def _injected_output_from_node_run(node_run: NodeRun) -> dict[str, Any]:
     return injected
 
 
-def _log_task_exception(task: asyncio.Task) -> None:
-    """Done-callback for fire-and-forget runner tasks.
-
-    Python silently discards unhandled task exceptions; this callback ensures
-    any exception that escapes the runner's own error handling is at least
-    logged so the failure is visible in application logs.
-    """
-    if not task.cancelled() and (exc := task.exception()):
-        if isinstance(exc, WorkflowConfigError):
-            logger.warning("Background workflow task aborted — configuration error: %s", exc)
-        else:
-            logger.error("Background workflow task raised unhandled exception: %s", exc, exc_info=exc)
-
-
-def _fire_background(coro: Any) -> asyncio.Task:
-    """Fire-and-forget a runner coroutine — without the callback Python swallows
-    any exception silently, so always go through this helper."""
-    task = asyncio.create_task(coro)
-    task.add_done_callback(_log_task_exception)
-    return task
-
-
-class _HasRun(Protocol):
-    """Structural interface for WorkflowRunner — avoids importing agno at module load time."""
-
-    async def run(
-        self,
-        definition_id: str,
-        user_text: str,
-        *,
-        auth_context: UserContextDict | None,
-        existing_run_id: str,
-        injected_outputs: dict[str, dict[str, Any]] | None = None,
-        stop_after_node_id: str | None = None,
-        definition_snapshot: dict[str, Any] | None = None,
-    ) -> tuple[WorkflowRun, list[NodeRun]]:
-        pass
-
-    async def continue_run(
-        self,
-        *,
-        existing_run_id: str,
-        auth_context: UserContextDict | None,
-    ) -> tuple[WorkflowRun, list[NodeRun]]:
-        """Resume a run that hit an HITL pause after the user decided."""
-        pass
-
-
 class WorkflowControlService:
     """Send pause / resume / cancel / retry directives to workflow runs.
 
     Args:
         directive_queue: The app-scoped in-process signal bus shared with the runner.
-        runner_factory:  Zero-argument callable that returns a ready-to-use
-                         ``WorkflowRunner`` instance.  Called lazily only when a
-                         retry creates a new child run.  May be ``None`` in
-                         environments where retry is not supported.
+        launcher:        Starts leased, tracked executor tasks for new child/replay
+                         runs and HITL continuations. May be ``None`` in environments
+                         where run execution is not supported (then retry/replay/resume 501).
     """
 
     def __init__(
         self,
         directive_queue: DirectiveQueue,
-        runner_factory: Callable[[], _HasRun] | None = None,
+        launcher: WorkflowRunLauncher | None = None,
         auth_context_refresher: AuthContextRefresher | None = None,
     ) -> None:
         self._queue = directive_queue
-        self._runner_factory = runner_factory
+        self._launcher = launcher
         self._auth_context_refresher = auth_context_refresher or _refresh_triggering_auth_context
-
-    async def trigger_run(
-        self,
-        workflow_definition_id: str,
-        user_text: str,
-        *,
-        auth_context: UserContextDict | None,
-        user_id: str | None,
-    ) -> WorkflowRun:
-        """Start a new WorkflowRun for the given WorkflowDefinition.
-
-        Creates a ``WorkflowRun`` document with status ``PENDING`` and fires the
-        runner as a background ``asyncio`` task so this method returns immediately
-        with the new run's ID.
-
-        Args:
-            workflow_definition_id: The WorkflowDefinition ObjectId string.
-            user_text:              Prompt forwarded to the workflow's first step.
-            auth_context:           Triggering user's auth context for the runner.
-            user_id:                User ID for ACL lookup inside the runner.
-
-        Raises:
-            HTTPException(400): ``workflow_definition_id`` is not a valid ObjectId.
-            HTTPException(404): WorkflowDefinition not found.
-            HTTPException(501): Runner factory not configured on this instance.
-        """
-        if self._runner_factory is None:
-            raise HTTPException(status_code=501, detail="Workflow runner is not configured on this instance")
-
-        try:
-            def_oid = PydanticObjectId(workflow_definition_id)
-        except Exception:
-            raise HTTPException(status_code=400, detail=f"Invalid workflow_id {workflow_definition_id!r}")
-
-        from registry_pkgs.models.workflow import WorkflowDefinition  # local import avoids circular deps
-
-        definition = await WorkflowDefinition.get(def_oid)
-        if definition is None:
-            raise HTTPException(status_code=404, detail=f"WorkflowDefinition {workflow_definition_id!r} not found")
-
-        run = WorkflowRun(
-            workflow_definition_id=def_oid,
-            status=WorkflowRunStatus.PENDING,
-            trigger_source="api",
-            initial_input={"user_text": user_text},
-            triggering_user_id=user_id,
-            triggering_username=auth_context.get("username") if auth_context else None,
-            triggering_scopes=effective_scopes_from_context(auth_context) if auth_context else None,
-            triggering_client_id=auth_context.get("client_id") if auth_context else None,
-        )
-        await run.insert()
-        logger.info("WorkflowRun %s created for definition %s", run.id, workflow_definition_id)
-
-        runner = self._runner_factory()
-        _fire_background(
-            runner.run(
-                workflow_definition_id,
-                user_text,
-                auth_context=auth_context,
-                existing_run_id=str(run.id),
-            )
-        )
-        return run
 
     async def send_pause(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
         """Pause a RUNNING workflow run.
@@ -327,44 +216,78 @@ class WorkflowControlService:
 
         logger.info("WorkflowRun %s requirement %s resolved as %s", run_id, step_id, resolution.value)
 
-        self._trigger_resume(run, auth_context)
+        await self._trigger_resume(run, auth_context)
 
         return await self._load_run(workflow_definition_id, run_id)
 
-    def _trigger_resume(self, run: WorkflowRun, auth_context: UserContextDict | None = None) -> None:
-        """Fire ``continue_run`` in the background to resume an AWAITING_APPROVAL run.
+    async def _trigger_resume(self, run: WorkflowRun, auth_context: UserContextDict | None = None) -> None:
+        """Launch ``continue_run`` to resume an AWAITING_APPROVAL run.
 
         Shared by ``resolve_requirement`` (user decided) and ``get_run_status``
-        (a pending requirement timed out). The runner re-builds the agno Workflow
-        from the snapshot and calls ``acontinue_run`` — which both applies the
-        user's decision and, for any requirement past its ``timeout_at``, applies
-        agno's ``on_timeout`` policy. ``continue_run`` performs a CAS so duplicate
-        triggers (e.g. concurrent polls) are harmless — only one wins.
+        (a pending requirement timed out). The launcher wins the AWAITING_APPROVAL →
+        RUNNING lease transition (replacing the runner's own CAS), so duplicate triggers
+        (e.g. concurrent polls) are harmless — only one acquires the lease.
         """
-        if self._runner_factory is None:
-            logger.error(
-                "_trigger_resume: runner_factory not configured — cannot continue_run for %s",
-                run.id,
-            )
+        if self._launcher is None:
+            logger.error("_trigger_resume: launcher not configured — cannot continue_run for %s", run.id)
             return
-        runner = self._runner_factory()
-        _fire_background(self._continue_run_with_current_auth(run, runner, auth_context))
+        try:
+            await self._launcher.launch_continue(
+                run_id=PydanticObjectId(run.id),
+                prepare=lambda: self._prepare_continue(run, auth_context),
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail="Registry is shutting down; retry") from exc
 
-    async def _continue_run_with_current_auth(
+    async def _prepare_continue(
         self,
         run: WorkflowRun,
-        runner: _HasRun,
         current_auth_context: UserContextDict | None = None,
-    ) -> None:
-        """Refresh authorization state immediately before resuming a paused run."""
+    ) -> UserContextDict | None:
+        """Refresh authorization state immediately before resuming; abort if reauth is required.
+
+        Returns the auth context to resume with (possibly ``None`` for script-driven runs), or
+        ``ABORT_CONTINUE`` to stop after failing a run whose original client identity is gone.
+        """
         auth_context = await self._auth_context_refresher(run, current_auth_context)
         if auth_context is not None and not auth_context.get("client_id"):
             await self._fail_run_requiring_reauthentication(run)
-            return
-        await runner.continue_run(
-            existing_run_id=str(run.id),
-            auth_context=auth_context,
-        )
+            return ABORT_CONTINUE
+        return auth_context
+
+    def _new_leased_run_id(self) -> tuple[PydanticObjectId, Lease]:
+        """Pre-allocate a run id and mint a lease this pod owns, so the run is born already leased."""
+        assert self._launcher is not None  # callers guard on self._launcher first
+        run_id = PydanticObjectId()
+        return run_id, self._launcher.new_lease(run_id)
+
+    async def _launch_leased_run(
+        self,
+        *,
+        lease: Lease,
+        run_id: PydanticObjectId,
+        definition_id: str,
+        user_text: str,
+        auth_context: UserContextDict | None,
+        injected_outputs: dict[str, dict[str, Any]] | None = None,
+        stop_after_node_id: str | None = None,
+        definition_snapshot: dict[str, Any] | None = None,
+    ) -> None:
+        """Launch an already-inserted leased run, mapping a post-shutdown refusal to 503."""
+        assert self._launcher is not None
+        try:
+            await self._launcher.launch_run(
+                lease=lease,
+                definition_id=definition_id,
+                user_text=user_text,
+                auth_context=auth_context,
+                existing_run_id=str(run_id),
+                injected_outputs=injected_outputs,
+                stop_after_node_id=stop_after_node_id,
+                definition_snapshot=definition_snapshot,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail="Registry is shutting down; retry") from exc
 
     @staticmethod
     async def _fail_run_requiring_reauthentication(run: WorkflowRun) -> None:
@@ -471,7 +394,7 @@ class WorkflowControlService:
             auth_context:           Triggering user's auth context forwarded to the runner.
             user_id:                User ID for ACL lookup forwarded to the runner.
         """
-        if self._runner_factory is None:
+        if self._launcher is None:
             raise HTTPException(status_code=501, detail="Retry is not configured on this instance")
 
         parent_run = await self._load_run(workflow_definition_id, run_id)
@@ -520,7 +443,9 @@ class WorkflowControlService:
                     )
                 )
 
+        child_id, lease = self._new_leased_run_id()
         child_run = WorkflowRun(
+            id=child_id,
             workflow_definition_id=parent_run.workflow_definition_id,
             # Inherit the parent's version so the retry replays the same definition
             # snapshot deterministically and reports a consistent workflow_version.
@@ -531,6 +456,7 @@ class WorkflowControlService:
             definition_snapshot=parent_run.definition_snapshot,
             parent_run_id=parent_run.id,
             resolved_dependencies=resolved_deps,
+            **workflow_run_lease_repository.insert_fields(lease),
         )
         await child_run.insert()
         logger.info(
@@ -541,16 +467,14 @@ class WorkflowControlService:
         )
 
         user_text: str = extract_user_text(parent_run.initial_input)
-        runner = self._runner_factory()
-        _fire_background(
-            runner.run(
-                str(parent_run.workflow_definition_id),
-                user_text,
-                auth_context=auth_context,
-                existing_run_id=str(child_run.id),
-                injected_outputs=injected_outputs,
-                definition_snapshot=parent_run.definition_snapshot,
-            )
+        await self._launch_leased_run(
+            lease=lease,
+            run_id=child_id,
+            definition_id=str(parent_run.workflow_definition_id),
+            user_text=user_text,
+            auth_context=auth_context,
+            injected_outputs=injected_outputs,
+            definition_snapshot=parent_run.definition_snapshot,
         )
         return child_run
 
@@ -580,9 +504,9 @@ class WorkflowControlService:
         Raises:
             HTTPException(400): node_id not found or is not a top-level STEP node.
             HTTPException(404): run_id not found.
-            HTTPException(501): runner_factory not configured.
+            HTTPException(501): launcher not configured.
         """
-        if self._runner_factory is None:
+        if self._launcher is None:
             raise HTTPException(status_code=501, detail="Workflow runner is not configured on this instance")
 
         parent_run = await self._load_run(workflow_definition_id, run_id)
@@ -673,7 +597,9 @@ class WorkflowControlService:
                     )
                 )
 
+        child_id, lease = self._new_leased_run_id()
         child_run = WorkflowRun(
+            id=child_id,
             workflow_definition_id=parent_run.workflow_definition_id,
             workflow_version=parent_run.workflow_version,
             status=WorkflowRunStatus.PENDING,
@@ -682,6 +608,7 @@ class WorkflowControlService:
             definition_snapshot=parent_run.definition_snapshot,
             parent_run_id=parent_run.id,
             resolved_dependencies=resolved_deps,
+            **workflow_run_lease_repository.insert_fields(lease),
         )
         await child_run.insert()
         logger.info(
@@ -692,17 +619,15 @@ class WorkflowControlService:
         )
 
         user_text: str = extract_user_text(parent_run.initial_input)
-        runner = self._runner_factory()
-        _fire_background(
-            runner.run(
-                str(parent_run.workflow_definition_id),
-                user_text,
-                auth_context=auth_context,
-                existing_run_id=str(child_run.id),
-                injected_outputs=injected_outputs,
-                stop_after_node_id=node_id,
-                definition_snapshot=parent_run.definition_snapshot,
-            )
+        await self._launch_leased_run(
+            lease=lease,
+            run_id=child_id,
+            definition_id=str(parent_run.workflow_definition_id),
+            user_text=user_text,
+            auth_context=auth_context,
+            injected_outputs=injected_outputs,
+            stop_after_node_id=node_id,
+            definition_snapshot=parent_run.definition_snapshot,
         )
         return child_run
 
@@ -728,9 +653,9 @@ class WorkflowControlService:
 
         Raises:
             HTTPException(404): run_id not found.
-            HTTPException(501): runner_factory not configured.
+            HTTPException(501): launcher not configured.
         """
-        if self._runner_factory is None:
+        if self._launcher is None:
             raise HTTPException(status_code=501, detail="Workflow runner is not configured on this instance")
 
         source_run = await self._load_run(workflow_definition_id, run_id)
@@ -744,26 +669,27 @@ class WorkflowControlService:
                 detail=f"WorkflowDefinition {workflow_definition_id!r} not found; cannot replay",
             )
 
+        replay_id, lease = self._new_leased_run_id()
         replay_run = WorkflowRun(
+            id=replay_id,
             workflow_definition_id=source_run.workflow_definition_id,
             workflow_version=live_definition.version,
             status=WorkflowRunStatus.PENDING,
             trigger_source="replay",
             initial_input=source_run.initial_input,
             parent_run_id=source_run.id,
+            **workflow_run_lease_repository.insert_fields(lease),
         )
         await replay_run.insert()
         logger.info("WorkflowRun %s: created replay run %s", run_id, replay_run.id)
 
         user_text: str = extract_user_text(source_run.initial_input)
-        runner = self._runner_factory()
-        _fire_background(
-            runner.run(
-                workflow_definition_id,
-                user_text,
-                auth_context=auth_context,
-                existing_run_id=str(replay_run.id),
-            )
+        await self._launch_leased_run(
+            lease=lease,
+            run_id=replay_id,
+            definition_id=workflow_definition_id,
+            user_text=user_text,
+            auth_context=auth_context,
         )
         return replay_run
 
@@ -794,7 +720,7 @@ class WorkflowControlService:
         run = await self._load_run(workflow_definition_id, run_id)
         if run.status == WorkflowRunStatus.AWAITING_APPROVAL and _has_timed_out_requirement(run):
             logger.info("WorkflowRun %s has a timed-out requirement — nudging continue_run", run_id)
-            self._trigger_resume(run, auth_context)
+            await self._trigger_resume(run, auth_context)
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
         return run, node_runs
 

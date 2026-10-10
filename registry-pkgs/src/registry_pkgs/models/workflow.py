@@ -10,6 +10,7 @@ from beanie import Document, PydanticObjectId
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pymongo import ASCENDING, IndexModel
 
+from registry_pkgs.database.leased_job import LeasedDocumentMixin
 from registry_pkgs.models.enums import (
     NodeRunStatus,
     OnRejectPolicy,
@@ -592,7 +593,7 @@ class NodeRun(Document):
         ]
 
 
-class WorkflowRun(Document):
+class WorkflowRun(LeasedDocumentMixin, Document):
     """Top-level record for a single execution of a WorkflowDefinition."""
 
     workflow_definition_id: PydanticObjectId
@@ -613,17 +614,30 @@ class WorkflowRun(Document):
     # Directive control fields — written by the API layer, read by the executor wrapper.
     # ``pending_directive`` is the MongoDB source of truth; the in-process asyncio.Queue
     # is the fast path.  On service restart the Queue is lost but this field survives,
-    # allowing startup cleanup to mark orphan runs correctly.
+    # so a new executor (or the reaper) can see any directive left pending.
     pending_directive: WorkflowDirective | None = None
+
+    # Lease fields (snake_case). A run is born already leased by its executing pod and
+    # stays leased while PENDING/RUNNING/PAUSED; the lease is released on entering
+    # AWAITING_APPROVAL or any terminal status. Written only through
+    # ``workflow_run_lease_repository`` (``LeasedRunStateWriter`` fences on ``lease_token``);
+    # the ``LeasedDocumentMixin`` makes a stray ``save()`` raise so it can't reset them.
+    lease_owner: str | None = None
+    lease_token: str | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    updated_at: datetime | None = None
 
     # agno generates its own internal run_id (UUID) inside ``workflow.arun``;
     agno_run_id: str | None = None
     # Set when the run transitions to PAUSED; used to enforce pause_timeout_seconds.
     paused_at: datetime | None = None
     # How long (seconds) a paused run may wait before being automatically cancelled.
-    # NOTE: not yet enforced — ad-hoc PAUSE auto-cancel needs the periodic run
-    # reaper (tracked separately). HITL *gate* timeouts (HumanReviewSpec.on_timeout)
-    # ARE enforced lazily at continue-time; see WorkflowControlService.get_run_status.
+    # NOTE: the run reaper (``reap_expired_runs``) does NOT enforce this — it only
+    # finalizes runs whose executor died (expired lease). ``pause_timeout_seconds`` is
+    # enforced by the executor wrapper while the run is still alive, and HITL *gate*
+    # timeouts (HumanReviewSpec.on_timeout) are enforced lazily at continue-time; see
+    # WorkflowControlService.get_run_status.
     pause_timeout_seconds: int = 3600
 
     # HITL: serialized agno ``StepRequirement`` objects awaiting user decision.
@@ -643,7 +657,13 @@ class WorkflowRun(Document):
 
     class Settings:
         name = "workflow_runs"
-        indexes = ["workflow_definition_id", "status", "parent_run_id"]
+        indexes = [
+            "workflow_definition_id",
+            "status",
+            "parent_run_id",
+            # Serves the reaper's expired-lease query: status ∈ leased set AND lease_expires_at ≤ now.
+            IndexModel([("status", ASCENDING), ("lease_expires_at", ASCENDING)]),
+        ]
 
 
 class WorkflowSchedule(Document):
