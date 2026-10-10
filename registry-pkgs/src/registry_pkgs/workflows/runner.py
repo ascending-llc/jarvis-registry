@@ -195,6 +195,7 @@ class WorkflowRunner:
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
         definition_snapshot: dict[str, Any] | None = None,
+        run_writer: RunStateWriter | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Execute a workflow definition and return the completed run + per-node results.
 
@@ -214,6 +215,10 @@ class WorkflowRunner:
                               are compiled and executed; downstream nodes are excluded.
             definition_snapshot: Optional WorkflowDefinition snapshot to execute
                                  instead of the current live definition.
+            run_writer:       Writer for all WorkflowRun state writes. Defaults to an
+                              unleased ``RunStateWriter``; the launcher injects a
+                              ``LeasedRunStateWriter`` so every write is token-fenced
+                              (including the PENDING → RUNNING compare-and-set below).
 
         Returns:
             A tuple of (WorkflowRun, list[NodeRun]) after the run completes.
@@ -236,7 +241,7 @@ class WorkflowRunner:
             if definition is None:
                 raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
 
-        writer = RunStateWriter(PydanticObjectId(run.id))
+        writer = run_writer or RunStateWriter(PydanticObjectId(run.id))
         snapshot_json = definition.model_dump(mode="json")
         # Compare-and-set PENDING → RUNNING: a run that already started or was cancelled
         # before we got here must not execute. First writer to claim it wins.
@@ -367,15 +372,19 @@ class WorkflowRunner:
         *,
         existing_run_id: str,
         auth_context: UserContextDict | None,
+        run_writer: RunStateWriter | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Resume a run that is holding at one or more pending requirements.
 
-        Called by ``WorkflowControlService.resolve_requirement`` (via BackgroundTask)
+        Called by ``WorkflowControlService`` through ``WorkflowRunLauncher.launch_continue``
         after the user's decision has been written into ``WorkflowRun.pending_requirements``.
 
         Flow:
         1. CAS state transition AWAITING_APPROVAL → RUNNING.  If another caller
            already won the race, this method exits silently (no double-resume).
+           When ``run_writer`` is injected, the caller (the launcher) has already
+           won this transition via ``workflow_run_lease_repository.acquire(...)``,
+           so the CAS here is skipped.
         2. Re-build the agno Workflow from ``run.definition_snapshot`` so any pod
            can resume — we do NOT depend on the in-memory state of whichever pod
            originally returned ``is_paused=True``.
@@ -394,25 +403,28 @@ class WorkflowRunner:
             raise ValueError(f"continue_run: invalid run_id {existing_run_id!r}")
 
         # CAS: only one continuation wins.  We use raw motor ``update_one`` here.
-        collection = self._db_client[self._db_name].get_collection(WorkflowRun.get_settings().name)
-        cas_result = await collection.update_one(
-            {
-                "_id": run_oid,
-                "status": WorkflowRunStatus.AWAITING_APPROVAL.value,
-            },
-            {"$set": {"status": WorkflowRunStatus.RUNNING.value}},
-        )
-        if cas_result.modified_count == 0:
-            logger.info("[run=%s] continue_run: CAS lost (not in AWAITING_APPROVAL), skipping", existing_run_id)
-            run = await WorkflowRun.get(run_oid)
-            node_runs = await NodeRun.find(NodeRun.workflow_run_id == run_oid).to_list() if run is not None else []
-            return run, node_runs  # type: ignore[return-value]
+        # When a writer is injected the launcher already won AWAITING_APPROVAL → RUNNING
+        # through the lease ``acquire``, so skip the CAS to avoid a double transition.
+        if run_writer is None:
+            collection = self._db_client[self._db_name].get_collection(WorkflowRun.get_settings().name)
+            cas_result = await collection.update_one(
+                {
+                    "_id": run_oid,
+                    "status": WorkflowRunStatus.AWAITING_APPROVAL.value,
+                },
+                {"$set": {"status": WorkflowRunStatus.RUNNING.value}},
+            )
+            if cas_result.modified_count == 0:
+                logger.info("[run=%s] continue_run: CAS lost (not in AWAITING_APPROVAL), skipping", existing_run_id)
+                run = await WorkflowRun.get(run_oid)
+                node_runs = await NodeRun.find(NodeRun.workflow_run_id == run_oid).to_list() if run is not None else []
+                return run, node_runs  # type: ignore[return-value]
 
         run = await WorkflowRun.get(run_oid)
         if run is None:
             raise ValueError(f"WorkflowRun {existing_run_id!r} not found")
 
-        writer = RunStateWriter(run_oid)
+        writer = run_writer or RunStateWriter(run_oid)
 
         if not run.definition_snapshot:
             raise RuntimeError(
@@ -632,7 +644,7 @@ class WorkflowRunner:
         """Mark the run CANCELLED and reverse-notify agno (M2)."""
         await self._write_terminal_state(run, writer, WorkflowRunStatus.CANCELLED, str(exc))
         try:
-            await self._finalize_dangling_node_runs(
+            await self.finalize_dangling_node_runs(
                 PydanticObjectId(run.id), str(exc), target_status=NodeRunStatus.CANCELLED
             )
         except Exception as inner:
@@ -650,13 +662,13 @@ class WorkflowRunner:
         """Mark the run FAILED directly (so a half-finished run never stays RUNNING)."""
         await self._write_terminal_state(run, writer, WorkflowRunStatus.FAILED, str(exc))
         try:
-            await self._finalize_dangling_node_runs(PydanticObjectId(run.id), str(exc))
+            await self.finalize_dangling_node_runs(PydanticObjectId(run.id), str(exc))
         except Exception as inner:
             logger.warning("[run=%s] failed to clean up dangling NodeRuns: %s", run.id, inner)
         logger.error("[run=%s] ✗ workflow failed: %s", run.id, exc, exc_info=True)
 
-    async def _finalize_dangling_node_runs(
-        self,
+    @staticmethod
+    async def finalize_dangling_node_runs(
         run_id: PydanticObjectId,
         error: str,
         target_status: NodeRunStatus = NodeRunStatus.FAILED,
