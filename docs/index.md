@@ -2,7 +2,7 @@
 <img src="img/jarvis_vertical_logo_w_text_light_bkg.svg" alt="Jarvis Registry Logo" width="2000" height="480" style="width:100%;height:auto;">
 </div>
 
-**Connect any AI chatbot, copilot, developer IDE, or autonomous agent to your enterprise tools and curated skills — through the secure [MCP Gateway](https://ascendingdc.com/jarvis-ai/mcp-gateway/), [Agent Gateway](https://ascendingdc.com/jarvis-ai/agent-gateway/), and governed [Skill Gateway](features/skill-gateway.md), with built-in identity governance and full observability.**
+**Jarvis Registry is a self-hostable enterprise AI gateway and registry for connecting AI clients to governed mcps(tools), agents, and private skills.** Deploy it in your environment and use its identity, access-control, and observability features to manage how clients reach registered resources.
 
 ---
 
@@ -10,9 +10,15 @@
 
 **Jarvis Registry** is an open-source, enterprise-grade orchestration platform for **[MCP Gateway](https://ascendingdc.com/jarvis-ai/mcp-gateway/), [Agent Gateway](https://ascendingdc.com/jarvis-ai/agent-gateway/), and [Skill Gateway](features/skill-gateway.md)** capabilities built by [ASCENDING Inc](https://ascendingdc.com/jarvis-ai/). It solves one of the hardest problems in enterprise AI: giving AI chatbots, copilots, developer IDEs, and autonomous agents **secure, governed access** to internal tools, data, and approved skills — without fragmented integrations or security blind spots.
 
-Jarvis Registry acts as a **centralized control plane** for tool calling and orchestration that sits between your AI clients (copilots, custom chatbots, IDEs, agents) and your enterprise MCP servers and skills. Every request is authenticated against your Identity Provider (Keycloak, Amazon Cognito, or Microsoft Entra ID) and checked against fine-grained ACL policies — before a single tool is invoked.
+Jarvis Registry acts as a **centralized control plane** for tool calling and orchestration between AI clients (copilots, custom chatbots, IDEs, agents) and enterprise MCP servers and skills. Requests are authenticated and checked against configured scopes and resource ACLs before protected resources are returned or invoked. See [Security Control Design](design/security-design.md) for how those controls work together.
 
 Whether you are building a custom chatbot, connecting Claude Code, Codex, GitHub Copilot, Cursor, or VS Code to internal tools, orchestrating fleets of autonomous A2A agents, or federating tools and skills across cloud environments, Jarvis Registry lets your engineers **focus on the user experience** while the platform handles **secure tool discovery, calling, and orchestration** with built-in governance, discoverability, and auditability.
+
+## Private Deployment and Compliance
+
+Jarvis Registry can be deployed in a customer's environment, including private and on-premises deployments. Its authentication, RBAC, resource ACL, and observability capabilities can support a customer's security and compliance controls. A private deployment does not itself grant SOC 2 or another certification; certification applies to the customer's in-scope organization or service and its independently assessed controls.
+
+See the [Deployment Guide](deployment-guide.md), [Security Control Design](design/security-design.md), and [Observability](features/observability.md) for the deployment and control details.
 
 ---
 
