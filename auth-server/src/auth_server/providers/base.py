@@ -9,11 +9,12 @@ logger = logging.getLogger(__name__)
 
 
 def log_group_resolution_failure(provider: str, exc: Exception) -> None:
-    """Log group outages without user identifiers, tokens or untrusted response bodies."""
+    """Log an IdP group-source-of-truth outage with one consistent, greppable signature."""
     logger.error(
-        "Group resolution failed for provider=%s error_type=%s; proceeding with empty groups",
+        "Group resolution failed for provider=%s; proceeding with empty groups: %s",
         provider,
-        type(exc).__name__,
+        exc,
+        exc_info=exc,
     )
 
 

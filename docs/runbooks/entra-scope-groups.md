@@ -74,7 +74,8 @@ user cleanup separate from this rollout.
 
 A Graph lookup failure produces a `Group resolution failed for provider=entra` log entry and empty
 groups, never a fallback to display-name authorization. Fix Graph availability or configuration and
-sign in again. Logs report the failure type without user identifiers, tokens or response bodies.
+sign in again. The log entry includes the exception message and traceback (for example the Graph HTTP
+status) to diagnose the failure.
 
 Existing tokens are not automatically revoked by this deployment. Use fresh sign-ins for verification;
 token/session revocation, if required operationally, follows the existing procedures.

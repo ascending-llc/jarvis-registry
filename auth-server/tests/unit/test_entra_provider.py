@@ -173,13 +173,14 @@ class TestEntraGetScopeGroups:
             assert await provider.get_scope_groups("access-token") == []
         assert isinstance(log_failure.call_args.args[1], httpx.HTTPStatusError)
 
-    async def test_timeout_logs_no_token_or_user_information(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_timeout_logs_full_exception_details(self, caplog: pytest.LogCaptureFixture) -> None:
         provider = _provider()
         with patch("auth_server.providers.entra.httpx.AsyncClient") as client_class:
             client_class.return_value.__aenter__.return_value.post = AsyncMock(
-                side_effect=httpx.ReadTimeout("user@example.com secret-access-token")
+                side_effect=httpx.ReadTimeout("graph timed out")
             )
-            assert await provider.get_scope_groups("secret-access-token") == []
-        assert "Group resolution failed for provider=entra error_type=ReadTimeout" in caplog.text
-        assert "user@example.com" not in caplog.text
-        assert "secret-access-token" not in caplog.text
+            assert await provider.get_scope_groups("access-token") == []
+        record = next(r for r in caplog.records if "Group resolution failed for provider=entra" in r.getMessage())
+        assert "graph timed out" in record.getMessage()
+        assert record.exc_info is not None
+        assert record.exc_info[0] is httpx.ReadTimeout
