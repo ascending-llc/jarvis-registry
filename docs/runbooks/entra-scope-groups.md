@@ -37,8 +37,8 @@ tenant ID, or a group display name.
 | `JARVIS_REGISTRY_USER_GROUP_OBJECT_ID` | Object ID of `jarvis-registry-user` |
 | `JARVIS_REGISTRY_READ_ONLY_GROUP_OBJECT_ID` | Object ID of `jarvis-registry-read-only` |
 
-Set all four on the **registry**, **auth-server**, and **workflow-worker** pods. Replace the example
-GUIDs in `.env.example`; they do not identify real authorization groups. Docker Compose passes the
+Set all four on the **registry**, **auth-server**, and **workflow-worker** pods. `.env.example` leaves them
+empty, so an Entra deployment fails startup until real IDs are set. Docker Compose passes the
 root `.env` to all three services.
 
 When `AUTH_PROVIDER=entra`, missing, invalid or duplicate bindings fail startup. Errors name every
