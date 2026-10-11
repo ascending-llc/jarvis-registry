@@ -123,6 +123,36 @@ async def test_launch_continue_race_lost_never_runs(runner: SimpleNamespace, mon
 
 
 @pytest.mark.asyncio
+async def test_launch_continue_after_shutdown_fails_the_leased_run_and_raises(
+    runner: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = PydanticObjectId()
+    lease = _lease(run_id)
+    monkeypatch.setattr(launcher_module.workflow_run_lease_repository, "acquire", AsyncMock(return_value=lease))
+    transition = AsyncMock()
+    monkeypatch.setattr(launcher_module.workflow_run_lease_repository, "transition", transition)
+    exec_mock = AsyncMock()
+    monkeypatch.setattr(launcher_module, "execute_leased_run", exec_mock)
+    tracker = BackgroundTaskTracker()
+    await tracker.shutdown()  # tracker now refuses the spawn that follows a won acquire
+    launcher = WorkflowRunLauncher(runner, "registry-1", tracker)
+
+    async def prepare() -> None:
+        return None
+
+    with pytest.raises(RuntimeError):
+        await launcher.launch_continue(run_id=run_id, prepare=prepare)
+
+    # The run was already moved RUNNING + leased by acquire, so a refused spawn must fail it here
+    # (released) rather than strand it RUNNING with a lease no live task will heartbeat.
+    set_fields = transition.await_args.args[1]
+    assert set_fields["status"] == WorkflowRunStatus.FAILED.value
+    assert set_fields["error_summary"] == _REGISTRY_SHUTDOWN_REASON
+    assert transition.await_args.kwargs["release"] is True
+    exec_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_launch_continue_abort_skips_acquire(runner: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     acquire = AsyncMock()
     monkeypatch.setattr(launcher_module.workflow_run_lease_repository, "acquire", acquire)

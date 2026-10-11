@@ -115,30 +115,39 @@ class WorkflowRunLauncher:
         run_id: PydanticObjectId,
         prepare: Callable[[], Awaitable[UserContextDict | None]],
     ) -> None:
-        """Spawn a tracked, leased HITL continuation.
+        """Acquire the continuation lease in the foreground, then spawn the leased resume.
 
         ``prepare`` performs the control service's auth refresh + reauth-fail check and returns the
         auth context to resume with, or ``ABORT_CONTINUE`` to stop (reauth failed). The launcher then
         wins the ``AWAITING_APPROVAL`` → ``RUNNING`` transition via ``acquire`` (this replaces the
         runner's own compare-and-set for registry callers); losing the race stops quietly.
 
+        ``prepare`` and ``acquire`` run on the caller's request path on purpose, not inside the tracked
+        task. The approval decision is already persisted before we get here, so if we deferred the
+        acquire into a background task a shutdown that cancels that task (or refuses the spawn) would
+        leave the run unleased in ``AWAITING_APPROVAL`` with its requirement already resolved — no
+        reaper covers that state and the decision cannot be resubmitted, so the run would strand. In
+        the foreground the request is drained by the graceful-shutdown timeout rather than cancelled,
+        and once ``acquire`` wins the run is ``RUNNING`` + leased: a spawn refused after that point
+        fails the leased run here (like ``launch_run``), and a crash afterwards is the reaper's.
+
         Raises ``RuntimeError`` (from the tracker) once shutdown has begun; the caller maps it to 503.
         """
+        prepared = await prepare()
+        if prepared is ABORT_CONTINUE:
+            return
+        auth_context = prepared
+        lease = await workflow_run_lease_repository.acquire(
+            doc_id=run_id,
+            owner=self._lease_owner,
+            expected_filter={"status": WorkflowRunStatus.AWAITING_APPROVAL.value},
+            set_fields={"status": WorkflowRunStatus.RUNNING.value},
+        )
+        if lease is None:
+            logger.info("[run=%s] continue lost the race (no longer AWAITING_APPROVAL)", run_id)
+            return
 
         async def _job() -> None:
-            prepared = await prepare()
-            if prepared is ABORT_CONTINUE:
-                return
-            auth_context = prepared
-            lease = await workflow_run_lease_repository.acquire(
-                doc_id=run_id,
-                owner=self._lease_owner,
-                expected_filter={"status": WorkflowRunStatus.AWAITING_APPROVAL.value},
-                set_fields={"status": WorkflowRunStatus.RUNNING.value},
-            )
-            if lease is None:
-                logger.info("[run=%s] continue lost the race (no longer AWAITING_APPROVAL)", run_id)
-                return
             await execute_leased_run(
                 lease,
                 self._runner.continue_run(
@@ -149,4 +158,16 @@ class WorkflowRunLauncher:
                 interrupted_reason=_REGISTRY_SHUTDOWN_REASON,
             )
 
-        self._tracker.spawn(_job(), name=f"workflow-continue-{run_id}")
+        try:
+            self._tracker.spawn(_job(), name=f"workflow-continue-{run_id}")
+        except RuntimeError:
+            await workflow_run_lease_repository.transition(
+                lease,
+                {
+                    "status": WorkflowRunStatus.FAILED.value,
+                    "error_summary": _REGISTRY_SHUTDOWN_REASON,
+                    "finished_at": datetime.now(UTC),
+                },
+                release=True,
+            )
+            raise
