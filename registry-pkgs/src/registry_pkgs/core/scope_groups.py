@@ -46,9 +46,9 @@ def validate_scope_group_object_ids(values: Mapping[str, str | None]) -> dict[st
 def entra_scope_group_ids(settings: JarvisBaseSettings) -> dict[str, str]:
     """Read configured bindings; Google-only deployments may have none."""
     return {
-        str(UUID(value.strip())): group
+        str(UUID(value)): group
         for group, field in SCOPE_GROUP_OBJECT_ID_FIELDS.items()
-        if (value := getattr(settings, field))
+        if (value := (getattr(settings, field) or "").strip())
     }
 
 

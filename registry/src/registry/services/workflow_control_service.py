@@ -953,7 +953,15 @@ def _scope_groups_from_current_groups(current_groups: list[ExtendedGroup]) -> li
         for group in current_groups
         if group.source == ExtendedGroupSource.ENTRA and group.idOnTheSource
     ]
-    groups = scope_groups_for_entra_ids(entra_ids, entra_scope_group_ids(settings)) if entra_ids else []
+    groups: list[str] = []
+    if entra_ids:
+        bindings = entra_scope_group_ids(settings)
+        if not bindings:
+            logger.warning(
+                "Workflow resume found Entra group memberships but no Entra scope-group bindings are "
+                "configured; set JARVIS_REGISTRY_*_GROUP_OBJECT_ID on this pod. Granting no Entra scope groups."
+            )
+        groups = scope_groups_for_entra_ids(entra_ids, bindings)
     groups.extend(
         scope_group
         for group in current_groups

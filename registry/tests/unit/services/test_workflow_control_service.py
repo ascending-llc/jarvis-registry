@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from registry.services import workflow_control_service as wcs
 from registry.services.workflow_control_service import WorkflowControlService
+from registry_pkgs.core.scope_groups import SCOPE_GROUP_OBJECT_ID_FIELDS
 from registry_pkgs.models.enums import RequirementResolution, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.workflows.control import DirectiveQueue
 
@@ -453,6 +454,19 @@ def test_workflow_group_resolution_deduplicates_mixed_sources(monkeypatch: pytes
         SimpleNamespace(source="google", email="jarvis-registry-admin@example.com"),
     ]
     assert wcs._scope_groups_from_current_groups(groups) == ["jarvis-registry-admin"]
+
+
+def test_workflow_entra_groups_without_bindings_grant_nothing_and_warn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Dual-provider pods (AUTH_PROVIDER=google) may lack bindings; resume fails closed, loudly."""
+    admin_id = wcs.settings.jarvis_registry_admin_group_object_id
+    for field in SCOPE_GROUP_OBJECT_ID_FIELDS.values():
+        monkeypatch.setattr(wcs.settings, field, None)
+    group = SimpleNamespace(source="entra", idOnTheSource=admin_id, email=None)
+
+    assert wcs._scope_groups_from_current_groups([group]) == []
+    assert "no Entra scope-group bindings are configured" in caplog.text
 
 
 @pytest.mark.asyncio

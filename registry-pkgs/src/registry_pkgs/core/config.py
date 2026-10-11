@@ -410,7 +410,11 @@ class JarvisBaseSettings(MongoSettings):
 
     @model_validator(mode="after")
     def _validate_entra_scope_group_object_ids(self) -> Self:
-        if self.auth_provider == "entra" and self.x_jarvis_registry_import_checks != "disabled":
+        # Any configured binding is validated whatever AUTH_PROVIDER is: dual-provider deployments
+        # (AUTH_PROVIDER=google, ENTRA_ENABLED=true) resolve Entra users' scopes on workflow resume
+        # from these values, so a partial or malformed set must fail at startup.
+        configured = any((getattr(self, field) or "").strip() for field in SCOPE_GROUP_OBJECT_ID_FIELDS.values())
+        if (self.auth_provider == "entra" or configured) and self.x_jarvis_registry_import_checks != "disabled":
             self._normalize_scope_group_object_ids()
         return self
 

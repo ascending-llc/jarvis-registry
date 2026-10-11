@@ -41,14 +41,17 @@ Set all four on the **registry**, **auth-server**, and **workflow-worker** pods.
 empty, so an Entra deployment fails startup until real IDs are set. Docker Compose passes the
 root `.env` to all three services.
 
-When `AUTH_PROVIDER=entra`, missing, invalid or duplicate bindings fail startup. Errors name every
-bad variable, for example `JARVIS_REGISTRY_ADMIN_GROUP_OBJECT_ID is not set`. UUIDs are normalized
-before duplicate detection. A syntactically valid but incorrect ID passes startup validation and
-grants no membership for that binding, so verify IDs and real sign-ins before production rollout.
+When `AUTH_PROVIDER=entra`, or when any of the four is set, missing, invalid or duplicate bindings
+fail startup on every pod. Errors name every bad variable, for example
+`JARVIS_REGISTRY_ADMIN_GROUP_OBJECT_ID is not set`. UUIDs are normalized before duplicate detection.
+A syntactically valid but incorrect ID passes startup validation and grants no membership for that
+binding, so verify IDs and real sign-ins before production rollout.
 
 auth-server also requires the bindings when `ENTRA_ENABLED=true` (the default), even if
-`AUTH_PROVIDER=google`. For Google-only deployments set `AUTH_PROVIDER=google` and
-`ENTRA_ENABLED=false`; configure `GOOGLE_ALLOWED_HD` as described in
+`AUTH_PROVIDER=google`. In that dual-provider setup, set them on registry and workflow-worker too:
+workflow resume rebuilds Entra users' scopes from them, and a pod without them grants Entra users no
+scope groups and logs a warning on each such resume. For Google-only deployments set
+`AUTH_PROVIDER=google` and `ENTRA_ENABLED=false`; configure `GOOGLE_ALLOWED_HD` as described in
 [Google SSO onboarding](google-sso-onboarding.md).
 
 No new Graph permission is required. Login calls `POST /v1.0/me/checkMemberGroups` with the four IDs

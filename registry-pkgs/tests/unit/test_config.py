@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from registry_pkgs.core.config import DISABLE_DOTENV_ENV_VAR, JarvisBaseSettings, MongoConfig, MongoSettings
-from registry_pkgs.core.scope_groups import SCOPE_GROUP_OBJECT_ID_FIELDS
+from registry_pkgs.core.scope_groups import SCOPE_GROUP_OBJECT_ID_FIELDS, entra_scope_group_ids
 from registry_pkgs.testing.fixtures import TEST_SCOPE_GROUP_OBJECT_IDS, disable_dotenv_loading
 
 
@@ -275,6 +275,34 @@ def test_google_settings_do_not_require_entra_scope_group_ids() -> None:
         **dict.fromkeys(SCOPE_GROUP_OBJECT_ID_FIELDS.values()),
     )
     assert settings.google_allowed_hd == "example.com"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["not-a-uuid", "partial"])
+def test_google_settings_validate_any_configured_entra_binding(value: str) -> None:
+    """Dual-provider pods resolve Entra resume scopes from these, so partial or bad sets fail fast."""
+    fields = list(SCOPE_GROUP_OBJECT_ID_FIELDS.values())
+    values = dict.fromkeys(fields)
+    values[fields[0]] = TEST_SCOPE_GROUP_OBJECT_IDS[fields[0]] if value == "partial" else value
+    with pytest.raises(ValidationError, match=fields[1].upper() if value == "partial" else fields[0].upper()):
+        JarvisBaseSettings(auth_provider="google", x_jarvis_registry_import_checks="enabled", **values)
+
+
+@pytest.mark.unit
+def test_google_settings_normalize_configured_entra_bindings() -> None:
+    values = {field: value.upper() for field, value in TEST_SCOPE_GROUP_OBJECT_IDS.items()}
+    settings = JarvisBaseSettings(auth_provider="google", x_jarvis_registry_import_checks="enabled", **values)
+    assert {field: getattr(settings, field) for field in values} == TEST_SCOPE_GROUP_OBJECT_IDS
+
+
+@pytest.mark.unit
+def test_google_settings_treat_blank_entra_bindings_as_unset() -> None:
+    settings = JarvisBaseSettings(
+        auth_provider="google",
+        x_jarvis_registry_import_checks="enabled",
+        **dict.fromkeys(SCOPE_GROUP_OBJECT_ID_FIELDS.values(), " "),
+    )
+    assert entra_scope_group_ids(settings) == {}
 
 
 @pytest.mark.unit
