@@ -1150,3 +1150,34 @@ class TestInjectedOutputFromNodeRun:
         injected = wcs._injected_output_from_node_run(node_run)
 
         assert injected == {"content": "", "session_state": {}}
+
+
+@pytest.mark.asyncio
+async def test_trigger_resume_maps_tracker_shutdown_to_503():
+    """A refused spawn during shutdown surfaces as 503 from the resume path."""
+    from registry.services.background_task_tracker import TrackerShutdownError
+
+    launcher = _FakeLauncher()
+    launcher.launch_continue = AsyncMock(side_effect=TrackerShutdownError("tracker is shutting down"))
+    service = WorkflowControlService(directive_queue=DirectiveQueue(), launcher=launcher)
+    run = SimpleNamespace(id=PydanticObjectId())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._trigger_resume(run)
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_trigger_resume_does_not_mask_unrelated_runtime_error_as_shutdown():
+    """prepare() runs inline on the request path; its own RuntimeError must not be reported as a 503."""
+    launcher = _FakeLauncher()
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        launcher=launcher,
+        auth_context_refresher=AsyncMock(side_effect=RuntimeError("group lookup failed")),
+    )
+    run = SimpleNamespace(id=PydanticObjectId(), triggering_user_id="user-1")
+
+    with pytest.raises(RuntimeError, match="group lookup failed"):
+        await service._trigger_resume(run)

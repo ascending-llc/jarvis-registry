@@ -3,7 +3,7 @@ from datetime import timedelta
 
 import pytest
 
-from registry.services.background_task_tracker import BackgroundTaskTracker
+from registry.services.background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 
 
 @pytest.mark.asyncio
@@ -31,7 +31,7 @@ async def test_spawn_refused_after_shutdown_and_coro_closed() -> None:
         started = True
 
     coro = work()
-    with pytest.raises(RuntimeError, match="shutting down"):
+    with pytest.raises(TrackerShutdownError, match="shutting down"):
         tracker.spawn(coro, name="late")
     # The refused coroutine was closed, so it neither runs nor warns "never awaited".
     assert started is False
