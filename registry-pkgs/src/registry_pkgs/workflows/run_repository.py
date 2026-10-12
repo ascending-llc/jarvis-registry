@@ -111,6 +111,22 @@ class RunStateWriter:
                 f"RunStateWriter may only set executor-owned fields; got non-executor field(s): {sorted(illegal)}"
             )
 
+    def _extra_filter(self) -> dict[str, Any]:
+        """Extra match clauses merged into every write's filter. Empty in the base writer.
+
+        ``LeasedRunStateWriter`` overrides this to add ``lease_token == <token>`` so every
+        executor write is also fenced on the per-claim lease token.
+        """
+        return {}
+
+    def _extra_set(self, set_fields: dict[str, Any]) -> dict[str, Any]:
+        """Extra ``$set`` fields merged in after the executor-field assertion. Empty in the base.
+
+        ``LeasedRunStateWriter`` overrides this to clear the lease fields when the write moves
+        the run to ``AWAITING_APPROVAL`` or a terminal status.
+        """
+        return {}
+
     async def write(
         self,
         set_fields: dict[str, Any],
@@ -126,9 +142,10 @@ class RunStateWriter:
         must not treat its in-memory copy as persisted.
         """
         self._assert_executor_fields(set(set_fields) | set(unset))
+        set_with_extra = {**set_fields, **self._extra_set(set_fields)}
         update: dict[str, Any] = {}
-        if set_fields:
-            update["$set"] = {key: _coerce(value) for key, value in set_fields.items()}
+        if set_with_extra:
+            update["$set"] = {key: _coerce(value) for key, value in set_with_extra.items()}
         if unset:
             update["$unset"] = dict.fromkeys(unset, "")
         if not update:
@@ -137,6 +154,7 @@ class RunStateWriter:
             {
                 "_id": self._run_id,
                 "status": {"$in": [_coerce(status) for status in from_statuses]},
+                **self._extra_filter(),
             },
             update,
             session=session,
@@ -174,6 +192,7 @@ class RunStateWriter:
                 "_id": self._run_id,
                 "status": {"$in": [_coerce(status) for status in from_statuses]},
                 "pending_directive": _coerce(consumed),
+                **self._extra_filter(),
             },
             {"$set": update_set},
         )

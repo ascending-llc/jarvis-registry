@@ -18,6 +18,7 @@ from pymongo import ReturnDocument
 from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
+from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import ModelSourceMode, WorkflowNodeType, WorkflowRunStatus
@@ -40,6 +41,7 @@ from registry_pkgs.models.workflow import (
     WorkflowVersion,
 )
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
+from registry_pkgs.workflows.run_lease import workflow_run_lease_repository
 from registry_pkgs.workflows.runner import definition_from_snapshot
 from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
 
@@ -738,6 +740,7 @@ class WorkflowService:
         triggering_scopes: list[str] | None = None,
         triggering_client_id: str | None = None,
         prepared_definition: PreparedWorkflowRunDefinition | None = None,
+        lease: Lease | None = None,
     ) -> WorkflowRun:
         """
         Trigger a workflow run (async execution).
@@ -754,6 +757,9 @@ class WorkflowService:
             version: Workflow version to run; defaults to the latest version when omitted
             prepared_definition: Previously validated definition selected for this run. When
                 provided, its snapshot is reused instead of resolving the workflow again.
+            lease: When provided, the run is inserted already leased (its ``id`` is the lease's
+                pre-allocated ``doc_id`` and the lease fields are stamped) so it is never unowned.
+                The API route always passes one; script callers may omit it (inserted unleased).
 
         Returns:
             Created WorkflowRun document (status=PENDING)
@@ -791,6 +797,12 @@ class WorkflowService:
                         )
                     )
 
+            # Insert already leased when a lease is supplied, so a PENDING run is never unowned.
+            lease_kwargs: dict[str, Any] = {}
+            if lease is not None:
+                lease_kwargs["id"] = lease.doc_id
+                lease_kwargs.update(workflow_run_lease_repository.insert_fields(lease))
+
             # Create workflow run
             run = WorkflowRun(
                 workflow_definition_id=prepared.workflow_id,
@@ -806,6 +818,7 @@ class WorkflowService:
                 triggering_username=triggering_username,
                 triggering_scopes=triggering_scopes,
                 triggering_client_id=triggering_client_id,
+                **lease_kwargs,
             )
 
             # Save to database

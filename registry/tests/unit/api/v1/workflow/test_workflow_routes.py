@@ -8,7 +8,16 @@ from fastapi import HTTPException
 from registry.api.v1.workflow import workflow_routes
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
+from registry.services.background_task_tracker import TrackerShutdownError
 from registry.services.workflow_service import PreparedWorkflowRunDefinition, WorkflowRunStats
+
+
+def _fake_launcher() -> MagicMock:
+    """A stand-in WorkflowRunLauncher for the trigger route: mints a lease, records launch_run."""
+    launcher = MagicMock()
+    launcher.new_lease = MagicMock(return_value=MagicMock())
+    launcher.launch_run = AsyncMock()
+    return launcher
 
 
 def _canvas() -> dict[str, dict[str, float]]:
@@ -457,6 +466,8 @@ async def test_trigger_run_preflights_and_runs_requested_historical_version(monk
         status=WorkflowRunStatus.PENDING,
         trigger_source="api",
         started_at=datetime.now(UTC),
+        initial_input={"user_text": "hi"},
+        definition_snapshot=None,
     )
 
     current_workflow = _fake_workflow(version=3)
@@ -480,7 +491,7 @@ async def test_trigger_run_preflights_and_runs_requested_historical_version(monk
     mock_acl = MagicMock()
     mock_acl.check_user_permission = AsyncMock(return_value=ResourcePermissions(VIEW=True))
 
-    background_tasks = MagicMock()
+    launcher = _fake_launcher()
     oauth_service = MagicMock()
     collect_pending = AsyncMock(return_value=[])
     monkeypatch.setattr(workflow_routes, "collect_pending_oauth_authorizations", collect_pending)
@@ -488,25 +499,25 @@ async def test_trigger_run_preflights_and_runs_requested_historical_version(monk
     response = await workflow_routes.trigger_workflow_run(
         workflow_id=str(current_workflow.id),
         data=WorkflowRunTriggerRequest(version=2),
-        background_tasks=background_tasks,
         user_context=user_context,
         workflow_service=mock_service,
-        workflow_runner=MagicMock(),
+        launcher=launcher,
         acl_service=mock_acl,
         oauth_service=oauth_service,
     )
 
     assert mock_service.trigger_workflow_run.await_args.kwargs["version"] == 2
     assert mock_service.trigger_workflow_run.await_args.kwargs["prepared_definition"] is prepared_definition
+    # The run is inserted already leased, then launched through the launcher (not BackgroundTasks).
+    assert mock_service.trigger_workflow_run.await_args.kwargs["lease"] is launcher.new_lease.return_value
     mock_service.prepare_workflow_run_definition.assert_awaited_once_with(current_workflow, 2)
     collect_pending.assert_awaited_once_with(
         historical_workflow,
         user_id=user_context["user_id"],
         oauth_service=oauth_service,
     )
-    background_tasks.add_task.assert_called_once()
-    _, kwargs = background_tasks.add_task.call_args
-    assert kwargs["auth_context"] is user_context
+    launcher.launch_run.assert_awaited_once()
+    assert launcher.launch_run.await_args.kwargs["auth_context"] is user_context
     assert response.requiresReauth is False
     assert response.pendingAuthorizations == []
     assert response.runId == str(run.id)
@@ -549,16 +560,15 @@ async def test_trigger_run_returns_pending_authorizations_without_creating_run(m
     ]
     collect_pending = AsyncMock(return_value=pending)
     monkeypatch.setattr(workflow_routes, "collect_pending_oauth_authorizations", collect_pending)
-    background_tasks = MagicMock()
+    launcher = _fake_launcher()
     oauth_service = MagicMock()
 
     response = await workflow_routes.trigger_workflow_run(
         workflow_id=str(workflow.id),
         data=WorkflowRunTriggerRequest(version=2),
-        background_tasks=background_tasks,
         user_context=user_context,
         workflow_service=mock_service,
-        workflow_runner=MagicMock(),
+        launcher=launcher,
         acl_service=mock_acl,
         oauth_service=oauth_service,
     )
@@ -570,7 +580,7 @@ async def test_trigger_run_returns_pending_authorizations_without_creating_run(m
     )
     mock_service.prepare_workflow_run_definition.assert_awaited_once_with(workflow, 2)
     mock_service.trigger_workflow_run.assert_not_awaited()
-    background_tasks.add_task.assert_not_called()
+    launcher.launch_run.assert_not_awaited()
     assert response.requiresReauth is True
     assert response.pendingAuthorizations == pending
     assert response.runId is None
@@ -616,10 +626,9 @@ async def test_trigger_run_validates_definition_before_oauth_preflight(
         await workflow_routes.trigger_workflow_run(
             workflow_id=str(workflow.id),
             data=WorkflowRunTriggerRequest(version=2),
-            background_tasks=MagicMock(),
             user_context=user_context,
             workflow_service=mock_service,
-            workflow_runner=MagicMock(),
+            launcher=_fake_launcher(),
             acl_service=mock_acl,
             oauth_service=oauth_service,
         )
@@ -648,10 +657,9 @@ async def test_trigger_run_forbidden_without_view():
         await workflow_routes.trigger_workflow_run(
             workflow_id=str(PydanticObjectId()),
             data=WorkflowRunTriggerRequest(),
-            background_tasks=MagicMock(),
             user_context=user_context,
             workflow_service=mock_service,
-            workflow_runner=MagicMock(),
+            launcher=_fake_launcher(),
             acl_service=mock_acl,
             oauth_service=MagicMock(),
         )
@@ -778,7 +786,6 @@ async def test_get_workflow_run_status_returns_run_status_response():
 async def test_get_workflow_run_status_nudges_continue_run_on_expired_requirement(monkeypatch):
     """The status endpoint must trigger the lazy timeout nudge when a pending
     requirement has passed its deadline."""
-    import asyncio
     from datetime import UTC, datetime, timedelta
     from types import SimpleNamespace
 
@@ -813,7 +820,6 @@ async def test_get_workflow_run_status_nudges_continue_run_on_expired_requiremen
     fake_node_run.find.return_value.to_list = AsyncMock(return_value=[])
     monkeypatch.setattr(wcs_module, "NodeRun", fake_node_run)
 
-    continue_mock = AsyncMock()
     refreshed_context = {
         "user_id": "user-1",
         "client_id": "client-1",
@@ -824,9 +830,20 @@ async def test_get_workflow_run_status_nudges_continue_run_on_expired_requiremen
         "provider": "workflow",
         "auth_source": "workflow_resume",
     }
+
+    class _Launcher:
+        def __init__(self) -> None:
+            self.continue_run_ids: list = []
+            self.prepared: list = []
+
+        async def launch_continue(self, *, run_id, prepare):
+            self.continue_run_ids.append(run_id)
+            self.prepared.append(await prepare())
+
+    launcher = _Launcher()
     service = wcs_module.WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(continue_run=continue_mock),
+        launcher=launcher,
         auth_context_refresher=AsyncMock(return_value=refreshed_context),
     )
     service._load_run = AsyncMock(return_value=run)
@@ -852,11 +869,9 @@ async def test_get_workflow_run_status_nudges_continue_run_on_expired_requiremen
         workflow_control_service=service,
         acl_service=mock_acl,
     )
-    await asyncio.sleep(0)  # let the fire-and-forget resume settle
 
-    continue_mock.assert_awaited_once()
-    assert continue_mock.await_args.kwargs["existing_run_id"] == run_id
-    assert continue_mock.await_args.kwargs["auth_context"] == refreshed_context
+    assert launcher.continue_run_ids == [PydanticObjectId(run_id)]
+    assert launcher.prepared == [refreshed_context]
 
 
 def test_workflow_create_request_parses_human_review_with_retry():
@@ -1177,3 +1192,58 @@ async def test_get_node_run_node_wrong_run_returns_400():
         )
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("launch_error", "expected_status", "expected_code"),
+    [
+        (TrackerShutdownError("tracker is shutting down"), 503, "service_unavailable"),
+        # Any other RuntimeError is an unexpected failure, not a shutdown, so it must not become a 503.
+        (RuntimeError("unrelated failure"), 500, "internal_error"),
+    ],
+)
+async def test_trigger_run_maps_only_tracker_shutdown_to_503(monkeypatch, launch_error, expected_status, expected_code):
+    """After the background-task tracker has begun shutting down, launch_run raises TrackerShutdownError;
+    the route must surface it as 503 (not 500). The run it inserted is failed by the launcher."""
+    from types import SimpleNamespace
+
+    from registry.schemas.workflow_api_schemas import WorkflowRunTriggerRequest
+    from registry_pkgs.models.enums import WorkflowRunStatus
+
+    user_context = {"user_id": str(PydanticObjectId()), "client_id": "c", "username": "u", "groups": [], "scopes": []}
+    workflow = _fake_workflow(version=1)
+    prepared = PreparedWorkflowRunDefinition(
+        workflow_id=workflow.id, definition=workflow, snapshot=workflow.model_dump(mode="json"), version=1
+    )
+    run = SimpleNamespace(
+        id=PydanticObjectId(),
+        workflow_definition_id=workflow.id,
+        status=WorkflowRunStatus.PENDING,
+        initial_input={"user_text": "hi"},
+        definition_snapshot=None,
+    )
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=workflow)
+    mock_service.prepare_workflow_run_definition = AsyncMock(return_value=prepared)
+    mock_service.trigger_workflow_run = AsyncMock(return_value=run)
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=ResourcePermissions(VIEW=True))
+    monkeypatch.setattr(workflow_routes, "collect_pending_oauth_authorizations", AsyncMock(return_value=[]))
+
+    launcher = _fake_launcher()
+    launcher.launch_run = AsyncMock(side_effect=launch_error)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.trigger_workflow_run(
+            workflow_id=str(workflow.id),
+            data=WorkflowRunTriggerRequest(),
+            user_context=user_context,
+            workflow_service=mock_service,
+            launcher=launcher,
+            acl_service=mock_acl,
+            oauth_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == expected_status
+    assert exc_info.value.detail["error"] == expected_code

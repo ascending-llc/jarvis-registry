@@ -102,8 +102,10 @@ async def test_workflow_run_trace_matches_execution_format_and_propagates_to_chi
         injected_outputs=None,
         stop_after_node_id=None,
         definition_snapshot=None,
+        run_writer=None,
     ):
         del runner, definition_id, user_text, auth_context, injected_outputs, stop_after_node_id, definition_snapshot
+        del run_writer
         LangfuseTraceAttributeSpanProcessor().on_start(child_span)
         return (
             SimpleNamespace(
@@ -245,8 +247,8 @@ async def test_workflow_trace_attribute_failure_does_not_change_result() -> None
 @pytest.mark.asyncio
 async def test_workflow_continuation_trace_uses_same_session_with_continue_tag() -> None:
     @trace_workflow_continuation
-    async def continue_run(runner, *, existing_run_id, auth_context):
-        del runner, auth_context
+    async def continue_run(runner, *, existing_run_id, auth_context, run_writer=None):
+        del runner, auth_context, run_writer
         return (
             SimpleNamespace(
                 id=existing_run_id,

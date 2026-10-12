@@ -1,6 +1,6 @@
 """End-to-end verification for AS-1543 features against a real MongoDB.
 
-Covers 11 modules / 49 checks:
+Covers 12 modules / 56 checks:
   A. ACL                  (3)  — creator OWNER, 403 without scope+ACL, list VIEW-filter
   B. Versioning           (7)  — PUT bump, checksum, history, version param, in-flight snapshot
   C. HITL approval gate   (13) — confirm/reject(skip/cancel/retry/else_branch)/user_input/edit/route_select
@@ -14,6 +14,10 @@ Covers 11 modules / 49 checks:
   I. Error paths          (4)  — 404 / 400 invalid version / 409 terminal cancel / 400 bad node
   J. Timeout (lazy nudge) (3)  — on_timeout skip/cancel via get_run_status; no-op before deadline
   K. Step error retry     (4)  — on_error retry recover/exhaust, skip, fail-fast (attempt counts)
+  L. Lease/Reaper            (7) — born-leased + cleared on terminal; AWAITING_APPROVAL releases lease
+                                 + continue re-acquires; reaper pass 1 (expired) + pass 2 (legacy);
+                                 token fence after reap; tracker.shutdown finalizes RUNNING run;
+                                 retry child is leased.
 
 Usage:
     uv run python scripts/verify_workflow_control_e2e.py                    # run all
@@ -40,6 +44,7 @@ import os
 import sys
 import time
 import traceback
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agno.workflow import StepInput, StepOutput
@@ -125,6 +130,11 @@ _EXECUTOR_KEYS = (
     "tool-x",
     "tool-c10-tech",
     "tool-c10-gen",
+    "tool-l1",
+    "tool-l2",
+    "tool-lx",
+    "tool-l6",
+    "tool-l7",
 )
 
 
@@ -178,8 +188,10 @@ async def _cleanup_executor_servers() -> None:
 
 
 from registry.services.access_control_service import ACLService, load_role_cache
+from registry.services.background_task_tracker import BackgroundTaskTracker
 from registry.services.group_service import GroupService
 from registry.services.workflow_control_service import WorkflowControlService
+from registry.services.workflow_run_launcher import WorkflowRunLauncher
 from registry.services.workflow_service import WorkflowService
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
@@ -197,6 +209,11 @@ from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowR
 from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue
+from registry_pkgs.workflows.run_lease import (
+    LeasedRunStateWriter,
+    reap_expired_runs,
+    workflow_run_lease_repository,
+)
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -771,7 +788,10 @@ async def module_c(workflow_service, control_service, acl_service, queue, runner
     # Drop & rebuild control service to simulate a process boundary.
     fresh_queue = DirectiveQueue()
     fresh_runner = _build_runner(fresh_queue)
-    fresh_service = WorkflowControlService(directive_queue=fresh_queue, runner_factory=lambda: fresh_runner)
+    fresh_service = WorkflowControlService(
+        directive_queue=fresh_queue,
+        launcher=WorkflowRunLauncher(runner=fresh_runner, lease_owner="e2e", tracker=BackgroundTaskTracker()),
+    )
     await fresh_service.resolve_requirement(wf_id, run_id, step_id=step_id, resolution=RequirementResolution.CONFIRM)
     final = await _wait_status(run_id, WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, timeout=20)
     r.check(
@@ -1180,7 +1200,10 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     wf_f = await _make_workflow(workflow_service, acl_service, "g3-failed", [_step_input("only", "tool-g3")])
     parent_failed = await workflow_service.trigger_workflow_run(workflow_id=str(wf_f.id))
     parent_failed.status = WorkflowRunStatus.FAILED
-    await parent_failed.save()
+    # WorkflowRun is lease-fenced (save() raises); write the status override with raw pymongo.
+    await WorkflowRun.get_pymongo_collection().update_one(
+        {"_id": parent_failed.id}, {"$set": {"status": WorkflowRunStatus.FAILED.value}}
+    )
     child3 = await control_service.send_retry(
         str(wf_f.id), str(parent_failed.id), wf_f.nodes[0].id, auth_context=None, user_id=str(USER_A)
     )
@@ -1204,7 +1227,9 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     # G5: retry a CANCELLED run → 400 (RETRY only valid from COMPLETED/FAILED).
     cancelled_run = await workflow_service.trigger_workflow_run(workflow_id=str(wf_f.id))
     cancelled_run.status = WorkflowRunStatus.CANCELLED
-    await cancelled_run.save()
+    await WorkflowRun.get_pymongo_collection().update_one(
+        {"_id": cancelled_run.id}, {"$set": {"status": WorkflowRunStatus.CANCELLED.value}}
+    )
     raised_cancel = False
     try:
         await control_service.send_retry(
@@ -1508,6 +1533,255 @@ async def module_k(workflow_service, control_service, acl_service, queue, runner
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Module L — Lease / Reaper / Shutdown  (7 checks)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class GatedMockRunner(WorkflowRunner):
+    """Mock runner whose step blocks on a shared event, so a run stays RUNNING until released."""
+
+    def __init__(self, *args, gate: asyncio.Event, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._gate = gate
+
+    async def _build_registry(self, definition, auth_context):
+        keyed_nodes = [n for n in flatten_workflow_nodes(definition.nodes) if n.executor_key]
+
+        def make(key: str) -> StepExecutor:
+            async def mock(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+                await self._gate.wait()  # hold the run in RUNNING until the test releases it
+                return StepOutput(content=f"{key}:OK", success=True)
+
+            return mock
+
+        return {node.id: make(node.executor_key) for node in keyed_nodes}
+
+
+def _build_gated_runner(queue: DirectiveQueue, gate: asyncio.Event) -> GatedMockRunner:
+    return GatedMockRunner(
+        fallback_model=build_legacy_bedrock_model(
+            resolve_bedrock_model_id(model_env_var="BEDROCK_MODEL", fallback_model_id="us.amazon.nova-lite-v1:0"),
+            settings.aws_region,
+        ),
+        encryption_key=settings.encryption_key,
+        azure_ad_token_provider=None,
+        db_client=MongoDB.get_client(),
+        db_name=MongoDB.database_name,
+        jwt_config=settings.jwt_signing_config,
+        directive_queue=queue,
+        gate=gate,
+    )
+
+
+async def _trigger_leased(launcher: WorkflowRunLauncher, workflow_service: WorkflowService, wf_id: str):
+    """Replicate the trigger route: insert an already-leased run, then launch it via the launcher."""
+    run_id = PydanticObjectId()
+    lease = launcher.new_lease(run_id)
+    run = await workflow_service.trigger_workflow_run(
+        workflow_id=wf_id,
+        trigger_source="e2e-lease",
+        initial_input={"user_text": "e2e"},
+        triggering_user_id=str(USER_A),
+        lease=lease,
+    )
+    await launcher.launch_run(
+        lease=lease,
+        definition_id=wf_id,
+        user_text="e2e",
+        auth_context=None,
+        existing_run_id=str(run.id),
+        definition_snapshot=run.definition_snapshot,
+    )
+    return str(run.id), run, lease
+
+
+async def _insert_raw_run(wf_id: PydanticObjectId, **fields) -> PydanticObjectId:
+    """Insert a WorkflowRun doc straight through pymongo (bypasses the lease-fenced model)."""
+    run_id = PydanticObjectId()
+    doc = {
+        "_id": run_id,
+        "workflow_definition_id": wf_id,
+        "status": "running",
+        "started_at": datetime.now(UTC),
+        **fields,
+    }
+    await WorkflowRun.get_pymongo_collection().insert_one(doc)
+    return run_id
+
+
+async def module_l(workflow_service, control_service, acl_service, queue, runner) -> Report:
+    r = Report("L. Lease/Reaper")
+    tracker = BackgroundTaskTracker()
+    launcher = WorkflowRunLauncher(runner=runner, lease_owner="e2e-L", tracker=tracker)
+
+    # L1: a triggered run is born leased, and the lease is cleared when it reaches a terminal state.
+    wf1 = await _make_workflow(workflow_service, acl_service, "l1-lease", [_step_input("only", "tool-l1")])
+    run_id, inserted, _lease = await _trigger_leased(launcher, workflow_service, str(wf1.id))
+    born_leased = inserted.lease_token is not None and inserted.lease_expires_at is not None
+    final = await _wait_status(run_id, WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED)
+    reloaded = await WorkflowRun.get(PydanticObjectId(run_id))
+    r.check(
+        "L1 run born leased → lease cleared on terminal",
+        born_leased
+        and final is not None
+        and final.status == WorkflowRunStatus.COMPLETED
+        and reloaded.lease_token is None,
+        f"born_leased={born_leased} final={final.status if final else 'timeout'} token_after={reloaded.lease_token}",
+    )
+
+    # L2: entering AWAITING_APPROVAL releases the lease; resolve → continue re-acquires and completes.
+    wf2 = await _make_workflow(
+        workflow_service,
+        acl_service,
+        "l2-hitl-lease",
+        [_step_input("gate", "tool-l2", humanReview=_hitl_input(requiresConfirmation=True))],
+    )
+    run_id2, _ins2, _l2 = await _trigger_leased(launcher, workflow_service, str(wf2.id))
+    await _wait_status(run_id2, WorkflowRunStatus.AWAITING_APPROVAL)
+    paused = await WorkflowRun.get(PydanticObjectId(run_id2))
+    step_id = paused.pending_requirements[0]["step_id"] if paused and paused.pending_requirements else None
+    lease_released = paused is not None and paused.lease_token is None
+    if step_id is not None:
+        await control_service.resolve_requirement(
+            str(wf2.id), run_id2, step_id=step_id, resolution=RequirementResolution.CONFIRM
+        )
+    final2 = await _wait_status(run_id2, WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, timeout=20)
+    r.check(
+        "L2 AWAITING_APPROVAL releases lease; continue re-acquires → COMPLETED",
+        lease_released and final2 is not None and final2.status == WorkflowRunStatus.COMPLETED,
+        f"lease_released={lease_released} final={final2.status if final2 else 'timeout'}",
+    )
+
+    # Shared fixture workflow for the raw-insert reaper cases (cleanup cascades by its name prefix).
+    wf_fix = await _make_workflow(workflow_service, acl_service, "l-reaper-fixture", [_step_input("x", "tool-lx")])
+    now = datetime.now(UTC)
+
+    # L3: reaper pass 1 — expired lease → FAILED + its open NodeRuns FAILED; a fresh lease is untouched.
+    expired = await _insert_raw_run(
+        wf_fix.id, lease_owner="dead-pod", lease_token="tok-expired", lease_expires_at=now - timedelta(seconds=1)
+    )
+    fresh = await _insert_raw_run(
+        wf_fix.id, lease_owner="live-pod", lease_token="tok-fresh", lease_expires_at=now + timedelta(minutes=5)
+    )
+    await NodeRun.get_pymongo_collection().insert_many(
+        [
+            {
+                "_id": PydanticObjectId(),
+                "workflow_run_id": expired,
+                "node_id": "n1",
+                "node_name": "a",
+                "status": "running",
+            },
+            {
+                "_id": PydanticObjectId(),
+                "workflow_run_id": expired,
+                "node_id": "n2",
+                "node_name": "b",
+                "status": "awaiting_approval",
+            },
+            {
+                "_id": PydanticObjectId(),
+                "workflow_run_id": expired,
+                "node_id": "n3",
+                "node_name": "c",
+                "status": "completed",
+            },
+        ]
+    )
+    reaped_count = await reap_expired_runs(legacy_cutover_age=timedelta(seconds=300))
+    exp_doc = await WorkflowRun.get_pymongo_collection().find_one({"_id": expired})
+    fresh_doc = await WorkflowRun.get_pymongo_collection().find_one({"_id": fresh})
+    node_states = {
+        d["node_id"]: d["status"] async for d in NodeRun.get_pymongo_collection().find({"workflow_run_id": expired})
+    }
+    r.check(
+        "L3 reaper pass 1: expired lease → FAILED + open NodeRuns FAILED, fresh untouched",
+        exp_doc["status"] == "failed"
+        and exp_doc["error_summary"] == "Executor lost: lease expired"
+        and exp_doc["lease_token"] is None
+        and fresh_doc["status"] == "running"
+        and node_states == {"n1": "failed", "n2": "failed", "n3": "completed"},
+        f"reaped>={reaped_count} expired={exp_doc['status']} fresh={fresh_doc['status']} nodes={node_states}",
+    )
+
+    # L4: reaper pass 2 — a lease-less run older than the cutover → FAILED; a recent one is untouched.
+    old_legacy = await _insert_raw_run(wf_fix.id, started_at=now - timedelta(minutes=10))
+    recent_legacy = await _insert_raw_run(wf_fix.id, started_at=now - timedelta(minutes=1))
+    await reap_expired_runs(legacy_cutover_age=timedelta(seconds=300))
+    old_doc = await WorkflowRun.get_pymongo_collection().find_one({"_id": old_legacy})
+    recent_doc = await WorkflowRun.get_pymongo_collection().find_one({"_id": recent_legacy})
+    r.check(
+        "L4 reaper pass 2: legacy lease-less >300s → FAILED, recent untouched",
+        old_doc["status"] == "failed"
+        and old_doc["error_summary"] == "Executor lost: run predates run leasing"
+        and recent_doc["status"] == "running",
+        f"old={old_doc['status']} recent={recent_doc['status']}",
+    )
+
+    # L5: after the reaper finalizes a run, the dead pod's old leased writer no-ops (token fence).
+    fenced_id = PydanticObjectId()
+    stale_lease = workflow_run_lease_repository.new_lease("dead-pod", doc_id=fenced_id)  # the pre-reap handle
+    await WorkflowRun.get_pymongo_collection().insert_one(
+        {
+            "_id": fenced_id,
+            "workflow_definition_id": wf_fix.id,
+            "status": "running",
+            "started_at": now,
+            "lease_owner": "dead-pod",
+            "lease_token": stale_lease.token,
+            "lease_expires_at": now - timedelta(seconds=1),
+        }
+    )
+    await reap_expired_runs(legacy_cutover_age=timedelta(seconds=300))
+    stale_write_ok = await LeasedRunStateWriter(stale_lease).write(
+        {"status": WorkflowRunStatus.COMPLETED}, from_statuses=[WorkflowRunStatus.RUNNING]
+    )
+    fenced_doc = await WorkflowRun.get_pymongo_collection().find_one({"_id": fenced_id})
+    r.check(
+        "L5 stale leased writer no-ops after reap (token fence)",
+        stale_write_ok is False and fenced_doc["status"] == "failed",
+        f"stale_write_ok={stale_write_ok} status={fenced_doc['status']}",
+    )
+
+    # L6: tracker.shutdown() cancels a RUNNING leased run → FAILED with the shutdown reason, lease cleared.
+    gate = asyncio.Event()
+    gated_tracker = BackgroundTaskTracker()
+    gated_runner = _build_gated_runner(queue, gate)
+    gated_launcher = WorkflowRunLauncher(runner=gated_runner, lease_owner="e2e-L-shutdown", tracker=gated_tracker)
+    wf6 = await _make_workflow(workflow_service, acl_service, "l6-shutdown", [_step_input("blocker", "tool-l6")])
+    run_id6, _ins6, _l6 = await _trigger_leased(gated_launcher, workflow_service, str(wf6.id))
+    running = await _wait_status(run_id6, WorkflowRunStatus.RUNNING, timeout=10)
+    await gated_tracker.shutdown(budget=timedelta(seconds=5))
+    gate.set()  # release the (now cancelled) step coroutine
+    after6 = await WorkflowRun.get(PydanticObjectId(run_id6))
+    r.check(
+        "L6 tracker.shutdown finalizes a RUNNING leased run → FAILED (interrupted)",
+        running is not None
+        and after6.status == WorkflowRunStatus.FAILED
+        and after6.error_summary == "Interrupted by registry shutdown; retry the run"
+        and after6.lease_token is None,
+        f"reached_running={running is not None} status={after6.status} summary={after6.error_summary!r}",
+    )
+
+    # L7: a retry child run is inserted already leased.
+    wf7 = await _make_workflow(workflow_service, acl_service, "l7-retry-lease", [_step_input("only", "tool-l7")])
+    parent_id, _p7, _lp7 = await _trigger_leased(launcher, workflow_service, str(wf7.id))
+    await _wait_status(parent_id, WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED)
+    parent = await WorkflowRun.get(PydanticObjectId(parent_id))
+    child = await control_service.send_retry(
+        str(wf7.id), parent_id, parent.definition_snapshot["nodes"][0]["id"], auth_context=None, user_id=str(USER_A)
+    )
+    child_doc = await WorkflowRun.get_pymongo_collection().find_one({"_id": child.id})
+    r.check(
+        "L7 retry child run is born leased",
+        child_doc.get("lease_token") is not None and child_doc.get("lease_expires_at") is not None,
+        f"child_token={child_doc.get('lease_token')!r}",
+    )
+
+    return r
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Cleanup
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -1556,6 +1830,7 @@ MODULES = {
     "I": module_i,
     "J": module_j,
     "K": module_k,
+    "L": module_l,
 }
 
 
@@ -1577,7 +1852,10 @@ async def amain(selected: list[str], keep_data: bool) -> int:
     )
     workflow_service = WorkflowService(acl_service=acl_service)
     await _seed_executor_servers(acl_service)
-    control_service = WorkflowControlService(directive_queue=queue, runner_factory=lambda: runner)
+    control_service = WorkflowControlService(
+        directive_queue=queue,
+        launcher=WorkflowRunLauncher(runner=runner, lease_owner="e2e", tracker=BackgroundTaskTracker()),
+    )
 
     reports: list[Report] = []
     t0 = time.monotonic()
@@ -1633,7 +1911,7 @@ async def amain(selected: list[str], keep_data: bool) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "--modules", default="A,B,C,D,E,F,G,H,I,J,K", help="Comma-separated module letters (default: all)."
+        "--modules", default="A,B,C,D,E,F,G,H,I,J,K,L", help="Comma-separated module letters (default: all)."
     )
     parser.add_argument(
         "--keep-data", action="store_true", help="Don't delete __as1543_e2e__* records at end (for debugging)."
