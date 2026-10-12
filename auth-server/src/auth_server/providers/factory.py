@@ -3,6 +3,8 @@
 # Builtin
 import logging
 
+from registry_pkgs.core.config import JarvisBaseSettings
+from registry_pkgs.core.scope_groups import entra_scope_group_ids
 from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
 
 from ..core.types import AllowedProvider, GoogleConfig
@@ -19,6 +21,7 @@ def get_auth_provider(
     provider_type: AllowedProvider,
     oauth2_config: OAuth2Config,
     cloud_identity_client: CloudIdentityGroupsClient,
+    settings: JarvisBaseSettings,
 ) -> AuthProvider:
     """Factory function to get the appropriate auth provider.
 
@@ -26,6 +29,7 @@ def get_auth_provider(
         provider_type: Type of provider to create ('entra' or 'google').
         oauth2_config:
         cloud_identity_client:
+        settings: Shared settings containing the Entra scope-group bindings.
 
     Returns:
         AuthProvider instance configured for the specified provider
@@ -36,15 +40,19 @@ def get_auth_provider(
     logger.info(f"Creating authentication provider: {provider_type}")
 
     if provider_type == "entra":
-        return _create_entra_provider(oauth2_config["providers"]["entra"])
+        return _create_entra_provider(oauth2_config["providers"]["entra"], settings)
     elif provider_type == "google":
         return _create_google_provider(oauth2_config["providers"]["google"], cloud_identity_client)
     else:
         raise ValueError(f"Unknown auth provider: {provider_type}")
 
 
-def _create_entra_provider(entra_config: EntraConfig) -> EntraIdProvider:
+def _create_entra_provider(entra_config: EntraConfig, settings: JarvisBaseSettings) -> EntraIdProvider:
     """Create and configure Microsoft Entra ID provider."""
+
+    scope_group_ids = entra_scope_group_ids(settings)
+    if not scope_group_ids:
+        raise ValueError("Entra scope groups are not configured; set JARVIS_REGISTRY_*_GROUP_OBJECT_ID")
 
     # Endpoint URLs from oauth2_providers.yml (already have environment variable substitution)
     tenant_id = entra_config.get("tenant_id")
@@ -117,6 +125,7 @@ def _create_entra_provider(entra_config: EntraConfig) -> EntraIdProvider:
         groups_claim=groups_claim,
         email_claim=email_claim,
         name_claim=name_claim,
+        scope_group_ids=scope_group_ids,
     )
 
 
