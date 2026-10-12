@@ -62,6 +62,24 @@ Any MCP-compatible client: Cursor, Claude Desktop, GitHub Copilot, VS Code, Wind
 
 → See: [AI Copilot Integration](FEATURES.md#1-gateway-proxy)
 
+### Which tools can receive skills from the Skill Gateway?
+
+The AI Skills CLI documents skill synchronization for Claude Code, Codex, and GitHub Copilot. Skill delivery is distinct from connecting an MCP-compatible client to the MCP Gateway.
+
+→ See: [Skill Gateway](features/skill-gateway.md) · [AI Skills CLI](features/ai-skills-cli.md)
+
+### Can a private Jarvis deployment support our SOC 2 program?
+
+A private deployment can be part of a customer's control environment. Jarvis Registry's documented identity, RBAC, resource ACL, and observability features can support customer controls and evidence collection when appropriately configured and operated. This documentation does not claim that Jarvis Registry itself is SOC 2 certified, and deploying it does not automatically certify the customer.
+
+→ See: [Deployment Guide](deployment-guide.md) · [Security Control Design](design/security-design.md) · [Observability](features/observability.md)
+
+### Can dynamic tool discovery find unapproved MCP servers on our network?
+
+No. Dynamic tool discovery searches registered MCP tool metadata to find relevant tools. It is not a network scanner or an inventory of unregistered servers. Customers need separate network, identity, or endpoint evidence to identify unapproved MCP servers.
+
+→ See: [Dynamic Tool Discovery](dynamic-tool-discovery.md)
+
 ### How does Skill & Context-Based Discovery work?
 
 Jarvis Registry provides semantic search over MCP server and A2A agent metadata (skills, descriptions, tags) so agents and copilots can find the right tool at runtime.

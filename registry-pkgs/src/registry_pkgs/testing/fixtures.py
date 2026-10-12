@@ -4,6 +4,18 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from registry_pkgs.core.config import DISABLE_DOTENV_ENV_VAR
+from registry_pkgs.core.scope_groups import SCOPE_GROUP_OBJECT_ID_FIELDS
+
+TEST_SCOPE_GROUP_OBJECT_IDS: dict[str, str] = {
+    field: f"a0000000-0000-4000-8000-{index:012d}"
+    for index, field in enumerate(SCOPE_GROUP_OBJECT_ID_FIELDS.values(), start=1)
+}
+
+
+def setup_test_scope_group_ids() -> None:
+    """Configure distinct, deterministic Entra group bindings before importing application settings."""
+    for field, object_id in TEST_SCOPE_GROUP_OBJECT_IDS.items():
+        os.environ[field.upper()] = object_id
 
 
 def disable_dotenv_loading() -> None:
@@ -57,12 +69,14 @@ def setup_registry_test_env() -> rsa.RSAPrivateKey:
     - ``CREDS_KEY`` (hex-encoded encryption key)
     - ``SECRET_KEY`` (HMAC / signing key)
     - ``TOOL_DISCOVERY_MODE`` (required validator value)
+    - Four ``JARVIS_REGISTRY_*_GROUP_OBJECT_ID`` bindings
 
     Also calls ``disable_dotenv_loading`` so no `.env` leaks into the run.
 
     Returns the RSA private key for reuse in test fixtures.
     """
     disable_dotenv_loading()
+    setup_test_scope_group_ids()
     os.environ["TOOL_DISCOVERY_MODE"] = "external"
     os.environ["CREDS_KEY"] = os.urandom(32).hex()
     os.environ["SECRET_KEY"] = os.urandom(32).hex()

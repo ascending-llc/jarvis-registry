@@ -1,6 +1,6 @@
 # Skill Gateway
 
-The Skill Gateway privately hosts organization-curated AI skills, governs who can access them, and distributes approved content consistently to the developer tools your teams already use. Platform teams get one Registry control plane for authoring, importing, managing, and sharing skills without publishing private content publicly.
+The **Skill Gateway** is a private, organization-managed catalog for authoring, importing, governing, and distributing approved AI skills. Skills remain private by default and are shared through Registry ACLs; the [AI Skills CLI](ai-skills-cli.md) delivers accessible skills to supported developer tools without publishing private content to a public marketplace.
 
 ## Manage Skills in the Registry
 
@@ -40,7 +40,17 @@ The enterprise benefit is controlled distribution:
 
 ## Deliver Skills to Developer Tools
 
-The [AI Skills CLI](ai-skills-cli.md) is the delivery layer for accessible Registry skills. It syncs approved content into personal or project environments for Claude Code, Codex, and GitHub Copilot. The CLI repository contains the operational installation and command reference.
+The [AI Skills CLI](ai-skills-cli.md) is the delivery layer for accessible Registry skills. It syncs approved content into personal or project environments for Claude Code, Codex, and GitHub Copilot. These are the skill-sync integrations documented by this repository; MCP client support is a separate capability. The CLI repository contains the operational installation and command reference.
+
+## Common Questions
+
+### What is a private skill marketplace?
+
+A private skill marketplace is an organization-controlled catalog for approved skills, with access limited by the organization's policies. Jarvis Skill Gateway provides Registry-based authoring, GitHub import, version and metadata management, and ACL-governed sharing rather than publishing private skills to a public marketplace.
+
+### Which developer tools can receive Registry skills?
+
+The AI Skills CLI documents skill synchronization for Claude Code, Codex, and GitHub Copilot. See [AI Skills CLI](ai-skills-cli.md) for the supported workflow. This list describes skill delivery, not the broader set of MCP-compatible clients.
 
 ## Next Steps
 

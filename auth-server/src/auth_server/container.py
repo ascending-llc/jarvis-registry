@@ -84,4 +84,5 @@ class AuthContainer:
             provider,
             self._oauth2_config,
             self.cloud_identity_client,
+            self._settings,
         )
