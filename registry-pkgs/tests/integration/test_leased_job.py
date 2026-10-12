@@ -4,10 +4,13 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from beanie import PydanticObjectId
+from beanie import PydanticObjectId, init_beanie
 from pymongo import AsyncMongoClient
 
 from registry_pkgs.database.leased_job import CAMEL_CASE_LEASE_FIELDS, LeasedRepository, LeaseSpec
+from registry_pkgs.models.enums import WorkflowRunStatus
+from registry_pkgs.models.workflow import NodeRun, WorkflowRun
+from registry_pkgs.workflows.run_lease import reap_expired_runs
 
 pytestmark = pytest.mark.asyncio
 
@@ -180,10 +183,6 @@ async def test_release_clears_lease_so_heartbeat_fails(collection):
 @pytest_asyncio.fixture
 async def workflow_db():
     """Init Beanie against a throwaway database so WorkflowRun/NodeRun use real collections."""
-    from beanie import init_beanie
-
-    from registry_pkgs.models.workflow import NodeRun, WorkflowRun
-
     uri = os.environ.get("MONGO_INTEGRATION_URI")
     if not uri:
         pytest.skip("Set MONGO_INTEGRATION_URI to run real-Mongo lease tests")
@@ -198,9 +197,6 @@ async def workflow_db():
 
 
 async def test_reap_expired_runs_finalizes_expired_and_legacy_but_skips_fresh(workflow_db):
-    from registry_pkgs.models.workflow import NodeRun, WorkflowRun
-    from registry_pkgs.workflows.run_lease import reap_expired_runs
-
     runs = WorkflowRun.get_pymongo_collection()
     nodes = NodeRun.get_pymongo_collection()
     now = datetime.now(UTC)
@@ -290,9 +286,6 @@ async def test_reap_expired_runs_finalizes_expired_and_legacy_but_skips_fresh(wo
 
 async def test_reap_expired_runs_skips_recent_leaseless_run(workflow_db):
     """Pass 2 must not touch a lease-less run younger than the legacy cutover age."""
-    from registry_pkgs.models.workflow import WorkflowRun
-    from registry_pkgs.workflows.run_lease import reap_expired_runs
-
     runs = WorkflowRun.get_pymongo_collection()
     recent = PydanticObjectId()
     await runs.insert_one(
@@ -308,3 +301,42 @@ async def test_reap_expired_runs_skips_recent_leaseless_run(workflow_db):
 
     assert reaped == 0
     assert (await runs.find_one({"_id": recent}))["status"] == "running"
+
+
+async def test_reap_expired_runs_fails_run_inserted_unleased_through_the_model(workflow_db):
+    """Pass 2 must catch an unleased run inserted through Beanie, which stores ``lease_token: null``.
+
+    Beanie inserts with ``keep_nulls=True``, so a ``WorkflowRun`` created without a lease (worker
+    scheduled runs before AS-1910, script-driven runs) has an explicit null token, not a missing field.
+    """
+    run = WorkflowRun(
+        workflow_definition_id=PydanticObjectId(),
+        status=WorkflowRunStatus.RUNNING,
+        started_at=datetime.now(UTC) - timedelta(minutes=10),
+    )
+    await run.insert()
+    runs = WorkflowRun.get_pymongo_collection()
+    stored = await runs.find_one({"_id": run.id})
+    assert "lease_token" in stored and stored["lease_token"] is None  # the shape this test guards
+
+    reaped = await reap_expired_runs(legacy_cutover_age=timedelta(seconds=300))
+
+    assert reaped == 1
+    reaped_doc = await runs.find_one({"_id": run.id})
+    assert reaped_doc["status"] == "failed"
+    assert reaped_doc["error_summary"] == "Executor lost: run predates run leasing"
+
+
+async def test_reap_expired_runs_skips_released_awaiting_approval_run(workflow_db):
+    """A run that released its lease on entering AWAITING_APPROVAL (null token) is not reaped."""
+    run = WorkflowRun(
+        workflow_definition_id=PydanticObjectId(),
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        started_at=datetime.now(UTC) - timedelta(minutes=10),
+    )
+    await run.insert()
+
+    reaped = await reap_expired_runs(legacy_cutover_age=timedelta(seconds=300))
+
+    assert reaped == 0
+    assert (await WorkflowRun.get_pymongo_collection().find_one({"_id": run.id}))["status"] == "awaiting_approval"

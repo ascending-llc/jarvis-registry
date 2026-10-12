@@ -253,7 +253,7 @@ async def test_reap_pass2_fails_legacy_leaseless_run(monkeypatch: pytest.MonkeyP
 
     assert count == 1
     flt, _update = collection.find_one_and_update.await_args_list[0].args
-    assert flt[SNAKE_CASE_LEASE_FIELDS.token] == {"$exists": False}
+    assert flt[SNAKE_CASE_LEASE_FIELDS.token] is None  # matches a missing field and an explicit null
     assert set(flt["status"]["$in"]) == {"pending", "running", "paused"}
     fail_nodes.assert_awaited_once_with(legacy_id, "Executor lost: run predates run leasing")
 

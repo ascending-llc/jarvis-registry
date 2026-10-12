@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from registry.api.v1.workflow import workflow_routes
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
+from registry.services.background_task_tracker import TrackerShutdownError
 from registry.services.workflow_service import PreparedWorkflowRunDefinition, WorkflowRunStats
 
 
@@ -1194,8 +1195,16 @@ async def test_get_node_run_node_wrong_run_returns_400():
 
 
 @pytest.mark.asyncio
-async def test_trigger_run_returns_503_when_launcher_is_shutting_down(monkeypatch):
-    """After the background-task tracker has begun shutting down, launch_run raises RuntimeError;
+@pytest.mark.parametrize(
+    ("launch_error", "expected_status", "expected_code"),
+    [
+        (TrackerShutdownError("tracker is shutting down"), 503, "service_unavailable"),
+        # Any other RuntimeError is an unexpected failure, not a shutdown, so it must not become a 503.
+        (RuntimeError("unrelated failure"), 500, "internal_error"),
+    ],
+)
+async def test_trigger_run_maps_only_tracker_shutdown_to_503(monkeypatch, launch_error, expected_status, expected_code):
+    """After the background-task tracker has begun shutting down, launch_run raises TrackerShutdownError;
     the route must surface it as 503 (not 500). The run it inserted is failed by the launcher."""
     from types import SimpleNamespace
 
@@ -1223,7 +1232,7 @@ async def test_trigger_run_returns_503_when_launcher_is_shutting_down(monkeypatc
     monkeypatch.setattr(workflow_routes, "collect_pending_oauth_authorizations", AsyncMock(return_value=[]))
 
     launcher = _fake_launcher()
-    launcher.launch_run = AsyncMock(side_effect=RuntimeError("tracker is shutting down"))
+    launcher.launch_run = AsyncMock(side_effect=launch_error)
 
     with pytest.raises(HTTPException) as exc_info:
         await workflow_routes.trigger_workflow_run(
@@ -1236,4 +1245,5 @@ async def test_trigger_run_returns_503_when_launcher_is_shutting_down(monkeypatc
             oauth_service=MagicMock(),
         )
 
-    assert exc_info.value.status_code == 503
+    assert exc_info.value.status_code == expected_status
+    assert exc_info.value.detail["error"] == expected_code

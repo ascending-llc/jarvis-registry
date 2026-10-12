@@ -10,9 +10,11 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException
 
 from registry.services import workflow_control_service as wcs
+from registry.services.background_task_tracker import TrackerShutdownError
 from registry.services.workflow_control_service import WorkflowControlService
 from registry_pkgs.core.scope_groups import SCOPE_GROUP_OBJECT_ID_FIELDS
 from registry_pkgs.models.enums import RequirementResolution, WorkflowDirective, WorkflowRunStatus
+from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.run_lease import workflow_run_lease_repository
 
@@ -733,10 +735,6 @@ async def test_rerun_single_node_rejects_non_terminal_run(non_terminal_status: W
 @pytest.mark.asyncio
 async def test_rerun_single_node_rejects_missing_upstream_snapshot(monkeypatch: pytest.MonkeyPatch):
     """rerun_single_node must fail with 409 when an upstream node has no output_snapshot."""
-    from fastapi import HTTPException
-
-    from registry_pkgs.models.workflow import WorkflowNode
-
     wf_id = PydanticObjectId()
     run_id = PydanticObjectId()
 
@@ -1150,3 +1148,33 @@ class TestInjectedOutputFromNodeRun:
         injected = wcs._injected_output_from_node_run(node_run)
 
         assert injected == {"content": "", "session_state": {}}
+
+
+@pytest.mark.asyncio
+async def test_trigger_resume_maps_tracker_shutdown_to_503():
+    """A refused spawn during shutdown surfaces as 503 from the resume path."""
+
+    launcher = _FakeLauncher()
+    launcher.launch_continue = AsyncMock(side_effect=TrackerShutdownError("tracker is shutting down"))
+    service = WorkflowControlService(directive_queue=DirectiveQueue(), launcher=launcher)
+    run = SimpleNamespace(id=PydanticObjectId())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._trigger_resume(run)
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_trigger_resume_does_not_mask_unrelated_runtime_error_as_shutdown():
+    """prepare() runs inline on the request path; its own RuntimeError must not be reported as a 503."""
+    launcher = _FakeLauncher()
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        launcher=launcher,
+        auth_context_refresher=AsyncMock(side_effect=RuntimeError("group lookup failed")),
+    )
+    run = SimpleNamespace(id=PydanticObjectId(), triggering_user_id="user-1")
+
+    with pytest.raises(RuntimeError, match="group lookup failed"):
+        await service._trigger_resume(run)

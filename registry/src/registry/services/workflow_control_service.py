@@ -27,6 +27,7 @@ from fastapi import HTTPException
 
 from registry.auth.dependencies import UserContextDict, effective_scopes_from_context
 from registry.core.config import settings
+from registry.services.background_task_tracker import TrackerShutdownError
 from registry.services.workflow_run_launcher import ABORT_CONTINUE, WorkflowRunLauncher
 from registry_pkgs.core.scope_groups import (
     entra_scope_group_ids,
@@ -243,7 +244,7 @@ class WorkflowControlService:
                 run_id=PydanticObjectId(run.id),
                 prepare=lambda: self._prepare_continue(run, auth_context),
             )
-        except RuntimeError as exc:
+        except TrackerShutdownError as exc:
             raise HTTPException(status_code=503, detail="Registry is shutting down; retry") from exc
 
     async def _prepare_continue(
@@ -293,7 +294,7 @@ class WorkflowControlService:
                 stop_after_node_id=stop_after_node_id,
                 definition_snapshot=definition_snapshot,
             )
-        except RuntimeError as exc:
+        except TrackerShutdownError as exc:
             raise HTTPException(status_code=503, detail="Registry is shutting down; retry") from exc
 
     @staticmethod
