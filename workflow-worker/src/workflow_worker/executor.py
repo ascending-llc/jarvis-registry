@@ -10,6 +10,7 @@ from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.helpers import extract_user_text
 from registry_pkgs.workflows.run_lease import (
+    LEASED_RUN_STATUSES,
     LeasedRunStateWriter,
     execute_leased_run,
     workflow_run_lease_repository,
@@ -279,6 +280,12 @@ async def _execute_schedule(
         )
         if result is None:
             final_status = await _read_run_status(run.id)
+            # execute_leased_run returns None when this worker self-fenced out of the run lease.
+            # The persisted run may still be PENDING/RUNNING/PAUSED before the reaper finalizes it
+            # to FAILED. Recording a non-terminal status on the schedule would leave last_run_status
+            # stuck forever, because the reaper does not update schedules.
+            if final_status in LEASED_RUN_STATUSES:
+                final_status = WorkflowRunStatus.FAILED
         else:
             updated_run, _ = result
             final_status = updated_run.status

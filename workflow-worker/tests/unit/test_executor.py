@@ -213,6 +213,37 @@ async def test_execute_schedule_reads_status_when_lease_lost(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_execute_schedule_maps_leased_status_to_failed_when_lease_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When execute_leased_run returns None and the run is still leased, finish with FAILED."""
+    schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
+    definition = SimpleNamespace(id=PydanticObjectId())
+    run = SimpleNamespace(id=PydanticObjectId())
+    lease = _lease(run.id)
+    claimed = SimpleNamespace(initial_input={"user_text": "x"}, created_by=PydanticObjectId())
+    monkeypatch.setattr(
+        executor,
+        "_prepare_scheduled_run",
+        AsyncMock(return_value=(claimed, definition, run, lease)),
+    )
+    finish = AsyncMock()
+    monkeypatch.setattr(executor, "_finish_schedule", finish)
+
+    async def fake_execute_leased_run(_lease: object, coro: object, *, interrupted_reason: str) -> None:
+        coro.close()
+        return None
+
+    monkeypatch.setattr(executor, "execute_leased_run", fake_execute_leased_run)
+    monkeypatch.setattr(executor, "_read_run_status", AsyncMock(return_value=WorkflowRunStatus.RUNNING))
+    runner = SimpleNamespace(run=AsyncMock(return_value=(SimpleNamespace(), None)))
+
+    await executor._execute_schedule(schedule, runner, repository := object(), "owner-1")
+
+    finish.assert_awaited_once_with(schedule, run, WorkflowRunStatus.FAILED, repository)
+
+
+@pytest.mark.asyncio
 async def test_execute_schedule_shutdown_cancel_fails_run_and_finishes_schedule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
