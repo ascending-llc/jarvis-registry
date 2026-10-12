@@ -185,22 +185,14 @@ def _fail_active_job(db, federation_id: ObjectId, reason: str) -> None:
         sort=[("createdAt", DESCENDING)],
     )
 
-    federation_result = db.federations.update_one(
-        {"_id": federation_id},
-        {
-            "$set": {
-                "syncStatus": "failed",
-                "syncMessage": reason,
-                "updatedAt": now,
-            }
-        },
-    )
-    if federation_result.matched_count == 0:
-        raise SystemExit(f"Federation not found: {federation_id}")
-
-    if active_job:
-        db.federation_sync_jobs.update_one(
-            {"_id": active_job["_id"]},
+    if active_job is not None:
+        job_result = db.federation_sync_jobs.update_one(
+            {
+                "_id": active_job["_id"],
+                "federationId": federation_id,
+                "status": {"$in": list(ACTIVE_JOB_STATUSES)},
+                "leaseToken": active_job.get("leaseToken"),
+            },
             {
                 "$set": {
                     "status": "failed",
@@ -208,15 +200,65 @@ def _fail_active_job(db, federation_id: ObjectId, reason: str) -> None:
                     "error": reason,
                     "finishedAt": now,
                     "updatedAt": now,
+                    "leaseOwner": None,
+                    "leaseToken": None,
+                    "leaseExpiresAt": None,
+                    "heartbeatAt": None,
                 }
             },
         )
+        if job_result.matched_count != 1:
+            raise SystemExit(f"Active job changed concurrently; no federation state was updated: {active_job['_id']}")
+
+        if active_job.get("jobType") == "delete_sync":
+            federation_filter = {
+                "_id": federation_id,
+                "status": "deleting",
+                "deletingJobId": {"$in": [active_job["_id"], None]},
+            }
+            federation_set = {
+                "status": "active",
+                "deletingJobId": None,
+                "syncStatus": "failed",
+                "syncMessage": reason,
+                "updatedAt": now,
+            }
+        else:
+            federation_filter = {
+                "_id": federation_id,
+                "status": "active",
+                "syncStatus": {"$in": list(ACTIVE_JOB_STATUSES)},
+                "lastSync.jobId": {"$in": [active_job["_id"], None]},
+            }
+            federation_set = {"syncStatus": "failed", "syncMessage": reason, "updatedAt": now}
+    else:
+        federation = db.federations.find_one({"_id": federation_id})
+        if federation is None:
+            raise SystemExit(f"Federation not found: {federation_id}")
+        federation_filter = {
+            "_id": federation_id,
+            "status": federation.get("status"),
+            "syncStatus": federation.get("syncStatus"),
+            "lastSync.jobId": (federation.get("lastSync") or {}).get("jobId"),
+            "deletingJobId": federation.get("deletingJobId"),
+        }
+        federation_set = {"syncStatus": "failed", "syncMessage": reason, "updatedAt": now}
+
+    federation_result = db.federations.update_one(
+        federation_filter,
+        {"$set": federation_set},
+    )
+    if federation_result.matched_count != 1 and (
+        active_job is None or db.federations.find_one({"_id": federation_id}) is not None
+    ):
+        raise SystemExit(f"Federation changed concurrently; job was failed but parent was not updated: {federation_id}")
 
     _print_json(
         {
             "federationId": federation_id,
             "activeJobId": active_job["_id"] if active_job else None,
             "clearedActiveJob": active_job is not None,
+            "federationUpdated": federation_result.matched_count == 1,
             "status": "failed",
             "message": reason,
         }
