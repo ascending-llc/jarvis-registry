@@ -1198,7 +1198,7 @@ async def test_get_node_run_node_wrong_run_returns_400():
 @pytest.mark.parametrize(
     ("launch_error", "expected_status", "expected_code"),
     [
-        (TrackerShutdownError("tracker is shutting down"), 503, "internal_error"),
+        (TrackerShutdownError("tracker is shutting down"), 503, "service_unavailable"),
         # Any other RuntimeError is an unexpected failure, not a shutdown, so it must not become a 503.
         (RuntimeError("unrelated failure"), 500, "internal_error"),
     ],

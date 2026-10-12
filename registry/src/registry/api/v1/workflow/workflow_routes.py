@@ -613,7 +613,7 @@ async def trigger_workflow_run(
         except TrackerShutdownError as exc:
             raise HTTPException(
                 status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Registry is shutting down; retry"),
+                detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, "Registry is shutting down; retry"),
             ) from exc
 
         logger.info(f"Workflow run {run.id} queued for execution (workflow: {workflow_id})")
