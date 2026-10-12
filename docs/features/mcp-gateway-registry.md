@@ -1,6 +1,8 @@
 # MCP Server Gateway & Registry
 
-The MCP Server Gateway & Registry is the central catalog of all [Model Context Protocol (MCP)](https://exploreagentic.ai/mcp/) servers available in your enterprise. It acts as the hub — registering servers, managing access, and orchestrating secure token exchange so that any authenticated AI copilot can discover and invoke your tools through a single secure gateway.
+Jarvis Registry's **MCP Gateway** is a single authenticated entry point for MCP-compatible clients to discover and invoke registered [Model Context Protocol (MCP)](https://exploreagentic.ai/mcp/) servers. The **MCP Registry** catalogs those servers and their metadata; configured scopes and resource ACLs determine what each caller can access, while the gateway routes permitted requests and manages downstream credentials.
+
+Jarvis Registry supports private deployment. Its identity, access-control, and observability features can support a customer's own compliance controls, but a private deployment does not itself confer SOC 2 or another certification. See the [Deployment Guide](../deployment-guide.md), [Security Control Design](../design/security-design.md), and [Observability](observability.md) for details.
 
 ---
 

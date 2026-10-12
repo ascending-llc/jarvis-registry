@@ -6,6 +6,9 @@ All environment variables are loaded here and accessed through the global `setti
 """
 
 from functools import cached_property
+from typing import Self
+
+from pydantic import model_validator
 
 from registry_pkgs.core.config import JarvisBaseSettings, RedisConfig
 
@@ -36,7 +39,6 @@ class AuthSettings(JarvisBaseSettings):
     # ==================== Google Settings ====================
     google_client_id: str | None = None
     google_client_secret: str | None = None
-    google_allowed_hd: str = ""
     google_enabled: str = "false"
 
     # Provider toggles (*_enabled) feed the ${..._ENABLED} substitution in oauth2_providers.yml.
@@ -55,6 +57,14 @@ class AuthSettings(JarvisBaseSettings):
 
     # ==================== Redis ====================
     redis_uri: str = "redis://registry-redis:6379/1"
+
+    @model_validator(mode="after")
+    def _validate_enabled_entra_scope_groups(self) -> Self:
+        # Match ${ENTRA_ENABLED:-true} substitution and config_loader's bool coercion.
+        enabled = (self.entra_enabled or "true").strip().lower() == "true"
+        if enabled and self.auth_provider != "entra" and self.x_jarvis_registry_import_checks != "disabled":
+            self._normalize_scope_group_object_ids()
+        return self
 
     @cached_property
     def redis_config(self) -> RedisConfig:

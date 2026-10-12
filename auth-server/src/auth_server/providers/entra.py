@@ -3,6 +3,7 @@ import time
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, StrictStr
 
 from registry_pkgs.core.jwt_utils import (
     InvalidTokenError,
@@ -11,12 +12,17 @@ from registry_pkgs.core.jwt_utils import (
     find_matching_jwk,
     get_token_kid,
 )
+from registry_pkgs.core.scope_groups import scope_groups_for_entra_ids
 
 from ..core.config import settings
 from .base import AuthProvider, log_group_resolution_failure
 
 # Get logger - logging is configured centrally in server.py via settings.configure_logging()
 logger = logging.getLogger(__name__)
+
+
+class _GroupMembershipResponse(BaseModel):
+    value: list[StrictStr]
 
 
 class EntraIdProvider(AuthProvider):
@@ -32,6 +38,7 @@ class EntraIdProvider(AuthProvider):
         jwks_url: str,
         logout_url: str,
         userinfo_url: str,
+        scope_group_ids: dict[str, str],
         graph_url: str | None = None,
         m2m_scope: str | None = None,
         scopes: list | None = None,
@@ -40,7 +47,7 @@ class EntraIdProvider(AuthProvider):
         groups_claim: str = "groups",
         email_claim: str = "email",
         name_claim: str = "name",
-    ):
+    ) -> None:
         """Initialize Entra ID provider.
 
         Args:
@@ -52,6 +59,7 @@ class EntraIdProvider(AuthProvider):
             jwks_url: JWKS endpoint URL
             logout_url: Logout endpoint URL
             userinfo_url: User info endpoint URL
+            scope_group_ids: Configured group object IDs mapped to abstract scope groups.
             graph_url: Microsoft Graph API base URL (default: 'https://graph.microsoft.com')
             m2m_scope: Default scope for M2M authentication (default: 'https://graph.microsoft.com/.default')
             scopes: List of OAuth2 scopes (default: ['openid', 'profile', 'email', 'User.Read'])
@@ -64,6 +72,7 @@ class EntraIdProvider(AuthProvider):
         self.tenant_id = tenant_id
         self.client_id = client_id
         self.client_secret = client_secret
+        self.scope_group_ids = dict(scope_group_ids)
 
         # Cache for JWKS
         self._jwks_cache: dict[str, Any] | None = None
@@ -233,35 +242,22 @@ class EntraIdProvider(AuthProvider):
             logger.error(f"Failed to fetch user info from Graph API: {e}")
             raise ValueError(f"Graph API request failed: {e}")
 
-    async def get_user_groups(self, access_token: str, identifier: str) -> list:
-        """Get user's group memberships from Microsoft Graph API.
-
-        Args:
-            access_token: OAuth2 access token
-            identifier: Email/username of the user, used only to identify the user in logs
-                when the group lookup fails.
-
-        Returns:
-            List of group display names
-        """
+    async def get_scope_groups(self, access_token: str) -> list[str]:
+        """Check transitive membership of the configured IDs, never trusting display names."""
         try:
-            logger.debug("Fetching user groups from Graph API")
+            logger.debug("Checking configured scope-group membership with Graph API")
             headers = {"Authorization": f"Bearer {access_token}"}
-            groups_url = (
-                f"{self.graph_url}/v1.0/me/transitiveMemberOf/microsoft.graph.group?$count=true&$select=id,displayName"
-            )
+            groups_url = f"{self.graph_url}/v1.0/me/checkMemberGroups"
             async with httpx.AsyncClient() as client:
-                response = await client.get(groups_url, headers=headers, timeout=10)
+                response = await client.post(
+                    groups_url, headers=headers, json={"groupIds": list(self.scope_group_ids)}, timeout=10
+                )
                 response.raise_for_status()
-                groups_data = response.json()
+                membership = _GroupMembershipResponse.model_validate(response.json())
+            return scope_groups_for_entra_ids(membership.value, self.scope_group_ids)
 
-            # Extract group display names
-            groups = [group.get("displayName") for group in groups_data.get("value", [])]
-            logger.info(f"Retrieved {groups} groups for user")
-            return groups
-
-        except Exception as exc:
-            log_group_resolution_failure("entra", identifier, exc)
+        except Exception as exc:  # Fail closed here so callback's generic userinfo fallback cannot grant scopes.
+            log_group_resolution_failure("entra", exc)
             return []
 
     async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
@@ -282,7 +278,7 @@ class EntraIdProvider(AuthProvider):
             - email: User's email address
             - name: User's display name
             - id: User's unique identifier
-            - groups: List of group display names (from Graph API)
+            - groups: Abstract scope groups resolved from configured Graph group IDs
             - Additional fields from Graph API (if fallback used)
         """
         try:
@@ -308,9 +304,7 @@ class EntraIdProvider(AuthProvider):
                 user_info = await self._fetch_user_info_from_graph(access_token)
 
             # Get user groups separately using access_token (required for Graph API)
-            groups = await self.get_user_groups(
-                access_token, user_info.get("email") or user_info.get("username") or "unknown"
-            )
+            groups = await self.get_scope_groups(access_token)
             user_info["groups"] = groups
 
             logger.info(f"User info retrieved: {user_info.get('username')} with {len(groups)} groups")

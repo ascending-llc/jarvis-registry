@@ -2,6 +2,8 @@
 
 Jarvis Registry is the enterprise control plane for AI — connecting copilots, autonomous agents, and enterprise tools through a single, secure, and observable gateway. It handles both [MCP (Model Context Protocol)](https://exploreagentic.ai/mcp/) servers and [A2A agents](https://exploreagentic.ai/agentic-ai/) under a unified control plane, so you don't need separate infrastructure for tool access and agent-to-agent communication.
 
+Jarvis Registry supports private deployment. Its identity, RBAC, resource ACL, and observability features can support a customer's governance and compliance program when configured and operated as part of that customer's environment. Deployment does not by itself provide SOC 2 or another certification; certification depends on the organization, its controls, and an independent assessment.
+
 ---
 
 ## 1. Registry

@@ -5,8 +5,8 @@ mappings across every deployment. Per-client values never belong in this OSS rep
 module always resolves the file bundled with ``registry-pkgs``; there is no per-deployment
 override path. ``group_mappings`` keys are provider-agnostic role names — each auth
 provider is responsible for converting its own IdP-native group identifiers into these
-names before a group list reaches this module (e.g. Google Workspace groups are
-email-addressed, so ``GoogleProvider`` strips the domain before returning its group list).
+names before a group list reaches this module. Entra groups are bound by configured
+object IDs; Google Workspace groups must belong to the configured allowed domain.
 
 Configuration is loaded lazily on first use and cached for the lifetime of the process.
 """
