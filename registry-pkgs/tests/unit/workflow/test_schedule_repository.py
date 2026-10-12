@@ -194,6 +194,31 @@ async def test_disable_and_finish_claim_are_fenced(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_release_claim_is_fenced_and_leaves_next_run_at(monkeypatch: pytest.MonkeyPatch) -> None:
+    schedule_id = PydanticObjectId()
+    collection = SimpleNamespace(update_one=AsyncMock(return_value=SimpleNamespace(matched_count=1)))
+    repository = _repository(monkeypatch, collection)
+
+    released = await repository.release_claim(schedule_id, "lease-1")
+
+    assert released is True
+    query, update = collection.update_one.await_args.args
+    assert query == {"_id": schedule_id, "lease_token": "lease-1"}
+    # Only the claim is cleared — next_run_at stays so a peer worker picks the occurrence up now.
+    assert update == {"$set": {"locked_until": None, "lease_token": None}}
+    assert "next_run_at" not in update["$set"]
+    assert "last_run_status" not in update["$set"]
+
+
+@pytest.mark.asyncio
+async def test_release_claim_returns_false_when_lease_superseded(monkeypatch: pytest.MonkeyPatch) -> None:
+    collection = SimpleNamespace(update_one=AsyncMock(return_value=SimpleNamespace(matched_count=0)))
+    repository = _repository(monkeypatch, collection)
+
+    assert await repository.release_claim(PydanticObjectId(), "stale-lease") is False
+
+
+@pytest.mark.asyncio
 async def test_update_schedule_returns_validated_document(monkeypatch: pytest.MonkeyPatch) -> None:
     schedule_id = PydanticObjectId()
     workflow_id = PydanticObjectId()
