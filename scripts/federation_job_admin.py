@@ -31,9 +31,12 @@ from bson import ObjectId
 from pymongo import DESCENDING, MongoClient
 
 from registry.core.config import settings
+from registry.core.vector_backend import resolve_vector_backend_config
+from registry_pkgs.database.embedding_reindex_job_repository import get_active_embedding_reindex_job
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.federation import Federation
+from registry_pkgs.vector.adapters.factory import VectorStoreFactory
 from registry_pkgs.vector.client import create_database_client
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -295,7 +298,14 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
 
     try:
         await init_mongodb(settings.mongo_config)
-        db_client = create_database_client(settings.vector_backend_config)
+        if await get_active_embedding_reindex_job() is not None:
+            raise SystemExit("Embedding reindex is active; retry vector sync after it completes")
+        config = await resolve_vector_backend_config(settings)
+        # A full rebuild deletes old vectors before insertion. Validate the configured model and
+        # credentials before touching any existing vector documents.
+        embedding = VectorStoreFactory._create_embedding(config)
+        await asyncio.to_thread(embedding.embed_query, "federation vector sync preflight")
+        db_client = create_database_client(config)
         mcp_repo = MCPServerRepository(db_client)
         a2a_repo = A2AAgentRepository(db_client)
 
@@ -316,7 +326,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
 
         for server in mcp_servers:
             try:
-                result = await mcp_repo.sync_to_vector_db(server, is_delete=False)
+                result = await mcp_repo.sync_to_vector_db(server, is_delete=True)
                 if not result or result.get("failed_tools"):
                     mcp_failed += 1
                     detail = result.get("error") if result else "sync returned no result"
@@ -332,7 +342,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
 
         for agent in a2a_agents:
             try:
-                result = await a2a_repo.sync_to_vector_db(agent, is_delete=False)
+                result = await a2a_repo.sync_to_vector_db(agent, is_delete=True)
                 if not result or result.get("failed"):
                     a2a_failed += 1
                     detail = result.get("error") if result else "sync returned no result"
@@ -350,6 +360,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
             {
                 "federationId": federation_id,
                 "displayName": federation.displayName,
+                "collectionGeneration": db_client.collection_generation,
                 "scanned": {
                     "mcpServers": len(mcp_servers),
                     "a2aAgents": len(a2a_agents),
@@ -366,6 +377,8 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
                 "errors": errors,
             }
         )
+        if errors:
+            raise SystemExit(1)
     finally:
         try:
             if db_client is not None:
