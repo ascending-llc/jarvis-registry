@@ -32,12 +32,14 @@ from beanie import PydanticObjectId
 
 from registry.container import RegistryContainer
 from registry.core.config import Settings
+from registry.core.vector_backend import resolve_vector_backend_config
 from registry_pkgs.database.mongodb import init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, RegistryAclEntry
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.federation import Federation
 from registry_pkgs.vector.client import create_database_client
+from scripts.vector_runtime import wait_for_vector_writes
 
 logger = logging.getLogger(__name__)
 
@@ -307,12 +309,14 @@ async def run(argv: list[str] | None = None) -> int:
 
         if not opts.skip_vector:
             redis_client = create_redis_client(settings.redis_config)
-            db_client = create_database_client(settings.vector_backend_config)
+            db_client = create_database_client(await resolve_vector_backend_config(settings))
             container = RegistryContainer(
                 settings=settings,
                 db_client=db_client,
                 redis_client=redis_client,
             )
+            if opts.apply:
+                await wait_for_vector_writes(container)
             print(f"Vector DB connected (store={settings.vector_store_type}, provider={settings.embedding_provider}).")
 
         plan = await collect_reset_plan(opts.federation_id)

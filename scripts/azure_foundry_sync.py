@@ -19,12 +19,14 @@ from dotenv import load_dotenv
 
 from registry.container import RegistryContainer
 from registry.core.config import settings
+from registry.core.vector_backend import resolve_vector_backend_config
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import Federation
 from registry_pkgs.vector.client import create_database_client
+from scripts.vector_runtime import wait_for_vector_writes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,22 +76,22 @@ async def main() -> None:
     # ---- bootstrap exactly like registry/main.py:_startup_container ----
     await init_mongodb(settings.mongo_config)
     redis_client = create_redis_client(settings.redis_config)
-    db_client = create_database_client(settings.vector_backend_config)
+    db_client = create_database_client(await resolve_vector_backend_config(settings))
     container = RegistryContainer(settings=settings, db_client=db_client, redis_client=redis_client)
-
-    crud = container.federation_crud_service
-    sync = container.federation_sync_service
-
-    # ---- 0. pre-clean leftovers from prior runs so this is re-runnable ----
-    _banner("STEP 0 — pre-clean prior e2e federations/agents")
-    stale = await Federation.find({"displayName": "azure-foundry-e2e"}).to_list()
-    for f in stale:
-        deleted = await A2AAgent.find({"federationRefId": f.id}).delete()
-        await f.delete()
-        print(f"removed stale federation {f.id} (+{getattr(deleted, 'deleted_count', '?')} agents)")
-
     federation: Federation | None = None
     try:
+        await wait_for_vector_writes(container)
+        crud = container.federation_crud_service
+        sync = container.federation_sync_service
+
+        # ---- 0. pre-clean leftovers from prior runs so this is re-runnable ----
+        _banner("STEP 0 — pre-clean prior e2e federations/agents")
+        stale = await Federation.find({"displayName": "azure-foundry-e2e"}).to_list()
+        for f in stale:
+            deleted = await A2AAgent.find({"federationRefId": f.id}).delete()
+            await f.delete()
+            print(f"removed stale federation {f.id} (+{getattr(deleted, 'deleted_count', '?')} agents)")
+
         # ---- 1. create federation (real crud: normalize + encrypt secret) ----
         _banner("STEP 1 — create_federation")
         federation = await _create_federation(crud, provider_config)
@@ -142,7 +144,7 @@ async def main() -> None:
                 print(f"deleted federation {federation.id} + its agents")
             except Exception as exc:
                 logger.warning("cleanup failed (leaving federation %s): %s", federation.id, exc)
-        await container.azure_foundry_client_cache.close()
+        await container.shutdown()
         close_redis_client(redis_client)
         db_client.close()
         await close_mongodb()
