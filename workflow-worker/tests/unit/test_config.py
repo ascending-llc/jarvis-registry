@@ -43,3 +43,32 @@ def test_worker_settings_reject_claim_capacity_below_execution_capacity() -> Non
             creds_key="00" * 16,
             _env_file=None,
         )
+
+
+def test_worker_settings_shutdown_budget_defaults_leave_headroom() -> None:
+    settings = WorkerSettings(creds_key="00" * 16, _env_file=None)
+
+    assert settings.shutdown_drain_seconds == 30.0
+    assert settings.shutdown_finalize_seconds == 10.0
+    assert settings.shutdown_drain_seconds + settings.shutdown_finalize_seconds <= 50
+
+
+def test_worker_settings_accept_shutdown_budget_at_ceiling() -> None:
+    settings = WorkerSettings(
+        WORKFLOW_WORKER_SHUTDOWN_DRAIN_SECONDS=40,
+        WORKFLOW_WORKER_SHUTDOWN_FINALIZE_SECONDS=10,
+        creds_key="00" * 16,
+        _env_file=None,
+    )
+
+    assert settings.shutdown_drain_seconds + settings.shutdown_finalize_seconds == 50
+
+
+def test_worker_settings_reject_shutdown_budget_without_headroom() -> None:
+    with pytest.raises(ValidationError, match="at most 50.0s"):
+        WorkerSettings(
+            WORKFLOW_WORKER_SHUTDOWN_DRAIN_SECONDS=45,
+            WORKFLOW_WORKER_SHUTDOWN_FINALIZE_SECONDS=10,
+            creds_key="00" * 16,
+            _env_file=None,
+        )

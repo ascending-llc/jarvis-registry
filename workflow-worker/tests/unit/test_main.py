@@ -1,5 +1,4 @@
 import asyncio
-from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -244,29 +243,37 @@ def test_build_mcp_headers_provider_is_non_interactive(monkeypatch: pytest.Monke
     assert captured["scope_resolver"]({"scopes": ["servers-read"]}) == ["servers-read"]
 
 
+def _loop_settings(**overrides: object) -> SimpleNamespace:
+    defaults: dict[str, object] = {
+        "lease_duration_seconds": 300,
+        "max_concurrent_runs": 2,
+        "max_claimed_runs": 4,
+        "max_sleep_seconds": 30.0,
+        "shutdown_drain_seconds": 40.0,
+        "shutdown_finalize_seconds": 10.0,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 @pytest.mark.asyncio
 async def test_scheduler_loop_sleeps_until_next_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     stop_event = asyncio.Event()
-    mock_settings = SimpleNamespace(
-        lease_duration_seconds=300,
-        max_concurrent_runs=2,
-        max_claimed_runs=4,
-        max_sleep_seconds=30.0,
-    )
+    mock_settings = _loop_settings()
     deadline = datetime.now(UTC) + timedelta(seconds=5)
     claim = AsyncMock(return_value=None)
     peek = AsyncMock(return_value=deadline)
     repository = SimpleNamespace(claim_due=claim, peek_next_deadline=peek)
 
-    async def wait_for_stop(awaitable: Awaitable[bool], timeout: float) -> bool:
+    async def fake_sleep(ev: asyncio.Event, timeout: float) -> bool:
         assert 0 < timeout <= 5
-        stop_event.set()
-        return await awaitable
+        ev.set()
+        return True
 
     monkeypatch.setattr(main, "settings", mock_settings)
-    monkeypatch.setattr(main.asyncio, "wait_for", wait_for_stop)
+    monkeypatch.setattr(main, "interruptible_sleep", fake_sleep)
 
-    await main._run_scheduler_loop(stop_event, SimpleNamespace(), repository)
+    await main._run_scheduler_loop(stop_event, SimpleNamespace(), repository, "owner-1")
 
     claim.assert_awaited_once_with(300)
     peek.assert_awaited_once_with()
@@ -275,12 +282,7 @@ async def test_scheduler_loop_sleeps_until_next_deadline(monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_scheduler_loop_immediately_continues_after_claim(monkeypatch: pytest.MonkeyPatch) -> None:
     stop_event = asyncio.Event()
-    mock_settings = SimpleNamespace(
-        lease_duration_seconds=120,
-        max_concurrent_runs=1,
-        max_claimed_runs=2,
-        max_sleep_seconds=30.0,
-    )
+    mock_settings = _loop_settings(lease_duration_seconds=120, max_concurrent_runs=1, max_claimed_runs=2)
     schedule = SimpleNamespace()
 
     async def claim_once(_lease_seconds: int) -> object:
@@ -293,11 +295,14 @@ async def test_scheduler_loop_immediately_continues_after_claim(monkeypatch: pyt
     monkeypatch.setattr(main, "settings", mock_settings)
     monkeypatch.setattr(main, "run_bounded", execute)
 
-    await main._run_scheduler_loop(stop_event, SimpleNamespace(), repository)
+    await main._run_scheduler_loop(stop_event, SimpleNamespace(), repository, "owner-1")
 
-    execute.assert_awaited_once()
-    assert execute.await_args.args[0] is schedule
-    assert execute.await_args.kwargs["lease_seconds"] == 120
+    # Called (coroutine built + task created); the task is cancelled by the shutdown drain before it
+    # runs, so assert on the call args rather than the await.
+    execute.assert_called_once()
+    assert execute.call_args.args[0] is schedule
+    assert execute.call_args.args[4] == "owner-1"
+    assert execute.call_args.kwargs["lease_seconds"] == 120
     peek.assert_not_awaited()
 
 
@@ -308,12 +313,7 @@ async def test_scheduler_loop_stops_claiming_at_capacity(monkeypatch: pytest.Mon
     two_runs_started = asyncio.Event()
     claimed_count = 0
     started_count = 0
-    mock_settings = SimpleNamespace(
-        lease_duration_seconds=120,
-        max_concurrent_runs=1,
-        max_claimed_runs=2,
-        max_sleep_seconds=30.0,
-    )
+    mock_settings = _loop_settings(lease_duration_seconds=120, max_concurrent_runs=1, max_claimed_runs=2)
 
     async def claim_schedule(_lease_seconds: int) -> object | None:
         nonlocal claimed_count
@@ -337,7 +337,7 @@ async def test_scheduler_loop_stops_claiming_at_capacity(monkeypatch: pytest.Mon
     monkeypatch.setattr(main, "settings", mock_settings)
     monkeypatch.setattr(main, "run_bounded", execute)
 
-    scheduler_task = asyncio.create_task(main._run_scheduler_loop(stop_event, SimpleNamespace(), repository))
+    scheduler_task = asyncio.create_task(main._run_scheduler_loop(stop_event, SimpleNamespace(), repository, "owner-1"))
     await asyncio.wait_for(two_runs_started.wait(), timeout=1)
 
     assert claimed_count == 2
@@ -362,3 +362,87 @@ async def test_wait_for_claim_capacity_is_interrupted_by_stop_signal() -> None:
 
     run_blocker.set()
     await asyncio.gather(*in_flight)
+
+
+@pytest.mark.asyncio
+async def test_drain_in_flight_lets_running_task_finish_within_drain() -> None:
+    done_flag = asyncio.Event()
+
+    async def quick() -> None:
+        await asyncio.sleep(0.01)
+        done_flag.set()
+
+    task: asyncio.Task[None] = asyncio.create_task(quick())
+    await asyncio.sleep(0)
+
+    await main._drain_in_flight({task}, {task}, drain_seconds=1.0, finalize_seconds=0.05)
+
+    assert task.done() and not task.cancelled()
+    assert done_flag.is_set()
+
+
+@pytest.mark.asyncio
+async def test_drain_in_flight_cancels_queued_and_finalizes_running() -> None:
+    async def forever() -> None:
+        await asyncio.Event().wait()
+
+    queued: asyncio.Task[None] = asyncio.create_task(forever())
+    running: asyncio.Task[None] = asyncio.create_task(forever())
+    await asyncio.sleep(0)
+
+    # queued is NOT in executing → cancelled immediately; running is → cancelled only after the drain.
+    await main._drain_in_flight({queued, running}, {running}, drain_seconds=0.05, finalize_seconds=0.1)
+
+    assert queued.cancelled()
+    assert running.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_loop_returns_within_shutdown_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run that never finishes on its own must not block shutdown past drain + finalize (+1s)."""
+    stop_event = asyncio.Event()
+    mock_settings = _loop_settings(
+        lease_duration_seconds=120,
+        max_concurrent_runs=1,
+        max_claimed_runs=2,
+        shutdown_drain_seconds=0.1,
+        shutdown_finalize_seconds=0.1,
+    )
+    never = asyncio.Event()
+    claimed = False
+
+    async def claim(_lease_seconds: int) -> object | None:
+        nonlocal claimed
+        if not claimed:
+            claimed = True
+            return SimpleNamespace(id=1, lease_token="lease-1")
+        stop_event.set()
+        return None
+
+    async def run_forever(
+        _schedule: object,
+        _semaphore: object,
+        _runner: object,
+        _repository: object,
+        _lease_owner: str,
+        executing: set[asyncio.Task[None]],
+        lease_seconds: int = 300,
+    ) -> None:
+        current = asyncio.current_task()
+        assert current is not None
+        executing.add(current)
+        try:
+            await never.wait()
+        finally:
+            executing.discard(current)
+
+    repository = SimpleNamespace(claim_due=claim, peek_next_deadline=AsyncMock(return_value=None))
+    monkeypatch.setattr(main, "settings", mock_settings)
+    monkeypatch.setattr(main, "run_bounded", run_forever)
+
+    start = asyncio.get_event_loop().time()
+    await asyncio.wait_for(
+        main._run_scheduler_loop(stop_event, SimpleNamespace(), repository, "owner-1"),
+        timeout=0.1 + 0.1 + 1,
+    )
+    assert asyncio.get_event_loop().time() - start < 0.1 + 0.1 + 1
