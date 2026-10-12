@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 from beanie import PydanticObjectId
 
+from registry.services.federation_job_service import federation_sync_lease_repository
 from registry.services.federation_sync_service import FederationSyncService
 from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus
 
 _DEFAULT_USER_OBJECT_ID = PydanticObjectId()
+_TEST_LEASE = federation_sync_lease_repository.new_lease("test-pod", doc_id=PydanticObjectId())
 
 
 def _make_federation_sync_service(*, reindex_active: bool = False) -> FederationSyncService:

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
-from fastapi import BackgroundTasks, HTTPException, Response
+from fastapi import HTTPException, Response
 from fastapi import status as http_status
 
 from registry.api.v1.federation.federation_routes import (
@@ -453,7 +453,6 @@ async def test_sync_federation_rejects_running_sync_status(sample_user_context, 
             data=FederationSyncRequest(),
             user_context=sample_user_context,
             response=Response(status_code=http_status.HTTP_202_ACCEPTED),
-            background_tasks=BackgroundTasks(),
             federation_crud_service=federation_crud_service,
             federation_sync_service=MagicMock(),
             acl_service=acl_service,
@@ -483,7 +482,6 @@ async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_c
             data=FederationSyncRequest(),
             user_context=sample_user_context,
             response=Response(status_code=http_status.HTTP_202_ACCEPTED),
-            background_tasks=BackgroundTasks(),
             federation_crud_service=federation_crud_service,
             federation_sync_service=MagicMock(),
             acl_service=acl_service,
@@ -518,7 +516,6 @@ async def test_sync_federation_rejects_azure_provider(sample_user_context, sampl
             data=FederationSyncRequest(),
             user_context=sample_user_context,
             response=Response(status_code=http_status.HTTP_202_ACCEPTED),
-            background_tasks=BackgroundTasks(),
             federation_crud_service=federation_crud_service,
             federation_sync_service=federation_sync_service,
             acl_service=acl_service,
@@ -556,7 +553,7 @@ async def test_sync_federation_dry_run_returns_preview_response(sample_user_cont
     )
     federation_sync_service = MagicMock()
     federation_sync_service.preview_manual_sync = AsyncMock(return_value=preview_result)
-    federation_sync_service.create_manual_sync_job = AsyncMock()
+    federation_sync_service.start_manual_sync_background = AsyncMock()
     response = Response(status_code=http_status.HTTP_202_ACCEPTED)
 
     result = await sync_federation(
@@ -564,7 +561,6 @@ async def test_sync_federation_dry_run_returns_preview_response(sample_user_cont
         data=FederationSyncRequest(dryRun=True, reason="test connection"),
         user_context=sample_user_context,
         response=response,
-        background_tasks=BackgroundTasks(),
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
         acl_service=acl_service,
@@ -580,7 +576,7 @@ async def test_sync_federation_dry_run_returns_preview_response(sample_user_cont
         reason="test connection",
         triggered_by=sample_user_context["user_id"],
     )
-    federation_sync_service.create_manual_sync_job.assert_not_awaited()
+    federation_sync_service.start_manual_sync_background.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -622,7 +618,6 @@ async def test_sync_federation_dry_run_bypasses_running_sync_status(
         data=FederationSyncRequest(dryRun=True),
         user_context=sample_user_context,
         response=response,
-        background_tasks=BackgroundTasks(),
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
         acl_service=acl_service,
@@ -634,7 +629,7 @@ async def test_sync_federation_dry_run_bypasses_running_sync_status(
 
 
 @pytest.mark.asyncio
-async def test_sync_federation_returns_before_background_discovery_failure(
+async def test_sync_federation_returns_pending_background_job(
     sample_user_context, sample_federation, sample_job, acl_service
 ):
     federation_crud_service = MagicMock()
@@ -642,31 +637,25 @@ async def test_sync_federation_returns_before_background_discovery_failure(
     federation_crud_service.validate_provider_config = MagicMock(return_value=sample_federation.providerConfig)
 
     federation_sync_service = MagicMock()
-    federation_sync_service.create_manual_sync_job = AsyncMock(
-        return_value=(sample_job, PydanticObjectId(sample_user_context["user_id"]))
-    )
+    federation_sync_service.start_manual_sync_background = AsyncMock(return_value=sample_job)
     federation_sync_service.run_sync = AsyncMock(
         side_effect=RuntimeError("Failed to list AgentCore runtimes in us-east-1: Token has expired and refresh failed")
     )
     response = Response(status_code=http_status.HTTP_202_ACCEPTED)
-    background_tasks = BackgroundTasks()
 
     result = await sync_federation(
         federation_id=str(sample_federation.id),
         data=FederationSyncRequest(),
         user_context=sample_user_context,
         response=response,
-        background_tasks=background_tasks,
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
         acl_service=acl_service,
-        embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: False),
     )
-    await background_tasks()
 
     assert response.status_code == http_status.HTTP_202_ACCEPTED
     assert result.status == FederationJobStatus.PENDING
-    federation_sync_service.run_sync.assert_awaited_once()
+    federation_sync_service.start_manual_sync_background.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -678,23 +667,20 @@ async def test_sync_federation_creates_pending_job_in_first_transaction(
     federation_crud_service.validate_provider_config = MagicMock(return_value=sample_federation.providerConfig)
 
     federation_sync_service = MagicMock()
-    author_id = PydanticObjectId(sample_user_context["user_id"])
-    federation_sync_service.create_manual_sync_job = AsyncMock(return_value=(sample_job, author_id))
+    federation_sync_service.start_manual_sync_background = AsyncMock(return_value=sample_job)
     response = Response(status_code=http_status.HTTP_202_ACCEPTED)
-    background_tasks = BackgroundTasks()
 
     result = await sync_federation(
         federation_id=str(sample_federation.id),
         data=FederationSyncRequest(reason="manual"),
         user_context=sample_user_context,
         response=response,
-        background_tasks=background_tasks,
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
         acl_service=acl_service,
     )
 
-    federation_sync_service.create_manual_sync_job.assert_awaited_once_with(
+    federation_sync_service.start_manual_sync_background.assert_awaited_once_with(
         federation=sample_federation,
         reason="manual",
         triggered_by=sample_user_context["user_id"],
@@ -702,7 +688,6 @@ async def test_sync_federation_creates_pending_job_in_first_transaction(
     assert result.id == str(sample_job.id)
     assert result.status == FederationJobStatus.PENDING
     assert response.status_code == http_status.HTTP_202_ACCEPTED
-    assert len(background_tasks.tasks) == 1
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from beanie import PydanticObjectId
 
 from registry.services.federation.azure_foundry_discovery import AzureFoundryDiscoveryClient
 from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler, AzureAiFoundrySyncHandler
+from registry.services.federation_job_service import federation_sync_lease_repository
 from registry.services.federation_sync_service import (
     FederationSyncMutationResult,
     FederationSyncPlan,
@@ -27,6 +28,7 @@ from registry_pkgs.models.federation_sync_job import FederationApplySummary
 from registry_pkgs.testing.federation_metadata import make_azure_foundry_metadata
 from tests.unit.services.federation_sync_test_helpers import (
     _DEFAULT_USER_OBJECT_ID,
+    _TEST_LEASE,
     _FakeQuery,
     _make_federation,
     _make_federation_sync_service,
@@ -36,24 +38,33 @@ from tests.unit.services.federation_sync_test_helpers import (
 pytestmark = pytest.mark.usefixtures("default_empty_access_roles")
 
 
+@pytest.fixture(autouse=True)
+def mock_lease_ownership(monkeypatch):
+    """These orchestration tests stub persistence; lease fences have dedicated tests."""
+    monkeypatch.setattr(federation_sync_lease_repository, "assert_owned", AsyncMock())
+
+
 @pytest.mark.asyncio
-async def test_run_federation_sync_background_swallows_execution_error():
+async def test_run_federation_sync_background_propagates_execution_error():
     federation = SimpleNamespace(id=PydanticObjectId())
     job = SimpleNamespace(id=PydanticObjectId())
     service = MagicMock()
     service.run_sync = AsyncMock(side_effect=RuntimeError("discovery failed"))
 
-    await run_federation_sync_background(
-        federation_sync_service=service,
-        federation=federation,
-        job=job,
-        author_id=_DEFAULT_USER_OBJECT_ID,
-    )
+    with pytest.raises(RuntimeError, match="discovery failed"):
+        await run_federation_sync_background(
+            federation_sync_service=service,
+            federation=federation,
+            job=job,
+            author_id=_DEFAULT_USER_OBJECT_ID,
+            lease=_TEST_LEASE,
+        )
 
     service.run_sync.assert_awaited_once_with(
         federation=federation,
         job=job,
         author_id=_DEFAULT_USER_OBJECT_ID,
+        lease=_TEST_LEASE,
     )
 
 
@@ -73,6 +84,7 @@ async def test_run_federation_sync_background_skips_during_reindex():
         job=job,
         author_id=_DEFAULT_USER_OBJECT_ID,
         embedding_maintenance_watcher=watcher,
+        lease=_TEST_LEASE,
     )
 
     # Skipped without running the sync, and BOTH records finalized (not left PENDING).
@@ -80,7 +92,7 @@ async def test_run_federation_sync_background_skips_during_reindex():
     service.federation_crud_service.mark_sync_failed.assert_awaited_once()
     assert "reindex" in service.federation_crud_service.mark_sync_failed.await_args.args[1]
     service.federation_job_service.mark_failed.assert_awaited_once()
-    job_arg, phase_arg, error_arg = service.federation_job_service.mark_failed.await_args.args
+    job_arg, phase_arg, error_arg, lease_arg = service.federation_job_service.mark_failed.await_args.args
     assert job_arg is job
     assert phase_arg == FederationJobPhase.FAILED
     assert "reindex" in error_arg
@@ -100,6 +112,7 @@ async def test_run_federation_sync_background_runs_when_not_reindexing():
         job=job,
         author_id=_DEFAULT_USER_OBJECT_ID,
         embedding_maintenance_watcher=watcher,
+        lease=_TEST_LEASE,
     )
 
     service.run_sync.assert_awaited_once()
@@ -284,7 +297,7 @@ async def test_run_delete_marks_job_success_and_cleans_up_vectors(
     federation_sync_service._delete_vectors_for_federation = AsyncMock(return_value=[])
     mongo_session = _patch_mongo_session(monkeypatch)
 
-    result = await federation_sync_service.run_delete(federation=federation, job=job)
+    result = await federation_sync_service.run_delete(federation=federation, job=job, lease=_TEST_LEASE)
 
     federation_sync_service._delete_transaction.assert_awaited_once_with(
         federation,
@@ -294,7 +307,7 @@ async def test_run_delete_marks_job_success_and_cleans_up_vectors(
     federation_sync_service._delete_vectors_for_federation.assert_awaited_once_with(
         str(federation.id), mcp_arns, a2a_arns
     )
-    federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job)
+    federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job, _TEST_LEASE)
     assert result is job
 
 
@@ -323,10 +336,10 @@ async def test_run_delete_records_vector_errors_in_job_but_still_succeeds(
     federation_sync_service._delete_vectors_for_federation = AsyncMock(return_value=vector_errors)
     _patch_mongo_session(monkeypatch)
 
-    result = await federation_sync_service.run_delete(federation=federation, job=job)
+    result = await federation_sync_service.run_delete(federation=federation, job=job, lease=_TEST_LEASE)
 
     assert result.applySummary.errorMessages == vector_errors
-    federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job)
+    federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job, _TEST_LEASE)
 
 
 @pytest.mark.asyncio
@@ -411,10 +424,10 @@ async def test_run_delete_restores_active_status_when_delete_fails(
     _patch_mongo_session(monkeypatch)
 
     with pytest.raises(RuntimeError, match="delete failed"):
-        await federation_sync_service.run_delete(federation=federation, job=job)
+        await federation_sync_service.run_delete(federation=federation, job=job, lease=_TEST_LEASE)
 
     federation_sync_service.federation_crud_service.mark_delete_failed.assert_awaited_once_with(
-        federation, "delete failed"
+        federation, "delete failed", expected_job_id=job.id
     )
     federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
 
@@ -436,11 +449,11 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
     job = SimpleNamespace(id=PydanticObjectId(), jobType="config_resync", createdAt=datetime.now(UTC))
 
     federation_sync_service.federation_crud_service.update_federation = AsyncMock(return_value=updated)
-    federation_sync_service.federation_job_service.create_job = AsyncMock(return_value=job)
+    federation_sync_service.federation_job_service.create_job = AsyncMock(return_value=(job, _TEST_LEASE))
     federation_sync_service.federation_crud_service.mark_sync_pending = AsyncMock(return_value=updated)
     session = object()
 
-    result, created_job = await federation_sync_service.update_federation_and_create_resync_job(
+    result, created_job, lease = await federation_sync_service.update_federation_and_create_resync_job(
         federation=federation,
         display_name="Updated",
         description="Updated",
@@ -491,13 +504,16 @@ async def test_run_sync_calls_vector_sync_after_commit(
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     mongo_session = _patch_mongo_session(monkeypatch)
 
-    result = await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
+    result = await federation_sync_service.run_sync(
+        federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
+    )
 
     assert result == job
     federation_sync_service._commit_bookkeeping_transaction.assert_awaited_once_with(
         federation=federation,
         job=job,
         discovered={"mcp_servers": [], "a2a_agents": []},
+        lease=_TEST_LEASE,
         session=mongo_session,
     )
     federation_sync_service._apply_sync_plan.assert_awaited_once()
@@ -541,11 +557,13 @@ async def test_run_sync_passes_vector_outcome_to_finalize(
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     _patch_mongo_session(monkeypatch)
 
-    result = await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
+    result = await federation_sync_service.run_sync(
+        federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
+    )
 
     assert result == job
     federation_sync_service._finalize_sync_status.assert_awaited_once_with(
-        federation, job, mutation_result, vector_outcome
+        federation, job, mutation_result, vector_outcome, _TEST_LEASE
     )
 
 
@@ -584,9 +602,7 @@ async def test_run_sync_finalizes_committed_apply_when_vector_sync_setup_fails(
     _patch_mongo_session(monkeypatch)
 
     result = await federation_sync_service.run_sync(
-        federation=federation,
-        job=job,
-        author_id=_DEFAULT_USER_OBJECT_ID,
+        federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
     )
 
     assert result == job
@@ -646,11 +662,11 @@ async def test_create_manual_sync_job_returns_pending_job_without_running_sync(
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     job = SimpleNamespace(id=PydanticObjectId())
     federation_sync_service.federation_job_service.get_active_job = AsyncMock(return_value=None)
-    federation_sync_service.create_sync_job_and_mark_pending = AsyncMock(return_value=job)
+    federation_sync_service.create_sync_job_and_mark_pending = AsyncMock(return_value=(job, _TEST_LEASE))
     federation_sync_service.run_sync = AsyncMock()
     session = _patch_mongo_session(monkeypatch)
 
-    result, author_id = await federation_sync_service.create_manual_sync_job(
+    result, lease, author_id = await federation_sync_service.create_manual_sync_job(
         federation=federation,
         reason="manual",
         triggered_by="user-1",
@@ -818,7 +834,9 @@ async def test_run_sync_forwards_author_id_to_discover_entities(
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     _patch_mongo_session(monkeypatch)
 
-    await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
+    await federation_sync_service.run_sync(
+        federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
+    )
 
     discover_mock.assert_awaited_once_with(federation, author_id=_DEFAULT_USER_OBJECT_ID)
 
@@ -1136,7 +1154,9 @@ async def test_bookkeeping_failure_aborts_whole_run(
     _patch_mongo_session(monkeypatch)
 
     with pytest.raises(RuntimeError, match="mark_syncing failed"):
-        await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
+        await federation_sync_service.run_sync(
+            federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
+        )
 
     federation_sync_service._apply_sync_plan.assert_not_awaited()
 
@@ -1152,13 +1172,15 @@ class TestFederationReindexGate:
         service = _make_federation_sync_service(reindex_active=True)
 
         with pytest.raises(EmbeddingReindexInProgressException):
-            await service.run_sync(federation=self._federation(), job=MagicMock(), author_id=_DEFAULT_USER_OBJECT_ID)
+            await service.run_sync(
+                federation=self._federation(), job=MagicMock(), author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
+            )
 
     async def test_run_delete_raises_before_marking_syncing(self):
         service = _make_federation_sync_service(reindex_active=True)
 
         with pytest.raises(EmbeddingReindexInProgressException):
-            await service.run_delete(federation=self._federation(), job=MagicMock())
+            await service.run_delete(federation=self._federation(), job=MagicMock(), lease=_TEST_LEASE)
         service.federation_job_service.mark_syncing.assert_not_called()
 
     async def test_start_manual_sync_raises_before_creating_job(self):
@@ -1182,5 +1204,7 @@ class TestFederationReindexGate:
         service = _make_federation_sync_service(reindex_active=False)
 
         with pytest.raises(Exception) as exc_info:
-            await service.run_sync(federation=self._federation(), job=MagicMock(), author_id=_DEFAULT_USER_OBJECT_ID)
+            await service.run_sync(
+                federation=self._federation(), job=MagicMock(), author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
+            )
         assert not isinstance(exc_info.value, EmbeddingReindexInProgressException)
