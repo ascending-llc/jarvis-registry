@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -6,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from beanie import PydanticObjectId
 
+from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.workflows import run_lease
 from workflow_worker import executor
@@ -257,6 +259,86 @@ async def test_execute_schedule_maps_leased_status_to_failed_when_lease_lost(
 
     await executor._execute_schedule(schedule, runner, repository := object(), "owner-1")
 
+    finish.assert_awaited_once_with(schedule, run, WorkflowRunStatus.FAILED, repository)
+
+
+@pytest.mark.asyncio
+async def test_execute_schedule_renews_run_lease_and_cancels_run_when_token_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real execute_leased_run: the run lease keeps advancing while the run executes; once the token is
+    replaced the runner coroutine is cancelled and no further WorkflowRun write lands.
+    """
+    repo = run_lease.workflow_run_lease_repository
+    monkeypatch.setattr(
+        repo,
+        "_spec",
+        dataclasses.replace(
+            repo.spec,
+            heartbeat_interval=timedelta(milliseconds=10),
+            self_fence_margin=timedelta(milliseconds=5),
+        ),
+    )
+    schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
+    definition = SimpleNamespace(id=PydanticObjectId())
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id)
+    lease = repo.new_lease("workflow-worker-x", doc_id=run_id)
+    claimed = SimpleNamespace(initial_input={"user_text": "x"}, created_by=PydanticObjectId())
+    monkeypatch.setattr(
+        executor,
+        "_prepare_scheduled_run",
+        AsyncMock(return_value=(claimed, definition, run, lease)),
+    )
+    finish = AsyncMock()
+    monkeypatch.setattr(executor, "_finish_schedule", finish)
+    monkeypatch.setattr(executor, "_read_run_status", AsyncMock(return_value=WorkflowRunStatus.RUNNING))
+    monkeypatch.setattr(
+        run_lease.WorkflowRun, "get", AsyncMock(return_value=SimpleNamespace(status=WorkflowRunStatus.RUNNING))
+    )
+
+    renewals_before_replacement = 2
+    heartbeats: list[Lease] = []
+
+    async def heartbeat(current: Lease) -> Lease | None:
+        heartbeats.append(current)
+        if len(heartbeats) > renewals_before_replacement:
+            return None  # another owner replaced the token
+        return dataclasses.replace(current, expires_at=current.expires_at + timedelta(seconds=30))
+
+    transition = AsyncMock(return_value=True)
+    monkeypatch.setattr(repo, "heartbeat", heartbeat)
+    monkeypatch.setattr(repo, "transition", transition)
+
+    run_kwargs: dict[str, object] = {}
+    cancelled = asyncio.Event()
+
+    async def blocking_run(**kwargs: object) -> tuple[object, object]:
+        run_kwargs.update(kwargs)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+    await asyncio.wait_for(
+        executor._execute_schedule(schedule, SimpleNamespace(run=blocking_run), repository := object(), "owner-1"),
+        timeout=1,
+    )
+
+    # The heartbeat renewed this run's lease, and each renewal pushed lease_expires_at forward.
+    assert [h.token for h in heartbeats] == [lease.token] * (renewals_before_replacement + 1)
+    assert all(h.doc_id == run_id for h in heartbeats)
+    expiries = [h.expires_at for h in heartbeats]
+    assert expiries == sorted(expiries) and len(set(expiries)) == len(expiries)
+    # The runner wrote through a writer fenced on this run's lease.
+    writer = run_kwargs["run_writer"]
+    assert isinstance(writer, executor.LeasedRunStateWriter)
+    assert writer._extra_filter() == {"lease_token": lease.token}
+    # Token replaced → the runner was cancelled and this worker wrote nothing more to the run.
+    assert cancelled.is_set()
+    transition.assert_not_awaited()
     finish.assert_awaited_once_with(schedule, run, WorkflowRunStatus.FAILED, repository)
 
 
