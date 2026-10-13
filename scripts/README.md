@@ -54,6 +54,9 @@ Deletion can partially succeed; there is no transaction across MongoDB and Weavi
 users, resources, and ACLs quiescent for the whole preview/apply window. Back up MongoDB and arrange a
 separate vector recovery path before deleting anything.
 
+For email reuse involving an obsolete identity, follow the
+[identity conflict resolution runbook](../docs/runbooks/identity-conflict-resolution.md).
+
 ## Federation Job Admin
 
 Use the federation job admin helper to inspect or repair federation sync state.
