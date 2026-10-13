@@ -52,6 +52,7 @@ def normalize_issuer(value: str) -> str:
             if str(UUID(match[1])) == match[1]:
                 return issuer
         except ValueError:
+            # Invalid tenant UUID; fall through to the unified argument error below.
             pass
     raise argparse.ArgumentTypeError("--issuer must be https://login.microsoftonline.com/<tenant-UUID>/v2.0")
 
