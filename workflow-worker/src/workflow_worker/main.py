@@ -183,18 +183,20 @@ async def _drain_in_flight(
     1. Queued tasks (claimed but not past the semaphore) are cancelled; each releases its schedule
        claim so a peer worker runs the occurrence now. ``in_flight - executing`` is computed with no
        await in between, so no queued task can slip into executing before it is cancelled.
-    2. Running tasks get up to ``drain_seconds`` to finish on their own.
+    2. Running tasks get up to ``drain_seconds`` to finish on their own. The cancelled queued tasks
+       are awaited in the same window, so their ``release_claim`` round trip is not cut short by
+       step 3 when the running tasks finish first.
     3. Whatever is still alive is cancelled and given ``finalize_seconds`` to write FAILED + release
        its leases (run and schedule). Anything still unfinished is logged; AS-1909's reaper finalizes
        those runs within one lease duration.
     """
     queued = in_flight - executing
-    running = set(executing)
     for task in queued:
         task.cancel()
 
-    if running:
-        await asyncio.wait(running, timeout=drain_seconds)
+    draining = {task for task in in_flight if not task.done()}
+    if draining:
+        await asyncio.wait(draining, timeout=drain_seconds)
 
     pending = {task for task in in_flight if not task.done()}
     for task in pending:
