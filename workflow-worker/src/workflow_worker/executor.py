@@ -1,14 +1,20 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from beanie import PydanticObjectId
 
+from registry_pkgs.database.leased_job import Lease, interruptible_sleep
 from registry_pkgs.models import WorkflowDefinition, WorkflowRun, WorkflowSchedule
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.helpers import extract_user_text
-from registry_pkgs.workflows.run_repository import NON_TERMINAL_RUN_STATUSES, RunStateWriter
+from registry_pkgs.workflows.run_lease import (
+    LEASED_RUN_STATUSES,
+    LeasedRunStateWriter,
+    execute_leased_run,
+    workflow_run_lease_repository,
+)
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 from registry_pkgs.workflows.scheduling import calculate_next_run_at
@@ -16,6 +22,7 @@ from registry_pkgs.workflows.scheduling import calculate_next_run_at
 logger = logging.getLogger(__name__)
 
 _MINIMUM_HEARTBEAT_INTERVAL_SECONDS = 1.0
+_WORKER_SHUTDOWN_REASON = "Interrupted by workflow-worker shutdown; retry the run"
 
 
 async def _renew_lease(
@@ -27,26 +34,38 @@ async def _renew_lease(
 ) -> None:
     """Heartbeat loop that extends locked_until every lease/3 seconds.
 
-    Runs outside the semaphore so the lease stays alive while waiting for
-    concurrency capacity. Stops immediately when the fencing token no longer
-    matches (matched_count == 0), meaning another worker took over.
+    Runs outside the semaphore so the lease stays alive while waiting for concurrency capacity.
+
+    Tolerant of transient Mongo errors: a failed ``renew_claim`` is logged and retried next
+    interval rather than abandoning the claim. Only two things end the loop early:
+      * the fencing token no longer matches (``matched == 0``): another worker took over;
+      * ``last_renewed_until`` has passed: every renewal since the last success failed long enough
+        that the schedule lock has actually lapsed, so the next occurrence may overlap this run.
+
+    Either way the run keeps executing — losing the *schedule* claim only risks one overlapping
+    occurrence (nothing enforces non-overlap); the run itself is protected by its own run lease.
     """
     interval = max(_MINIMUM_HEARTBEAT_INTERVAL_SECONDS, lease_seconds / 3)
+    last_renewed_until = datetime.now(UTC) + timedelta(seconds=lease_seconds)
     while not stop_event.is_set():
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=interval)
-            continue
-        except TimeoutError:
-            # Expected: no stop signal within the interval, so fall through and renew the lease.
-            pass
+        if await interruptible_sleep(stop_event, interval):
+            return
+        now = datetime.now(UTC)
+        if now >= last_renewed_until:
+            logger.warning(
+                "Schedule claim %s lapsed while renewing; the next occurrence may overlap this run",
+                schedule_id,
+            )
+            return
         try:
             matched = await repository.renew_claim(schedule_id, lease_token, lease_seconds)
         except Exception:
-            logger.exception("Failed to renew lease for workflow schedule %s", schedule_id)
-            return
+            logger.warning("Failed to renew lease for workflow schedule %s; retrying", schedule_id, exc_info=True)
+            continue
         if not matched:
             logger.warning("Lease lost while renewing workflow schedule %s", schedule_id)
             return
+        last_renewed_until = now + timedelta(seconds=lease_seconds)
 
 
 async def run_bounded(
@@ -54,13 +73,19 @@ async def run_bounded(
     semaphore: asyncio.Semaphore,
     runner: WorkflowRunner,
     repository: WorkflowScheduleRepository,
+    lease_owner: str,
+    executing: set[asyncio.Task[None]],
     lease_seconds: int = 300,
 ) -> None:
     """Entry point for executing a claimed schedule with concurrency control.
 
-    Starts the heartbeat BEFORE acquiring the semaphore so the lease stays
-    alive while queued for capacity. The semaphore gates actual execution;
-    the heartbeat is stopped in finally to guarantee cleanup.
+    Starts the heartbeat BEFORE acquiring the semaphore so the lease stays alive while queued for
+    capacity. The semaphore gates actual execution; the heartbeat is stopped in finally to
+    guarantee cleanup.
+
+    Registers this task in ``executing`` only once past the semaphore, so shutdown drain can tell a
+    running task from one still queued. A task cancelled *while queued* releases its schedule claim
+    (``next_run_at`` untouched) so a peer worker picks the occurrence up immediately.
     """
     if not schedule.lease_token:
         logger.error("Claimed workflow schedule %s has no lease token", schedule.id)
@@ -69,9 +94,24 @@ async def run_bounded(
     heartbeat = asyncio.create_task(
         _renew_lease(repository, schedule.id, schedule.lease_token, lease_seconds, stop_event),
     )
+    entered = False
+    current = asyncio.current_task()
     try:
         async with semaphore:
-            await _execute_schedule(schedule, runner, repository)
+            entered = True
+            if current is not None:
+                executing.add(current)
+            try:
+                await _execute_schedule(schedule, runner, repository, lease_owner)
+            finally:
+                if current is not None:
+                    executing.discard(current)
+    except asyncio.CancelledError:
+        if not entered:
+            # Cancelled while still queued on the semaphore (never executed): release the claim so
+            # another worker can run this occurrence now instead of waiting for the lock to expire.
+            await repository.release_claim(schedule.id, schedule.lease_token)
+        raise
     finally:
         stop_event.set()
         await asyncio.gather(heartbeat, return_exceptions=True)
@@ -93,15 +133,27 @@ async def _create_scheduled_run(
     claimed: WorkflowSchedule,
     definition: WorkflowDefinition,
     repository: WorkflowScheduleRepository,
-) -> WorkflowRun | None:
-    """Atomically advance next_run_at and insert a WorkflowRun in one transaction.
+    lease_owner: str,
+) -> tuple[WorkflowRun, Lease] | None:
+    """Atomically advance next_run_at and insert a run that is born already leased by this worker.
 
-    The fenced update also checks cron_expression + timezone haven't changed since
-    claim, preventing a stale next_run_at from being written if the user updated the
-    schedule concurrently. Returns None if the fencing check fails.
+    The run is minted with lease fields (owner/token/expires_at) so it has an owner the instant it
+    is inserted — AS-1909's reaper never treats a worker-executed run as an unowned orphan. The
+    fenced update also checks cron_expression + timezone haven't changed since claim, preventing a
+    stale next_run_at from being written if the user updated the schedule concurrently.
+
+    If shutdown cancels the insert transaction, it may still have committed. The run is then failed
+    (fenced by its lease, so a no-op when it was never inserted) and recorded on the schedule, which
+    also releases the claim.
+
+    Returns ``(run, lease)``, or None if the fencing check fails.
     """
     next_run_at = calculate_next_run_at(claimed.cron_expression, claimed.timezone)
+    run_id = PydanticObjectId()
+    lease = workflow_run_lease_repository.new_lease(lease_owner, doc_id=run_id)
     run = WorkflowRun(
+        id=run_id,
+        **workflow_run_lease_repository.insert_fields(lease),
         workflow_definition_id=PydanticObjectId(definition.id),
         workflow_version=definition.version,
         status=WorkflowRunStatus.PENDING,
@@ -110,15 +162,30 @@ async def _create_scheduled_run(
         definition_snapshot=definition.model_dump(mode="json"),
         triggering_user_id=str(claimed.created_by),
     )
-    inserted = await repository.advance_and_insert_run(claimed, run, next_run_at)
-    return run if inserted else None
+    try:
+        inserted = await repository.advance_and_insert_run(claimed, run, next_run_at)
+    except asyncio.CancelledError:
+        failed = await workflow_run_lease_repository.transition(
+            lease,
+            {
+                "status": WorkflowRunStatus.FAILED.value,
+                "error_summary": _WORKER_SHUTDOWN_REASON,
+                "finished_at": datetime.now(UTC),
+            },
+            release=True,
+        )
+        if failed:
+            await repository.finish_claim(claimed.id, claimed.lease_token, run_id, WorkflowRunStatus.FAILED)
+        raise
+    return (run, lease) if inserted else None
 
 
 async def _prepare_scheduled_run(
     schedule: WorkflowSchedule,
     repository: WorkflowScheduleRepository,
-) -> tuple[WorkflowSchedule, WorkflowDefinition, WorkflowRun] | None:
-    """Validate the claim, load the workflow, and create the run record.
+    lease_owner: str,
+) -> tuple[WorkflowSchedule, WorkflowDefinition, WorkflowRun, Lease] | None:
+    """Validate the claim, load the workflow, and create the leased run record.
 
     Returns None (skip, no error) in three cases:
     1. Lease was lost or schedule disabled between claim and execution
@@ -137,31 +204,24 @@ async def _prepare_scheduled_run(
             claimed.workflow_definition_id,
         )
         return None
-    run = await _create_scheduled_run(claimed, definition, repository)
-    if run is None:
+    created = await _create_scheduled_run(claimed, definition, repository, lease_owner)
+    if created is None:
         logger.info("Schedule %s was modified during claim; skipping this cycle", claimed.id)
         return None
-    return claimed, definition, run
+    run, lease = created
+    return claimed, definition, run, lease
 
 
-async def _mark_run_failed(run: WorkflowRun, exc: Exception) -> None:
-    """Best-effort persistence of FAILED status when runner.run() throws.
+async def _read_run_status(run_id: PydanticObjectId) -> WorkflowRunStatus:
+    """Projected read of a run's current status, for when execute_leased_run reports no result.
 
-    Uses the guarded write path: the terminal mark only lands while the run is
-    still non-terminal, so it never overwrites a terminal outcome the runner already wrote
-    and never resurrects a deleted run via upsert.
+    After lease loss, the persisted status may still be non-terminal until the reaper finalizes
+    the run. Defaults to FAILED if the run has vanished.
     """
-    try:
-        await RunStateWriter(PydanticObjectId(run.id)).write(
-            {
-                "status": WorkflowRunStatus.FAILED,
-                "error_summary": str(exc),
-                "finished_at": datetime.now(UTC),
-            },
-            from_statuses=NON_TERMINAL_RUN_STATUSES,
-        )
-    except Exception:
-        logger.exception("Failed to persist failure status for workflow run %s", run.id)
+    document = await WorkflowRun.get_pymongo_collection().find_one({"_id": run_id}, {"status": 1})
+    if document is None:
+        return WorkflowRunStatus.FAILED
+    return WorkflowRunStatus(document["status"])
 
 
 async def _finish_schedule(
@@ -208,27 +268,53 @@ async def _execute_schedule(
     schedule: WorkflowSchedule,
     runner: WorkflowRunner,
     repository: WorkflowScheduleRepository,
+    lease_owner: str,
 ) -> None:
-    """Orchestrate the full lifecycle: prepare → run → finish.
+    """Orchestrate the full lifecycle: prepare → run under the run lease → finish.
 
-    If _prepare returns None (workflow gone, lease lost, etc.) exits silently
-    without calling _finish_schedule — no run was created, nothing to clean up.
+    If _prepare returns None (workflow gone, lease lost, etc.) exits silently without calling
+    _finish_schedule — no run was created, nothing to clean up. If shutdown cancels _prepare, the
+    claim is released so a peer worker picks the occurrence up now (a no-op when
+    _create_scheduled_run already finished the claim for a run it inserted).
+
+    The run executes under ``execute_leased_run``, which heartbeats the run lease, and on shutdown
+    or an escaped error writes FAILED (fenced by the lease) and fails open NodeRuns before
+    re-raising — so this function never writes the run's failure itself.
     """
-    prepared = await _prepare_scheduled_run(schedule, repository)
+    try:
+        prepared = await _prepare_scheduled_run(schedule, repository, lease_owner)
+    except asyncio.CancelledError:
+        await repository.release_claim(schedule.id, schedule.lease_token)
+        raise
     if prepared is None:
         return
-    claimed, definition, run = prepared
+    claimed, definition, run, lease = prepared
     final_status = WorkflowRunStatus.FAILED
     try:
-        updated_run, _ = await runner.run(
-            definition_id=str(definition.id),
-            user_text=extract_user_text(claimed.initial_input),
-            auth_context=_scheduled_run_auth_context(claimed.created_by),
-            existing_run_id=str(run.id),
+        result = await execute_leased_run(
+            lease,
+            runner.run(
+                definition_id=str(definition.id),
+                user_text=extract_user_text(claimed.initial_input),
+                auth_context=_scheduled_run_auth_context(claimed.created_by),
+                existing_run_id=str(run.id),
+                run_writer=LeasedRunStateWriter(lease),
+            ),
+            interrupted_reason=_WORKER_SHUTDOWN_REASON,
         )
-        final_status = updated_run.status
-    except Exception as exc:
+        if result is None:
+            final_status = await _read_run_status(run.id)
+            # execute_leased_run returns None when this worker self-fenced out of the run lease.
+            # The persisted run may still be PENDING/RUNNING/PAUSED before the reaper finalizes it
+            # to FAILED. The reaper does not update schedules, so recording that status would leave
+            # last_run_status stale until a later schedule execution overwrites it.
+            if final_status in LEASED_RUN_STATUSES:
+                final_status = WorkflowRunStatus.FAILED
+        else:
+            updated_run, _ = result
+            final_status = updated_run.status
+    except Exception:
+        # execute_leased_run already wrote FAILED (fenced) before re-raising; just log here.
         logger.exception("Scheduled workflow execution failed for schedule %s", schedule.id)
-        await _mark_run_failed(run, exc)
     finally:
         await _finish_schedule(schedule, run, final_status, repository)

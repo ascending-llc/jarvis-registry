@@ -155,6 +155,19 @@ class WorkflowScheduleRepository:
         )
         return result.matched_count > 0
 
+    async def release_claim(self, schedule_id: PydanticObjectId, lease_token: str) -> bool:
+        """Release the schedule claim without recording a run outcome, fenced by lease_token.
+
+        Unlike ``finish_claim`` this leaves ``next_run_at`` and the ``last_run_*`` metadata alone,
+        so the occurrence stays due and another worker can pick it up immediately. Used when a
+        claimed-but-not-yet-executed schedule is cancelled during shutdown drain.
+        """
+        result = await self._collection.update_one(
+            _lease_filter(schedule_id, lease_token),
+            {"$set": {"locked_until": None, "lease_token": None}},
+        )
+        return result.matched_count > 0
+
     async def update_schedule(
         self,
         schedule_id: PydanticObjectId,

@@ -3,11 +3,13 @@ import logging
 import signal
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from agno.run.cancel import set_cancellation_manager
 
 from registry_pkgs.core.structured_logging import configure_structured_logging
+from registry_pkgs.database.leased_job import interruptible_sleep
 from registry_pkgs.database.mongodb import MongoDB, close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
@@ -170,19 +172,62 @@ def _build_mcp_headers_provider(redis_client: Any) -> McpHeadersProvider:
     )
 
 
+async def _drain_in_flight(
+    in_flight: set[asyncio.Task[None]],
+    executing: set[asyncio.Task[None]],
+    drain_seconds: float,
+    finalize_seconds: float,
+) -> None:
+    """Bounded graceful drain on shutdown, so the pod finalizes before K8s SIGKILLs it.
+
+    1. Queued tasks (claimed but not past the semaphore) are cancelled; each releases its schedule
+       claim so a peer worker runs the occurrence now. ``in_flight - executing`` is computed with no
+       await in between, so no queued task can slip into executing before it is cancelled.
+    2. Running tasks get up to ``drain_seconds`` to finish on their own. The cancelled queued tasks
+       are awaited in the same window, so their ``release_claim`` round trip is not cut short by
+       step 3 when the running tasks finish first.
+    3. Whatever is still alive is cancelled and given ``finalize_seconds`` to write FAILED + release
+       its leases (run and schedule). Anything still unfinished is logged; AS-1909's reaper finalizes
+       those runs within one lease duration.
+    """
+    queued = in_flight - executing
+    for task in queued:
+        task.cancel()
+
+    draining = {task for task in in_flight if not task.done()}
+    if draining:
+        await asyncio.wait(draining, timeout=drain_seconds)
+
+    pending = {task for task in in_flight if not task.done()}
+    for task in pending:
+        task.cancel()
+    if pending:
+        _done, not_done = await asyncio.wait(pending, timeout=finalize_seconds)
+        if not_done:
+            logger.warning(
+                "%d scheduled workflow task(s) did not finish within the shutdown window; "
+                "the reaper will finalize them",
+                len(not_done),
+            )
+
+
 async def _run_scheduler_loop(
     stop_event: asyncio.Event,
     runner: WorkflowRunner,
     schedule_repository: WorkflowScheduleRepository,
+    lease_owner: str,
 ) -> None:
     """Main polling loop: claim → spawn task → continue, or sleep until next deadline.
 
     On claim success, immediately loops back to try claiming another (greedy).
     On claim failure, uses adaptive sleep capped at max_sleep_seconds to avoid
     busy-waiting. On SIGTERM/SIGINT the stop_event breaks the loop and the
-    finally block drains all in-flight tasks before returning.
+    finally block runs a bounded drain of in-flight tasks before returning.
     """
     in_flight: set[asyncio.Task[None]] = set()
+    # Tasks that have entered the semaphore and are actually executing (vs. still queued). Shutdown
+    # drain uses this to cancel queued tasks first and give running ones time to finish.
+    executing: set[asyncio.Task[None]] = set()
     # Per-pod concurrency gate: at most N workflows execute simultaneously
     semaphore = asyncio.Semaphore(settings.max_concurrent_runs)
     try:
@@ -205,6 +250,8 @@ async def _run_scheduler_loop(
                         semaphore,
                         runner,
                         schedule_repository,
+                        lease_owner,
+                        executing,
                         lease_seconds=settings.lease_duration_seconds,
                     )
                 )
@@ -222,15 +269,16 @@ async def _run_scheduler_loop(
                 max_sleep_seconds=settings.max_sleep_seconds,
             )
             logger.debug("No due workflow schedule; sleeping %.3fs", sleep_seconds)
-            # wait_for on stop_event: sleep is interruptible by SIGTERM/SIGINT
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=sleep_seconds)
-            except TimeoutError:
-                # Expected: slept the full interval without a stop signal, so loop and re-poll.
-                pass
+            # interruptible_sleep: the sleep is cut short by SIGTERM/SIGINT setting stop_event.
+            await interruptible_sleep(stop_event, sleep_seconds)
     finally:
-        # Graceful shutdown: wait for all in-flight executions to finish
-        await asyncio.gather(*in_flight, return_exceptions=True)
+        # Graceful shutdown: bounded drain so the pod finalizes its runs before SIGKILL.
+        await _drain_in_flight(
+            in_flight,
+            executing,
+            settings.shutdown_drain_seconds,
+            settings.shutdown_finalize_seconds,
+        )
 
 
 async def main() -> None:
@@ -241,10 +289,15 @@ async def main() -> None:
     await init_mongodb(settings.mongo_config)
     schedule_repository = WorkflowScheduleRepository(MongoDB.get_database())
     redis_client = create_redis_client(settings.redis_config)
-    # DirectiveQueue:Cross-pod control signal queue (pause/resume/cancel) backed by Redis
+    # DirectiveQueue: in-process (per-run asyncio.Queue) fast path for control signals
+    # (pause/resume/cancel). The cross-replica channel is the WorkflowRun.pending_directive field in
+    # Mongo, which the executor wrapper falls back to reading when the in-process queue is empty.
     directive_queue = DirectiveQueue()
     # Global cancellation manager: runner checks for cancel directives during execution
     set_cancellation_manager(MongoBackedCancellationManager(directive_queue=directive_queue))
+    # One owner id per worker process: stamped onto every WorkflowRun this pod leases, so the reaper
+    # can tell this pod's runs from another's and its runs are never seen as unowned orphans.
+    lease_owner = f"workflow-worker-{uuid4()}"
 
     # read=None: workflow runs can be long-lived (LLM inference, external API calls)
     http_client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0))
@@ -268,7 +321,7 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop_event.set)
 
     try:
-        await _run_scheduler_loop(stop_event, runner, schedule_repository)
+        await _run_scheduler_loop(stop_event, runner, schedule_repository, lease_owner)
     finally:
         await http_client.aclose()
         await azure_client_cache.close()
