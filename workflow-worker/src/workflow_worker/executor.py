@@ -142,6 +142,10 @@ async def _create_scheduled_run(
     fenced update also checks cron_expression + timezone haven't changed since claim, preventing a
     stale next_run_at from being written if the user updated the schedule concurrently.
 
+    If shutdown cancels the insert transaction, it may still have committed. The run is then failed
+    (fenced by its lease, so a no-op when it was never inserted) and recorded on the schedule, which
+    also releases the claim.
+
     Returns ``(run, lease)``, or None if the fencing check fails.
     """
     next_run_at = calculate_next_run_at(claimed.cron_expression, claimed.timezone)
@@ -158,7 +162,21 @@ async def _create_scheduled_run(
         definition_snapshot=definition.model_dump(mode="json"),
         triggering_user_id=str(claimed.created_by),
     )
-    inserted = await repository.advance_and_insert_run(claimed, run, next_run_at)
+    try:
+        inserted = await repository.advance_and_insert_run(claimed, run, next_run_at)
+    except asyncio.CancelledError:
+        failed = await workflow_run_lease_repository.transition(
+            lease,
+            {
+                "status": WorkflowRunStatus.FAILED.value,
+                "error_summary": _WORKER_SHUTDOWN_REASON,
+                "finished_at": datetime.now(UTC),
+            },
+            release=True,
+        )
+        if failed:
+            await repository.finish_claim(claimed.id, claimed.lease_token, run_id, WorkflowRunStatus.FAILED)
+        raise
     return (run, lease) if inserted else None
 
 
@@ -255,13 +273,19 @@ async def _execute_schedule(
     """Orchestrate the full lifecycle: prepare → run under the run lease → finish.
 
     If _prepare returns None (workflow gone, lease lost, etc.) exits silently without calling
-    _finish_schedule — no run was created, nothing to clean up.
+    _finish_schedule — no run was created, nothing to clean up. If shutdown cancels _prepare, the
+    claim is released so a peer worker picks the occurrence up now (a no-op when
+    _create_scheduled_run already finished the claim for a run it inserted).
 
     The run executes under ``execute_leased_run``, which heartbeats the run lease, and on shutdown
     or an escaped error writes FAILED (fenced by the lease) and fails open NodeRuns before
     re-raising — so this function never writes the run's failure itself.
     """
-    prepared = await _prepare_scheduled_run(schedule, repository, lease_owner)
+    try:
+        prepared = await _prepare_scheduled_run(schedule, repository, lease_owner)
+    except asyncio.CancelledError:
+        await repository.release_claim(schedule.id, schedule.lease_token)
+        raise
     if prepared is None:
         return
     claimed, definition, run, lease = prepared
