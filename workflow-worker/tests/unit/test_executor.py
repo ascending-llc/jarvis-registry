@@ -184,7 +184,19 @@ async def test_execute_schedule_runs_under_lease_and_finishes_with_runner_status
 
 
 @pytest.mark.asyncio
-async def test_execute_schedule_reads_status_when_lease_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "status",
+    [
+        WorkflowRunStatus.AWAITING_APPROVAL,
+        WorkflowRunStatus.COMPLETED,
+        WorkflowRunStatus.FAILED,
+        WorkflowRunStatus.CANCELLED,
+    ],
+)
+async def test_execute_schedule_reads_status_when_lease_lost(
+    monkeypatch: pytest.MonkeyPatch,
+    status: WorkflowRunStatus,
+) -> None:
     """When execute_leased_run returns None (lease lost), the final status is read back from Mongo."""
     schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
     definition = SimpleNamespace(id=PydanticObjectId())
@@ -204,17 +216,22 @@ async def test_execute_schedule_reads_status_when_lease_lost(monkeypatch: pytest
         return None
 
     monkeypatch.setattr(executor, "execute_leased_run", fake_execute_leased_run)
-    monkeypatch.setattr(executor, "_read_run_status", AsyncMock(return_value=WorkflowRunStatus.CANCELLED))
+    monkeypatch.setattr(executor, "_read_run_status", AsyncMock(return_value=status))
     runner = SimpleNamespace(run=AsyncMock(return_value=(SimpleNamespace(), None)))
 
     await executor._execute_schedule(schedule, runner, repository := object(), "owner-1")
 
-    finish.assert_awaited_once_with(schedule, run, WorkflowRunStatus.CANCELLED, repository)
+    finish.assert_awaited_once_with(schedule, run, status, repository)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [WorkflowRunStatus.PENDING, WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED],
+)
 async def test_execute_schedule_maps_leased_status_to_failed_when_lease_lost(
     monkeypatch: pytest.MonkeyPatch,
+    status: WorkflowRunStatus,
 ) -> None:
     """When execute_leased_run returns None and the run is still leased, finish with FAILED."""
     schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
@@ -235,7 +252,7 @@ async def test_execute_schedule_maps_leased_status_to_failed_when_lease_lost(
         return None
 
     monkeypatch.setattr(executor, "execute_leased_run", fake_execute_leased_run)
-    monkeypatch.setattr(executor, "_read_run_status", AsyncMock(return_value=WorkflowRunStatus.RUNNING))
+    monkeypatch.setattr(executor, "_read_run_status", AsyncMock(return_value=status))
     runner = SimpleNamespace(run=AsyncMock(return_value=(SimpleNamespace(), None)))
 
     await executor._execute_schedule(schedule, runner, repository := object(), "owner-1")

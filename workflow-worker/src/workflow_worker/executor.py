@@ -197,8 +197,8 @@ async def _prepare_scheduled_run(
 async def _read_run_status(run_id: PydanticObjectId) -> WorkflowRunStatus:
     """Projected read of a run's current status, for when execute_leased_run reports no result.
 
-    (lease lost or a write rejected: whoever holds the lease wrote the final status.) Defaults to
-    FAILED if the run has vanished.
+    After lease loss, the persisted status may still be non-terminal until the reaper finalizes
+    the run. Defaults to FAILED if the run has vanished.
     """
     document = await WorkflowRun.get_pymongo_collection().find_one({"_id": run_id}, {"status": 1})
     if document is None:
@@ -282,8 +282,8 @@ async def _execute_schedule(
             final_status = await _read_run_status(run.id)
             # execute_leased_run returns None when this worker self-fenced out of the run lease.
             # The persisted run may still be PENDING/RUNNING/PAUSED before the reaper finalizes it
-            # to FAILED. Recording a non-terminal status on the schedule would leave last_run_status
-            # stuck forever, because the reaper does not update schedules.
+            # to FAILED. The reaper does not update schedules, so recording that status would leave
+            # last_run_status stale until a later schedule execution overwrites it.
             if final_status in LEASED_RUN_STATUSES:
                 final_status = WorkflowRunStatus.FAILED
         else:
