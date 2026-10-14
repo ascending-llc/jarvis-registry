@@ -91,6 +91,11 @@ class BackgroundTaskTracker:
         self._tasks.discard(task)
         _log_task_exception(task)
 
+    @property
+    def tasks(self) -> frozenset[asyncio.Task[Any]]:
+        """Return the currently tracked tasks without exposing the mutable backing set."""
+        return frozenset(self._tasks)
+
     async def shutdown(self, *, budget: timedelta = FINALIZE_BUDGET) -> int:
         """Stop accepting new tasks, cancel every tracked one, and wait up to ``budget`` for them.
 
