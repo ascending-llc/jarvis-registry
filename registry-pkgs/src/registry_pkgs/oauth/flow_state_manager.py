@@ -4,11 +4,14 @@ import json
 import logging
 import secrets
 import time
+from collections.abc import Callable
 from typing import Any, cast
 from uuid import uuid4
 
 from redis import Redis
+from redis.exceptions import RedisError
 
+from .errors import OAuthFlowStorageError
 from .oauth_utils import parse_scope, scope_to_string
 from .redis_flow_storage import RedisFlowStorage
 from .schemas import (
@@ -25,6 +28,8 @@ from .types import OAuthFlowState, StateMetadata
 
 logger = logging.getLogger(__name__)
 
+_FLOW_STORAGE_CONCURRENCY = 8
+
 
 class FlowStateManager:
     """
@@ -33,52 +38,30 @@ class FlowStateManager:
 
     DEFAULT_FLOW_TTL = 600  # Flow time-to-live in seconds (10 minutes)
 
-    def __init__(
-        self,
-        redis_client: Redis | None = None,
-        *,
-        redis_key_prefix: str,
-        fallback_to_memory: bool = True,
-    ):
-        """
-        Initialize FlowStateManager with Redis backend
-
-        Args:
-            redis_client: Redis client (memory fallback used when None/unavailable)
-            redis_key_prefix: Namespace prefix for flow keys (caller-supplied;
-                e.g. settings.redis_key_prefix)
-            fallback_to_memory: If True, use memory storage when Redis unavailable
-        """
-        self._lock = asyncio.Lock()
+    def __init__(self, redis_client: Redis, *, redis_key_prefix: str) -> None:
+        if redis_client is None:
+            raise RuntimeError("FlowStateManager requires Redis")
         self._flow_ttl = self.DEFAULT_FLOW_TTL
-        self._use_redis = False
-        self._memory_flows: dict[str, OAuthFlow] = {}
-        self._redis_storage: RedisFlowStorage | None = None
+        self._redis_storage = RedisFlowStorage(redis_client, redis_key_prefix=redis_key_prefix)
+        self._io_limit = asyncio.Semaphore(_FLOW_STORAGE_CONCURRENCY)
 
-        # Try to initialize Redis storage
+    async def _run_storage[T](self, operation: Callable[..., T], *args: Any) -> T:
+        # Keep the slot until the thread finishes, even if the caller is cancelled.
+        async with self._io_limit:
+            task = asyncio.create_task(asyncio.to_thread(operation, *args))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                try:
+                    await task
+                finally:
+                    raise
+
+    async def initialize(self) -> None:
         try:
-            if redis_client:
-                redis_client.ping()
-                self._redis_storage = RedisFlowStorage(redis_client, redis_key_prefix=redis_key_prefix)
-                self._use_redis = True
-
-                logger.info("FlowStateManager initialized with Redis storage")
-            else:
-                raise RuntimeError("Redis client not initialized")
-
-        except Exception as e:
-            if fallback_to_memory:
-                logger.warning(f"Redis unavailable, using memory storage: {e}")
-                self._use_redis = False
-                self._redis_storage = None
-            else:
-                logger.error(f"Failed to initialize FlowStateManager: {e}")
-                raise
-
-    @property
-    def uses_redis(self) -> bool:
-        """Whether flows are stored in Redis (False when the memory fallback is in use)."""
-        return self._use_redis
+            await self._run_storage(self._redis_storage.redis.ping)
+        except RedisError as exc:
+            raise RuntimeError("FlowStateManager requires Redis") from exc
 
     def generate_flow_id(self, user_id: str, server_id: str) -> str:
         """
@@ -192,13 +175,9 @@ class FlowStateManager:
             device_code=device_code,
         )
 
-    def create_flow(
+    async def create_flow(
         self, flow_id: str, server_id: str, user_id: str, code_verifier: str, metadata: MCPOAuthFlowMetadata
     ) -> OAuthFlow:
-        """
-        Create OAuth flow and persist to storage
-        """
-        # Create dataclass flow object
         flow = OAuthFlow(
             flow_id=flow_id,
             server_id=server_id,
@@ -210,211 +189,54 @@ class FlowStateManager:
             created_at=time.time(),
             metadata=metadata,
         )
-
-        if self._use_redis and self._redis_storage:
-            try:
-                # Save to Redis using native storage
-                success = self._redis_storage.save_flow(flow, self._flow_ttl)
-                if success:
-                    logger.info(f"Created OAuth flow in Redis: flow_id={flow_id}")
-                else:
-                    logger.warning("Failed to save to Redis, using memory fallback")
-                    self._memory_flows[flow_id] = flow
-            except Exception as e:
-                logger.error(f"Failed to save flow to Redis, using memory: {e}")
-                self._memory_flows[flow_id] = flow
-        else:
-            # Use memory storage
-            self._memory_flows[flow_id] = flow
-            logger.debug(f"Created OAuth flow in memory: flow_id={flow_id}")
-
+        await self._run_storage(self._redis_storage.save_flow, flow, self._flow_ttl)
         return flow
 
-    def get_flow(self, flow_id: str) -> OAuthFlow | None:
-        """
-        Retrieve OAuth flow by ID
+    async def get_flow(self, flow_id: str) -> OAuthFlow | None:
+        return await self._run_storage(self._redis_storage.get_flow, flow_id)
 
-        Args:
-            flow_id: Flow identifier
-
-        Returns:
-            OAuthFlow if found, None otherwise
-        """
-        if self._use_redis and self._redis_storage:
-            try:
-                flow = self._redis_storage.get_flow(flow_id)
-                if flow:
-                    logger.info(f"Flow found in Redis: {flow_id}, status: {flow.status}")
-                else:
-                    logger.warning(f"Flow not found in Redis: {flow_id}")
-                return flow
-
-            except Exception as e:
-                logger.error(f"Error getting flow from Redis: {e}")
-                return None
-        else:
-            # Use memory storage
-            flow = self._memory_flows.get(flow_id)
-            if flow:
-                logger.debug(f"Flow found in memory: {flow_id}, status: {flow.status}")
-            else:
-                logger.warning(f"Flow not found in memory: {flow_id}")
-            return flow
+    async def get_flows(self, flow_ids: list[str]) -> dict[str, OAuthFlow | OAuthFlowStorageError | None]:
+        if not flow_ids:
+            return {}
+        return await self._run_storage(self._redis_storage.get_flows, flow_ids)
 
     def is_flow_expired(self, flow: OAuthFlow) -> bool:
-        """
-        Check if OAuth flow has expired
-        """
-        if not flow.created_at:
-            return True
-        return time.time() - flow.created_at > self._flow_ttl
+        return not flow.created_at or time.time() - flow.created_at >= self._flow_ttl
 
-    def consume_flow(self, flow_id: str, expected_state: str) -> OAuthFlow | None:
-        """Atomically retrieve and delete the matching pending flow."""
-        if self._use_redis and self._redis_storage:
-            flow = self._redis_storage.consume_flow(flow_id, expected_state)
-            if flow:
-                logger.info(f"Consumed flow from Redis: {flow_id}")
-            return flow
+    async def consume_flow(self, flow_id: str, expected_state: str) -> OAuthFlow | None:
+        return await self._run_storage(self._redis_storage.consume_flow, flow_id, expected_state)
 
-        flow = self._memory_flows.get(flow_id)
-        if (
-            flow is None
-            or flow.status != OAuthFlowStatus.PENDING
-            or not secrets.compare_digest(flow.state, expected_state)
-        ):
-            return None
-        logger.debug(f"Consumed flow from memory: {flow_id}")
-        return self._memory_flows.pop(flow_id)
+    async def delete_flow(self, flow_id: str) -> None:
+        await self._run_storage(self._redis_storage.delete_flow, flow_id)
 
-    def delete_flow(self, flow_id: str) -> None:
-        """
-        Delete OAuth flow from storage
-        """
-        if self._use_redis and self._redis_storage:
-            try:
-                success = self._redis_storage.delete_flow(flow_id)
-                if success:
-                    logger.info(f"Deleted flow from Redis: {flow_id}")
-            except Exception as e:
-                logger.warning(f"Error deleting flow from Redis: {e}")
-        else:
-            # Use memory storage
-            if flow_id in self._memory_flows:
-                del self._memory_flows[flow_id]
-                logger.debug(f"Deleted flow from memory: {flow_id}")
+    async def complete_flow(self, flow_id: str, tokens: OAuthTokens) -> None:
+        flow = await self.get_flow(flow_id)
+        if flow is None:
+            raise ValueError("OAuth flow not found")
+        flow.status = OAuthFlowStatus.COMPLETED
+        flow.completed_at = time.time()
+        flow.tokens = tokens
+        await self._run_storage(self._redis_storage.save_flow, flow, self._flow_ttl)
 
-    def complete_flow(self, flow_id: str, tokens: OAuthTokens) -> None:
-        """
-        Mark OAuth flow as completed and store tokens
+    async def fail_flow(self, flow_id: str, error: str) -> None:
+        flow = await self.get_flow(flow_id)
+        if flow is None:
+            raise ValueError("OAuth flow not found")
+        flow.status = OAuthFlowStatus.FAILED
+        flow.error = error
+        await self._run_storage(self._redis_storage.save_flow, flow, self._flow_ttl)
 
-        """
-        if self._use_redis and self._redis_storage:
-            try:
-                flow = self._redis_storage.get_flow(flow_id)
-                if flow:
-                    flow.status = OAuthFlowStatus.COMPLETED
-                    flow.completed_at = time.time()
-                    flow.tokens = tokens
-                    self._redis_storage.save_flow(flow, self._flow_ttl)
-                    logger.info(f"Completed flow in Redis: {flow_id}")
-            except Exception as e:
-                logger.error(f"Error completing flow in Redis: {e}")
-        else:
-            # Use memory storage
-            flow = self._memory_flows.get(flow_id)
-            if flow:
-                flow.status = OAuthFlowStatus.COMPLETED
-                flow.completed_at = time.time()
-                flow.tokens = tokens
-                logger.debug(f"Completed flow in memory: {flow_id}")
+    async def cancel_user_flow(self, user_id: str, server_id: str) -> bool:
+        flow_id = self.generate_flow_id(user_id, server_id)
+        flow = await self.get_flow(flow_id)
+        if flow is None or flow.status != OAuthFlowStatus.PENDING:
+            return False
+        await self.fail_flow(flow_id, "User cancelled OAuth flow")
+        return True
 
-    def fail_flow(self, flow_id: str, error: str) -> None:
-        """
-        Mark OAuth flow as failed with error message
-        """
-        if self._use_redis and self._redis_storage:
-            try:
-                flow = self._redis_storage.get_flow(flow_id)
-                if flow:
-                    flow.status = OAuthFlowStatus.FAILED
-                    flow.error = error
-                    self._redis_storage.save_flow(flow, self._flow_ttl)
-                    logger.info(f"Marked flow as failed in Redis: {flow_id}")
-            except Exception as e:
-                logger.error(f"Error marking flow as failed in Redis: {e}")
-        else:
-            # Use memory storage
-            flow = self._memory_flows.get(flow_id)
-            if flow:
-                flow.status = OAuthFlowStatus.FAILED
-                flow.error = error
-                logger.debug(f"Marked flow as failed in memory: {flow_id}")
-
-    def cancel_user_flow(self, user_id: str, server_id: str) -> bool:
-        """
-        Cancel pending OAuth flow for user and server
-        """
-        if self._use_redis and self._redis_storage:
-            try:
-                # Find pending flows for user and server
-                flows = self._redis_storage.find_flows(user_id, server_id)
-                pending_flows = [f for f in flows if f.status == OAuthFlowStatus.PENDING]
-
-                if not pending_flows:
-                    return False
-
-                # Cancel the first pending flow
-                flow_to_cancel = pending_flows[0]
-                flow_to_cancel.status = OAuthFlowStatus.FAILED
-                flow_to_cancel.error = "User cancelled OAuth flow"
-                self._redis_storage.save_flow(flow_to_cancel, self._flow_ttl)
-
-                logger.info(f"Cancelled flow in Redis: {flow_to_cancel.flow_id}")
-                return True
-
-            except Exception as e:
-                logger.error(f"Error cancelling flow in Redis: {e}")
-                return False
-        else:
-            # Use memory storage
-            flow_to_cancel = None
-            for _flow_id, flow in self._memory_flows.items():
-                if flow.user_id == user_id and flow.server_id == server_id and flow.status == OAuthFlowStatus.PENDING:
-                    flow_to_cancel = flow
-                    break
-
-            if not flow_to_cancel:
-                return False
-
-            flow_to_cancel.status = OAuthFlowStatus.FAILED
-            flow_to_cancel.error = "User cancelled OAuth flow"
-            logger.debug(f"Cancelled flow in memory: {flow_to_cancel.flow_id}")
-            return True
-
-    def get_user_flows(self, user_id: str, server_id: str) -> list[OAuthFlow]:
-        """
-        Get all OAuth flows for specific user and server
-
-        """
-        if self._use_redis and self._redis_storage:
-            try:
-                user_flows = self._redis_storage.find_flows(user_id, server_id)
-                logger.debug(f"Found {len(user_flows)} flows in Redis for {user_id}/{server_id}")
-                return user_flows
-
-            except Exception as e:
-                logger.error(f"Error getting user flows from Redis: {e}")
-                return []
-        else:
-            # Use memory storage
-            user_flows = []
-            for _flow_id, flow in self._memory_flows.items():
-                if flow.user_id == user_id and flow.server_id == server_id:
-                    user_flows.append(flow)
-
-            logger.debug(f"Found {len(user_flows)} flows in memory for {user_id}/{server_id}")
-            return user_flows
+    async def get_user_flows(self, user_id: str, server_id: str) -> list[OAuthFlow]:
+        flow = await self.get_flow(self.generate_flow_id(user_id, server_id))
+        return [flow] if flow else []
 
     def _create_client_info(
         self,
@@ -458,34 +280,4 @@ class FlowStateManager:
         )
 
     async def cleanup_expired_flows(self) -> int:
-        """
-        Clean up expired flows from Redis or memory
-        """
-        if self._use_redis and self._redis_storage:
-            try:
-                cleaned_count = self._redis_storage.cleanup_expired(self._flow_ttl)
-                if cleaned_count > 0:
-                    logger.info(f"Cleaned up {cleaned_count} expired flows from Redis")
-                return cleaned_count
-
-            except Exception as e:
-                logger.error(f"Error cleaning up expired flows: {e}")
-                return 0
-        else:
-            # Use memory storage
-            cleaned_count = 0
-            current_time = time.time()
-            expired_ids = []
-
-            for flow_id, flow in self._memory_flows.items():
-                if current_time - flow.created_at > self._flow_ttl:
-                    expired_ids.append(flow_id)
-
-            for flow_id in expired_ids:
-                del self._memory_flows[flow_id]
-                cleaned_count += 1
-
-            if cleaned_count > 0:
-                logger.info(f"Cleaned up {cleaned_count} expired flows from memory")
-
-            return cleaned_count
+        return await self._run_storage(self._redis_storage.cleanup_expired, self._flow_ttl)

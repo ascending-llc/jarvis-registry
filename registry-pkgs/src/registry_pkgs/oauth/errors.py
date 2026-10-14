@@ -102,3 +102,11 @@ class OAuthTokenEndpointError(AuthenticationError):
 
 class RegistryOAuthStateConflictError(AuthenticationError):
     """Concurrent writers kept winning the compare-and-swap on ``registryOAuth``."""
+
+
+class OAuthCoordinationError(OAuthTokenError):
+    """Temporary coordination failure; must never trigger an interactive login."""
+
+
+class OAuthFlowStorageError(RuntimeError):
+    """Flow persistence failed; distinct from a missing flow or invalid user input."""

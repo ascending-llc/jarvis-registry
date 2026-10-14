@@ -1,3 +1,5 @@
+from tests.fake_redis import FakeRedis
+
 """Unit tests for MCPOAuthService.
 
 Most tests run the real service against in-memory fakes of the three things it talks to: the
@@ -18,7 +20,6 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from beanie import PydanticObjectId
-from redis.exceptions import ConnectionError as RedisConnectionError
 
 from registry_pkgs.core.crypto_utils import decrypt_value
 from registry_pkgs.core.exceptions import DownstreamAuthRejectedException
@@ -28,6 +29,7 @@ from registry_pkgs.oauth import FlowStateManager
 from registry_pkgs.oauth import refresh_lock as refresh_lock_module
 from registry_pkgs.oauth.discovery import DiscoveryResult
 from registry_pkgs.oauth.errors import (
+    OAuthCoordinationError,
     OAuthDiscoveryError,
     OAuthReAuthRequiredError,
     OAuthTokenEndpointError,
@@ -182,6 +184,19 @@ class FakeTokenService:
     async def has_refresh_token(self, user_id: str, service_name: str) -> bool:
         return (user_id, service_name) in self.refresh
 
+    async def token_write_snapshot(self, user_id: str, service_name: str) -> dict[str, Any]:
+        key = (user_id, service_name)
+        return {"key": key, "access": self._copy(self.access.get(key)), "refresh": self._copy(self.refresh.get(key))}
+
+    def snapshot_matches_refresh(self, snapshot, service_name, token):
+        return snapshot["refresh"] is not None and snapshot["refresh"].token == token
+
+    async def commit_oauth_tokens(self, service_name, tokens, metadata, snapshot):
+        key = snapshot["key"]
+        if self.access.get(key) != snapshot["access"] or self.refresh.get(key) != snapshot["refresh"]:
+            raise OAuthCoordinationError("OAuth credentials changed during refresh; retry")
+        await self.store_oauth_tokens(key[0], service_name, tokens, metadata)
+
     async def store_oauth_tokens(
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -219,26 +234,6 @@ class FakeTokenService:
         return (self._copy(record), True) if record is not None else (None, False)
 
 
-class FakeRedis:
-    def __init__(self, *, fail_set: bool = False) -> None:
-        self.fail_set = fail_set
-        self.store: dict[str, str] = {}
-
-    def set(self, key: str, value: str, *, nx: bool = False, px: int | None = None) -> bool | None:
-        if self.fail_set:
-            raise RedisConnectionError("redis down")
-        if nx and key in self.store:
-            return None
-        self.store[key] = value
-        return True
-
-    def eval(self, script: str, numkeys: int, key: str, token: str) -> int:
-        if self.store.get(key) == token:
-            del self.store[key]
-            return 1
-        return 0
-
-
 # ----------------------------------------------------------------------
 # Harness
 # ----------------------------------------------------------------------
@@ -249,14 +244,14 @@ class Harness:
         self.collection = collection
         self.discover = discover
         self.tokens = FakeTokenService()
-        self.flow_manager = FlowStateManager(None, redis_key_prefix="test")
+        self.flow_manager = FlowStateManager(FakeRedis(), redis_key_prefix="test")
         self.service = MCPOAuthService(
             flow_manager=self.flow_manager,
             token_service_instance=self.tokens,  # type: ignore[arg-type]
             registry_app_name="jarvis-registry",
             base_redirect_url=BASE_URL,
             encryption_key=KEY,
-            redis_client=None,
+            redis_client=FakeRedis(),
             redis_key_prefix="test",
         )
         self.registered = 0
@@ -326,7 +321,7 @@ def h(collection: FakeServerCollection, discover: AsyncMock) -> Harness:
 
 @pytest.fixture(autouse=True)
 def _reset_memory_locks() -> None:
-    refresh_lock_module._memory_locks.clear()
+    pass
 
 
 # ----------------------------------------------------------------------
@@ -628,7 +623,7 @@ class TestLogin:
         assert query["client_id"] == ["client-1"]
         assert set(query["scope"][0].split()) == set(atlassian_discovery().scope.split())
         assert auth_url.startswith("https://auth.atlassian.com/authorize")
-        flow = h.flow_manager.get_flow(flow_id)
+        flow = await h.flow_manager.get_flow(flow_id)
         assert flow is not None and flow.metadata is not None
         assert flow.metadata.resource_metadata is not None
         assert flow.metadata.resource_metadata.resource == ATLASSIAN_URL
@@ -659,7 +654,7 @@ class TestLogin:
     async def _start_and_complete(self, h: Harness, *, tokens: OAuthTokens | None = None, exchange_error=None):
         flow_id, _, error = await h.service.initiate_oauth_flow(USER, h.server())
         assert error is None and flow_id is not None
-        flow = h.flow_manager.get_flow(flow_id)
+        flow = await h.flow_manager.get_flow(flow_id)
         assert flow is not None
         if exchange_error is not None:
             h.service.oauth_client.exchange_code_for_tokens = AsyncMock(side_effect=exchange_error)
@@ -691,13 +686,13 @@ class TestLogin:
         assert h.register.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_redis_error_on_lock_still_stores_login_tokens(self, h: Harness) -> None:
+    async def test_redis_error_on_lock_does_not_store_login_tokens(self, h: Harness) -> None:
         h.service._lock_redis_client = FakeRedis(fail_set=True)  # type: ignore[assignment]
 
         success, _ = await self._start_and_complete(h)
 
-        assert success
-        assert h.tokens.access[(USER, "atlassian")].token == "login-access"
+        assert not success
+        assert (USER, "atlassian") not in h.tokens.access
 
 
 # ----------------------------------------------------------------------
@@ -843,9 +838,19 @@ class TestRefresh:
             return OAuthTokens(access_token="fresh", refresh_token="r2" if rotates else refresh_token)
 
         h.refresh.side_effect = slow_refresh
+        other = MCPOAuthService(
+            flow_manager=h.flow_manager,
+            token_service_instance=h.tokens,
+            registry_app_name="jarvis-registry",
+            base_redirect_url=BASE_URL,
+            encryption_key=KEY,
+            redis_client=h.service._lock_redis_client,
+            redis_key_prefix="test",
+        )
+        other.oauth_client = h.service.oauth_client
         results = await asyncio.gather(
             h.service.validate_and_refresh_tokens(USER, h.server()),
-            h.service.validate_and_refresh_tokens(USER, h.server()),
+            other.validate_and_refresh_tokens(USER, h.server()),
         )
 
         assert results == [(True, None), (True, None)]
@@ -861,13 +866,16 @@ class TestRefresh:
         release = asyncio.Event()
 
         async def holder() -> None:
-            async with refresh_lock(None, key_prefix="test", user_id=USER, server_id=str(SERVER_ID)):
+            async with refresh_lock(
+                h.service._lock_redis_client, key_prefix="test", user_id=USER, server_id=str(SERVER_ID)
+            ):
                 held.set()
                 await release.wait()
 
         task = asyncio.create_task(holder())
         await held.wait()
-        assert await h.service.validate_and_refresh_tokens(USER, h.server()) == (False, "refresh already in progress")
+        with pytest.raises(OAuthCoordinationError, match="refresh already in progress"):
+            await h.service.validate_and_refresh_tokens(USER, h.server())
 
         h.tokens.put("atlassian", access="fresh-from-other-pod", metadata=h.dcr_binding(state))
         assert await h.service.validate_and_refresh_tokens(USER, h.server()) == (True, None)
@@ -881,9 +889,8 @@ class TestRefresh:
         h.tokens.put("atlassian", refresh="r1", metadata=h.dcr_binding(state))
         h.service._lock_redis_client = FakeRedis(fail_set=True)  # type: ignore[assignment]
 
-        success, error = await h.service._refresh_with_lock(USER, h.server())
-
-        assert not success and error is not None and "lock" in error
+        with pytest.raises(OAuthCoordinationError):
+            await h.service._refresh_with_lock(USER, h.server())
         h.refresh.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -927,7 +934,7 @@ class TestRefresh:
             await h.service.get_valid_access_token(USER, h.server(), interactive=False)
 
         assert exc_info.value.auth_url is None
-        assert h.flow_manager.get_user_flows(USER, str(SERVER_ID)) == []
+        assert await h.flow_manager.get_user_flows(USER, str(SERVER_ID)) == []
         h.register.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1006,7 +1013,7 @@ class TestRecoverFromUnauthorized:
             )
 
         h.refresh.assert_not_awaited()
-        assert h.flow_manager.get_user_flows(USER, str(SERVER_ID)) == []
+        assert await h.flow_manager.get_user_flows(USER, str(SERVER_ID)) == []
         assert h.discover.await_args.kwargs["www_authenticate"] == "Bearer"
 
     @pytest.mark.asyncio
@@ -1075,7 +1082,7 @@ class TestMCPOAuthService:
             registry_app_name="jarvis-registry",
             base_redirect_url=BASE_URL,
             encryption_key=KEY,
-            redis_client=None,
+            redis_client=FakeRedis(),
             redis_key_prefix="test",
         )
         service.oauth_client = Mock()
@@ -1108,7 +1115,7 @@ class TestMCPOAuthService:
             "redis_client": redis,
             "redis_key_prefix": "p",
         }
-        assert MCPOAuthService(flow_manager=memory_manager, **kwargs)._lock_redis_client is None
+        assert MCPOAuthService(flow_manager=memory_manager, **kwargs)._lock_redis_client is redis
         assert MCPOAuthService(flow_manager=redis_manager, **kwargs)._lock_redis_client is redis
 
     @pytest.mark.asyncio
@@ -1275,7 +1282,7 @@ class TestMCPOAuthService:
 
     @pytest.mark.asyncio
     async def test_cancel_oauth_flow_success(self, oauth_service):
-        oauth_service.flow_manager.cancel_user_flow = Mock(return_value=True)
+        oauth_service.flow_manager.cancel_user_flow = AsyncMock(return_value=True)
         success, error = await oauth_service.cancel_oauth_flow(USER, str(SERVER_ID))
 
         assert success
@@ -1283,12 +1290,12 @@ class TestMCPOAuthService:
 
     @pytest.mark.asyncio
     async def test_has_active_flow_true(self, oauth_service):
-        oauth_service.flow_manager.get_user_flows = Mock(return_value=[Mock()])
+        oauth_service.flow_manager.get_user_flows = AsyncMock(return_value=[Mock()])
         assert await oauth_service.has_active_flow(USER, "test_server")
 
     @pytest.mark.asyncio
     async def test_has_failed_flow_true(self, oauth_service):
-        oauth_service.flow_manager.get_user_flows = Mock(return_value=[Mock(status=OAuthFlowStatus.FAILED)])
+        oauth_service.flow_manager.get_user_flows = AsyncMock(return_value=[Mock(status=OAuthFlowStatus.FAILED)])
         assert await oauth_service.has_failed_flow(USER, "test_server")
 
 

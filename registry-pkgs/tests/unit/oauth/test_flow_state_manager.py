@@ -1,3 +1,5 @@
+from tests.fake_redis import FakeRedis
+
 """Unit tests for FlowStateManager — RFC 8707 resource indicator resolution (RC1)."""
 
 import pytest
@@ -17,7 +19,7 @@ class TestCreateFlowMetadataResourceResolution:
 
     @pytest.fixture
     def manager(self):
-        return FlowStateManager(redis_key_prefix="jarvis-registry", fallback_to_memory=True)
+        return FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
 
     def _base_oauth_config(self, **overrides) -> dict:
         config: dict = {
@@ -97,32 +99,60 @@ class TestCreateFlowMetadataResourceResolution:
 
 
 class TestConsumeFlow:
-    def test_memory_flow_is_returned_once(self) -> None:
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry", fallback_to_memory=True)
+    @pytest.mark.asyncio
+    async def test_redis_flow_is_returned_once(self) -> None:
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow = OAuthFlow(
             flow_id="flow-1",
             server_id="server-1",
-            server_name="server",
+            server_name="",
             user_id="user-1",
             code_verifier="verifier",
             state="state",
         )
-        manager._memory_flows[flow.flow_id] = flow
+        manager._redis_storage.save_flow(flow)
 
-        assert manager.consume_flow(flow.flow_id, "state") is flow
-        assert manager.consume_flow(flow.flow_id, "state") is None
+        assert await manager.consume_flow(flow.flow_id, "state") == flow
+        assert await manager.consume_flow(flow.flow_id, "state") is None
 
-    def test_memory_flow_is_not_consumed_for_mismatched_state(self) -> None:
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry", fallback_to_memory=True)
+    @pytest.mark.asyncio
+    async def test_redis_flow_is_not_consumed_for_mismatched_state(self) -> None:
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow = OAuthFlow(
             flow_id="flow-1",
             server_id="server-1",
-            server_name="server",
+            server_name="",
             user_id="user-1",
             code_verifier="verifier",
             state="expected-state",
         )
-        manager._memory_flows[flow.flow_id] = flow
+        manager._redis_storage.save_flow(flow)
 
-        assert manager.consume_flow(flow.flow_id, "forged-state") is None
-        assert manager.get_flow(flow.flow_id) is flow
+        assert await manager.consume_flow(flow.flow_id, "forged-state") is None
+        assert await manager.get_flow(flow.flow_id) == flow
+
+
+@pytest.mark.asyncio
+async def test_redis_required_and_ping_failure():
+    from registry_pkgs.oauth.flow_state_manager import FlowStateManager
+
+    with pytest.raises(RuntimeError, match="requires Redis"):
+        FlowStateManager(None, redis_key_prefix="test")
+    redis = FakeRedis()
+    redis.fail_ping = True
+    manager = FlowStateManager(redis, redis_key_prefix="test")
+    with pytest.raises(RuntimeError, match="requires Redis"):
+        await manager.initialize()
+    assert not hasattr(manager, "_memory_flows")
+
+
+@pytest.mark.asyncio
+async def test_storage_write_failure_propagates_without_memory():
+    from unittest.mock import Mock
+
+    manager = FlowStateManager(FakeRedis(fail_set=True), redis_key_prefix="test")
+    metadata = Mock(state="state", server_name="server")
+    metadata.model_dump_json.return_value = "{}"
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await manager.create_flow("u:s", "s", "u", "verifier", metadata)
+    assert not hasattr(manager, "_memory_flows")
