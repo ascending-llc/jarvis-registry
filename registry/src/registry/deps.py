@@ -9,7 +9,6 @@ from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.workflows.runner import WorkflowRunner
 
-from .auth.oauth.reconnection import OAuthReconnectionManager
 from .container import RegistryContainer
 from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
@@ -25,7 +24,6 @@ from .services.federation_sync_service import FederationSyncService
 from .services.group_service import GroupService
 from .services.model_gateway_selection_service import ModelGatewaySelectionService
 from .services.model_source_crud_service import ModelSourceCrudService
-from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.search.service import SearchService
@@ -86,16 +84,8 @@ def get_oauth_service(container: RegistryContainer = Depends(get_container)) -> 
     return container.oauth_service
 
 
-def get_connection_service(container: RegistryContainer = Depends(get_container)) -> MCPConnectionService:
-    return container.connection_service
-
-
 def get_mcp_service(container: RegistryContainer = Depends(get_container)) -> MCPService:
     return container.mcp_service
-
-
-def get_reconnection_manager(container: RegistryContainer = Depends(get_container)) -> OAuthReconnectionManager:
-    return container.reconnection_manager
 
 
 def get_status_resolver(container: RegistryContainer = Depends(get_container)) -> ConnectionStatusResolver:

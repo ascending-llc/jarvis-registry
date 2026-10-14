@@ -10,7 +10,6 @@ from ....schemas.common_api_schemas import (
     ConnectionStatusMapResponse,
     ServerConnectionStatusResponse,
 )
-from ....schemas.enums import ConnectionState
 from ....services.oauth.connection_status_service import (
     get_servers_connection_status,
     get_single_server_connection_status,
@@ -45,11 +44,6 @@ async def reinitialize_server(
         user_id = current_user.get("user_id")
         logger.info(f"[Reinitialize] User {user_id} reinitializing server: {server_id}")
 
-        # Step 1: Disconnect existing connection
-        disconnected = await mcp_service.connection_service.disconnect_user_connection(user_id, server_id)
-        if disconnected:
-            logger.info(f"[Reinitialize] Disconnected {server_id} for user {user_id}")
-
         # Step 2: Get server config
         server = await server_service.get_server_by_id(server_id)
         if not server:
@@ -60,28 +54,17 @@ async def reinitialize_server(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server config not found")
 
         # Step 3: Handle OAuth authentication
-        needs_connection, response_data = await mcp_service.oauth_service.handle_reinitialize_auth(
+        _needs_connection, response_data = await mcp_service.oauth_service.handle_reinitialize_auth(
             user_id=user_id, server=server
         )
 
-        # Step 4: Create connection if tokens are valid
-        if needs_connection:
-            await mcp_service.connection_service.create_user_connection(
-                user_id=user_id,
-                server_id=server_id,
-                initial_state=ConnectionState.CONNECTED,
-                details={"reinitialized": True, "has_oauth": True},
-            )
-            logger.info(f"[Reinitialize] Created connection for {server_id}")
         return JSONResponse(status_code=status.HTTP_200_OK, content=response_data)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"[Reinitialize] Unexpected error for {server_id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Internal server error: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 @router.get(
