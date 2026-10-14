@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 FINALIZE_BUDGET = timedelta(seconds=10)
 
 
+class TrackerShutdownError(RuntimeError):
+    """Raised by ``BackgroundTaskTracker.spawn`` once shutdown has begun; callers map it to 503.
+
+    A dedicated type lets callers catch exactly this refusal, so an unrelated ``RuntimeError`` raised
+    alongside a spawn (e.g. while preparing a resume) is not misreported as "shutting down".
+    """
+
+
 def _log_task_exception(task: asyncio.Task) -> None:
     """Done-callback that surfaces an exception a fire-and-forget task would otherwise swallow.
 
@@ -67,12 +75,12 @@ class BackgroundTaskTracker:
             The created ``asyncio.Task``.
 
         Raises:
-            RuntimeError: If ``shutdown`` has already begun. ``coro`` is closed first so it does not
+            TrackerShutdownError: If ``shutdown`` has already begun. ``coro`` is closed first so it does not
                 emit a "coroutine was never awaited" warning.
         """
         if self._shutting_down:
             coro.close()
-            raise RuntimeError("BackgroundTaskTracker is shutting down; refusing new task")
+            raise TrackerShutdownError("BackgroundTaskTracker is shutting down; refusing new task")
         task = asyncio.create_task(coro, name=name)
         self._tasks.add(task)
         task.add_done_callback(self._on_done)
@@ -82,6 +90,11 @@ class BackgroundTaskTracker:
         """Untrack a finished task and surface any exception it did not handle itself."""
         self._tasks.discard(task)
         _log_task_exception(task)
+
+    @property
+    def tasks(self) -> frozenset[asyncio.Task[Any]]:
+        """Return the currently tracked tasks without exposing the mutable backing set."""
+        return frozenset(self._tasks)
 
     async def shutdown(self, *, budget: timedelta = FINALIZE_BUDGET) -> int:
         """Stop accepting new tasks, cancel every tracked one, and wait up to ``budget`` for them.

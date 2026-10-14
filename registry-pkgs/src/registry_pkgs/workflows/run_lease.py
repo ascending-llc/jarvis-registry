@@ -183,9 +183,11 @@ async def reap_expired_runs(*, legacy_cutover_age: timedelta) -> int:
     Pass 1 — expired leases: repeatedly ``reap_one`` a leased run whose ``lease_expires_at`` has
     passed, writing FAILED and clearing the lease, then fail its open NodeRuns.
 
-    Pass 2 — legacy runs with no lease fields, started before this release: finalize any
-    PENDING/RUNNING/PAUSED run with no ``lease_token`` older than ``legacy_cutover_age``. Kept
-    permanently; it costs one indexed query per tick.
+    Pass 2 — lease-less runs: finalize any PENDING/RUNNING/PAUSED run with no ``lease_token`` older
+    than ``legacy_cutover_age``. "No lease_token" matches both a missing field (runs written before
+    the lease fields existed) and an explicit ``null`` (runs inserted unleased by current code, whose
+    Beanie insert stores the field's ``None`` default). Kept permanently; it costs one indexed query
+    per tick.
 
     Both passes write FAILED (never CANCELLED) so ``send_retry`` / ``rerun_single_node`` stay available.
     Each reap is a single atomic ``find_one_and_update``, so concurrent pods never finalize a run twice.
@@ -222,7 +224,9 @@ async def reap_expired_runs(*, legacy_cutover_age: timedelta) -> int:
         document = await collection.find_one_and_update(
             {
                 "status": {"$in": leased_values},
-                SNAKE_CASE_LEASE_FIELDS.token: {"$exists": False},
+                # ``None`` matches a missing field and an explicit null; ``$exists: False`` would miss
+                # every run inserted unleased through the model, which stores ``lease_token: null``.
+                SNAKE_CASE_LEASE_FIELDS.token: None,
                 "started_at": {"$lte": cutoff},
             },
             {

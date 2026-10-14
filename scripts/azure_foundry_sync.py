@@ -20,13 +20,13 @@ from dotenv import load_dotenv
 from registry.container import RegistryContainer
 from registry.core.config import settings
 from registry.core.vector_backend import resolve_vector_backend_config
+from registry.utils.vector_runtime import wait_for_vector_writes
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import Federation
 from registry_pkgs.vector.client import create_database_client
-from scripts.vector_runtime import wait_for_vector_writes
 
 logging.basicConfig(
     level=logging.INFO,

@@ -7,7 +7,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services import workflow_run_launcher as launcher_module
-from registry.services.background_task_tracker import BackgroundTaskTracker
+from registry.services.background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from registry.services.workflow_run_launcher import (
     _REGISTRY_SHUTDOWN_REASON,
     ABORT_CONTINUE,
@@ -70,7 +70,7 @@ async def test_launch_run_after_shutdown_fails_the_run_and_raises(
     run_id = PydanticObjectId()
     lease = _lease(run_id)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(TrackerShutdownError):
         await launcher.launch_run(
             lease=lease, definition_id="def-1", user_text="x", auth_context=None, existing_run_id=str(run_id)
         )
@@ -140,7 +140,7 @@ async def test_launch_continue_after_shutdown_fails_the_leased_run_and_raises(
     async def prepare() -> None:
         return None
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(TrackerShutdownError):
         await launcher.launch_continue(run_id=run_id, prepare=prepare)
 
     # The run was already moved RUNNING + leased by acquire, so a refused spawn must fail it here

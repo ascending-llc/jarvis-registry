@@ -14,6 +14,7 @@ from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
+from .services.background_task_tracker import BackgroundTaskTracker
 from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
 from .services.embedding_reindex_job_service import EmbeddingReindexJobService
 from .services.federation.a2a_client_registry import A2AClientRegistry
@@ -212,3 +213,8 @@ def get_workflow_runner(container: RegistryContainer = Depends(get_container)) -
 
 def get_workflow_run_launcher(container: RegistryContainer = Depends(get_container)) -> WorkflowRunLauncher:
     return container.workflow_run_launcher
+
+
+def get_background_task_tracker(container: RegistryContainer = Depends(get_container)) -> BackgroundTaskTracker:
+    """Get the pod-wide tracker that background work spawns through, so one shutdown drains it all."""
+    return container.background_task_tracker

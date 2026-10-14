@@ -46,6 +46,7 @@ from registry.schemas.workflow_api_schemas import (
 )
 from registry.schemas.workflow_schemas import NodeRunListResponse, NodeRunSummary, RunStatusResponse
 from registry.services.access_control_service import ACLService
+from registry.services.background_task_tracker import TrackerShutdownError
 from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_reauth_service import collect_pending_oauth_authorizations
 from registry.services.workflow_run_launcher import WorkflowRunLauncher
@@ -609,10 +610,10 @@ async def trigger_workflow_run(
                 existing_run_id=str(run.id),
                 definition_snapshot=run.definition_snapshot,
             )
-        except RuntimeError as exc:
+        except TrackerShutdownError as exc:
             raise HTTPException(
                 status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Registry is shutting down; retry"),
+                detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, "Registry is shutting down; retry"),
             ) from exc
 
         logger.info(f"Workflow run {run.id} queued for execution (workflow: {workflow_id})")

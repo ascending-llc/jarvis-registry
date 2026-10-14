@@ -35,13 +35,13 @@ from typing import Any
 from registry.container import RegistryContainer
 from registry.core.config import Settings
 from registry.core.vector_backend import resolve_vector_backend_config
+from registry.utils.vector_runtime import wait_for_vector_writes
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.vector.adapters.factory import VectorStoreFactory
 from registry_pkgs.vector.client import create_database_client
-from scripts.vector_runtime import wait_for_vector_writes
 
 VALID_TARGETS = {"mcp", "a2a", "all"}
 
