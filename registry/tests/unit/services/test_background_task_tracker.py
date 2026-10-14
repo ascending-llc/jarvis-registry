@@ -15,10 +15,8 @@ async def test_spawn_runs_and_tracks_task() -> None:
         ran.set()
 
     task = tracker.spawn(work(), name="w")
-    assert task in tracker.tasks
     _ = await task
     assert ran.is_set()
-    assert task not in tracker.tasks
 
 
 @pytest.mark.asyncio

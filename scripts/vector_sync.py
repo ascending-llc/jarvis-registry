@@ -35,7 +35,6 @@ from typing import Any
 from registry.container import RegistryContainer
 from registry.core.config import Settings
 from registry.core.vector_backend import resolve_vector_backend_config
-from registry.utils.vector_runtime import wait_for_vector_writes
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -338,7 +337,6 @@ async def run() -> int:
             db_client=db_client,
             redis_client=redis_client,
         )
-        await wait_for_vector_writes(container)
 
         sync_mcp = target in {"mcp", "all"}
         sync_a2a = target in {"a2a", "all"}
