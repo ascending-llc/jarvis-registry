@@ -55,7 +55,7 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_kwargs: http_client)
     monkeypatch.setattr(main, "AzureFoundryClientCache", lambda **_kwargs: azure_client_cache)
     monkeypatch.setattr(main, "AzureModelCredential", lambda: azure_model_credential)
-    monkeypatch.setattr(main, "_build_runner", lambda *_args: runner)
+    monkeypatch.setattr(main, "_build_runner", AsyncMock(return_value=runner))
     monkeypatch.setattr(main.asyncio, "get_running_loop", lambda: loop)
     monkeypatch.setattr(main, "_run_scheduler_loop", run_scheduler_loop)
     monkeypatch.setattr(main, "close_redis_client", close_redis_client)
@@ -172,7 +172,7 @@ async def test_main_shuts_down_telemetry_after_scheduler_drains(monkeypatch: pyt
         "AzureModelCredential",
         lambda: SimpleNamespace(token_provider=object(), close=MagicMock()),
     )
-    monkeypatch.setattr(main, "_build_runner", lambda *_args: object())
+    monkeypatch.setattr(main, "_build_runner", AsyncMock(return_value=object()))
     monkeypatch.setattr(main.asyncio, "get_running_loop", lambda: SimpleNamespace(add_signal_handler=MagicMock()))
     monkeypatch.setattr(main, "_run_scheduler_loop", scheduler_loop)
     monkeypatch.setattr(main, "close_redis_client", MagicMock())
@@ -183,7 +183,8 @@ async def test_main_shuts_down_telemetry_after_scheduler_drains(monkeypatch: pyt
     assert call_order == ["scheduler", "shutdown"]
 
 
-def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_settings = SimpleNamespace(
         workflow_llm_model_id="model",
         aws_region="us-east-1",
@@ -205,12 +206,12 @@ def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(main.MongoDB, "get_client", lambda: object())
     monkeypatch.setattr(main.MongoDB, "database_name", "jarvis", raising=False)
     monkeypatch.setattr(main, "make_a2a_headers_provider", lambda **kwargs: headers_provider)
-    monkeypatch.setattr(main, "_build_mcp_headers_provider", lambda _redis: mcp_headers_provider)
+    monkeypatch.setattr(main, "_build_mcp_headers_provider", AsyncMock(return_value=mcp_headers_provider))
     monkeypatch.setattr(main, "WorkflowRunner", lambda **kwargs: captured.update(kwargs) or object())
 
     azure_client_cache = object()
     azure_model_credential = SimpleNamespace(token_provider=object())
-    main._build_runner(object(), object(), object(), azure_client_cache, azure_model_credential)
+    await main._build_runner(object(), object(), object(), azure_client_cache, azure_model_credential)
 
     model_factory.assert_called_once_with("model", "us-east-1")
     assert captured["headers_provider"] is headers_provider
@@ -219,7 +220,8 @@ def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPa
     assert captured["azure_ad_token_provider"] is azure_model_credential.token_provider
 
 
-def test_build_mcp_headers_provider_is_non_interactive(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_build_mcp_headers_provider_is_non_interactive(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_settings = SimpleNamespace(
         encryption_key=b"0" * 32,
         registry_app_name="jarvis-registry",
@@ -232,11 +234,11 @@ def test_build_mcp_headers_provider_is_non_interactive(monkeypatch: pytest.Monke
     monkeypatch.setattr(main, "settings", mock_settings)
     monkeypatch.setattr(main, "UserService", object)
     monkeypatch.setattr(main, "TokenService", lambda **_kwargs: object())
-    monkeypatch.setattr(main, "FlowStateManager", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "FlowStateManager", lambda **_kwargs: SimpleNamespace(initialize=AsyncMock()))
     monkeypatch.setattr(main, "MCPOAuthService", lambda **_kwargs: object())
     monkeypatch.setattr(main, "make_mcp_headers_provider", lambda **kwargs: captured.update(kwargs) or object())
 
-    main._build_mcp_headers_provider(object())
+    await main._build_mcp_headers_provider(object())
 
     # Scheduled runs must be non-interactive so no Redis OAuth flow is minted.
     assert captured["interactive"] is False
