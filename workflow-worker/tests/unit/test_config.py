@@ -48,7 +48,7 @@ def test_worker_settings_reject_claim_capacity_below_execution_capacity() -> Non
 def test_worker_settings_shutdown_budget_defaults_leave_headroom() -> None:
     settings = WorkerSettings(creds_key="00" * 16, _env_file=None)
 
-    assert settings.shutdown_drain_seconds == 30.0
+    assert settings.shutdown_drain_seconds == 40.0
     assert settings.shutdown_finalize_seconds == 10.0
     assert settings.shutdown_drain_seconds + settings.shutdown_finalize_seconds <= 50
 

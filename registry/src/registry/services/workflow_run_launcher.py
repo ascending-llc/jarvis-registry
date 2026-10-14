@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from beanie import PydanticObjectId
 
 from registry.auth.dependencies import UserContextDict
-from registry.services.background_task_tracker import BackgroundTaskTracker
+from registry.services.background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.workflows.run_lease import (
@@ -74,7 +74,7 @@ class WorkflowRunLauncher:
     ) -> None:
         """Spawn a tracked, leased execution of an already-inserted run.
 
-        Raises ``RuntimeError`` (from the tracker) once shutdown has begun; the caller maps it to 503.
+        Raises ``TrackerShutdownError`` (from the tracker) once shutdown has begun; the caller maps it to 503.
         The run is already inserted ``PENDING`` and leased, so on refusal it is failed here instead of
         being left for the reaper.
         """
@@ -97,7 +97,7 @@ class WorkflowRunLauncher:
 
         try:
             self._tracker.spawn(_job(), name=f"workflow-run-{existing_run_id}")
-        except RuntimeError:
+        except TrackerShutdownError:
             await workflow_run_lease_repository.transition(
                 lease,
                 {
@@ -131,7 +131,7 @@ class WorkflowRunLauncher:
         and once ``acquire`` wins the run is ``RUNNING`` + leased: a spawn refused after that point
         fails the leased run here (like ``launch_run``), and a crash afterwards is the reaper's.
 
-        Raises ``RuntimeError`` (from the tracker) once shutdown has begun; the caller maps it to 503.
+        Raises ``TrackerShutdownError`` (from the tracker) once shutdown has begun; the caller maps it to 503.
         """
         prepared = await prepare()
         if prepared is ABORT_CONTINUE:
@@ -160,7 +160,7 @@ class WorkflowRunLauncher:
 
         try:
             self._tracker.spawn(_job(), name=f"workflow-continue-{run_id}")
-        except RuntimeError:
+        except TrackerShutdownError:
             await workflow_run_lease_repository.transition(
                 lease,
                 {

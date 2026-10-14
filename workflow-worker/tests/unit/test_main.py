@@ -4,8 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from beanie import PydanticObjectId
 
-from workflow_worker import main
+from workflow_worker import executor, main
 
 
 def test_handle_task_done_removes_and_observes_completed_task() -> None:
@@ -395,6 +396,50 @@ async def test_drain_in_flight_cancels_queued_and_finalizes_running() -> None:
 
     assert queued.cancelled()
     assert running.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_drain_in_flight_waits_for_queued_release_when_running_finishes_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queued task's release_claim must complete even when the running task finishes before it."""
+    released: list[str] = []
+
+    async def slow_release(_schedule_id: object, lease_token: str) -> bool:
+        await asyncio.sleep(0.05)  # Mongo round trip outlasts the running task
+        released.append(lease_token)
+        return True
+
+    async def renew(*args: object) -> None:
+        await args[-1].wait()  # stop_event
+
+    async def quick_execute(*_args: object) -> None:
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(executor, "_renew_lease", renew)
+    monkeypatch.setattr(executor, "_execute_schedule", quick_execute)
+    repository = SimpleNamespace(release_claim=slow_release)
+    semaphore = asyncio.Semaphore(1)
+    executing: set[asyncio.Task[None]] = set()
+    in_flight = {
+        asyncio.create_task(
+            main.run_bounded(
+                SimpleNamespace(id=PydanticObjectId(), lease_token=f"lease-{i}"),
+                semaphore,
+                SimpleNamespace(),
+                repository,
+                "owner-1",
+                executing,
+            )
+        )
+        for i in range(2)
+    }
+    await asyncio.sleep(0)  # first task enters the semaphore, second queues behind it
+    assert len(executing) == 1
+
+    await main._drain_in_flight(in_flight, executing, drain_seconds=1.0, finalize_seconds=0.1)
+
+    assert len(released) == 1
 
 
 @pytest.mark.asyncio
