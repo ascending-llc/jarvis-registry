@@ -4,8 +4,8 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from datetime import datetime
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -23,11 +23,13 @@ from registry_pkgs.models.federation import AzureAiFoundryProviderConfig, Federa
 from .azure_foundry_auth import AzureFoundryAuthService
 
 logger = logging.getLogger(__name__)
-
 _TOKEN_SCOPE = "https://ai.azure.com/.default"
 _PREVIEW_HEADER_NAME = "Foundry-Features"
 _PREVIEW_HEADER_VALUE = "HostedAgents=V1Preview"
-_TOKEN_EXPIRY_SKEW_SECONDS = 300  # refresh this many seconds before actual expiry
+_TOKEN_EXPIRY_SKEW_SECONDS = 300
+_STATE_MAX_AGE_SECONDS = 600
+_REBUILD_MIN_INTERVAL_SECONDS = 30
+_SAFE_REPLAY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class AuthMode(StrEnum):
@@ -37,13 +39,11 @@ class AuthMode(StrEnum):
 
 @dataclass
 class _CredentialState:
-    """Per-federation credential state owned by the cache."""
-
     provider_config: AzureAiFoundryProviderConfig
-    config_updated_at: datetime
     mode: AuthMode
-    cached_token: AccessToken | None = None  # client_secret mode only
-    long_lived_credential: DefaultAzureCredential | None = None  # managed_identity mode only
+    built_at: float = field(default_factory=time.monotonic)
+    cached_token: AccessToken | None = None
+    long_lived_credential: DefaultAzureCredential | None = None
 
 
 def _resolve_mode(provider_config: AzureAiFoundryProviderConfig) -> AuthMode:
@@ -55,139 +55,168 @@ def _is_near_expiry(token: AccessToken) -> bool:
 
 
 class AzureEntraAuth(httpx.Auth):
-    """httpx auth hook that injects Azure Entra headers for each outgoing request."""
+    """Bounded authentication recovery, only for requests safe to replay."""
 
-    def __init__(self, auth_service: AzureFoundryAuthService):
+    def __init__(self, auth_service: AzureFoundryAuthService) -> None:
         self._auth_service = auth_service
+
+    @staticmethod
+    def _apply_headers(request: httpx.Request, headers: dict[str, str]) -> None:
+        request.headers.pop(_PREVIEW_HEADER_NAME, None)
+        request.headers.update(headers)
 
     async def async_auth_flow(self, request: httpx.Request) -> AsyncIterator[httpx.Request]:
         headers = await self._auth_service.build_headers()
-        for key, value in headers.items():
-            request.headers[key] = value
+        self._apply_headers(request, headers)
+        response = yield request
+        # No provider-specific evidence makes arbitrary POSTs or 403s safe to replay.
+        if response.status_code != 401 or request.method not in _SAFE_REPLAY_METHODS:
+            return
+        await self._auth_service.rebuild_after_auth_failure()
+        new_headers = await self._auth_service.build_headers()
+        if new_headers == headers:
+            return
+        await response.aclose()
+        self._apply_headers(request, new_headers)
         yield request
 
 
 class AzureFoundryClientCache:
-    """Single, shared owner of all Azure Foundry credential/token state, per federation."""
+    """Process-local derived cache; Mongo remains the configuration authority.
+
+    All use of a credential is serialized with its replacement, per federation.
+    A mode switch or deletion therefore cannot close a credential during get_token.
+    """
 
     def __init__(
-        self,
-        *,
-        encryption_key: bytes,
-        max_connections: int = 300,
-        max_keepalive_connections: int = 20,
-    ):
+        self, *, encryption_key: bytes, max_connections: int = 300, max_keepalive_connections: int = 20
+    ) -> None:
         self._encryption_key = encryption_key
         self._states: dict[PydanticObjectId, _CredentialState] = {}
         self._facades: dict[PydanticObjectId, AzureFoundryAuthService] = {}
         self._clients: dict[PydanticObjectId, httpx.AsyncClient] = {}
         self._locks: dict[PydanticObjectId, asyncio.Lock] = {}
+        self._lock_users: dict[PydanticObjectId, int] = {}
+        self._last_auth_rebuild: dict[PydanticObjectId, float] = {}
         self._limits = httpx.Limits(
-            max_connections=max_connections,
-            max_keepalive_connections=max_keepalive_connections,
+            max_connections=max_connections, max_keepalive_connections=max_keepalive_connections
         )
+        self._closed = False
 
-    async def _get_state_locked(self, federation_id: PydanticObjectId) -> _CredentialState:
-        cached = self._states.get(federation_id)
-        if cached is not None:
-            return cached
+    @asynccontextmanager
+    async def _lock(self, federation_id: PydanticObjectId) -> AsyncIterator[None]:
+        if self._closed:
+            raise RuntimeError("Azure Foundry cache is closed")
+        lock = self._locks.setdefault(federation_id, asyncio.Lock())
+        self._lock_users[federation_id] = self._lock_users.get(federation_id, 0) + 1
+        try:
+            async with lock:
+                if self._closed:
+                    raise RuntimeError("Azure Foundry cache is closed")
+                yield
+        finally:
+            remaining = self._lock_users[federation_id] - 1
+            if remaining:
+                self._lock_users[federation_id] = remaining
+            else:
+                self._lock_users.pop(federation_id, None)
+                if federation_id not in self._states:
+                    self._locks.pop(federation_id, None)
+                    self._last_auth_rebuild.pop(federation_id, None)
 
+    async def _rebuild_state_locked(
+        self, federation_id: PydanticObjectId, *, auth_failure: bool = False
+    ) -> _CredentialState:
+        state = self._states.get(federation_id)
+        now = time.monotonic()
+        previous = self._last_auth_rebuild.get(federation_id)
+        if auth_failure:
+            if state is not None and previous is not None and now - previous < _REBUILD_MIN_INTERVAL_SECONDS:
+                return state
+            # Failed attempts count too; never stamp a stale state as fresh.
+            self._last_auth_rebuild[federation_id] = now
         federation = await Federation.get(federation_id)
         if federation is None:
+            self._states.pop(federation_id, None)
+            self._facades.pop(federation_id, None)
+            client = self._clients.pop(federation_id, None)
+            if client is not None:
+                await client.aclose()
+            if state is not None and state.long_lived_credential is not None:
+                await state.long_lived_credential.close()
             raise ValueError(f"Federation {federation_id} not found")
         if federation.providerType != FederationProviderType.AZURE_AI_FOUNDRY:
-            raise ValueError(
-                f"Federation {federation_id} providerType={federation.providerType!r} is not azure_ai_foundry"
-            )
-
+            raise ValueError("Federation providerType is not azure_ai_foundry")
         cfg = AzureAiFoundryProviderConfig(**(federation.providerConfig or {}))
-        state = _CredentialState(provider_config=cfg, config_updated_at=federation.updatedAt, mode=_resolve_mode(cfg))
-        self._states[federation_id] = state
+        new_state = _CredentialState(provider_config=cfg, mode=_resolve_mode(cfg))
+        if state is not None and new_state.mode == state.mode == AuthMode.MANAGED_IDENTITY:
+            new_state.long_lived_credential = state.long_lived_credential
+        elif state is not None and state.long_lived_credential is not None:
+            await state.long_lived_credential.close()
+        self._states[federation_id] = new_state
+        return new_state
+
+    async def _get_state_locked(self, federation_id: PydanticObjectId) -> _CredentialState:
+        state = self._states.get(federation_id)
+        if state is None or time.monotonic() - state.built_at >= _STATE_MAX_AGE_SECONDS:
+            state = await self._rebuild_state_locked(federation_id)
         return state
 
-    async def _ensure_state(self, federation_id: PydanticObjectId) -> _CredentialState:
-        """Return the federation's state, building it under the lock if missing."""
-        state = self._states.get(federation_id)
-        if state is not None:
-            return state
-        lock = self._locks.setdefault(federation_id, asyncio.Lock())
-        async with lock:
-            return await self._get_state_locked(federation_id)
+    async def force_rebuild(
+        self, federation_id: PydanticObjectId, *, auth_failure: bool = False
+    ) -> AzureAiFoundryProviderConfig:
+        async with self._lock(federation_id):
+            return (
+                await self._rebuild_state_locked(federation_id, auth_failure=auth_failure)
+            ).provider_config.model_copy(deep=True)
 
-    async def _get_facade_locked(self, federation_id: PydanticObjectId) -> AzureFoundryAuthService:
-        await self._get_state_locked(federation_id)
-        return self._facades.setdefault(federation_id, AzureFoundryAuthService(federation_id, self))
+    async def get_auth_service(
+        self, federation_id: PydanticObjectId, *, expected_config: AzureAiFoundryProviderConfig | None = None
+    ) -> AzureFoundryAuthService:
+        async with self._lock(federation_id):
+            await self._get_state_locked(federation_id)
+            if expected_config is not None:
+                return AzureFoundryAuthService(federation_id, self, expected_config=expected_config)
+            return self._facades.setdefault(federation_id, AzureFoundryAuthService(federation_id, self))
 
-    async def get_auth_service(self, federation_id: PydanticObjectId) -> AzureFoundryAuthService:
-        """Return the stable per-federation facade, building state on first use (one per federation).
-
-        This is the single entry point every external consumer uses to reach Azure Foundry:
-
-        - workflow A2A node invocation (``A2aHeadersProvider``, registry-triggered and worker-scheduled)
-          → ``facade.build_headers()``.
-        - federation sync discovery (``AzureAiFoundrySyncHandler``) → the facade is passed to
-          ``AIProjectClient`` as an ``AsyncTokenCredential`` (``get_token``), plus ``build_headers()``
-          to enrich each discovered agent card.
-        - agent-card re-discovery (``A2AAgentService.sync_wellknown`` / ``refresh_agent_capabilities``)
-          → ``facade.build_headers()``.
-
-        The direct-proxy client path (``get_client``) builds the *same* facade via the shared
-        ``_get_facade_locked`` core rather than calling this method: it already holds the federation
-        lock, and this method acquires it (the lock is not re-entrant). All four paths ultimately
-        funnel into ``get_access_token``, so token caching / rotation self-heal live in one place.
-        """
-        cached = self._facades.get(federation_id)
-        if cached is not None:
-            return cached
-        lock = self._locks.setdefault(federation_id, asyncio.Lock())
-        async with lock:
-            return await self._get_facade_locked(federation_id)
-
-    async def get_access_token(self, federation_id: PydanticObjectId, *, scope: str = _TOKEN_SCOPE) -> AccessToken:
-        state = self._states.get(federation_id)
-        if state is None:
-            state = await self._ensure_state(federation_id)
-
-        if state.mode == AuthMode.MANAGED_IDENTITY:
-            credential = await self._get_managed_identity_credential(federation_id, state)
-            return await credential.get_token(scope)
-
-        # Fast path: reuse a still-valid cached token without taking the lock.
-        if state.cached_token is not None and not _is_near_expiry(state.cached_token):
-            return state.cached_token
-
-        lock = self._locks.setdefault(federation_id, asyncio.Lock())
-        async with lock:
-            return await self._get_client_secret_token_locked(federation_id, scope)
-
-    async def _get_client_secret_token_locked(
-        self, federation_id: PydanticObjectId, scope: str, *, rebuilt: bool = False
+    async def _token_locked(
+        self,
+        federation_id: PydanticObjectId,
+        scope: str,
+        expected_config: AzureAiFoundryProviderConfig | None,
+        *,
+        rebuilt: bool = False,
     ) -> AccessToken:
-        """Caller MUST hold this federation's lock.
-
-        Re-reads state and re-dispatches on ``mode`` on every entry — including after a reactive
-        rebuild — because ``_refresh_state_if_config_changed`` may have flipped the federation from
-        client_secret to managed_identity (a config edit that cleared ``clientSecret``). ``rebuilt``
-        bounds the reactive rebuild to exactly one attempt (no unbounded recursion if ``updatedAt``
-        keeps advancing).
-        """
-        state = self._states[federation_id]
+        state = await self._get_state_locked(federation_id)
+        if expected_config is not None and state.provider_config != expected_config:
+            raise RuntimeError("Azure configuration changed during discovery; retry synchronization")
         if state.mode == AuthMode.MANAGED_IDENTITY:
-            credential = self._ensure_managed_credential_locked(state)
-            return await credential.get_token(scope)
-
+            if state.long_lived_credential is None:
+                state.long_lived_credential = DefaultAzureCredential()
+            return await state.long_lived_credential.get_token(scope)
         if state.cached_token is not None and not _is_near_expiry(state.cached_token):
             return state.cached_token
-
         try:
             token = await self._fetch_client_secret_token(state.provider_config, scope)
         except ClientAuthenticationError:
-            if rebuilt or not await self._refresh_state_if_config_changed(federation_id, state):
+            if rebuilt:
                 raise
-            return await self._get_client_secret_token_locked(federation_id, scope, rebuilt=True)
-
+            updated = await self._rebuild_state_locked(federation_id, auth_failure=True)
+            if updated is state:
+                raise
+            return await self._token_locked(federation_id, scope, expected_config, rebuilt=True)
         state.cached_token = token
         return token
+
+    async def get_access_token(
+        self,
+        federation_id: PydanticObjectId,
+        *,
+        scope: str = _TOKEN_SCOPE,
+        expected_config: AzureAiFoundryProviderConfig | None = None,
+    ) -> AccessToken:
+        async with self._lock(federation_id):
+            return await self._token_locked(federation_id, scope, expected_config)
 
     async def _fetch_client_secret_token(
         self, provider_config: AzureAiFoundryProviderConfig, scope: str
@@ -209,123 +238,50 @@ class AzureFoundryClientCache:
         ) as cred:
             return await cred.get_token(scope)
 
-    def _ensure_managed_credential_locked(self, state: _CredentialState) -> DefaultAzureCredential:
-        """Build the long-lived DefaultAzureCredential on first use. Caller MUST hold the fed lock."""
-        if state.long_lived_credential is None:
-            state.long_lived_credential = DefaultAzureCredential()
-        return state.long_lived_credential
-
-    async def _get_managed_identity_credential(
-        self, federation_id: PydanticObjectId, state: _CredentialState
-    ) -> DefaultAzureCredential:
-        if state.long_lived_credential is not None:
-            return state.long_lived_credential
-        lock = self._locks.setdefault(federation_id, asyncio.Lock())
-        async with lock:
-            return self._ensure_managed_credential_locked(state)
-
-    async def _refresh_state_if_config_changed(self, federation_id: PydanticObjectId, state: _CredentialState) -> bool:
-        """Re-read Mongo; rebuild state from the new config only if ``updatedAt`` advanced."""
-        federation = await Federation.get(federation_id)
-        if federation is None or federation.updatedAt <= state.config_updated_at:
-            return False
-        cfg = AzureAiFoundryProviderConfig(**(federation.providerConfig or {}))
-        self._states[federation_id] = _CredentialState(
-            provider_config=cfg, config_updated_at=federation.updatedAt, mode=_resolve_mode(cfg)
-        )
-        return True
-
     async def build_headers(
-        self, federation_id: PydanticObjectId, extra: dict[str, Any] | None = None
+        self,
+        federation_id: PydanticObjectId,
+        extra: dict[str, Any] | None = None,
+        *,
+        expected_config: AzureAiFoundryProviderConfig | None = None,
     ) -> dict[str, str]:
-        token = await self.get_access_token(federation_id)
-        headers: dict[str, str] = {"Authorization": f"Bearer {token.token}"}
-        state = self._states[federation_id]
-        if state.provider_config.sendPreviewHeader:
-            headers[_PREVIEW_HEADER_NAME] = _PREVIEW_HEADER_VALUE
-        if extra:
-            headers.update(extra)
-        return headers
+        async with self._lock(federation_id):
+            token = await self._token_locked(federation_id, _TOKEN_SCOPE, expected_config)
+            headers = dict(extra or {})
+            headers["Authorization"] = f"Bearer {token.token}"
+            headers.pop(_PREVIEW_HEADER_NAME, None)
+            if self._states[federation_id].provider_config.sendPreviewHeader:
+                headers[_PREVIEW_HEADER_NAME] = _PREVIEW_HEADER_VALUE
+            return headers
 
     async def get_client(self, agent: A2AAgent) -> httpx.AsyncClient:
         federation_id = agent.federationRefId
         if federation_id is None:
             raise ValueError(f"Azure Foundry A2A agent {agent.path!r} has no federationRefId")
-
-        cached = self._clients.get(federation_id)
-        if cached is not None:
-            return cached
-
-        lock = self._locks.setdefault(federation_id, asyncio.Lock())
-        async with lock:
-            cached = self._clients.get(federation_id)
-            if cached is not None:
-                return cached
-
-            # Build state/facade and the client under one lock, atomic w.r.t. invalidate().
-            facade = await self._get_facade_locked(federation_id)
-            client = httpx.AsyncClient(
-                auth=AzureEntraAuth(facade),
-                timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
-                limits=self._limits,
-            )
-            self._clients[federation_id] = client
-            return client
-
-    async def invalidate(self, federation_id: PydanticObjectId) -> None:
-        """Drop a federation's cached client; refresh credential state, mode-conditionally.
-
-        A `managed_identity`-mode federation that stays in that mode keeps its long-lived
-        `DefaultAzureCredential` untouched (nothing federation-derived to refresh, and rebuilding
-        it repeats expensive provider-chain discovery for no benefit) — otherwise a concurrent
-        caller mid-`get_token()` on the shared credential could hit a use-after-close failure when
-        this call tears it down. `client_secret`-mode federations, and any federation switching
-        mode, get a fresh state (dropping any cached token / closing any managed credential).
-        """
-        lock = self._locks.setdefault(federation_id, asyncio.Lock())
-        async with lock:
-            client = self._clients.pop(federation_id, None)
-            if client is not None:
-                await client.aclose()
-
-            state = self._states.get(federation_id)
-            if state is None:
-                return
-
-            federation = await Federation.get(federation_id)
-            if federation is None:
-                self._states.pop(federation_id, None)
-                if state.long_lived_credential is not None:
-                    await state.long_lived_credential.close()
-                return
-
-            cfg = AzureAiFoundryProviderConfig(**(federation.providerConfig or {}))
-            new_mode = _resolve_mode(cfg)
-
-            if new_mode == AuthMode.MANAGED_IDENTITY and state.mode == AuthMode.MANAGED_IDENTITY:
-                state.provider_config = cfg
-                state.config_updated_at = federation.updatedAt
-                return
-
-            if state.long_lived_credential is not None:
-                await state.long_lived_credential.close()
-            self._states[federation_id] = _CredentialState(
-                provider_config=cfg, config_updated_at=federation.updatedAt, mode=new_mode
-            )
+        async with self._lock(federation_id):
+            await self._get_state_locked(federation_id)
+            if federation_id not in self._clients:
+                facade = self._facades.setdefault(federation_id, AzureFoundryAuthService(federation_id, self))
+                self._clients[federation_id] = httpx.AsyncClient(
+                    auth=AzureEntraAuth(facade),
+                    timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
+                    limits=self._limits,
+                )
+            return self._clients[federation_id]
 
     async def close(self) -> None:
-        clients = list(self._clients.values())
-        states = list(self._states.values())
-        self._clients.clear()
-        self._states.clear()
+        self._closed = True
+        for federation_id, lock in list(self._locks.items()):
+            async with lock:
+                client = self._clients.pop(federation_id, None)
+                if client is not None:
+                    await client.aclose()
+                state = self._states.pop(federation_id, None)
+                if state is not None and state.long_lived_credential is not None:
+                    await state.long_lived_credential.close()
         self._facades.clear()
         self._locks.clear()
-
-        for client in clients:
-            await client.aclose()
-        for state in states:
-            if state.long_lived_credential is not None:
-                await state.long_lived_credential.close()
+        self._last_auth_rebuild.clear()
 
 
-__all__: list[str] = ["AzureEntraAuth", "AzureFoundryClientCache"]
+__all__ = ["AzureEntraAuth", "AzureFoundryClientCache"]

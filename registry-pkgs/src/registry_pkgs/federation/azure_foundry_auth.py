@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any
 from azure.core.credentials import AccessToken
 from beanie import PydanticObjectId
 
+from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
+
 if TYPE_CHECKING:
     from .azure_foundry_client_cache import AzureFoundryClientCache
 
@@ -21,23 +23,35 @@ class AzureFoundryAuthService:
     raw azure-identity object.
     """
 
-    def __init__(self, federation_id: PydanticObjectId, cache: AzureFoundryClientCache) -> None:
+    def __init__(
+        self,
+        federation_id: PydanticObjectId,
+        cache: AzureFoundryClientCache,
+        *,
+        expected_config: AzureAiFoundryProviderConfig | None = None,
+    ) -> None:
         self._federation_id = federation_id
         self._cache = cache
+        self._expected_config = expected_config
 
     async def get_token(self, *scopes: str, **kwargs: Any) -> AccessToken:
         # Only the scope is honored. claims / tenant_id / enable_cae kwargs are intentionally
         # ignored — the cache stores one token per federation for _TOKEN_SCOPE. Revisit if a
         # CAE / claims-challenge or multi-scope flow is ever required (see spec "Out of scope").
         scope = scopes[0] if scopes else _TOKEN_SCOPE
-        return await self._cache.get_access_token(self._federation_id, scope=scope)
+        return await self._cache.get_access_token(
+            self._federation_id, scope=scope, expected_config=self._expected_config
+        )
 
     async def access_token(self) -> str:
         token = await self.get_token(_TOKEN_SCOPE)
         return token.token
 
     async def build_headers(self, extra: dict[str, Any] | None = None) -> dict[str, str]:
-        return await self._cache.build_headers(self._federation_id, extra=extra)
+        return await self._cache.build_headers(self._federation_id, extra=extra, expected_config=self._expected_config)
+
+    async def rebuild_after_auth_failure(self) -> None:
+        await self._cache.force_rebuild(self._federation_id, auth_failure=True)
 
     async def close(self) -> None:
         """No-op: credential/token lifecycle is owned by AzureFoundryClientCache, not this facade."""
