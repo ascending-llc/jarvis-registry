@@ -9,7 +9,7 @@ from fastapi import status as http_status
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
-from registry_pkgs.models.enums import FederationProviderType, FederationStateMachine, FederationStatus, RoleBits
+from registry_pkgs.models.enums import FederationStateMachine, FederationStatus, RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.federation_sync_job import FederationSyncJob
 
@@ -521,8 +521,6 @@ async def update_federation(
         )
         if job is not None:
             logger.info(f"Updated federation {federation_id}: {federation},job: {job}")
-        if federation.providerType == FederationProviderType.AZURE_AI_FOUNDRY:
-            await a2a_client_registry.invalidate_azure_federation(federation.id)
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc
     except ValueError as exc:

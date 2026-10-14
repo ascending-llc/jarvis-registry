@@ -1,3 +1,5 @@
+from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
+
 """Tests for federation sync orchestration and lifecycle operations."""
 
 from datetime import UTC, datetime
@@ -200,6 +202,7 @@ async def test_azure_handler_discover_entities_uses_shared_cache_auth_service():
     )
     auth = object()
     cache = MagicMock()
+    cache.force_rebuild = AsyncMock(return_value=AzureAiFoundryProviderConfig(**federation.providerConfig))
     cache.get_auth_service = AsyncMock(return_value=auth)
     discovery_client = MagicMock()
     skipped_runtimes = [{"runtimeArn": "temporarily-unavailable", "reason": "agent_fetch_failed"}]
@@ -208,7 +211,8 @@ async def test_azure_handler_discover_entities_uses_shared_cache_auth_service():
 
     result = await handler.discover_entities(federation, author_id=_DEFAULT_USER_OBJECT_ID)
 
-    cache.get_auth_service.assert_awaited_once_with(federation.id)
+    cache.force_rebuild.assert_awaited_once_with(federation.id)
+    cache.get_auth_service.assert_awaited_once_with(federation.id, expected_config=cache.force_rebuild.return_value)
     assert discovery_client.discover_a2a_agents.await_args.kwargs["auth"] is auth
     assert discovery_client.discover_a2a_agents.await_args.kwargs["author_id"] == _DEFAULT_USER_OBJECT_ID
     assert result == {
@@ -251,6 +255,7 @@ async def test_azure_preview_preserves_agent_when_detail_fetch_transiently_fails
     )
 
     cache = MagicMock()
+    cache.force_rebuild = AsyncMock(return_value=AzureAiFoundryProviderConfig(**federation.providerConfig))
     cache.get_auth_service = AsyncMock(return_value=object())
     federation_sync_service.sync_handlers[FederationProviderType.AZURE_AI_FOUNDRY] = AzureAiFoundrySyncHandler(
         azure_client_cache=cache,

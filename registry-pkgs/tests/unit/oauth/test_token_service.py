@@ -728,3 +728,34 @@ class TestTokenServiceEncryption:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.asyncio
+async def test_batch_status_projects_no_credentials_and_matches_type() -> None:
+    collection = Mock()
+    # A service name ending in :refresh shares an identifier with another service's
+    # refresh record, but never shares its token type.
+    collection.find.return_value.to_list = AsyncMock(
+        return_value=[
+            {
+                "identifier": registry_refresh_token_identifier("example"),
+                "type": TokenType.MCP_OAUTH_REFRESH.value,
+                "metadata": {"clientId": "refresh-client"},
+            },
+            {
+                "identifier": registry_access_token_identifier("example:refresh"),
+                "type": TokenType.MCP_OAUTH_ACCESS.value,
+                "metadata": {"clientId": "access-client"},
+            },
+        ]
+    )
+    service = TokenService(Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
+    service.get_user_by_user_id = AsyncMock(return_value=str(PydanticObjectId()))
+    with patch.object(Token, "get_pymongo_collection", return_value=collection):
+        result = await service.get_authorization_status("u", ["example", "example:refresh"])
+    assert result["example"]["refresh"]["clientId"] == "refresh-client"
+    assert result["example:refresh"]["access"]["clientId"] == "access-client"
+    collection.find.assert_called_once()
+    projection = collection.find.call_args.args[1]
+    assert "token" not in projection and projection["metadata"] == 1
+    service.get_user_by_user_id.assert_awaited_once()

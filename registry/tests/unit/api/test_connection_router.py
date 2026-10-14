@@ -68,7 +68,7 @@ for attr in dir(mock_connection_service):
 
 # Set up the TestClient with the necessary dependencies overridden
 @pytest.fixture
-def client():
+async def client():
     from fastapi import FastAPI
 
     app = FastAPI()

@@ -7,6 +7,7 @@ from httpx import Response
 
 from registry.services.skill_sync_oauth_service import SkillSyncOAuthService
 from registry.utils.crypto_utils import encrypt_value
+from registry_pkgs.oauth.flow_state_manager import FlowStateManager
 
 
 def _source():
@@ -17,8 +18,9 @@ def _source():
     )
 
 
-def test_authorization_url_uses_pkce_and_persists_flow() -> None:
-    flow_manager = MagicMock()
+@pytest.mark.asyncio
+async def test_authorization_url_uses_pkce_and_persists_flow() -> None:
+    flow_manager = MagicMock(spec=FlowStateManager)
     flow_manager.create_flow_metadata.return_value = SimpleNamespace(state="encoded-state", authorization_url="")
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
@@ -26,7 +28,7 @@ def test_authorization_url_uses_pkce_and_persists_flow() -> None:
         http_client=MagicMock(),
     )
 
-    url = service.create_authorization_url(
+    url = await service.create_authorization_url(
         source=_source(),
         user_id="000000000000000000000001",
         redirect_uri="https://registry.example/callback",
@@ -39,8 +41,9 @@ def test_authorization_url_uses_pkce_and_persists_flow() -> None:
     assert "include_client_secret" not in flow_manager.create_flow_metadata.call_args.kwargs
 
 
-def test_resolve_source_id_returns_flow_server_id() -> None:
-    flow_manager = MagicMock()
+@pytest.mark.asyncio
+async def test_resolve_source_id_returns_flow_server_id() -> None:
+    flow_manager = MagicMock(spec=FlowStateManager)
     flow_manager.decode_state.return_value = {"flow_id": "flow", "security_token": "token"}
     flow_manager.get_flow.return_value = SimpleNamespace(server_id="source-123", state="state")
     service = SkillSyncOAuthService(
@@ -49,12 +52,13 @@ def test_resolve_source_id_returns_flow_server_id() -> None:
         http_client=MagicMock(),
     )
 
-    assert service.resolve_source_id("state") == "source-123"
+    assert await service.resolve_source_id("state") == "source-123"
     flow_manager.get_flow.assert_called_once_with("flow")
 
 
-def test_resolve_source_id_raises_when_flow_missing() -> None:
-    flow_manager = MagicMock()
+@pytest.mark.asyncio
+async def test_resolve_source_id_raises_when_flow_missing() -> None:
+    flow_manager = MagicMock(spec=FlowStateManager)
     flow_manager.decode_state.return_value = {"flow_id": "flow", "security_token": "token"}
     flow_manager.get_flow.return_value = None
     service = SkillSyncOAuthService(
@@ -64,11 +68,12 @@ def test_resolve_source_id_raises_when_flow_missing() -> None:
     )
 
     with pytest.raises(ValueError):
-        service.resolve_source_id("state")
+        await service.resolve_source_id("state")
 
 
-def test_resolve_source_id_raises_when_state_does_not_match_flow() -> None:
-    flow_manager = MagicMock()
+@pytest.mark.asyncio
+async def test_resolve_source_id_raises_when_state_does_not_match_flow() -> None:
+    flow_manager = MagicMock(spec=FlowStateManager)
     flow_manager.decode_state.return_value = {"flow_id": "flow", "security_token": "token"}
     flow_manager.get_flow.return_value = SimpleNamespace(server_id="source-123", state="the-real-state")
     service = SkillSyncOAuthService(
@@ -78,11 +83,12 @@ def test_resolve_source_id_raises_when_state_does_not_match_flow() -> None:
     )
 
     with pytest.raises(ValueError):
-        service.resolve_source_id("a-forged-state")
+        await service.resolve_source_id("a-forged-state")
 
 
-def test_resolve_source_id_propagates_malformed_state() -> None:
-    flow_manager = MagicMock()
+@pytest.mark.asyncio
+async def test_resolve_source_id_propagates_malformed_state() -> None:
+    flow_manager = MagicMock(spec=FlowStateManager)
     flow_manager.decode_state.side_effect = ValueError("bad state")
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
@@ -91,13 +97,13 @@ def test_resolve_source_id_propagates_malformed_state() -> None:
     )
 
     with pytest.raises(ValueError):
-        service.resolve_source_id("state")
+        await service.resolve_source_id("state")
 
 
 @pytest.mark.asyncio
 async def test_callback_consumes_state_and_stores_tokens() -> None:
     source = _source()
-    flow_manager = MagicMock()
+    flow_manager = MagicMock(spec=FlowStateManager)
     flow_manager.decode_state.return_value = {"flow_id": "flow", "security_token": "token"}
     flow_manager.consume_flow.return_value = SimpleNamespace(
         server_id=str(source.id),

@@ -344,7 +344,6 @@ async def test_update_federation_invalidates_azure_client_cache(sample_user_cont
     federation_sync_service = MagicMock()
     federation_sync_service.update_federation_with_optional_resync = AsyncMock(return_value=(updated_federation, None))
     a2a_client_registry = MagicMock()
-    a2a_client_registry.invalidate_azure_federation = AsyncMock()
 
     await update_federation(
         federation_id=str(azure_federation.id),
@@ -361,8 +360,6 @@ async def test_update_federation_invalidates_azure_client_cache(sample_user_cont
         acl_service=acl_service,
         a2a_client_registry=a2a_client_registry,
     )
-
-    a2a_client_registry.invalidate_azure_federation.assert_awaited_once_with(updated_federation.id)
 
 
 @pytest.mark.asyncio

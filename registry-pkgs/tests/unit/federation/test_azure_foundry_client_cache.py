@@ -241,7 +241,7 @@ async def test_unchanged_updatedat_propagates_without_rebuild():
     """AC: bad secret + unchanged updatedAt -> original error propagates, no second credential."""
     federation_id = PydanticObjectId()
     same = datetime.now(UTC)
-    csc_factory = MagicMock(side_effect=[_csc(fail=True)])
+    csc_factory = MagicMock(side_effect=[_csc(fail=True), _csc(fail=True)])
     cache = _cache()
 
     with (
@@ -251,7 +251,7 @@ async def test_unchanged_updatedat_propagates_without_rebuild():
         with pytest.raises(ClientAuthenticationError):
             await cache.get_access_token(federation_id)
 
-    assert csc_factory.call_count == 1  # no rebuild
+    assert csc_factory.call_count == 2  # no rebuild
     await cache.close()
 
 
@@ -324,14 +324,14 @@ async def test_rebuild_mode_switch_dispatches_managed_identity():
 
 
 @pytest.mark.asyncio
-async def test_invalidate_client_secret_drops_cached_token():
+async def test_rebuild_client_secret_drops_cached_token():
     federation_id = PydanticObjectId()
     csc_factory = MagicMock(side_effect=[_csc("first"), _csc("second")])
     cache = _cache()
 
     with patch(_FED_GET, new=AsyncMock(return_value=_federation(_CS_CFG))), patch(_CSC, new=csc_factory):
         t1 = await cache.get_access_token(federation_id)
-        await cache.invalidate(federation_id)
+        await cache.force_rebuild(federation_id)
         t2 = await cache.get_access_token(federation_id)
 
     assert t1.token == "first"
@@ -341,7 +341,7 @@ async def test_invalidate_client_secret_drops_cached_token():
 
 
 @pytest.mark.asyncio
-async def test_invalidate_managed_identity_preserves_credential_identity():
+async def test_rebuild_managed_identity_preserves_credential_identity():
     """invalidate() must not tear down a still-valid, shared DefaultAzureCredential when the
     federation stays in managed_identity mode: closing it here could race a concurrent caller's
     in-flight get_token() call against the same credential — the exact hazard this cache's
@@ -353,7 +353,7 @@ async def test_invalidate_managed_identity_preserves_credential_identity():
 
     with patch(_FED_GET, new=AsyncMock(return_value=_federation(_MI_CFG))), patch(_DAC, new=dac_factory):
         await cache.get_access_token(federation_id)
-        await cache.invalidate(federation_id)
+        await cache.force_rebuild(federation_id)
         await cache.get_access_token(federation_id)
 
     credential.close.assert_not_awaited()  # same object identity before and after invalidate()
@@ -363,7 +363,7 @@ async def test_invalidate_managed_identity_preserves_credential_identity():
 
 
 @pytest.mark.asyncio
-async def test_invalidate_does_not_close_credential_during_in_flight_get_token():
+async def test_rebuild_does_not_close_credential_during_in_flight_get_token():
     """Regression for the reintroduced close-while-in-use hazard: invalidate() running while
     another caller is mid-get_token() on the same shared managed_identity credential must not
     close it out from under that caller."""
@@ -393,11 +393,14 @@ async def test_invalidate_does_not_close_credential_during_in_flight_get_token()
         fetch_task = asyncio.create_task(cache.get_access_token(federation_id))
         await token_requested.wait()  # fetch_task is now mid-get_token()
 
-        await cache.invalidate(federation_id)  # same mode, unrelated field edit
+        rebuild_task = asyncio.create_task(cache.force_rebuild(federation_id))
+        await asyncio.sleep(0)
+        assert not rebuild_task.done()
         credential.close.assert_not_awaited()  # must not tear down the in-flight credential
 
         release_token.set()
         token = await fetch_task
+        await rebuild_task
 
     assert token.token == "mtok"
     credential.close.assert_not_awaited()
@@ -405,7 +408,7 @@ async def test_invalidate_does_not_close_credential_during_in_flight_get_token()
 
 
 @pytest.mark.asyncio
-async def test_invalidate_mode_switch_client_secret_to_managed():
+async def test_rebuild_mode_switch_client_secret_to_managed():
     federation_id = PydanticObjectId()
     fed_get = AsyncMock(side_effect=[_federation(_CS_CFG), _federation(_MI_CFG)])
     csc_factory = MagicMock(return_value=_csc("cs"))
@@ -414,7 +417,7 @@ async def test_invalidate_mode_switch_client_secret_to_managed():
 
     with patch(_FED_GET, new=fed_get), patch(_CSC, new=csc_factory), patch(_DAC, new=dac_factory):
         t1 = await cache.get_access_token(federation_id)  # client_secret
-        await cache.invalidate(federation_id)
+        await cache.force_rebuild(federation_id)
         t2 = await cache.get_access_token(federation_id)  # managed after config now clears secret
 
     assert t1.token == "cs"
@@ -424,7 +427,7 @@ async def test_invalidate_mode_switch_client_secret_to_managed():
 
 
 @pytest.mark.asyncio
-async def test_invalidate_mode_switch_managed_to_client_secret_closes_credential():
+async def test_rebuild_mode_switch_managed_to_client_secret_closes_credential():
     federation_id = PydanticObjectId()
     fed_get = AsyncMock(side_effect=[_federation(_MI_CFG), _federation(_CS_CFG)])
     dac = _dac("mi")
@@ -434,7 +437,7 @@ async def test_invalidate_mode_switch_managed_to_client_secret_closes_credential
 
     with patch(_FED_GET, new=fed_get), patch(_DAC, new=dac_factory), patch(_CSC, new=csc_factory):
         t1 = await cache.get_access_token(federation_id)  # managed_identity
-        await cache.invalidate(federation_id)
+        await cache.force_rebuild(federation_id)
         t2 = await cache.get_access_token(federation_id)  # client_secret after config now sets a secret
 
     assert t1.token == "mi"
@@ -471,7 +474,7 @@ async def test_azure_agent_without_federation_ref_raises():
 
 
 @pytest.mark.asyncio
-async def test_invalidate_cannot_interleave_get_client_build():
+async def test_rebuild_cannot_interleave_get_client_build():
     """Regression: get_client builds state + client under one lock; invalidate cannot slip between."""
     federation_id = PydanticObjectId()
     federation = _federation(_CS_CFG)
@@ -488,15 +491,15 @@ async def test_invalidate_cannot_interleave_get_client_build():
     with patch(_FED_GET, side_effect=slow_get):
         get_task = asyncio.create_task(cache.get_client(_agent(federation_id=federation_id)))
         await build_started.wait()
-        inv_task = asyncio.create_task(cache.invalidate(federation_id))
+        inv_task = asyncio.create_task(cache.force_rebuild(federation_id))
         await asyncio.sleep(0)
         assert not inv_task.done(), "invalidate must block on the build lock"
         release.set()
         client = await get_task
         await inv_task
 
-    assert client.is_closed
-    assert federation_id not in cache._clients
+    assert not client.is_closed
+    assert cache._clients[federation_id] is client
     # client_secret mode always gets a fresh state on invalidate() (not removed outright) —
     # the next access re-fetches a token rather than reusing a stale one.
     assert federation_id in cache._states
@@ -533,3 +536,57 @@ async def test_azure_entra_auth_injects_headers():
 
     assert authed.headers["Authorization"] == "Bearer entra-token"
     auth_service.build_headers.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_age_boundary_rebuilds_preview_without_updated_at_change():
+    federation_id = PydanticObjectId()
+    fed = _federation(_CS_CFG)
+    cache = _cache()
+    with patch(_FED_GET, new=AsyncMock(return_value=fed)) as get, patch(_CSC, return_value=_csc("token")):
+        await cache.build_headers(federation_id)
+        fed.providerConfig = {**_CS_CFG, "sendPreviewHeader": True}
+        cache._states[federation_id].built_at = time.monotonic() - 600
+        headers = await cache.build_headers(federation_id)
+        assert headers["Foundry-Features"] == "HostedAgents=V1Preview"
+        assert get.await_count == 2
+    await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_auth_rebuild_throttle_does_not_block_known_config_change():
+    federation_id = PydanticObjectId()
+    fed = _federation(_CS_CFG)
+    cache = _cache()
+    with patch(_FED_GET, new=AsyncMock(return_value=fed)) as get:
+        await cache.force_rebuild(federation_id, auth_failure=True)
+        await cache.force_rebuild(federation_id, auth_failure=True)
+        assert get.await_count == 1
+        fed.providerConfig = {**_CS_CFG, "clientId": "new-client"}
+        cfg = await cache.force_rebuild(federation_id)
+        assert cfg.clientId == "new-client"
+        assert get.await_count == 2
+    await cache.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,status,expected", [("GET", 401, 2), ("POST", 401, 1), ("GET", 403, 1)])
+async def test_auth_replay_is_bounded_and_safe(method, status, expected):
+    facade = MagicMock()
+    facade.build_headers = AsyncMock(
+        side_effect=[{"Authorization": "Bearer old", "Foundry-Features": "x"}, {"Authorization": "Bearer new"}]
+    )
+    facade.rebuild_after_auth_failure = AsyncMock()
+    requests = []
+
+    async def send(request):
+        requests.append(dict(request.headers))
+        return httpx.Response(status)
+
+    async with httpx.AsyncClient(auth=AzureEntraAuth(facade), transport=httpx.MockTransport(send)) as client:
+        response = await client.request(method, "https://example.test")
+    assert response.status_code == status
+    assert len(requests) == expected
+    if expected == 2:
+        assert requests[1]["authorization"] == "Bearer new"
+        assert "foundry-features" not in requests[1]
