@@ -3,7 +3,7 @@ import math
 from typing import NoReturn
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
 
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
@@ -18,7 +18,6 @@ from ....core.telemetry_decorators import track_registry_operation
 from ....deps import (
     get_a2a_client_registry,
     get_acl_service,
-    get_embedding_maintenance_watcher,
     get_federation_crud_service,
     get_federation_job_service,
     get_federation_sync_service,
@@ -42,11 +41,10 @@ from ....schemas.federation_api_schemas import (
 )
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.access_control_service import ACLService
-from ....services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
 from ....services.federation.a2a_client_registry import A2AClientRegistry
 from ....services.federation_crud_service import FederationCrudService
 from ....services.federation_job_service import FederationJobService
-from ....services.federation_sync_service import FederationSyncService, run_federation_sync_background
+from ....services.federation_sync_service import FederationSyncService, FederationSyncShuttingDownError
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +91,7 @@ def _raise_federation_value_error(exc: ValueError) -> NoReturn:
     if message in {
         "Federation already has an active sync job",
         "Federation already has an active job",
+        "Federation changed concurrently",
     }:
         raise HTTPException(
             status_code=http_status.HTTP_409_CONFLICT,
@@ -565,11 +564,9 @@ async def sync_federation(
     data: FederationSyncRequest,
     user_context: CurrentUser,
     response: Response,
-    background_tasks: BackgroundTasks,
     federation_crud_service: FederationCrudService = Depends(get_federation_crud_service),
     federation_sync_service: FederationSyncService = Depends(get_federation_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
-    embedding_maintenance_watcher: EmbeddingMaintenanceWatcher = Depends(get_embedding_maintenance_watcher),
 ):
     """
         sync a federation.
@@ -640,22 +637,20 @@ async def sync_federation(
             )
             response.status_code = http_status.HTTP_200_OK
             return _to_dry_run_response(result)
-        job, author_id = await federation_sync_service.create_manual_sync_job(
+        job = await federation_sync_service.start_manual_sync_background(
             federation=federation,
             reason=data.reason,
             triggered_by=triggered_by,
         )
-        background_tasks.add_task(
-            run_federation_sync_background,
-            federation_sync_service=federation_sync_service,
-            federation=federation,
-            job=job,
-            author_id=author_id,
-            embedding_maintenance_watcher=embedding_maintenance_watcher,
-        )
         return _to_job_response(job)
     except ValueError as exc:
         _raise_federation_value_error(exc)
+    except FederationSyncShuttingDownError as exc:
+        # The background task tracker is shutting down; the job was failed and released already.
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, "Registry is shutting down; retry shortly"),
+        ) from exc
     except Exception as exc:
         _raise_sync_error(exc)
 

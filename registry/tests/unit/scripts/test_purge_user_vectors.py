@@ -25,7 +25,7 @@ def weaviate(monkeypatch):
     return SimpleNamespace(client=client, collection=collection, connect=connect)
 
 
-@pytest.mark.parametrize("generation", [None, "0123456789abcdef01234567"])
+@pytest.mark.parametrize("generation", [None, "aaaaaaaaaaaaaaaaaaaaaaaa"])
 async def test_deletes_from_selected_generation_without_embeddings_or_schema_changes(weaviate, generation):
     expected = "MCP_Servers" if generation is None else f"MCP_Servers_{generation}"
     async with vectors.open_vector_repository(generation) as repo:

@@ -435,7 +435,10 @@ class RegistryContainer:
     @cached_property
     def lease_reaper(self) -> LeaseReaper:
         return LeaseReaper(
-            [("workflow_runs", partial(reap_expired_runs, legacy_cutover_age=timedelta(seconds=300)))],
+            [
+                ("workflow_runs", partial(reap_expired_runs, legacy_cutover_age=timedelta(seconds=300))),
+                ("federation_sync_jobs", self.federation_sync_service.reap_expired_federation_jobs),
+            ],
         )
 
     @cached_property
@@ -569,6 +572,8 @@ class RegistryContainer:
             user_service=self.user_service,
             azure_client_cache=self.azure_foundry_client_cache,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            lease_owner=self.lease_owner,
+            background_task_tracker=self.background_task_tracker,
         )
 
     @cached_property
