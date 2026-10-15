@@ -149,4 +149,5 @@ exclude-signatures = [
     {signature = '9775c81493dd8663f25171fe586cfa241f955ff688bf2eb10a7a055dc25f2125', reason = 'fake MongoDB credentials in create_mongo_client URL-building unit tests are not credentials'},
     {signature = 'e7ce705ab327fd06ea52dec32866d1c7dde7d86de2535b20826b5553e1594d18', reason = 'stateless gateway integration test uses synthetic MongoDB ObjectIds and mock fixtures, not credentials'},
     {signature = '07b8f38f951c28b4881898ff750da0c72ae494860f71b50c84fedcc827c4e4cd', reason = 'client-info store unit test uses synthetic MongoDB ObjectIds and mock fixtures, not credentials'},
+    {signature = '199aac890574b3f7381e6d069afacdbbfc821efaad85fb0697d083b1c4988ff0', reason = 'stateless gateway e2e verification script uses a throwaway MongoDB ObjectId and locally-minted test tokens, not credentials'},
 ]
