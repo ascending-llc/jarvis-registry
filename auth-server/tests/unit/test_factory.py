@@ -76,9 +76,11 @@ def test_entra_factory_injects_scope_group_bindings() -> None:
         "jwks_url": "https://example.com/jwks",
         "logout_url": "https://example.com/logout",
         "user_info_url": "https://graph.microsoft.com/v1.0/me",
+        "email_claim": "upn",
     }
     provider = get_auth_provider("entra", {"providers": {"entra": config}}, Mock(), settings)
     assert provider.scope_group_ids == entra_scope_group_ids(settings)
+    assert not hasattr(provider, "email_claim")
 
 
 @pytest.mark.unit

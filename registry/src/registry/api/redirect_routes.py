@@ -334,13 +334,16 @@ async def oauth2_callback(
             return _oauth2_login_error_response("oauth2_exchange_error", clear_oauth2_login_cookies=True)
 
         if not user_claims.get("user_id"):
-            logger.warning(f"User {user_claims.get('sub')} has no user_id - not found in MongoDB. Creating new user.")
-            user_obj = await user_service.create_user(user_claims)
-        else:
-            user_obj = await user_service.get_user_by_user_id(user_claims.get("user_id"))
+            logger.error("Auth-server token is missing user_id")
+            return _oauth2_login_error_response(
+                "User+not+found+in+registry",
+                clear_oauth2_login_cookies=True,
+            )
+
+        user_obj = await user_service.get_user_by_user_id(user_claims["user_id"])
 
         if not user_obj:
-            logger.error(f"Failed to find or create user for claims: {user_claims}")
+            logger.error("Auth-server user_id does not resolve to a Registry user")
             return _oauth2_login_error_response(
                 "User+not+found+in+registry",
                 clear_oauth2_login_cookies=True,

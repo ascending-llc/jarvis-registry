@@ -209,9 +209,7 @@ services:
       # Optional: Claim mappings - customize based on your Entra ID setup
       - ENTRA_USERNAME_CLAIM=${ENTRA_USERNAME_CLAIM:-preferred_username}
       - ENTRA_GROUPS_CLAIM=${ENTRA_GROUPS_CLAIM:-groups}
-      - ENTRA_EMAIL_CLAIM=${ENTRA_EMAIL_CLAIM:-upn}
       - ENTRA_NAME_CLAIM=${ENTRA_NAME_CLAIM:-name}
-      - ENTRA_ROLE_TOKEN_KIND=${ENTRA_ROLE_TOKEN_KIND:-id}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       - OTEL_SERVICE_NAME=auth-server
       # MongoDB configuration

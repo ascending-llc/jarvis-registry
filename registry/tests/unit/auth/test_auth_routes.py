@@ -301,14 +301,14 @@ class TestAuthRoutes:
         mock_user_service.get_user_by_user_id.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_oauth2_callback_user_not_found(self, mock_request, mock_code, mock_settings):
-        """Test OAuth2 callback when user is not found in DB."""
+    async def test_oauth2_callback_missing_user_id_never_creates_user(self, mock_request, mock_code, mock_settings):
+        """An auth-server token must already identify a provisioned user."""
         # Mock httpx AsyncClient to return a token without user_id
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"access_token": "test-access-token-no-user-id"}
 
-        # User claims without user_id to trigger create_user
+        # User claims without user_id must fail closed
         user_claims = {
             "sub": "testuser",
             "email": "test@test.com",
@@ -331,7 +331,7 @@ class TestAuthRoutes:
             mock_decoder.return_value = user_claims
             mock_decrypter.return_value = "123"
 
-            # Mock create_user to return a new user
+            # Even an available creation method must never be called
             mock_user_service.create_user = AsyncMock(return_value=mock_user)
             mock_user_service.get_user_by_user_id = AsyncMock(return_value=mock_user)
 
@@ -346,7 +346,9 @@ class TestAuthRoutes:
 
             assert isinstance(response, RedirectResponse)
             assert response.status_code == 302
-            mock_user_service.create_user.assert_called_once()
+            assert "User+not+found+in+registry" in response.headers["location"]
+            mock_user_service.create_user.assert_not_called()
+            mock_user_service.get_user_by_user_id.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_oauth2_callback_with_error(self, mock_request):
