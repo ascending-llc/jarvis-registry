@@ -6,11 +6,11 @@ from bson import ObjectId
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from registry.api.v1.mcp.oauth_router import router
-from registry.core.session_store import SessionStore
+from registry.api.v1.mcp.oauth_router import _client_branding_from_meta, router
 from registry.deps import get_container
 from registry.services.oauth.mcp_service import MCPService
 from registry_pkgs.oauth.schemas import OAuthFlowStatus, OAuthFlowStatusResponse
+from registry_pkgs.oauth.types import ClientBranding
 from tests.conftest import make_container_factory
 
 # Valid MongoDB ObjectId for testing (24 hex characters)
@@ -147,7 +147,6 @@ async def client():
         server_service=mock_container.server_service,
         token_service=mock_container.token_service,
         mcp_service=mock_container.mcp_service,
-        session_store=SessionStore(),
         redis_client=Mock(),
         oauth_state_store=mock_oauth_state_store,
     )
@@ -872,6 +871,32 @@ class TestOAuthRouter:
         assert response_data["serverId"] == TEST_SERVER_ID
         assert response_data["userId"] == "test_user"
         assert "oauth delete failed" in response_data["message"]
+
+
+class TestClientBrandingFromMeta:
+    """AS-1914: the branding helper replaced the old elicitation-complete notifier. It must keep the
+    exact return contract and tolerate pre-deploy flow metadata that still carries the dropped flag."""
+
+    def test_returns_none_when_meta_is_falsy(self):
+        assert _client_branding_from_meta(None) is None
+        assert _client_branding_from_meta({}) is None
+
+    def test_returns_none_without_elicitation_id(self):
+        assert _client_branding_from_meta({"client_branding": ClientBranding.VSCODE}) is None
+
+    def test_returns_branding_with_elicitation_id(self):
+        meta = {"elicitation_id": "e-1", "client_branding": ClientBranding.VSCODE}
+        assert _client_branding_from_meta(meta) == ClientBranding.VSCODE
+
+    def test_accepts_pre_deploy_meta_with_dropped_notify_flag(self):
+        """Flow metadata written before the deploy still carries the removed notification flag; the
+        helper must ignore the extra key, not choke on it."""
+        meta = {
+            "elicitation_id": "e-1",
+            "client_branding": ClientBranding.CURSOR,
+            "notify_elicitation_complete": True,
+        }
+        assert _client_branding_from_meta(meta) == ClientBranding.CURSOR
 
 
 if __name__ == "__main__":

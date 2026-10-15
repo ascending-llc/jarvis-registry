@@ -69,6 +69,7 @@ from .utils import (
     _extract_authenticated_user_context,
     _get_state_metadata,
     forward_notification,
+    get_client_params,
     get_target_url,
     parse_data_field,
 )
@@ -274,7 +275,7 @@ async def _call_with_oauth_recovery(
     mcp_client_service = _get_mcp_client_service(ctx)
     requires_init = server.config.get("requiresInit", True)
     transport_type = server.config.get("type", "streamable-http")
-    state_metadata = _get_state_metadata(ctx.session.client_params)
+    state_metadata = _get_state_metadata(get_client_params(ctx))
     oauth_enabled = server.mcp_auth_mode is McpAuthMode.OAUTH
 
     async def build_headers(extra: dict[str, str]) -> dict[str, str]:
@@ -481,7 +482,7 @@ async def execute_tool_impl(
             ):
                 nonce = secrets.token_urlsafe(32)
                 elicitation_id = str(uuid4())
-                state_metadata = _get_state_metadata(ctx.session.client_params)
+                state_metadata = _get_state_metadata(get_client_params(ctx))
                 lifespan.pending_consent_store.save(
                     nonce,
                     {

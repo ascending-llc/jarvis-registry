@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,12 +12,14 @@ from fastapi.staticfiles import StaticFiles
 
 from .core.config import settings
 from .core.exception_handler import register_validation_exception_handler
+from .mcpgw.core.client_info_store import ClientInfoCaptureMiddleware, ClientInfoStore
 from .middleware import CSRFMiddleware, ScopePermissionMiddleware, UnifiedAuthMiddleware
 from .routers import register_routers
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+    from .container import RegistryContainer
     from .mcpgw.core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
@@ -47,7 +50,12 @@ OPENAPI_TAGS = [
 ]
 
 
-def create_app(*, lifespan, gateway_mcp_app: FastMCP[McpAppContext]) -> FastAPI:
+def create_app(
+    *,
+    lifespan,
+    gateway_mcp_app: FastMCP[McpAppContext],
+    container_provider: Callable[[], RegistryContainer | None],
+) -> FastAPI:
     """Create and configure the FastAPI application."""
     app_version = settings.build_version or "0.0.0"
     app = FastAPI(
@@ -66,7 +74,13 @@ def create_app(*, lifespan, gateway_mcp_app: FastMCP[McpAppContext]) -> FastAPI:
 
     # MCP app must be mounted before including any FastAPI router. This is so that requests to
     # `/proxy/mcpgw/mcp` will be routed to the MCP app instead of `proxy_router`, which has a catch-all route.
-    app.mount("/proxy/mcpgw", gateway_mcp_app.streamable_http_app())
+    # The capture middleware persists each `initialize`'s client info to Redis for the stateless gateway.
+    def _client_info_store() -> ClientInfoStore | None:
+        container = container_provider()
+        return container.client_info_store if container is not None else None
+
+    mcp_asgi_app = ClientInfoCaptureMiddleware(gateway_mcp_app.streamable_http_app(), _client_info_store)
+    app.mount("/proxy/mcpgw", mcp_asgi_app)
     register_routers(app)
     app.openapi = _customize_openapi(app)  # type: ignore[method-assign]  # FastAPI recommendation
 

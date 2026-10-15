@@ -59,16 +59,17 @@ def _make_ctx(
         acl_service=acl_service,
         consent_store=consent_store,
         pending_consent_store=MagicMock(),
-        session_store=MagicMock(),
+        client_info_store=MagicMock(),
     )
     request_state = SimpleNamespace(user={"user_id": user_id, "client_id": client_id})
+    # Pre-seed the per-request memo so get_client_params() returns None without a Redis GET.
+    request_state.mcp_client_params = None
     request_context = SimpleNamespace(
         lifespan_context=lifespan_context,
         request=SimpleNamespace(state=request_state),
     )
     ctx = MagicMock()
     ctx.request_context = request_context
-    ctx.session = SimpleNamespace(client_params=None)
     return ctx
 
 
@@ -195,7 +196,6 @@ async def test_execute_agent_without_agent_consent_returns_elicitation():
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["agent_path"] == "/test-agent"
     assert pending["elicitation_id"]
-    assert pending["notify_elicitation_complete"] is False
 
 
 @pytest.mark.asyncio
@@ -213,17 +213,14 @@ async def test_execute_agent_without_consent_raises_url_elicitation_for_capable_
         mock_model.id = MagicMock()
         mock_model.find_one = AsyncMock(return_value=target_agent)
 
-        with pytest.raises(utils.UrlElicitationRequiredError):
+        with pytest.raises(utils.UrlElicitationRequiredError) as exc_info:
             await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
     mock_call.assert_not_awaited()
-    ctx.request_context.lifespan_context.session_store.append.assert_called_once()
-    elicitation_id, saved_session = ctx.request_context.lifespan_context.session_store.append.call_args.args
-    assert elicitation_id
-    assert saved_session is ctx.session
+    raised_elicitation_id = exc_info.value.elicitations[0].elicitationId
+    assert raised_elicitation_id
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
-    assert pending["elicitation_id"] == elicitation_id
-    assert pending["notify_elicitation_complete"] is True
+    assert pending["elicitation_id"] == raised_elicitation_id
 
 
 @pytest.mark.asyncio
