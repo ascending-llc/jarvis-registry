@@ -7,9 +7,13 @@ and registry redirect endpoint that calls /oauth2/token to decode JWT.
 
 import base64
 import secrets
+from http.cookies import SimpleCookie
 from types import SimpleNamespace
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
@@ -28,7 +32,7 @@ from auth_server.server import app
 from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
 from registry_pkgs.core.jwt_utils import InvalidTokenError
-from tests.conftest import test_consent_store
+from tests.conftest import test_consent_store, test_pending_consent_store
 from tests.support.auth_provider import _mock_entra_provider
 from tests.support.oauth_state_store import authorization_codes_storage, test_oauth_state_store
 
@@ -437,10 +441,16 @@ class TestOAuth2CallbackStandardFlow:
             }
         }
 
-    def _drive_google_callback(self, mock_google_provider, mock_identity_service, module_get_user_info=None):
-        """Drive a browser (non-device) Google callback with the given provider mock and return
-        the 302 response. When ``module_get_user_info`` is set, the module-level ``get_user_info``
-        fallback is patched to return it."""
+    def _drive_google_callback(
+        self,
+        mock_google_provider: MagicMock,
+        mock_identity_service: MagicMock,
+        module_get_user_info: dict[str, Any] | None = None,
+        *,
+        flow: Literal["browser", "device"] = "browser",
+        requested_scope: str | None = None,
+    ) -> httpx.Response:
+        """Drive a Google callback, optionally using a mocked userinfo fallback response."""
         with (
             patch("auth_server.routes.oauth_flow.exchange_code_for_token") as mock_exchange_token,
             patch("auth_server.routes.oauth_flow.get_user_info") as mock_get_user_info,
@@ -476,13 +486,29 @@ class TestOAuth2CallbackStandardFlow:
                 "code_challenge": "123",
                 "code_challenge_method": "S256",
                 "client_redirect_uri": "http://localhost:3000/redirect",
+                "requested_scope": requested_scope,
             }
+            if flow == "device":
+                device_code = "google-device-code"
+                test_oauth_state_store.save_device_code(
+                    device_code,
+                    {"status": "pending", "client_id": "mock-client-id", "scope": requested_scope},
+                    ttl_seconds=600,
+                )
+                session_data.update(flow_type="device", device_code=device_code)
             test_client.cookies.set(settings.oauth2_temp_session_cookie_name, test_signer.dumps(session_data))
-            return test_client.get(
+            response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/google",
                 params={"code": "google_code", "state": "test-state-google-flow"},
                 follow_redirects=False,
             )
+            if module_get_user_info is not None:
+                mock_get_user_info.assert_awaited_once_with(
+                    "google_access", self._google_oauth2_config()["providers"]["google"]
+                )
+            else:
+                mock_get_user_info.assert_not_awaited()
+            return response
 
     def test_oauth_callback_zero_scope_browser_login_rejected(self, clear_device_storage, mock_identity_service):
         """A browser login that resolves zero scopes must be rejected with a human-readable
@@ -550,9 +576,72 @@ class TestOAuth2CallbackStandardFlow:
         assert response.status_code == 302
         assert "organization+is+not+authorized" in response.headers["location"]
 
-    def test_google_userinfo_fallback_propagates_verified_identity(
+    @pytest.mark.parametrize("flow", ["browser", "device"])
+    @pytest.mark.parametrize("requested_scope", [None, "servers-read"])
+    def test_google_userinfo_fallback_without_groups_rejects_login(
+        self,
+        clear_device_storage,
+        mock_identity_service: MagicMock,
+        flow: Literal["browser", "device"],
+        requested_scope: str | None,
+    ) -> None:
+        """Standard Google userinfo carries identity claims, not Workspace authorization groups."""
+        provider = MagicMock()
+        provider.get_user_info = AsyncMock(side_effect=ValueError("JWKS unavailable"))
+        test_consent_store.default_client_consent = False
+
+        response = self._drive_google_callback(
+            provider,
+            mock_identity_service,
+            module_get_user_info={
+                "sub": "123456789012345678901",
+                "email": "user@corp.example",
+                "email_verified": True,
+                "hd": "corp.example",
+                "name": "Test User",
+            },
+            flow=flow,
+            requested_scope=requested_scope,
+        )
+
+        mock_identity_service.resolve_or_provision.assert_not_awaited()
+        assert not authorization_codes_storage
+        assert not test_oauth_state_store.refresh_tokens_storage
+        assert not test_pending_consent_store.pending
+        assert not test_consent_store.client_consents
+        assert not test_consent_store.server_consents
+        cookies = SimpleCookie()
+        cookies.load(response.headers["set-cookie"])
+        assert cookies[settings.oauth2_temp_session_cookie_name]["max-age"] == "0"
+
+        if flow == "device":
+            assert response.status_code == 400
+            device = test_oauth_state_store.get_device_code("google-device-code")
+            assert device["status"] == "scope_denied"
+            assert device["error_description"] == (
+                "Requested scopes are not available for this user"
+                if requested_scope
+                else "No permissions are currently assigned to this account"
+            )
+            assert "mapped_user" not in device
+            assert "resolved_scope" not in device
+        else:
+            assert response.status_code == 302
+            location = urlparse(response.headers["location"])
+            params = parse_qs(location.query)
+            assert "code" not in params
+            if requested_scope:
+                assert location.path == "/redirect"
+                assert params["error"] == ["invalid_scope"]
+                assert params["error_description"] == ["Requested scopes are not available for this user"]
+            else:
+                assert location.path == "/login"
+                assert "no permissions are currently assigned" in params["error"][0]
+
+    def test_google_userinfo_fallback_maps_identity_with_synthetic_groups(
         self, clear_device_storage, mock_identity_service: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """Synthetic groups isolate identity mapping; they do not model a real Google response."""
         sensitive = "private-fallback@example.com bearer-credential"
         provider = MagicMock()
         provider.get_user_info = AsyncMock(side_effect=ValueError(sensitive))
@@ -595,18 +684,24 @@ class TestOAuth2CallbackStandardFlow:
             "email": "user@corp.example",
             "email_verified": True,
             "hd": "corp.example",
-            "groups": ["jarvis-registry-admin"],
             field: invalid,
         }
         response = self._drive_google_callback(provider, mock_identity_service, module_get_user_info=userinfo)
         assert response.status_code == 302
-        assert "localhost:3000/login?error=" in response.headers["location"]
+        location = urlparse(response.headers["location"])
+        assert location.path == "/login"
+        assert parse_qs(location.query)["error"] == [
+            "Your Google email address is not verified. Please verify it with Google and try again."
+            if field == "email"
+            else "Something went wrong during sign-in. Please try again."
+        ]
         mock_identity_service.resolve_or_provision.assert_not_awaited()
         assert not authorization_codes_storage
 
-    def test_google_userinfo_fallback_preserves_opaque_subject(
+    def test_google_userinfo_fallback_preserves_opaque_subject_with_synthetic_groups(
         self, clear_device_storage, mock_identity_service: MagicMock
     ) -> None:
+        """Synthetic groups allow the opaque subject to reach the identity service."""
         provider = MagicMock()
         provider.get_user_info = AsyncMock(side_effect=ValueError("JWKS unavailable"))
         subject = " Google-Subject-With-Case "
