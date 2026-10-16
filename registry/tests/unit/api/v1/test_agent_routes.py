@@ -186,8 +186,9 @@ async def test_get_agent_stats_uses_injected_service(sample_user_context):
 @pytest.mark.asyncio
 async def test_create_agent_uses_injected_services(sample_user_context):
     agent = _build_agent()
+    plan = MagicMock()
     a2a_agent_service = MagicMock()
-    a2a_agent_service.create_agent = AsyncMock(return_value=agent)
+    a2a_agent_service.create_agent = AsyncMock(return_value=(agent, plan))
 
     acl_service = MagicMock()
     acl_service.grant_permission = AsyncMock(return_value=MagicMock())
@@ -220,6 +221,8 @@ async def test_create_agent_uses_injected_services(sample_user_context):
         session=mock_session,
     )
     acl_service.grant_permission.assert_awaited_once()
+    # The returned plan is scheduled after the transaction block.
+    a2a_agent_service.schedule_vector_sync.assert_called_once_with(plan)
     call_args = acl_service.grant_permission.call_args
     assert call_args.kwargs["principal_type"] == PrincipalType.USER
     assert call_args.kwargs["resource_type"] == ResourceType.REMOTE_AGENT
@@ -550,7 +553,7 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     agent insert is rolled back rather than left orphaned."""
     agent = _build_agent()
     a2a_agent_service = MagicMock()
-    a2a_agent_service.create_agent = AsyncMock(return_value=agent)
+    a2a_agent_service.create_agent = AsyncMock(return_value=(agent, MagicMock()))
 
     acl_service = MagicMock()
     acl_service.grant_permission = AsyncMock(side_effect=RuntimeError("ACL write failed"))
@@ -580,6 +583,8 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     acl_service.grant_permission.assert_awaited_once()
     # Transaction context manager sees the original exception before the route maps it to HTTPException.
     assert ctx.exit_exc_type is RuntimeError
+    # A failure inside the transaction must leave the vector sync unscheduled (no stale write).
+    a2a_agent_service.schedule_vector_sync.assert_not_called()
 
 
 @pytest.mark.asyncio
