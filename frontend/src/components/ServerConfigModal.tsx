@@ -56,7 +56,6 @@ const IDE_OPTIONS: IDEOption[] = [
 ];
 
 const REGISTRY_SERVER_NAME = 'jarvis-registry';
-const REGISTRY_SERVER_URL = 'https://jarvis.ascendingdc.com/gateway/proxy/mcpgw/mcp';
 const joinUrlPath = (...segments: string[]) =>
   segments
     .map(segment => segment.replace(/^\/+|\/+$/g, ''))
@@ -105,7 +104,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
     const normalizedPath = server?.path || '';
     const url =
       configScope === 'registry'
-        ? REGISTRY_SERVER_URL
+        ? `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/mcpgw/mcp')}`
         : `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/server', userId, normalizedPath)}`;
 
     return {
