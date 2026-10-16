@@ -10,6 +10,7 @@ Note: All OAuth endpoints are served under /auth prefix when AUTH_SERVER_API_PRE
 
 import time
 from http.cookies import SimpleCookie
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
@@ -18,7 +19,7 @@ from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
 from auth_server.core.config import settings
-from auth_server.deps import get_auth_provider, get_oauth2_config, get_token_grant_service, get_user_service
+from auth_server.deps import get_auth_provider, get_identity_service, get_oauth2_config, get_token_grant_service
 from auth_server.providers.factory import _create_entra_provider
 from auth_server.routes.consent_templates import render_device_server_error_page
 from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
@@ -64,7 +65,7 @@ def clear_oauth_flow_route_overrides(test_client: TestClient):
     yield
     test_client.app.dependency_overrides.pop(get_auth_provider, None)
     test_client.app.dependency_overrides.pop(get_oauth2_config, None)
-    test_client.app.dependency_overrides.pop(get_user_service, None)
+    test_client.app.dependency_overrides.pop(get_identity_service, None)
     test_client.app.dependency_overrides.pop(get_token_grant_service, None)
 
 
@@ -80,19 +81,15 @@ def _configure_oauth2(test_client: TestClient) -> None:
     test_client.app.dependency_overrides[get_oauth2_config] = lambda: OAUTH2_CONFIG
 
 
-def _configure_user_service(test_client: TestClient, user_id: str = "user-123") -> Mock:
-    """Override user_service everywhere it's consulted: directly (oauth2_callback) and via
-    TokenGrantService (the /oauth2/token grant branches), mirroring get_server_service-style
-    overrides for composed services rather than trying to swap a sub-dependency and expect
-    propagation into the container-cached TokenGrantService.
-    """
-    user_service = Mock()
-    user_service.resolve_user_id = AsyncMock(return_value=user_id)
-    test_client.app.dependency_overrides[get_user_service] = lambda: user_service
+def _configure_identity_service(test_client: TestClient, user_id: str = "user-123") -> Mock:
+    """Stub callback identity resolution and keep token grants on the test stores."""
+    identity_service = Mock()
+    identity_service.resolve_or_provision = AsyncMock(return_value=SimpleNamespace(id=user_id))
+    test_client.app.dependency_overrides[get_identity_service] = lambda: identity_service
     test_client.app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-        user_service, test_oauth_state_store, test_consent_store
+        test_oauth_state_store, test_consent_store
     )
-    return user_service
+    return identity_service
 
 
 def _seed_legacy_client_without_device_grant() -> None:
@@ -438,7 +435,7 @@ class TestA2ADynamicClientRegistration:
         test_client: TestClient,
         clear_device_storage,
     ) -> None:
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         discovery = test_client.get("/.well-known/oauth-authorization-server/a2a")
         assert discovery.status_code == 200
 
@@ -452,7 +449,7 @@ class TestA2ADynamicClientRegistration:
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "expires_at": int(time.time()) + 600,
-            "user_info": {"username": "a2a-user", "groups": ["registry-users"]},
+            "user_info": {"user_id": "user-123", "username": "a2a-user", "groups": ["registry-users"]},
             "resolved_scope": ["a2a-proxy-ops", "mcp-proxy-ops"],
         }
         token_response = test_client.post(
@@ -765,7 +762,7 @@ class TestDeviceFlowRoutes:
         test_client: TestClient,
         clear_device_storage,
     ) -> None:
-        user_service = _configure_user_service(test_client)
+        identity_service = _configure_identity_service(test_client)
         device_data = _start_device_flow(
             test_client,
             client_id="jarvis-registry-cli",
@@ -827,7 +824,7 @@ class TestDeviceFlowRoutes:
         assert decode_jwt_unverified(refreshed_token["access_token"])["scope"] == "skills-read"
         assert first_token["refresh_token"] not in refresh_tokens_storage
         assert refresh_tokens_storage[refreshed_token["refresh_token"]]["scope"] == "skills-read"
-        assert user_service.resolve_user_id.await_count == 1
+        identity_service.resolve_or_provision.assert_not_awaited()
 
     def test_cli_authorization_code_grant_is_rejected(
         self,
@@ -1022,7 +1019,7 @@ class TestDeviceFlowRoutes:
         clear_device_storage,
     ):
         mock_mint_token.return_value = MintedManagedAgentToken("mock-access-token", "mcp-proxy-ops")
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         data = _start_device_flow(test_client)
         _approve_device_directly(str(data["device_code"]))
 
@@ -1047,7 +1044,8 @@ class TestDeviceFlowRoutes:
         assert data["user_code"] not in user_codes_storage
 
         mock_mint_token.assert_called_once()
-        assert mock_mint_token.call_args.kwargs["subject"] == "test-user"
+        assert mock_mint_token.call_args.kwargs["subject"] == "user-123"
+        assert mock_mint_token.call_args.kwargs["extra_claims"]["preferred_username"] == "test-user"
         assert mock_mint_token.call_args.kwargs["requested_scopes"] == [token_data["scope"]]
         assert mock_mint_token.call_args.kwargs["extra_claims"]["user_id"] == "user-123"
 
@@ -1069,7 +1067,7 @@ class TestDeviceFlowRoutes:
     ):
         """A concurrent poll can still observe status == "approved" via get_device_code, but must
         lose if another poll already won the atomic consume_device_code race."""
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         data = _start_device_flow(test_client)
         _approve_device_directly(str(data["device_code"]))
 
@@ -1136,7 +1134,7 @@ class TestDeviceFlowRoutes:
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         data = _start_device_flow(test_client, client_id="mcp-client-confidential")
         _approve_device_directly(str(data["device_code"]))
 
@@ -1166,7 +1164,7 @@ class TestDeviceFlowCallbackAndConsent:
     ) -> None:
         """Use the real provider and scope mapper; mock only IdP verification/HTTP and storage."""
         _configure_oauth2(test_client)
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         provider = _create_entra_provider(
             OAUTH2_CONFIG["providers"]["entra"]
             | {
@@ -1181,6 +1179,9 @@ class TestDeviceFlowCallbackAndConsent:
                 "preferred_username": "test-user",
                 "email": "test@example.com",
                 "oid": "idp-123",
+                "iss": "https://login.microsoftonline.com/tenant/v2.0",
+                "sub": "provider-subject-123",
+                "xms_edov": True,
                 "groups": ["jarvis-registry-admin"],
             }
         )
@@ -1234,7 +1235,7 @@ class TestDeviceFlowCallbackAndConsent:
     ):
         _configure_oauth2(test_client)
         test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider()
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         data = _start_device_flow(test_client, scope="servers-read")
         verify_response = test_client.post(
             f"{API_PREFIX}/oauth2/device/verify",
@@ -1281,7 +1282,7 @@ class TestDeviceFlowCallbackAndConsent:
     ):
         _configure_oauth2(test_client)
         test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider()
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         data = _start_device_flow(test_client, scope="servers-read")
         verify_response = test_client.post(
             f"{API_PREFIX}/oauth2/device/verify",
@@ -1334,7 +1335,7 @@ class TestDeviceFlowCallbackAndConsent:
             "groups": ["registry-users"],
         }
         test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         data = _start_device_flow(test_client, scope="servers-read")
         verify_response = test_client.post(
             f"{API_PREFIX}/oauth2/device/verify",
@@ -1377,7 +1378,7 @@ class TestDeviceFlowCallbackAndConsent:
             "groups": ["registry-users"],
         }
         test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
-        _configure_user_service(test_client)
+        _configure_identity_service(test_client)
         test_consent_store.default_client_consent = False
         data = _start_device_flow(test_client, scope="servers-read")
         verify_response = test_client.post(
@@ -1549,3 +1550,152 @@ def _extract_state_from_temp_session(session_cookie: str) -> str:
     session_data = signer.loads(session_cookie)
     assert session_data["flow_type"] == "device"
     return session_data["state"]
+
+
+class TestCallbackIdentityResolution:
+    """Identity resolution happens once, after access checks and before consent."""
+
+    def _callback(
+        self,
+        client: TestClient,
+        flow: str,
+        *,
+        groups: list[str] | None = None,
+        requested_scope: str | None = None,
+        identity_error: Exception | None = None,
+    ) -> tuple[httpx.Response, Mock, str | None]:
+        _configure_oauth2(client)
+        provider = _mock_entra_provider({"groups": ["jarvis-registry-admin"] if groups is None else groups})
+        client.app.dependency_overrides[get_auth_provider] = lambda: provider
+        identity_service = _configure_identity_service(client, user_id="new-user-id")
+        identity_service.resolve_or_provision.side_effect = identity_error
+        device_code = None
+        if flow == "device":
+            data = _start_device_flow(client, scope=requested_scope)
+            device_code = data["device_code"]
+            response = client.post(
+                f"{API_PREFIX}/oauth2/device/verify",
+                data={"user_code": data["user_code"]},
+                follow_redirects=False,
+            )
+            cookie = response.cookies[settings.oauth2_temp_session_cookie_name]
+            state = _extract_state_from_temp_session(cookie)
+        else:
+            state = "identity-callback-state"
+            session = {
+                "state": state,
+                "provider": "entra",
+                "client_id": "mcp-client-test",
+                "client_redirect_uri": "http://localhost/callback",
+                "code_challenge": "test-challenge",
+                "code_challenge_method": "S256",
+                "requested_scope": requested_scope,
+            }
+            cookie = URLSafeTimedSerializer(settings.secret_key).dumps(session)
+        client.cookies.set(settings.oauth2_temp_session_cookie_name, cookie)
+        with patch(
+            "auth_server.routes.oauth_flow.exchange_code_for_token",
+            new_callable=AsyncMock,
+            return_value={"access_token": "provider-token", "id_token": "provider-id-token"},
+        ):
+            response = client.get(
+                f"{API_PREFIX}/oauth2/callback/entra",
+                params={"code": "provider-code", "state": state},
+                follow_redirects=False,
+            )
+        return response, identity_service, device_code
+
+    @pytest.mark.parametrize("flow", ["browser", "device"])
+    @pytest.mark.parametrize("requested_scope", [None, "servers-read"])
+    def test_zero_scopes_never_provisions(
+        self, test_client: TestClient, flow: str, requested_scope: str | None
+    ) -> None:
+        response, service, device_code = self._callback(test_client, flow, groups=[], requested_scope=requested_scope)
+        service.resolve_or_provision.assert_not_awaited()
+        assert not authorization_codes_storage
+        assert not test_pending_consent_store.pending
+        if flow == "device":
+            assert response.status_code == 400
+            assert device_codes_storage[device_code]["status"] == "scope_denied"
+        else:
+            assert response.status_code == 302
+            assert "error=" in response.headers["location"]
+
+    @pytest.mark.parametrize("flow", ["browser", "device"])
+    def test_new_user_requires_third_party_consent(self, test_client: TestClient, flow: str) -> None:
+        test_consent_store.default_client_consent = False
+        response, service, device_code = self._callback(test_client, flow)
+        service.resolve_or_provision.assert_awaited_once()
+        identity = service.resolve_or_provision.await_args.args[0]
+        assert identity.provider == "entra"
+        assert identity.issuer == "https://login.microsoftonline.com/tenant/v2.0"
+        assert identity.subject == "provider-subject-123"
+        assert identity.object_id == "provider-object-123"
+        assert identity.email_trusted is True
+        assert response.status_code == 302
+        assert "/oauth2/consent?nonce=" in response.headers["location"]
+        pending = next(iter(test_pending_consent_store.pending.values()))
+        assert pending["mapped_user"]["user_id"] == "new-user-id"
+        assert pending["mapped_user"]["subject"] == identity.subject
+        assert not authorization_codes_storage
+        if device_code:
+            assert device_codes_storage[device_code]["status"] == "pending"
+
+    @pytest.mark.parametrize("flow", ["browser", "device"])
+    @pytest.mark.parametrize("error_kind", ["conflict", "untrusted"])
+    def test_identity_failure_stops_login(self, test_client: TestClient, flow: str, error_kind: str) -> None:
+        from urllib.parse import parse_qs, urlparse
+
+        from auth_server.routes.oauth_flow import IDENTITY_CONFLICT_MESSAGE, UNTRUSTED_EMAIL_MESSAGE
+        from registry_pkgs.oauth.identity import IdentityConflictError, UntrustedEmailError
+
+        error = (
+            IdentityConflictError("provider_mismatch", "existing-user")
+            if error_kind == "conflict"
+            else UntrustedEmailError()
+        )
+        expected = IDENTITY_CONFLICT_MESSAGE if error_kind == "conflict" else UNTRUSTED_EMAIL_MESSAGE
+        response, service, device_code = self._callback(test_client, flow, identity_error=error)
+        service.resolve_or_provision.assert_awaited_once()
+        assert not authorization_codes_storage
+        assert not test_pending_consent_store.pending
+        assert settings.oauth2_temp_session_cookie_name in response.headers["set-cookie"]
+        if flow == "device":
+            assert response.status_code == 400
+            device = device_codes_storage[device_code]
+            assert device["status"] == "failed"
+            assert device["error_description"] == expected
+        else:
+            assert response.status_code == 302
+            assert parse_qs(urlparse(response.headers["location"]).query)["error"] == [expected]
+
+    @pytest.mark.parametrize("flow", ["browser", "device"])
+    @pytest.mark.parametrize("error_kind", ["database", "validation"])
+    def test_unexpected_identity_error_does_not_log_sensitive_data(
+        self, test_client: TestClient, flow: str, error_kind: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from pydantic import ValidationError
+        from pymongo.errors import DuplicateKeyError
+
+        sensitive = "pii@example.com secret"
+        error = (
+            DuplicateKeyError(sensitive)
+            if error_kind == "database"
+            else ValidationError.from_exception_data(
+                "User", [{"type": "string_type", "loc": ("email",), "input": {"sensitive": sensitive}}]
+            )
+        )
+        assert sensitive in str(error)
+        response, service, device_code = self._callback(test_client, flow, identity_error=error)
+        service.resolve_or_provision.assert_awaited_once()
+        assert sensitive not in caplog.text
+        assert f"provider=entra error_type={type(error).__name__}" in caplog.text
+        assert not authorization_codes_storage
+        assert not test_pending_consent_store.pending
+        if flow == "device":
+            assert response.status_code == 500
+            assert device_codes_storage[device_code]["status"] == "failed"
+            assert device_codes_storage[device_code]["error_description"] == "Unexpected error during sign-in"
+        else:
+            assert response.status_code == 302
+            assert "Something+went+wrong+during+sign-in" in response.headers["location"]

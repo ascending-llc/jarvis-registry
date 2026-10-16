@@ -7,8 +7,13 @@ and registry redirect endpoint that calls /oauth2/token to decode JWT.
 
 import base64
 import secrets
+from http.cookies import SimpleCookie
+from types import SimpleNamespace
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
@@ -16,18 +21,18 @@ from itsdangerous import URLSafeTimedSerializer
 from auth_server.core.config import settings
 from auth_server.deps import (
     get_auth_provider,
+    get_identity_service,
     get_oauth2_config,
     get_oauth_state_store,
     get_signer,
     get_token_grant_service,
-    get_user_service,
 )
 from auth_server.providers.google import GoogleDomainNotAllowedError, GoogleEmailNotVerifiedError
 from auth_server.server import app
 from auth_server.services.token_grant_service import TokenGrantService
-from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
+from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken, verify_managed_agent_token
 from registry_pkgs.core.jwt_utils import InvalidTokenError
-from tests.conftest import test_consent_store
+from tests.conftest import test_consent_store, test_pending_consent_store
 from tests.support.auth_provider import _mock_entra_provider
 from tests.support.oauth_state_store import authorization_codes_storage, test_oauth_state_store
 
@@ -35,12 +40,12 @@ API_PREFIX = "/auth"
 
 
 @pytest.fixture
-def mock_user_service():
-    """Mock user_service for user_id resolution."""
+def mock_identity_service():
+    """Mock identity_service for user_id resolution."""
     mock_service = MagicMock()
 
-    # Default behavior: resolve_user_id returns a valid user_id
-    mock_service.resolve_user_id = AsyncMock(return_value="507f1f77bcf86cd799439011")
+    # Default behavior: resolve_or_provision returns a valid user_id
+    mock_service.resolve_or_provision = AsyncMock(return_value=SimpleNamespace(id="507f1f77bcf86cd799439011"))
 
     yield mock_service
 
@@ -55,7 +60,7 @@ class TestOAuth2CallbackStandardFlow:
         self,
         mock_exchange_token,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
     ):
         """Test that oauth2_callback always generates authorization code (for both external clients and registry)."""
         # Mock provider token exchange
@@ -104,7 +109,7 @@ class TestOAuth2CallbackStandardFlow:
 
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
@@ -164,7 +169,7 @@ class TestOAuth2CallbackStandardFlow:
         self,
         mock_exchange_token,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
     ):
         """Test oauth2_callback with explicit client_id (external OAuth client)."""
         mock_exchange_token.return_value = {"access_token": "provider_access_token", "id_token": "provider_id_token"}
@@ -209,7 +214,7 @@ class TestOAuth2CallbackStandardFlow:
 
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
@@ -257,18 +262,20 @@ class TestOAuth2CallbackStandardFlow:
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
-    def test_oauth_callback_rejects_invalid_token_signature_entra(
+    @pytest.mark.parametrize("provider_error", [InvalidTokenError("bad signature"), ValueError("missing id_token")])
+    def test_oauth_callback_rejects_provider_errors_entra(
         self,
         mock_get_user_info,
         mock_exchange_token,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
+        provider_error,
     ):
         """Entra invalid token must not fall back to userInfo."""
         mock_exchange_token.return_value = {"access_token": "entra_access", "id_token": "entra_id_token"}
 
         mock_entra_provider = MagicMock()
-        mock_entra_provider.get_user_info = AsyncMock(side_effect=InvalidTokenError("bad signature"))
+        mock_entra_provider.get_user_info = AsyncMock(side_effect=provider_error)
 
         oauth2_config = {
             "providers": {
@@ -300,7 +307,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: mock_entra_provider
 
@@ -327,11 +334,12 @@ class TestOAuth2CallbackStandardFlow:
         assert response.status_code == 302
         assert "Something+went+wrong+during+sign-in" in response.headers["location"]
         mock_get_user_info.assert_not_called()
+        mock_identity_service.resolve_or_provision.assert_not_awaited()
 
     def _run_google_gate_callback(
         self,
         error: Exception,
-        mock_user_service,
+        mock_identity_service,
     ):
         """Drive a Google callback whose get_user_info raises a login-gate error and
         return the 302 response. The login-gate rejection must surface a specific error
@@ -375,7 +383,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: mock_google_provider
 
@@ -400,13 +408,17 @@ class TestOAuth2CallbackStandardFlow:
         mock_get_user_info.assert_not_called()
         return response
 
-    def test_oauth_callback_google_unverified_email_redirects(self, clear_device_storage, mock_user_service):
-        response = self._run_google_gate_callback(GoogleEmailNotVerifiedError("email not verified"), mock_user_service)
+    def test_oauth_callback_google_unverified_email_redirects(self, clear_device_storage, mock_identity_service):
+        response = self._run_google_gate_callback(
+            GoogleEmailNotVerifiedError("email not verified"), mock_identity_service
+        )
         assert response.status_code == 302
         assert "Your+Google+email+address+is+not+verified" in response.headers["location"]
 
-    def test_oauth_callback_google_domain_not_allowed_redirects(self, clear_device_storage, mock_user_service):
-        response = self._run_google_gate_callback(GoogleDomainNotAllowedError("domain not allowed"), mock_user_service)
+    def test_oauth_callback_google_domain_not_allowed_redirects(self, clear_device_storage, mock_identity_service):
+        response = self._run_google_gate_callback(
+            GoogleDomainNotAllowedError("domain not allowed"), mock_identity_service
+        )
         assert response.status_code == 302
         assert "organization+is+not+authorized" in response.headers["location"]
 
@@ -429,10 +441,16 @@ class TestOAuth2CallbackStandardFlow:
             }
         }
 
-    def _drive_google_callback(self, mock_google_provider, mock_user_service, module_get_user_info=None):
-        """Drive a browser (non-device) Google callback with the given provider mock and return
-        the 302 response. When ``module_get_user_info`` is set, the module-level ``get_user_info``
-        fallback is patched to return it."""
+    def _drive_google_callback(
+        self,
+        mock_google_provider: MagicMock,
+        mock_identity_service: MagicMock,
+        module_get_user_info: dict[str, Any] | None = None,
+        *,
+        flow: Literal["browser", "device"] = "browser",
+        requested_scope: str | None = None,
+    ) -> httpx.Response:
+        """Drive a Google callback, optionally using a mocked userinfo fallback response."""
         with (
             patch("auth_server.routes.oauth_flow.exchange_code_for_token") as mock_exchange_token,
             patch("auth_server.routes.oauth_flow.get_user_info") as mock_get_user_info,
@@ -454,7 +472,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = self._google_oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: mock_google_provider
 
@@ -468,15 +486,31 @@ class TestOAuth2CallbackStandardFlow:
                 "code_challenge": "123",
                 "code_challenge_method": "S256",
                 "client_redirect_uri": "http://localhost:3000/redirect",
+                "requested_scope": requested_scope,
             }
+            if flow == "device":
+                device_code = "google-device-code"
+                test_oauth_state_store.save_device_code(
+                    device_code,
+                    {"status": "pending", "client_id": "mock-client-id", "scope": requested_scope},
+                    ttl_seconds=600,
+                )
+                session_data.update(flow_type="device", device_code=device_code)
             test_client.cookies.set(settings.oauth2_temp_session_cookie_name, test_signer.dumps(session_data))
-            return test_client.get(
+            response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/google",
                 params={"code": "google_code", "state": "test-state-google-flow"},
                 follow_redirects=False,
             )
+            if module_get_user_info is not None:
+                mock_get_user_info.assert_awaited_once_with(
+                    "google_access", self._google_oauth2_config()["providers"]["google"]
+                )
+            else:
+                mock_get_user_info.assert_not_awaited()
+            return response
 
-    def test_oauth_callback_zero_scope_browser_login_rejected(self, clear_device_storage, mock_user_service):
+    def test_oauth_callback_zero_scope_browser_login_rejected(self, clear_device_storage, mock_identity_service):
         """A browser login that resolves zero scopes must be rejected with a human-readable
         message and must never mint a session cookie."""
         mock_google_provider = MagicMock()
@@ -487,10 +521,14 @@ class TestOAuth2CallbackStandardFlow:
                 "name": "User",
                 "id": "sub-1",
                 "groups": [],
+                "issuer": "https://accounts.google.com",
+                "subject": "sub-1",
+                "object_id": None,
+                "email_trusted": True,
             }
         )
 
-        response = self._drive_google_callback(mock_google_provider, mock_user_service)
+        response = self._drive_google_callback(mock_google_provider, mock_identity_service)
 
         assert response.status_code == 302
         assert "no+permissions+are+currently+assigned" in response.headers["location"]
@@ -498,10 +536,11 @@ class TestOAuth2CallbackStandardFlow:
         # Did not proceed to _finish_oauth2_callback (would redirect to the client /redirect).
         assert "/redirect" not in response.headers["location"]
         assert "jarvis_registry_session" not in response.cookies
+        mock_identity_service.resolve_or_provision.assert_not_awaited()
         # The single-use temp OAuth session cookie must be cleared on this terminal failure.
         assert settings.oauth2_temp_session_cookie_name in response.headers.get("set-cookie", "")
 
-    def test_oauth_callback_google_fallback_enforces_email_verified(self, clear_device_storage, mock_user_service):
+    def test_oauth_callback_google_fallback_enforces_email_verified(self, clear_device_storage, mock_identity_service):
         """When the generic userinfo fallback is taken for Google, an unverified-email userinfo
         response must raise GoogleEmailNotVerifiedError instead of bypassing the login gate."""
         mock_google_provider = MagicMock()
@@ -510,14 +549,14 @@ class TestOAuth2CallbackStandardFlow:
 
         response = self._drive_google_callback(
             mock_google_provider,
-            mock_user_service,
-            module_get_user_info={"email": "user@corp.example", "email_verified": False},
+            mock_identity_service,
+            module_get_user_info={"sub": "google-subject", "email": "user@corp.example", "email_verified": False},
         )
 
         assert response.status_code == 302
         assert "Your+Google+email+address+is+not+verified" in response.headers["location"]
 
-    def test_oauth_callback_google_fallback_enforces_hd(self, clear_device_storage, mock_user_service):
+    def test_oauth_callback_google_fallback_enforces_hd(self, clear_device_storage, mock_identity_service):
         """When the generic userinfo fallback is taken for Google, a mismatched hd must raise
         GoogleDomainNotAllowedError when allowed_hd is configured."""
         mock_google_provider = MagicMock()
@@ -525,22 +564,170 @@ class TestOAuth2CallbackStandardFlow:
 
         response = self._drive_google_callback(
             mock_google_provider,
-            mock_user_service,
-            module_get_user_info={"email": "user@attacker.com", "email_verified": True, "hd": "attacker.com"},
+            mock_identity_service,
+            module_get_user_info={
+                "sub": "google-subject",
+                "email": "user@attacker.com",
+                "email_verified": True,
+                "hd": "attacker.com",
+            },
         )
 
         assert response.status_code == 302
         assert "organization+is+not+authorized" in response.headers["location"]
 
+    @pytest.mark.parametrize("flow", ["browser", "device"])
+    @pytest.mark.parametrize("requested_scope", [None, "servers-read"])
+    def test_google_userinfo_fallback_without_groups_rejects_login(
+        self,
+        clear_device_storage,
+        mock_identity_service: MagicMock,
+        flow: Literal["browser", "device"],
+        requested_scope: str | None,
+    ) -> None:
+        """Standard Google userinfo carries identity claims, not Workspace authorization groups."""
+        provider = MagicMock()
+        provider.get_user_info = AsyncMock(side_effect=ValueError("JWKS unavailable"))
+        test_consent_store.default_client_consent = False
+
+        response = self._drive_google_callback(
+            provider,
+            mock_identity_service,
+            module_get_user_info={
+                "sub": "123456789012345678901",
+                "email": "user@corp.example",
+                "email_verified": True,
+                "hd": "corp.example",
+                "name": "Test User",
+            },
+            flow=flow,
+            requested_scope=requested_scope,
+        )
+
+        mock_identity_service.resolve_or_provision.assert_not_awaited()
+        assert not authorization_codes_storage
+        assert not test_oauth_state_store.refresh_tokens_storage
+        assert not test_pending_consent_store.pending
+        assert not test_consent_store.client_consents
+        assert not test_consent_store.server_consents
+        cookies = SimpleCookie()
+        cookies.load(response.headers["set-cookie"])
+        assert cookies[settings.oauth2_temp_session_cookie_name]["max-age"] == "0"
+
+        if flow == "device":
+            assert response.status_code == 400
+            device = test_oauth_state_store.get_device_code("google-device-code")
+            assert device["status"] == "scope_denied"
+            assert device["error_description"] == (
+                "Requested scopes are not available for this user"
+                if requested_scope
+                else "No permissions are currently assigned to this account"
+            )
+            assert "mapped_user" not in device
+            assert "resolved_scope" not in device
+        else:
+            assert response.status_code == 302
+            location = urlparse(response.headers["location"])
+            params = parse_qs(location.query)
+            assert "code" not in params
+            if requested_scope:
+                assert location.path == "/redirect"
+                assert params["error"] == ["invalid_scope"]
+                assert params["error_description"] == ["Requested scopes are not available for this user"]
+            else:
+                assert location.path == "/login"
+                assert "no permissions are currently assigned" in params["error"][0]
+
+    def test_google_userinfo_fallback_maps_identity_with_synthetic_groups(
+        self, clear_device_storage, mock_identity_service: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Synthetic groups isolate identity mapping; they do not model a real Google response."""
+        sensitive = "private-fallback@example.com bearer-credential"
+        provider = MagicMock()
+        provider.get_user_info = AsyncMock(side_effect=ValueError(sensitive))
+        response = self._drive_google_callback(
+            provider,
+            mock_identity_service,
+            module_get_user_info={
+                "sub": "google-subject",
+                "email": " User@Corp.Example ",
+                "email_verified": True,
+                "hd": "corp.example",
+                "groups": ["jarvis-registry-admin"],
+            },
+        )
+        assert response.status_code == 302
+        assert "code=" in response.headers["location"]
+        mock_identity_service.resolve_or_provision.assert_awaited_once()
+        identity = mock_identity_service.resolve_or_provision.await_args.args[0]
+        assert identity.provider == "google"
+        assert identity.issuer == "https://accounts.google.com"
+        assert identity.subject == "google-subject"
+        assert identity.object_id is None
+        assert identity.email == "user@corp.example"
+        assert identity.email_trusted is True
+        stored = next(iter(authorization_codes_storage.values()))["user_info"]
+        assert stored["email"] == stored["username"] == "user@corp.example"
+        assert stored["user_id"] == "507f1f77bcf86cd799439011"
+        assert sensitive not in caplog.text
+        assert "provider=google error_type=ValueError" in caplog.text
+
+    @pytest.mark.parametrize("field", ["sub", "email"])
+    @pytest.mark.parametrize("invalid", [None, "", "   ", 42])
+    def test_google_userinfo_fallback_rejects_invalid_identity(
+        self, clear_device_storage, mock_identity_service: MagicMock, field: str, invalid: str | int | None
+    ) -> None:
+        provider = MagicMock()
+        provider.get_user_info = AsyncMock(side_effect=ValueError("JWKS unavailable"))
+        userinfo = {
+            "sub": "google-subject",
+            "email": "user@corp.example",
+            "email_verified": True,
+            "hd": "corp.example",
+            field: invalid,
+        }
+        response = self._drive_google_callback(provider, mock_identity_service, module_get_user_info=userinfo)
+        assert response.status_code == 302
+        location = urlparse(response.headers["location"])
+        assert location.path == "/login"
+        assert parse_qs(location.query)["error"] == [
+            "Your Google email address is not verified. Please verify it with Google and try again."
+            if field == "email"
+            else "Something went wrong during sign-in. Please try again."
+        ]
+        mock_identity_service.resolve_or_provision.assert_not_awaited()
+        assert not authorization_codes_storage
+
+    def test_google_userinfo_fallback_preserves_opaque_subject_with_synthetic_groups(
+        self, clear_device_storage, mock_identity_service: MagicMock
+    ) -> None:
+        """Synthetic groups allow the opaque subject to reach the identity service."""
+        provider = MagicMock()
+        provider.get_user_info = AsyncMock(side_effect=ValueError("JWKS unavailable"))
+        subject = " Google-Subject-With-Case "
+        response = self._drive_google_callback(
+            provider,
+            mock_identity_service,
+            module_get_user_info={
+                "sub": subject,
+                "email": "user@corp.example",
+                "email_verified": True,
+                "hd": "corp.example",
+                "groups": ["jarvis-registry-admin"],
+            },
+        )
+        assert "code=" in response.headers["location"]
+        assert mock_identity_service.resolve_or_provision.await_args.args[0].subject == subject
+
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
-    def test_oauth_callback_user_id_not_resolved(
+    def test_oauth_callback_new_user_is_provisioned(
         self,
         mock_get_user_info,
         mock_exchange,
         clear_device_storage,
     ):
-        """User not yet in MongoDB: provider get_user_info succeeds; auth code is issued with user_id=None."""
+        """First login stores the provisioned user ID and verified identity in the authorization code."""
         mock_exchange.return_value = {"access_token": "token", "id_token": "id"}
         user_info = {
             "username": "newuser",
@@ -580,12 +767,12 @@ class TestOAuth2CallbackStandardFlow:
 
             app.dependency_overrides = {}
 
-            mock_user_service = MagicMock()
-            mock_user_service.resolve_user_id = AsyncMock(return_value=None)
+            mock_identity_service = MagicMock()
+            mock_identity_service.resolve_or_provision = AsyncMock(return_value=SimpleNamespace(id="new-user-id"))
 
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
@@ -619,7 +806,9 @@ class TestOAuth2CallbackStandardFlow:
         auth_code = query_params.get("code", [None])[0]
 
         code_data = authorization_codes_storage[auth_code]
-        assert "user_info" in code_data
+        assert code_data["user_info"]["user_id"] == "new-user-id"
+        assert code_data["user_info"]["subject"] == "provider-subject-123"
+        mock_identity_service.resolve_or_provision.assert_awaited_once()
         mock_get_user_info.assert_not_called()
 
 
@@ -629,7 +818,7 @@ class TestOAuth2TokenEndpoint:
     """Test /oauth2/token endpoint with authorization code grant."""
 
     @pytest.mark.parametrize("content_type", ["form", "json"])
-    def test_token_endpoint_with_authorization_code(self, clear_device_storage, mock_user_service, content_type):
+    def test_token_endpoint_with_authorization_code(self, clear_device_storage, mock_identity_service, content_type):
         """Test token endpoint exchanges authorization code for JWT with user_id."""
         # Create authorization code directly
         auth_code = secrets.token_urlsafe(32)
@@ -660,45 +849,35 @@ class TestOAuth2TokenEndpoint:
             "redirect_uri": "http://localhost/callback",
         }
 
-        # Exchange code for token
-        with patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope") as mock_mint_token:
-            mock_mint_token.return_value = MintedManagedAgentToken("mock-jwt-token-with-user-id", "mcp-proxy-ops")
+        app.dependency_overrides = {}
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+        app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            test_oauth_state_store, test_consent_store
+        )
 
-            app.dependency_overrides = {}
+        test_client = TestClient(app)
+        kwargs = {"json": payload} if content_type == "json" else {"data": payload}
+        response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
 
-            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
-            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-                mock_user_service, test_oauth_state_store, test_consent_store
-            )
+        assert response.status_code == 200
+        token_data = response.json()
+        assert token_data["token_type"] == "Bearer"
+        assert "expires_in" in token_data
+        assert "refresh_token" in token_data
 
-            test_client = TestClient(app)
+        claims = verify_managed_agent_token(settings.jwt_token_config, token_data["access_token"])
+        assert claims["sub"] == claims["user_id"] == "507f1f77bcf86cd799439011"
+        assert claims["preferred_username"] == "testuser"
+        assert claims["email"] == "test@example.com"
+        assert claims["client_id"] == "mcp-client-test"
+        assert claims["groups"] == ["user-group"]
+        assert claims["scope"] == token_data["scope"] == "mcp-proxy-ops"
+        assert claims["token_use"] == "access"
+        assert claims["auth_provider"] is not None
+        assert auth_code not in authorization_codes_storage
 
-            kwargs = {"json": payload} if content_type == "json" else {"data": payload}
-            response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
-
-            assert response.status_code == 200
-            token_data = response.json()
-
-            assert token_data["access_token"] == "mock-jwt-token-with-user-id"
-            assert token_data["token_type"] == "Bearer"
-            assert "expires_in" in token_data
-            assert "refresh_token" in token_data
-
-            # Verify managed-agent token was minted with resolved user identity
-            assert mock_mint_token.call_args.kwargs["subject"] == "testuser"
-            assert mock_mint_token.call_args.kwargs["client_id"] == "mcp-client-test"
-            token_claims = mock_mint_token.call_args.kwargs["extra_claims"]
-            assert token_claims["user_id"] == "507f1f77bcf86cd799439011"
-            assert token_claims["groups"] == ["user-group"]
-            assert mock_mint_token.call_args.kwargs["requested_scopes"] == ["mcp-proxy-ops"]
-            assert token_claims["token_use"] == "access"
-            assert token_claims["auth_provider"] is not None
-
-            # Code should be deleted after successful exchange
-            assert auth_code not in authorization_codes_storage
-
-    def test_token_endpoint_rejects_invalid_client_secret(self, clear_device_storage, mock_user_service):
+    def test_token_endpoint_rejects_invalid_client_secret(self, clear_device_storage, mock_identity_service):
         """Test client_secret_post DCR clients must provide the registered secret."""
         client_id = "secret-client"
         test_oauth_state_store.save_client(
@@ -730,9 +909,9 @@ class TestOAuth2TokenEndpoint:
 
         app.dependency_overrides = {}
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-        app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
         app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-            mock_user_service, test_oauth_state_store, test_consent_store
+            test_oauth_state_store, test_consent_store
         )
 
         test_client = TestClient(app)
@@ -755,7 +934,7 @@ class TestOAuth2TokenEndpoint:
     def test_token_endpoint_quick_suite_basic_auth_fallback(
         self,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
         content_type,
     ):
         """Test Quick Suite compatibility: resolve client_id/client_secret from Basic auth when body omits them."""
@@ -793,9 +972,9 @@ class TestOAuth2TokenEndpoint:
 
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-                mock_user_service, test_oauth_state_store, test_consent_store
+                test_oauth_state_store, test_consent_store
             )
 
             test_client = TestClient(app)
@@ -824,7 +1003,7 @@ class TestOAuth2TokenEndpoint:
     def test_token_endpoint_non_quick_suite_basic_auth_no_fallback(
         self,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
         content_type,
     ):
         """Test non-Quick Suite clients using Basic auth do not get client_id fallback."""
@@ -860,9 +1039,9 @@ class TestOAuth2TokenEndpoint:
         with patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope") as mock_mint_token:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-                mock_user_service, test_oauth_state_store, test_consent_store
+                test_oauth_state_store, test_consent_store
             )
 
             test_client = TestClient(app)
@@ -885,14 +1064,14 @@ class TestOAuth2TokenEndpoint:
             assert auth_code in authorization_codes_storage
 
     @pytest.mark.parametrize("content_type", ["form", "json"])
-    def test_token_endpoint_code_already_used(self, clear_device_storage, mock_user_service, content_type):
+    def test_token_endpoint_code_already_used(self, clear_device_storage, mock_identity_service, content_type):
         """Test token endpoint rejects an authorization code consumed by a prior request."""
         auth_code = secrets.token_urlsafe(32)
         current_time = int(__import__("time").time())
 
         authorization_codes_storage[auth_code] = {
             "token_data": {},
-            "user_info": {"username": "testuser", "groups": []},
+            "user_info": {"user_id": "507f1f77bcf86cd799439011", "username": "testuser", "groups": []},
             "client_id": "mcp-client-test",
             "expires_at": current_time + 600,
             "redirect_uri": "http://localhost/callback",
@@ -910,9 +1089,9 @@ class TestOAuth2TokenEndpoint:
         app.dependency_overrides = {}
 
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-        app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
         app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-            mock_user_service, test_oauth_state_store, test_consent_store
+            test_oauth_state_store, test_consent_store
         )
 
         test_client = TestClient(app)
@@ -930,14 +1109,14 @@ class TestOAuth2TokenEndpoint:
         # Code should be deleted
         assert auth_code not in authorization_codes_storage
 
-    def test_token_endpoint_unsupported_content_type(self, mock_user_service):
+    def test_token_endpoint_unsupported_content_type(self, mock_identity_service):
         """Test token endpoint rejects unsupported content-type with 415."""
         app.dependency_overrides = {}
 
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-        app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
         app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-            mock_user_service, test_oauth_state_store, test_consent_store
+            test_oauth_state_store, test_consent_store
         )
 
         test_client = TestClient(app)
@@ -959,15 +1138,15 @@ class TestOAuth2TokenEndpoint:
     )
     def test_token_endpoint_rejects_invalid_json_shape(
         self,
-        mock_user_service,
+        mock_identity_service,
         content: str,
         expected_description: str,
     ):
         app.dependency_overrides = {}
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-        app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
         app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-            mock_user_service, test_oauth_state_store, test_consent_store
+            test_oauth_state_store, test_consent_store
         )
         test_client = TestClient(app)
 

@@ -6,7 +6,6 @@ import httpx
 from pydantic import BaseModel, StrictStr
 
 from registry_pkgs.core.jwt_utils import (
-    InvalidTokenError,
     decode_jwt_unverified,
     decode_jwt_with_jwk,
     find_matching_jwk,
@@ -14,7 +13,6 @@ from registry_pkgs.core.jwt_utils import (
 )
 from registry_pkgs.core.scope_groups import scope_groups_for_entra_ids
 
-from ..core.config import settings
 from .base import AuthProvider, log_group_resolution_failure
 
 # Get logger - logging is configured centrally in server.py via settings.configure_logging()
@@ -45,7 +43,6 @@ class EntraIdProvider(AuthProvider):
         grant_type: str = "authorization_code",
         username_claim: str = "preferred_username",
         groups_claim: str = "groups",
-        email_claim: str = "email",
         name_claim: str = "name",
     ) -> None:
         """Initialize Entra ID provider.
@@ -66,7 +63,6 @@ class EntraIdProvider(AuthProvider):
             grant_type: OAuth2 grant type (default: 'authorization_code')
             username_claim: Claim to use for username (default: 'preferred_username')
             groups_claim: Claim to use for groups (default: 'groups')
-            email_claim: Claim to use for email (default: 'email')
             name_claim: Claim to use for display name (default: 'name')
         """
         self.tenant_id = tenant_id
@@ -97,7 +93,6 @@ class EntraIdProvider(AuthProvider):
         # Claim mappings configuration
         self.username_claim = username_claim
         self.groups_claim = groups_claim
-        self.email_claim = email_claim
         self.name_claim = name_claim
 
         # Entra ID supports two issuer formats:
@@ -110,7 +105,7 @@ class EntraIdProvider(AuthProvider):
         logger.debug(
             f"Initialized Entra ID provider for tenant '{tenant_id}' with "
             f"scopes={self.scopes}, grant_type={self.grant_type}, graph_url={self.graph_url}, "
-            f"claims: username={username_claim}, email={email_claim}, groups={groups_claim}, name={name_claim}"
+            f"claims: username={username_claim}, groups={groups_claim}, name={name_claim}"
         )
 
     async def get_jwks(self) -> dict[str, Any]:
@@ -155,92 +150,35 @@ class EntraIdProvider(AuthProvider):
             audience=[self.client_id, f"api://{self.client_id}"],
         )
 
-    def _extract_user_info_from_token(self, verified_claims: dict[str, Any], token_type: str) -> dict[str, Any] | None:
-        """Extract user information from verified JWT claims.
+    def _extract_user_info_from_token(self, claims: dict[str, Any]) -> dict[str, Any]:
+        """Extract stable identity fields only from successfully verified ID-token claims."""
+        for field in ("iss", "sub", "oid"):
+            value = claims.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Entra ID token requires a non-empty {field}")
 
-        Args:
-            verified_claims: Claims returned by a successful JWT verification.
-            token_type: Type of token ('id' or 'access')
-
-        Returns:
-            Dict with user info or None if extraction fails
-        """
-        try:
-            logger.debug(f"Extracting user info from {token_type} token")
-            logger.debug(f"Verified token claims available: {list(verified_claims.keys())}")
-
-            # Extract username with fallback chain
-            username = (
-                verified_claims.get(self.username_claim)
-                or verified_claims.get("preferred_username")
-                or verified_claims.get("upn")
-                or verified_claims.get("unique_name")
-            )
-            # Extract email
-            email = verified_claims.get(self.email_claim) or verified_claims.get("upn")
-            # Extract name
-            name = (
-                verified_claims.get(self.name_claim)
-                or verified_claims.get("displayName")
-                or verified_claims.get("given_name")
-            )
-            user_info = {
-                "username": username,
-                "email": email,
-                "name": name,
-                "id": verified_claims.get("oid") or verified_claims.get("sub"),
-                "groups": [],
-            }
-            logger.info(f"User info extracted from {token_type} token: {username}")
-            return user_info
-
-        except Exception as e:
-            logger.warning(f"Failed to extract user info from {token_type} token: {e}")
-            return None
-
-    async def _fetch_user_info_from_graph(self, access_token: str) -> dict[str, Any]:
-        """Fetch user information from Microsoft Graph API.
-
-        Args:
-            access_token: OAuth2 access token
-
-        Returns:
-            Dict containing user information
-
-        Raises:
-            ValueError: If Graph API request fails
-        """
-        try:
-            logger.debug("Fetching user info from Microsoft Graph API")
-            headers = {"Authorization": f"Bearer {access_token}"}
-            async with httpx.AsyncClient() as client:
-                response = await client.get(self.userinfo_url, headers=headers, timeout=10)
-                response.raise_for_status()
-                graph_data = response.json()
-            logger.info(f"User info fetched from Microsoft Graph API: {graph_data}")
-
-            # Map Microsoft Graph response to standard format
-            username = graph_data.get(self.username_claim)
-            email = graph_data.get(self.email_claim)
-
-            name = graph_data.get(self.name_claim) or graph_data.get("DisplayName")
-            user_info = {
-                "username": username,
-                "email": email,
-                "name": name,
-                "given_name": graph_data.get("givenName"),
-                "family_name": graph_data.get("surname"),
-                "id": graph_data.get("id"),
-                "job_title": graph_data.get("jobTitle"),
-                "office_location": graph_data.get("officeLocation"),
-                "groups": [],
-            }
-            logger.info(f"User info fetched from Microsoft Graph API: {user_info}")
-            return user_info
-
-        except httpx.HTTPError as e:
-            logger.error(f"Failed to fetch user info from Graph API: {e}")
-            raise ValueError(f"Graph API request failed: {e}")
+        email = claims.get("email")
+        if email is not None and not isinstance(email, str):
+            raise ValueError("Entra ID token email must be a string")
+        if email is not None:
+            email = email.strip().lower() or None
+        username = (
+            claims.get(self.username_claim)
+            or claims.get("preferred_username")
+            or claims.get("upn")
+            or claims.get("unique_name")
+        )
+        return {
+            "username": username,
+            "email": email,
+            "name": claims.get(self.name_claim) or claims.get("displayName") or claims.get("given_name"),
+            "id": claims["oid"],
+            "groups": [],
+            "issuer": claims["iss"],
+            "subject": claims["sub"],
+            "object_id": claims["oid"],
+            "email_trusted": claims.get("xms_edov") is True,
+        }
 
     async def get_scope_groups(self, access_token: str) -> list[str]:
         """Check transitive membership of the configured IDs, never trusting display names."""
@@ -261,57 +199,11 @@ class EntraIdProvider(AuthProvider):
             return []
 
     async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
-        """Get user information from token or Microsoft Graph API.
+        """Verify the ID-token identity, then resolve scope groups using the Graph access token."""
+        if not id_token:
+            raise ValueError("Entra login requires an id_token")
 
-        This method supports flexible user info extraction:
-        1. Extract from id_token (preferred) or access_token based on auth-server settings
-        2. Fallback to Microsoft Graph API if token extraction fails
-        3. Groups are automatically included (fetched from Graph API using access_token)
-
-        Args:
-            access_token: OAuth2 access token (required for Graph API calls)
-            id_token: Optional ID token (preferred for user identity extraction)
-
-        Returns:
-            Dict containing user information with keys:
-            - username: User's principal name or email
-            - email: User's email address
-            - name: User's display name
-            - id: User's unique identifier
-            - groups: Abstract scope groups resolved from configured Graph group IDs
-            - Additional fields from Graph API (if fallback used)
-        """
-        try:
-            token_kind = settings.entra_token_kind.lower()
-            user_info = None
-
-            if token_kind == "id" and id_token:
-                # Use ID token for user identity
-                logger.debug("Extracting user info from ID token")
-                verified_claims = await self._verify_user_info_token(id_token)
-                user_info = self._extract_user_info_from_token(verified_claims, "id")
-            elif token_kind == "access" and access_token:
-                #  Use access token
-                logger.debug("Extracting user info from access token")
-                verified_claims = await self._verify_user_info_token(access_token)
-                user_info = self._extract_user_info_from_token(verified_claims, "access")
-            else:
-                logger.warning(f"Token kind '{token_kind}' not available or token missing, falling back to Graph API")
-
-            # Fallback to Microsoft Graph API if token extraction failed
-            if not user_info:
-                logger.info("Token extraction failed, using Graph API fallback")
-                user_info = await self._fetch_user_info_from_graph(access_token)
-
-            # Get user groups separately using access_token (required for Graph API)
-            groups = await self.get_scope_groups(access_token)
-            user_info["groups"] = groups
-
-            logger.info(f"User info retrieved: {user_info.get('username')} with {len(groups)} groups")
-            return user_info
-
-        except InvalidTokenError:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to get user info: {e}")
-            raise ValueError(f"User info retrieval failed: {e}")
+        claims = await self._verify_user_info_token(id_token)
+        user_info = self._extract_user_info_from_token(claims)
+        user_info["groups"] = await self.get_scope_groups(access_token)
+        return user_info

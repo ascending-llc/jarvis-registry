@@ -19,13 +19,12 @@ from registry_pkgs.core.client_categories import (
     DEVICE_CODE_GRANT_TYPE,
     REFRESH_TOKEN_GRANT_TYPE,
 )
-from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
+from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken, verify_managed_agent_token
 
 
 @pytest.fixture
 def service() -> TokenGrantService:
     return TokenGrantService(
-        user_service=Mock(),
         store=InMemoryOAuthStateStore(),
         consent_store=Mock(),
     )
@@ -133,12 +132,11 @@ async def test_refresh_exchange_returns_invalid_grant_when_rotation_loses_race()
         "old-refresh-token",
         {
             "client_id": "mcp-client-race",
-            "user_info": {"username": "race-user", "groups": []},
+            "user_info": {"username": "race-user", "groups": [], "user_id": "user-123"},
             "scope": "mcp-proxy-ops",
         },
     )
     service = TokenGrantService(
-        user_service=Mock(resolve_user_id=AsyncMock(return_value=None)),
         store=store,
         consent_store=Mock(),
     )
@@ -166,7 +164,7 @@ async def test_refresh_exchange_returns_invalid_grant_when_rotation_loses_race()
 async def test_refresh_exchange_propagates_unexpected_store_failure() -> None:
     store = Mock()
     store.get_refresh_token.side_effect = RuntimeError("store unavailable")
-    service = TokenGrantService(user_service=Mock(), store=store, consent_store=Mock())
+    service = TokenGrantService(store=store, consent_store=Mock())
     grant_request = RefreshTokenRequest(
         grant_type=REFRESH_TOKEN_GRANT_TYPE,
         client_id="mcp-client-test",
@@ -177,94 +175,132 @@ async def test_refresh_exchange_propagates_unexpected_store_failure() -> None:
         await service.exchange(grant_request)
 
 
-async def test_authorization_code_exchange_resolves_and_logs_user_before_client_mismatch(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
+def _prepare_grant(kind: str, user_info: dict) -> tuple[TokenGrantService, OAuthTokenRequest]:
     store = InMemoryOAuthStateStore()
-    user_info = {"username": "test-user"}
-    store.save_authcode(
-        "auth-code",
-        {
-            "client_id": "stored-client",
-            "redirect_uri": "https://client.example/callback",
-            "expires_at": int(time.time()) + 600,
-            "user_info": user_info,
-        },
-    )
-    user_service = Mock(resolve_user_id=AsyncMock(return_value="user-123"))
-    service = TokenGrantService(user_service=user_service, store=store, consent_store=Mock())
-    grant_request = AuthorizationCodeTokenRequest(
-        grant_type=AUTHORIZATION_CODE_GRANT_TYPE,
-        client_id="request-client",
-        code="auth-code",
-        redirect_uri="https://client.example/callback",
-    )
+    client_id = "mcp-client-identity"
+    store.save_client(client_id, {"grant_types": [kind], "token_endpoint_auth_method": "none"})
+    context = {"client_id": client_id, "expires_at": int(time.time()) + 600}
+    if kind == AUTHORIZATION_CODE_GRANT_TYPE:
+        store.save_authcode(
+            "code",
+            {
+                **context,
+                "user_info": user_info,
+                "redirect_uri": "https://client.example/callback",
+                "resolved_scope": ["mcp-proxy-ops"],
+            },
+        )
+        request = AuthorizationCodeTokenRequest(
+            grant_type=kind,
+            client_id=client_id,
+            code="code",
+            redirect_uri="https://client.example/callback",
+        )
+    elif kind == DEVICE_CODE_GRANT_TYPE:
+        store.save_device_code(
+            "device",
+            {
+                **context,
+                "mapped_user": user_info,
+                "resolved_scope": ["mcp-proxy-ops"],
+                "status": "approved",
+                "user_code": "USER-CODE",
+            },
+            600,
+        )
+        request = DeviceCodeTokenRequest(grant_type=kind, client_id=client_id, device_code="device")
+    else:
+        store.save_refresh_token("refresh", {**context, "user_info": user_info, "scope": "mcp-proxy-ops"})
+        request = RefreshTokenRequest(grant_type=kind, client_id=client_id, refresh_token="refresh")
+    return TokenGrantService(store, Mock(has_client_consent=Mock(return_value=True))), request
 
-    response = await service.exchange(grant_request)
 
+@pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE])
+@pytest.mark.parametrize("user_id", [None, "", "   ", 123])
+async def test_grants_reject_missing_or_invalid_stored_user_id(kind: str, user_id: object) -> None:
+    user_info = {"username": "same-name", "email": "person@example.com", "groups": []}
+    if user_id is not None:
+        user_info["user_id"] = user_id
+    service, request = _prepare_grant(kind, user_info)
+    with patch.object(service, "_mint_response") as mint:
+        response = await service.exchange(request)
+    assert response.status_code == 400
+    assert b'"error":"invalid_grant"' in response.body
+    assert b"Please sign in again." in response.body
+    mint.assert_not_called()
+    assert set(service._store.refresh_tokens_storage) == ({"refresh"} if kind == REFRESH_TOKEN_GRANT_TYPE else set())
+
+
+@pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE])
+@pytest.mark.parametrize("email", ["person@example.com", None])
+async def test_grants_preserve_stored_identity_in_access_and_refresh_tokens(kind: str, email: str | None) -> None:
+    user_info = {
+        "user_id": "507f1f77bcf86cd799439011",
+        "username": "display-name",
+        "name": "Display Name",
+        "idp_id": "provider-subject",
+        "groups": [],
+        "provider": "entra",
+    }
+    if email is not None:
+        user_info["email"] = email
+    service, request = _prepare_grant(kind, user_info)
+    response = await service.exchange(request)
+
+    claims = verify_managed_agent_token(service._token_config, response.access_token)
+    assert claims["sub"] == claims["user_id"] == user_info["user_id"]
+    assert claims["preferred_username"] == user_info["username"]
+    assert claims["email"] == email
+    assert claims["scope"] == response.scope == "mcp-proxy-ops"
+    if kind == REFRESH_TOKEN_GRANT_TYPE:
+        assert "name" not in claims
+        assert "idp_id" not in claims
+    else:
+        assert claims["name"] == user_info["name"]
+        assert claims["idp_id"] == user_info["idp_id"]
+    assert service._store.get_refresh_token(response.refresh_token)["user_info"] == user_info
+
+
+@pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE])
+async def test_grants_validate_identity_from_consumed_context(kind: str) -> None:
+    service, request = _prepare_grant(kind, {"user_id": "user-123", "username": "user"})
+    if kind == AUTHORIZATION_CODE_GRANT_TYPE:
+        consumed = {**service._store.get_authcode("code"), "user_info": {"username": "user"}}
+        consume_method = "consume_authcode"
+    else:
+        consumed = {**service._store.get_device_code("device"), "mapped_user": {"username": "user"}}
+        consume_method = "consume_device_code"
+    with (
+        patch.object(service._store, consume_method, return_value=consumed),
+        patch.object(service, "_mint_response") as mint,
+    ):
+        response = await service.exchange(request)
+    assert response.status_code == 400
+    assert b"Please sign in again." in response.body
+    mint.assert_not_called()
+
+
+async def test_refresh_without_consent_does_not_mint_or_rotate() -> None:
+    service, request = _prepare_grant(REFRESH_TOKEN_GRANT_TYPE, {"user_id": "user-123", "username": "user"})
+    service._consent_store.has_client_consent.return_value = False
+    with patch.object(service, "_mint_response") as mint:
+        response = await service.exchange(request)
+    assert response.status_code == 400
+    assert b"User consent is required" in response.body
+    service._consent_store.has_client_consent.assert_called_once_with("user-123", request.client_id)
+    mint.assert_not_called()
+    assert service._store.get_refresh_token("refresh") is not None
+
+
+@pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE])
+async def test_grants_reject_wrong_client_without_minting(kind: str) -> None:
+    service, request = _prepare_grant(kind, {"user_id": "user-123", "username": "user"})
+    request.client_id = "other-client"
+    with patch.object(service, "_mint_response") as mint:
+        response = await service.exchange(request)
     assert response.status_code == 400
     assert b"client_id mismatch" in response.body
-    user_service.resolve_user_id.assert_awaited_once_with(user_info)
-    assert "user_id: user-123" in caplog.text
-
-
-async def test_refresh_exchange_resolves_and_logs_user_before_client_mismatch(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
-    store = InMemoryOAuthStateStore()
-    user_info = {"username": "test-user"}
-    store.save_refresh_token("refresh-token", {"client_id": "stored-client", "user_info": user_info})
-    user_service = Mock(resolve_user_id=AsyncMock(return_value="user-123"))
-    service = TokenGrantService(user_service=user_service, store=store, consent_store=Mock())
-    grant_request = RefreshTokenRequest(
-        grant_type=REFRESH_TOKEN_GRANT_TYPE,
-        client_id="request-client",
-        refresh_token="refresh-token",
-    )
-
-    response = await service.exchange(grant_request)
-
-    assert response.status_code == 400
-    assert b"client_id mismatch" in response.body
-    user_service.resolve_user_id.assert_awaited_once_with(user_info)
-    assert "user_id: user-123" in caplog.text
-
-
-async def test_authorization_code_exchange_logs_user_before_redirect_uri_mismatch(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
-    store = InMemoryOAuthStateStore()
-    user_info = {"username": "test-user"}
-    store.save_client(
-        "mcp-client-123",
-        {"grant_types": [AUTHORIZATION_CODE_GRANT_TYPE], "token_endpoint_auth_method": "none"},
-    )
-    store.save_authcode(
-        "auth-code",
-        {
-            "client_id": "mcp-client-123",
-            "redirect_uri": "https://client.example/registered",
-            "expires_at": int(time.time()) + 600,
-            "user_info": user_info,
-        },
-    )
-    user_service = Mock(resolve_user_id=AsyncMock(return_value="user-123"))
-    service = TokenGrantService(user_service=user_service, store=store, consent_store=Mock())
-    grant_request = AuthorizationCodeTokenRequest(
-        grant_type=AUTHORIZATION_CODE_GRANT_TYPE,
-        client_id="mcp-client-123",
-        code="auth-code",
-        redirect_uri="https://client.example/mismatch",
-    )
-
-    response = await service.exchange(grant_request)
-
-    assert response.status_code == 400
-    assert b"redirect_uri mismatch" in response.body
-    assert "user_id: user-123" in caplog.text
+    mint.assert_not_called()
 
 
 def _mint_kwargs(service: TokenGrantService, user_info: dict) -> dict:
