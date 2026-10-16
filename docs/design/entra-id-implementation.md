@@ -49,8 +49,10 @@ codes, approved device codes, pending consent, and refresh records carry the res
 Older stored records without `user_id` require a new sign-in instead of a username/email lookup.
 
 The upstream Entra `sub` used for identity resolution is distinct from the subject of Jarvis-issued
-JWTs. AS-1899 retains the existing Jarvis JWT subject; changing it to the database user ID belongs to
-AS-1900.
+JWTs. Jarvis user tokens use the MongoDB user ID for both `sub` and the compatibility `user_id` claim;
+`preferred_username` carries the display name. Registry readers reject older username subjects.
+Deploy auth-server and Registry together: browser users must sign in again and user-generated tokens
+must be regenerated. OAuth refresh records carrying `user_id` can issue the new token format.
 
 ## Operations and tests
 

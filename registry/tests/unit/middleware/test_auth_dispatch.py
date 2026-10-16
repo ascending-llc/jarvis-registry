@@ -3,8 +3,9 @@ from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from httpx import Response
 from starlette.testclient import TestClient
 from starlette.types import Receive, Scope, Send
 
@@ -12,7 +13,7 @@ from registry.constants import MAX_RETURN_PATH_LENGTH
 from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
 from registry.utils.crypto_utils import generate_access_token
-from registry_pkgs.core.jwt_tokens import mint_managed_agent_token, verify_managed_agent_token
+from registry_pkgs.core.jwt_tokens import mint_crud_session_token, mint_managed_agent_token, verify_managed_agent_token
 
 _COOKIE = settings.session_cookie_name
 
@@ -23,6 +24,11 @@ USER_B = "507f1f77bcf86cd799439012"
 def _build_app() -> FastAPI:
     app = FastAPI()
     app.add_middleware(UnifiedAuthMiddleware)
+
+    @app.get("/api/identity")
+    @app.get("/proxy/identity")
+    async def identity_ep(request: Request) -> JSONResponse:
+        return JSONResponse(request.state.user)
 
     @app.get("/proxy/mcpgw/mcp")
     async def proxy_ep():  # pragma: no cover - body trivial
@@ -102,21 +108,25 @@ def client() -> TestClient:
 
 def _managed_agent_token(
     client_id: str = "mcp-client-abc",
-    user_id: str | None = None,
+    user_id: str | None = USER_A,
     server_path: str | None = None,
     token_scope: str = "mcp-proxy-ops",
     groups: list[str] | None = None,
+    subject: str = USER_A,
+    preferred_username: str | None = "alice",
 ) -> str:
     extra: dict = {}
     if user_id is not None:
         extra["user_id"] = user_id
+    if preferred_username is not None:
+        extra["preferred_username"] = preferred_username
     if server_path is not None:
         extra["server_path"] = server_path
     if groups is not None:
         extra["groups"] = groups
     return mint_managed_agent_token(
         settings.jwt_token_config,
-        subject="alice",
+        subject=subject,
         client_id=client_id,
         requested_scopes=token_scope,
         expires_in_seconds=3600,
@@ -126,7 +136,7 @@ def _managed_agent_token(
 
 def _crud_cookie_token() -> str:
     return generate_access_token(
-        user_id="u1",
+        user_id=USER_A,
         username="alice",
         email="alice@example.com",
         groups=["g1"],
@@ -135,6 +145,63 @@ def _crud_cookie_token() -> str:
         auth_method="oauth2",
         provider="entra",
     )
+
+
+def _request_with_identity(client: TestClient, token_kind: str, subject: str, claims: dict[str, str]) -> Response:
+    """Exercise the real signature verifier before the middleware reads identity claims."""
+    if token_kind == "managed-agent":
+        token = mint_managed_agent_token(
+            settings.jwt_token_config,
+            subject=subject,
+            client_id="mcp-client-abc",
+            requested_scopes="mcp-proxy-ops",
+            expires_in_seconds=3600,
+            extra_claims=claims,
+        )
+        return client.get("/proxy/identity", headers={"Authorization": f"Bearer {token}"})
+
+    token = mint_crud_session_token(
+        settings.jwt_token_config,
+        subject=subject,
+        token_type="access_token",
+        expires_in_seconds=3600,
+        extra_claims={"scope": "servers-read", **claims},
+    )
+    client.cookies.set(_COOKIE, token)
+    return client.get("/api/identity")
+
+
+@pytest.mark.parametrize("token_kind", ["managed-agent", "session"])
+@pytest.mark.parametrize("subject", ["alice@corp.com", "alice"])
+def test_signed_legacy_subject_is_rejected(client: TestClient, token_kind: str, subject: str) -> None:
+    response = _request_with_identity(client, token_kind, subject, {"user_id": USER_A, "preferred_username": "alice"})
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("token_kind", ["managed-agent", "session"])
+@pytest.mark.parametrize("custom_user_id", [USER_A, USER_B, None])
+def test_context_uses_subject_for_identity_and_preferred_username_for_display(
+    client: TestClient, token_kind: str, custom_user_id: str | None
+) -> None:
+    claims = {"preferred_username": "alice"}
+    if custom_user_id is not None:
+        claims["user_id"] = custom_user_id
+
+    response = _request_with_identity(client, token_kind, USER_A, claims)
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == USER_A
+    assert response.json()["username"] == "alice"
+
+
+def test_downstream_subject_without_preferred_username_remains_usable(client: TestClient) -> None:
+    token = _managed_agent_token(preferred_username=None)
+
+    response = client.get("/proxy/identity", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == response.json()["username"] == USER_A
 
 
 def test_proxy_accepts_managed_agent_bearer(client):
@@ -293,11 +360,22 @@ def test_direct_connect_rejects_user_id_mismatch(client):
     assert resp.status_code == 401
 
 
-def test_direct_connect_rejects_token_without_user_id(client):
-    # A managed-agent token carrying no user_id claim cannot satisfy the binding.
+def test_direct_connect_accepts_token_without_custom_user_id(client):
+    # The stable subject satisfies the binding without the compatibility user_id claim.
     token = _managed_agent_token(user_id=None, server_path="github")
     resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 401
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(("url_user_id", "expected_status"), [(USER_A, 200), (USER_B, 401)])
+def test_direct_connect_uses_subject_despite_different_custom_user_id(
+    client: TestClient, url_user_id: str, expected_status: int
+) -> None:
+    token = _managed_agent_token(subject=USER_A, user_id=USER_B, server_path="github")
+
+    response = client.get(f"/proxy/server/{url_user_id}/github", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == expected_status
 
 
 def test_direct_connect_rejects_server_path_mismatch(client):

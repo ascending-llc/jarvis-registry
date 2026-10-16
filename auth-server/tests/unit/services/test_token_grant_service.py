@@ -19,7 +19,7 @@ from registry_pkgs.core.client_categories import (
     DEVICE_CODE_GRANT_TYPE,
     REFRESH_TOKEN_GRANT_TYPE,
 )
-from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
+from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken, verify_managed_agent_token
 
 
 @pytest.fixture
@@ -232,17 +232,32 @@ async def test_grants_reject_missing_or_invalid_stored_user_id(kind: str, user_i
 
 
 @pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE])
-async def test_grants_preserve_stored_identity_in_access_and_refresh_tokens(kind: str) -> None:
-    user_info = {"user_id": "user-123", "username": "display-name", "groups": [], "provider": "entra"}
+@pytest.mark.parametrize("email", ["person@example.com", None])
+async def test_grants_preserve_stored_identity_in_access_and_refresh_tokens(kind: str, email: str | None) -> None:
+    user_info = {
+        "user_id": "507f1f77bcf86cd799439011",
+        "username": "display-name",
+        "name": "Display Name",
+        "idp_id": "provider-subject",
+        "groups": [],
+        "provider": "entra",
+    }
+    if email is not None:
+        user_info["email"] = email
     service, request = _prepare_grant(kind, user_info)
-    with patch(
-        "auth_server.services.token_grant_service.mint_managed_agent_token_with_scope",
-        return_value=MintedManagedAgentToken("access-token", "mcp-proxy-ops"),
-    ) as mint:
-        response = await service.exchange(request)
-    assert response.access_token == "access-token"
-    assert mint.call_args.kwargs["extra_claims"]["user_id"] == "user-123"
-    assert mint.call_args.kwargs["subject"] == "display-name"  # Subject changes separately in AS-1900.
+    response = await service.exchange(request)
+
+    claims = verify_managed_agent_token(service._token_config, response.access_token)
+    assert claims["sub"] == claims["user_id"] == user_info["user_id"]
+    assert claims["preferred_username"] == user_info["username"]
+    assert claims["email"] == email
+    assert claims["scope"] == response.scope == "mcp-proxy-ops"
+    if kind == REFRESH_TOKEN_GRANT_TYPE:
+        assert "name" not in claims
+        assert "idp_id" not in claims
+    else:
+        assert claims["name"] == user_info["name"]
+        assert claims["idp_id"] == user_info["idp_id"]
     assert service._store.get_refresh_token(response.refresh_token)["user_info"] == user_info
 
 

@@ -156,6 +156,8 @@ class TokenGrantService:
     ) -> DeviceTokenResponse:
         extra_claims = {
             "user_id": user_id,
+            "preferred_username": user_info["username"],
+            "email": user_info.get("email"),
             "groups": user_info.get("groups", []),
             "token_use": ACCESS_USE,
             "auth_provider": user_info.get("provider", settings.auth_provider),
@@ -165,7 +167,7 @@ class TokenGrantService:
 
         minted = mint_managed_agent_token_with_scope(
             self._token_config,
-            subject=user_info["username"],
+            subject=user_id,
             client_id=client_id,
             requested_scopes=requested_scopes,
             expires_in_seconds=settings.oauth_access_token_expiry_seconds,

@@ -1044,7 +1044,8 @@ class TestDeviceFlowRoutes:
         assert data["user_code"] not in user_codes_storage
 
         mock_mint_token.assert_called_once()
-        assert mock_mint_token.call_args.kwargs["subject"] == "test-user"
+        assert mock_mint_token.call_args.kwargs["subject"] == "user-123"
+        assert mock_mint_token.call_args.kwargs["extra_claims"]["preferred_username"] == "test-user"
         assert mock_mint_token.call_args.kwargs["requested_scopes"] == [token_data["scope"]]
         assert mock_mint_token.call_args.kwargs["extra_claims"]["user_id"] == "user-123"
 

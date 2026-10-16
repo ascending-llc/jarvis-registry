@@ -37,6 +37,8 @@ UNMAPPED_USER_CONTEXT = {**USER_CONTEXT, "groups": ["unmapped-group"]}
 
 def _scope_claim(result: TokenGenerateResponse) -> str:
     claims = verify_managed_agent_token(settings.jwt_token_config, result.tokenData.accessToken)
+    assert claims["sub"] == claims["user_id"] == USER_CONTEXT["user_id"]
+    assert claims["preferred_username"] == USER_CONTEXT["username"]
     assert claims["scope"] == result.tokenData.scope
     return claims["scope"]
 
@@ -71,11 +73,26 @@ async def test_generate_user_token_selects_client_id_from_purpose(
     assert result.requestedScopes == POWER_USER_TOKEN_SCOPES
     mint_token.assert_called_once()
     call_kwargs = mint_token.call_args.kwargs
+    assert call_kwargs["subject"] == USER_CONTEXT["user_id"]
+    assert call_kwargs["extra_claims"]["preferred_username"] == USER_CONTEXT["username"]
     assert call_kwargs["client_id"] == expected_client_id
     assert call_kwargs["expires_in_seconds"] == 8 * 3600
     assert call_kwargs["extra_claims"]["user_id"] == USER_CONTEXT["user_id"]
     assert "scope" not in call_kwargs["extra_claims"]
     assert call_kwargs["extra_claims"]["groups"] == USER_CONTEXT["groups"]
+
+
+@pytest.mark.parametrize("user_id", [None, ""])
+async def test_generate_user_token_requires_user_id(user_id: str | None) -> None:
+    with (
+        patch("registry.api.v1.token_routes.mint_managed_agent_token_with_scope") as mint_token,
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await generate_user_token(TokenGenerateRequest(expiresInHours=8), {**USER_CONTEXT, "user_id": user_id})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "User ID is required in user context"
+    mint_token.assert_not_called()
 
 
 async def test_generate_agent_token_with_current_scopes_grants_proxy_ops() -> None:

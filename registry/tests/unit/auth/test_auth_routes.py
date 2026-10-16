@@ -22,11 +22,18 @@ from registry.api.redirect_routes import (
     oauth2_login_redirect,
     refresh_token,
 )
-from registry.utils.crypto_utils import REFRESH_TOKEN_EXPIRES_SECONDS
+from registry.core.config import settings as token_settings
+from registry.utils.crypto_utils import (
+    REFRESH_TOKEN_EXPIRES_SECONDS,
+    verify_access_token,
+    verify_refresh_token,
+)
 from registry.utils.csrf import compute_csrf_token
+from registry_pkgs.core.jwt_tokens import mint_crud_session_token
 from registry_pkgs.core.jwt_utils import InvalidSignatureError
 
 _TEST_STATE_NONCE = "test-state-nonce"
+_TEST_USER_ID = "507f1f77bcf86cd799439011"
 
 
 def _encode_oauth2_state(data: object) -> str:
@@ -447,8 +454,9 @@ class TestAuthRoutes:
         """Successful token refresh must issue new access, CSRF, and reissued refresh cookies."""
 
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["admin"],
@@ -500,11 +508,87 @@ class TestAuthRoutes:
         assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
 
     @pytest.mark.asyncio
+    async def test_refresh_token_rejects_signed_legacy_subject(self, mock_request, mock_settings):
+        """A valid signature and custom user_id must not rescue a legacy username subject."""
+        token = mint_crud_session_token(
+            token_settings.jwt_token_config,
+            subject="alice@example.com",
+            token_type="refresh_token",
+            expires_in_seconds=3600,
+            extra_claims={
+                "user_id": _TEST_USER_ID,
+                "auth_method": "oauth2",
+                "provider": "entra",
+                "scope": "servers-read",
+            },
+        )
+        assert verify_refresh_token(token) is not None
+
+        with (
+            patch("registry.api.redirect_routes.generate_access_token") as mock_gen_access,
+            patch("registry.api.redirect_routes.generate_refresh_token") as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh=token, is_https=False)
+
+        assert response.status_code == 401
+        assert json.loads(response.body)["detail"] == "Refresh token missing required identity claims"
+        _assert_auth_cookies_cleared(_cookies_from_response(response), mock_settings)
+        mock_gen_access.assert_not_called()
+        mock_gen_refresh.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("custom_user_id", "preferred_username"),
+        [(None, "alice"), ("507f1f77bcf86cd799439012", None)],
+    )
+    async def test_refresh_token_mints_signed_identity_from_sub_without_fake_email(
+        self,
+        mock_request,
+        mock_settings,
+        custom_user_id,
+        preferred_username,
+    ):
+        """Refresh uses sub even without/mismatching user_id and never invents an email."""
+        session_started_at = int(time.time()) - 3600
+        claims = {
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "scope": "servers-read",
+            "session_started_at": session_started_at,
+        }
+        if custom_user_id is not None:
+            claims["user_id"] = custom_user_id
+        if preferred_username is not None:
+            claims["preferred_username"] = preferred_username
+        token = mint_crud_session_token(
+            token_settings.jwt_token_config,
+            subject=_TEST_USER_ID,
+            token_type="refresh_token",
+            expires_in_seconds=3600,
+            extra_claims=claims,
+        )
+
+        response = await refresh_token(mock_request, refresh=token, is_https=False)
+
+        assert response.status_code == 200
+        cookies = _cookies_from_response(response)
+        access_claims = verify_access_token(cookies[mock_settings.session_cookie_name].value)
+        refresh_claims = verify_refresh_token(cookies[mock_settings.refresh_cookie_name].value)
+        for minted_claims in (access_claims, refresh_claims):
+            assert minted_claims is not None
+            assert minted_claims["sub"] == minted_claims["user_id"] == _TEST_USER_ID
+            assert minted_claims["preferred_username"] == (preferred_username or _TEST_USER_ID)
+            assert minted_claims["email"] == ""
+            assert minted_claims["scope"] == "servers-read"
+        assert refresh_claims["session_started_at"] == session_started_at
+
+    @pytest.mark.asyncio
     async def test_refresh_token_missing_scopes_clears_csrf_cookie(self, mock_request, mock_settings):
         """A refresh token with no resolvable scopes must clear the CSRF cookie and return 401."""
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": [],
@@ -528,8 +612,9 @@ class TestAuthRoutes:
         """Reissued refresh token must carry forward the same claims from the prior token."""
         fixed_session_start = int(time.time()) - 3600  # 1 hour ago — well within 14-day cap
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["jarvis-registry-admin"],
@@ -550,7 +635,7 @@ class TestAuthRoutes:
 
         mock_gen_refresh.assert_called_once()
         call_kwargs = mock_gen_refresh.call_args.kwargs
-        assert call_kwargs["user_id"] == "123"
+        assert call_kwargs["user_id"] == _TEST_USER_ID
         assert call_kwargs["username"] == "testuser"
         assert call_kwargs["auth_method"] == "oauth2"
         assert call_kwargs["provider"] == "entra"
@@ -565,8 +650,9 @@ class TestAuthRoutes:
         """session_started_at must remain unchanged across two consecutive rotations, not just one."""
         fixed_session_start = int(time.time()) - 3600  # 1 hour ago — well within 14-day cap
         first_claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["jarvis-registry-admin"],
@@ -609,8 +695,9 @@ class TestAuthRoutes:
         """String timestamps from refresh token claims are parsed before enforcing the session cap."""
         fixed_session_start = int(time.time()) - 3600
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["admin"],
@@ -637,8 +724,9 @@ class TestAuthRoutes:
         """Small clock skew in session_started_at is tolerated but not carried forward as future time."""
         before = int(time.time())
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["admin"],
@@ -665,8 +753,9 @@ class TestAuthRoutes:
     async def test_refresh_token_far_future_session_started_at_returns_401(self, mock_request, mock_settings):
         """Far-future session_started_at claims must fail closed instead of extending the session cap."""
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["admin"],
@@ -693,8 +782,9 @@ class TestAuthRoutes:
     async def test_refresh_token_invalid_session_started_at_returns_401(self, mock_request, mock_settings):
         """Malformed session_started_at claims must not become 500s during refresh."""
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["admin"],
@@ -718,7 +808,7 @@ class TestAuthRoutes:
         _assert_auth_cookies_cleared(cookies, mock_settings)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("claim_name", ["user_id", "sub", "auth_method", "provider"])
+    @pytest.mark.parametrize("claim_name", ["sub", "auth_method", "provider"])
     async def test_refresh_token_missing_required_identity_claim_returns_401(
         self,
         mock_request,
@@ -727,8 +817,9 @@ class TestAuthRoutes:
     ):
         """Required identity claims must be present before token reissue."""
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["admin"],
@@ -770,8 +861,9 @@ class TestAuthRoutes:
     ):
         """refresh_token must not trust raw groups claim shape from a legacy refresh token."""
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": groups_claim,
@@ -801,8 +893,9 @@ class TestAuthRoutes:
         """A refresh where now - session_started_at > 14 days must return 401 and clear all cookies."""
         old_start = int(time.time()) - (15 * 86400)  # 15 days ago
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["admin"],
@@ -828,17 +921,18 @@ class TestAuthRoutes:
 
     @pytest.mark.asyncio
     async def test_refresh_token_missing_session_started_at_grandfathered(self, mock_request, mock_settings):
-        """A pre-deploy refresh token with no session_started_at must NOT be rejected."""
+        """A valid stable-ID refresh token without session_started_at receives a session start."""
         claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": ["admin"],
             "scope": "read write",
             "role": "user",
             "email": "test@example.com",
-            # No session_started_at — simulates a pre-deploy token
+            # No session_started_at — retain the existing timestamp fallback.
         }
 
         with (
@@ -876,8 +970,9 @@ class TestAuthRoutes:
 
         # Branch 3: no scopes
         no_scope_claims = {
-            "user_id": "123",
-            "sub": "testuser",
+            "user_id": _TEST_USER_ID,
+            "sub": _TEST_USER_ID,
+            "preferred_username": "testuser",
             "auth_method": "oauth2",
             "provider": "entra",
             "groups": [],
@@ -941,7 +1036,7 @@ class TestAuthRoutes:
         assert "Some-Unrelated-Distro-List" in filter_input
         assert "Teams-Channel-Foo" in filter_input
 
-        passed_user_info = mock_gen_pair.call_args.kwargs.get("user_info") or mock_gen_pair.call_args.args[0]
+        passed_user_info = mock_gen_pair.call_args.kwargs
         assert passed_user_info["groups"] == ["jarvis-registry-admin"]
 
     @pytest.mark.asyncio

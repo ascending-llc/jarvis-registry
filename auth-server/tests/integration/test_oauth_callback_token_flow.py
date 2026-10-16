@@ -30,7 +30,7 @@ from auth_server.deps import (
 from auth_server.providers.google import GoogleDomainNotAllowedError, GoogleEmailNotVerifiedError
 from auth_server.server import app
 from auth_server.services.token_grant_service import TokenGrantService
-from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
+from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken, verify_managed_agent_token
 from registry_pkgs.core.jwt_utils import InvalidTokenError
 from tests.conftest import test_consent_store, test_pending_consent_store
 from tests.support.auth_provider import _mock_entra_provider
@@ -849,43 +849,33 @@ class TestOAuth2TokenEndpoint:
             "redirect_uri": "http://localhost/callback",
         }
 
-        # Exchange code for token
-        with patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope") as mock_mint_token:
-            mock_mint_token.return_value = MintedManagedAgentToken("mock-jwt-token-with-user-id", "mcp-proxy-ops")
+        app.dependency_overrides = {}
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+        app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            test_oauth_state_store, test_consent_store
+        )
 
-            app.dependency_overrides = {}
+        test_client = TestClient(app)
+        kwargs = {"json": payload} if content_type == "json" else {"data": payload}
+        response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
 
-            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
-            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-                test_oauth_state_store, test_consent_store
-            )
+        assert response.status_code == 200
+        token_data = response.json()
+        assert token_data["token_type"] == "Bearer"
+        assert "expires_in" in token_data
+        assert "refresh_token" in token_data
 
-            test_client = TestClient(app)
-
-            kwargs = {"json": payload} if content_type == "json" else {"data": payload}
-            response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
-
-            assert response.status_code == 200
-            token_data = response.json()
-
-            assert token_data["access_token"] == "mock-jwt-token-with-user-id"
-            assert token_data["token_type"] == "Bearer"
-            assert "expires_in" in token_data
-            assert "refresh_token" in token_data
-
-            # Verify managed-agent token was minted with resolved user identity
-            assert mock_mint_token.call_args.kwargs["subject"] == "testuser"
-            assert mock_mint_token.call_args.kwargs["client_id"] == "mcp-client-test"
-            token_claims = mock_mint_token.call_args.kwargs["extra_claims"]
-            assert token_claims["user_id"] == "507f1f77bcf86cd799439011"
-            assert token_claims["groups"] == ["user-group"]
-            assert mock_mint_token.call_args.kwargs["requested_scopes"] == ["mcp-proxy-ops"]
-            assert token_claims["token_use"] == "access"
-            assert token_claims["auth_provider"] is not None
-
-            # Code should be deleted after successful exchange
-            assert auth_code not in authorization_codes_storage
+        claims = verify_managed_agent_token(settings.jwt_token_config, token_data["access_token"])
+        assert claims["sub"] == claims["user_id"] == "507f1f77bcf86cd799439011"
+        assert claims["preferred_username"] == "testuser"
+        assert claims["email"] == "test@example.com"
+        assert claims["client_id"] == "mcp-client-test"
+        assert claims["groups"] == ["user-group"]
+        assert claims["scope"] == token_data["scope"] == "mcp-proxy-ops"
+        assert claims["token_use"] == "access"
+        assert claims["auth_provider"] is not None
+        assert auth_code not in authorization_codes_storage
 
     def test_token_endpoint_rejects_invalid_client_secret(self, clear_device_storage, mock_identity_service):
         """Test client_secret_post DCR clients must provide the registered secret."""
