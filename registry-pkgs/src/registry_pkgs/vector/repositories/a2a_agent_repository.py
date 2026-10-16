@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from ...models import A2AAgent
@@ -50,18 +49,9 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
             await self.ensure_collection()
 
             if is_delete and self._collection_has_property("agent_id"):
-                try:
-                    result.deleted = await asyncio.wait_for(
-                        self.adelete_by_filter({"agent_id": agent_id}),
-                        timeout=10.0,
-                    )
-                    if result.deleted:
-                        logger.debug("Deleted %d old docs for agent_id=%s", result.deleted, agent_id)
-                except TimeoutError:
-                    logger.warning(
-                        "adelete_by_filter timed out for agent_id=%s — skipping delete, proceeding with insert",
-                        agent_id,
-                    )
+                # Do not cancel a thread-backed delete and then insert: the late delete could
+                # erase the replacement. Transport timeouts propagate as a failed sync below.
+                result.deleted = await self.adelete_by_filter({"agent_id": agent_id})
 
             docs = agent.to_documents()
             expected = len(docs) if docs else 0

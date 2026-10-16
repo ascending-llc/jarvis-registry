@@ -191,7 +191,7 @@ async def test_mcp_update_entity_metadata_returns_zero_when_no_docs():
 
 
 @pytest.mark.asyncio
-async def test_update_entity_metadata_skips_when_adapter_lacks_update_metadata():
+async def test_update_entity_metadata_reports_unsupported_adapter():
     """Adapter without update_metadata support returns early without error."""
 
     class _LegacyAdapter:
@@ -218,7 +218,8 @@ async def test_update_entity_metadata_skips_when_adapter_lacks_update_metadata()
     result = await repo.update_entity_metadata("agent_id", "a", {"enabled": True})
 
     assert result.metadata_updated == 0
-    assert result.error is None
+    assert result.error == "Adapter does not support metadata updates"
+    assert result.failed == 1
 
 
 @pytest.mark.asyncio
