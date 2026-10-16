@@ -30,6 +30,7 @@ from pydantic import AnyUrl, BaseModel
 from registry_pkgs.telemetry.span_attributes import TRACE_APP, clean_span_attributes, set_span_attributes
 
 from .core.types import McpAppContext
+from .tools.utils import get_client_params
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +152,10 @@ def _extract_caller_identity(ctx: Context[ServerSession, McpAppContext]) -> dict
                 }
             )
 
-        session = getattr(ctx, "session", None)
-        client_params = getattr(session, "client_params", None)
-        client_info = getattr(client_params, "clientInfo", None)
-        if client_info is not None:
-            identity["mcp_client_name"] = getattr(client_info, "name", None)
-            identity["mcp_client_version"] = getattr(client_info, "version", None)
+        client_params = get_client_params(ctx)
+        if client_params is not None:
+            identity["mcp_client_name"] = client_params.clientInfo.name
+            identity["mcp_client_version"] = client_params.clientInfo.version
 
         return clean_span_attributes(identity)
     except Exception:

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.testclient import TestClient
 from starlette.types import Receive, Scope, Send
@@ -27,6 +27,10 @@ def _build_app() -> FastAPI:
     @app.get("/proxy/mcpgw/mcp")
     async def proxy_ep():  # pragma: no cover - body trivial
         return JSONResponse({"ok": "proxy"})
+
+    @app.get("/proxy/mcpgw/echo-user")
+    async def echo_user_ep(request: Request):
+        return JSONResponse({"jti": request.state.user.get("jti")})
 
     @app.get("/api/v1/skills")
     async def skills_ep():
@@ -140,6 +144,24 @@ def _crud_cookie_token() -> str:
 def test_proxy_accepts_managed_agent_bearer(client):
     resp = client.get("/proxy/mcpgw/mcp", headers={"Authorization": f"Bearer {_managed_agent_token()}"})
     assert resp.status_code == 200
+
+
+def test_managed_agent_jwt_puts_jti_in_user_context(client):
+    """The JWT (managed-agent) auth path must thread the token's jti into the user context so the
+    gateway can key its client-info cache per token for shared client ids."""
+    token = mint_managed_agent_token(
+        settings.jwt_token_config,
+        subject="alice",
+        client_id="mcp-client-abc",
+        requested_scopes="mcp-proxy-ops",
+        expires_in_seconds=3600,
+        extra_claims={"user_id": USER_A, "jti": "jti-xyz"},
+    )
+
+    resp = client.get("/proxy/mcpgw/echo-user", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    assert resp.json()["jti"] == "jti-xyz"
 
 
 def test_proxy_rejects_crud_token_as_bearer(client):

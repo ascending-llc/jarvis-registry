@@ -222,4 +222,8 @@ gateway_mcp_app = create_gateway_mcp_app(container_provider=_get_current_contain
 
 # The FastAPI app is exposed at module level so ASGI servers can import ``app``
 # directly while still keeping the startup and shutdown wiring in ``lifespan``.
-app = create_app(lifespan=lifespan, gateway_mcp_app=gateway_mcp_app)
+app = create_app(
+    lifespan=lifespan,
+    gateway_mcp_app=gateway_mcp_app,
+    container_provider=_get_current_container,
+)
