@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from beanie import PydanticObjectId
@@ -854,3 +854,26 @@ async def test_delete_failure_does_not_affect_imported_total(
 
     assert stats.importedTotal == 2
     assert stats.unimportedTotal == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", [False, True])
+async def test_federation_runtime_cleanup_is_inside_shared_sync(federation_sync_service, agent):
+    from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+
+    model = A2AAgent if agent else ExtendedMCPServer
+    doc = SimpleNamespace(id=PydanticObjectId())
+    service = federation_sync_service
+    repo = service.a2a_agent_repo if agent else service.mcp_server_repo
+    repo.delete_by_runtime_identity = AsyncMock()
+    method = service._sync_a2a_vectors_for_runtime if agent else service._sync_mcp_vectors_for_runtime
+    with (
+        patch.object(model, "find_one", AsyncMock(return_value=doc)),
+        patch("registry.services.federation_sync_service.sync_pending_vectors", AsyncMock()) as sync,
+    ):
+        await method(doc.id, "arn:runtime:1")
+        sync.assert_awaited_once_with(model, repo, doc.id, runtime_identity=(str(doc.id), "arn:runtime:1"))
+        repo.delete_by_runtime_identity.assert_not_awaited()
+        sync.side_effect = RuntimeError("vector down")
+        with pytest.raises(RuntimeError, match="vector down"):
+            await method(doc.id, "arn:runtime:1")

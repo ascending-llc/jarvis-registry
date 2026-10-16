@@ -65,6 +65,7 @@ from .federation_job_service import (
     _live_active_filter,
     federation_sync_lease_repository,
 )
+from .vector_sync_helpers import sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -1686,6 +1687,10 @@ class FederationSyncService:
 
         async def _create_one(item: _CreateItem) -> None:
             item.document.federationRefId = sync_plan.federation_id
+            # Mark pending in the same insert; the post-commit vector step clears it on success, and
+            # an item whose vector rebuild fails keeps the marker for the reconciler to heal.
+            item.document.vectorSyncPendingAt = datetime.now(UTC)
+            item.document.vectorSyncAttempts = 0
             await item.document.insert()
 
         outcomes = await run_bounded(
@@ -1737,6 +1742,9 @@ class FederationSyncService:
                 self._copy_mcp_update_fields(item.existing, item.discovered)
             else:
                 self._copy_a2a_update_fields(item.existing, item.discovered)
+            # Mark pending in the same save; the post-commit vector step clears it on success.
+            item.existing.vectorSyncPendingAt = datetime.now(UTC)
+            item.existing.vectorSyncAttempts = 0
             await item.existing.save()
 
         outcomes = await run_bounded(
@@ -2256,7 +2264,6 @@ class FederationSyncService:
         federation_id_str = str(federation_id)
         # Delete and rebuild one MCP runtime at a time. runtimeArn identifies the
         # concrete remote resource; federation_id prevents cross-federation deletes.
-        await self.mcp_server_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
         current_server = await ExtendedMCPServer.find_one(
             {
                 "federationRefId": federation_id,
@@ -2264,17 +2271,17 @@ class FederationSyncService:
             }
         )
         if current_server is None:
+            await self.mcp_server_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
             return
-
-        result = await self.mcp_server_repo.sync_to_vector_db(current_server, is_delete=False)
-        if not result or result.get("failed_tools"):
-            detail = result.get("error") if result else None
-            suffix = f":{detail}" if detail else ""
-            raise RuntimeError(f"mcp sync failed for {current_server.serverName}{suffix}")
+        await sync_pending_vectors(
+            ExtendedMCPServer,
+            self.mcp_server_repo,
+            current_server.id,
+            runtime_identity=(federation_id_str, runtime_arn),
+        )
 
     async def _sync_a2a_vectors_for_runtime(self, federation_id, runtime_arn: str) -> None:
         federation_id_str = str(federation_id)
-        await self.a2a_agent_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
         current_agent = await A2AAgent.find_one(
             {
                 "federationRefId": federation_id,
@@ -2282,13 +2289,14 @@ class FederationSyncService:
             }
         )
         if current_agent is None:
+            await self.a2a_agent_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
             return
-
-        result = await self.a2a_agent_repo.sync_to_vector_db(current_agent, is_delete=False)
-        if not result or result.get("failed"):
-            detail = result.get("error") if result else None
-            suffix = f":{detail}" if detail else ""
-            raise RuntimeError(f"a2a sync failed for {current_agent.card.name}{suffix}")
+        await sync_pending_vectors(
+            A2AAgent,
+            self.a2a_agent_repo,
+            current_agent.id,
+            runtime_identity=(federation_id_str, runtime_arn),
+        )
 
     async def _current_mcp_runtime_arns(self, federation_id) -> list[str]:
         current_servers = await ExtendedMCPServer.find({"federationRefId": federation_id}).to_list()
