@@ -99,6 +99,15 @@ class VectorSyncBusyError(RuntimeError):
     """Another worker owns this entity; its pending marker must remain eligible for reconciliation."""
 
 
+def _entity_lease_name(model: type[VectorModel], doc_id: PydanticObjectId) -> str:
+    return f"vector-entity:{model.get_collection_name()}:{doc_id}"
+
+
+async def delete_entity_lease(model: type[VectorModel], doc_id: PydanticObjectId) -> None:
+    """Drop an entity's per-entity sync lease when the entity is deleted, so leases don't orphan."""
+    await LeaderLease.get_pymongo_collection().delete_one({"_id": _entity_lease_name(model, doc_id)})
+
+
 def _same_marker(left: datetime, right: datetime) -> bool:
     # BSON stores UTC milliseconds; plans originate as aware, microsecond-precision Python values.
     def milliseconds(value: datetime) -> datetime:
@@ -214,7 +223,7 @@ async def sync_pending_vectors(
     A stale plan is promoted to full sync, including stale tool deltas. Federation runtime cleanup
     runs inside this same lease, never before acquiring it.
     """
-    name = f"vector-entity:{model.get_collection_name()}:{doc_id}"
+    name = _entity_lease_name(model, doc_id)
     await ensure_leader_document(name)
     claimed = await _repository.claim(owner=_OWNER, claimable_filter=leader_claimable_filter(name, datetime.now(UTC)))
     if claimed is None:

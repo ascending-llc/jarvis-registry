@@ -40,7 +40,7 @@ from ..core.config import settings
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
-from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, sync_pending_vectors
+from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, delete_entity_lease, sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -820,7 +820,9 @@ class A2AAgentService:
             raise ValueError(f"Agent not found: {agent_id}")
 
         agent_name = agent.card.name
+        agent_object_id = agent.id
         await agent.delete(session=session)
+        await delete_entity_lease(A2AAgent, agent_object_id)
         logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
 
         self._schedule_delete(agent_id, agent_name)

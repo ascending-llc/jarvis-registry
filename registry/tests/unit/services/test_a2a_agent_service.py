@@ -413,6 +413,7 @@ async def test_delete_agent_passes_session_to_delete():
 
     with (
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch("registry.services.a2a_agent_service.delete_entity_lease", AsyncMock()) as drop_lease,
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
@@ -420,6 +421,7 @@ async def test_delete_agent_passes_session_to_delete():
 
     fake_agent.delete.assert_awaited_once()
     assert fake_agent.delete.await_args.kwargs["session"] is _SENTINEL_SESSION
+    drop_lease.assert_awaited_once()  # orphan per-entity lease is cleaned up on delete
 
 
 @pytest.mark.asyncio

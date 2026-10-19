@@ -53,6 +53,18 @@ async def test_clear_vector_sync_marker_compare_and_clears_by_value():
     )
 
 
+async def test_delete_entity_lease_removes_per_entity_lease_doc(monkeypatch):
+    from registry.services.vector_sync_helpers import delete_entity_lease
+    from registry_pkgs.models import LeaderLease
+
+    doc_id = PydanticObjectId()
+    collection = Mock(delete_one=AsyncMock())
+    monkeypatch.setattr(ExtendedMCPServer, "get_collection_name", lambda: "mcpservers")
+    monkeypatch.setattr(LeaderLease, "get_pymongo_collection", lambda: collection)
+    await delete_entity_lease(ExtendedMCPServer, doc_id)
+    collection.delete_one.assert_awaited_once_with({"_id": f"vector-entity:mcpservers:{doc_id}"})
+
+
 async def test_vector_sync_plan_is_frozen():
     from dataclasses import FrozenInstanceError
 

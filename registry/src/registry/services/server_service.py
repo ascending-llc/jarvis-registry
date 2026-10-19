@@ -47,7 +47,7 @@ from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title
 from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
-from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, sync_pending_vectors
+from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, delete_entity_lease, sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -803,6 +803,7 @@ class ServerServiceV1:
         # Remove from vector DB before deleting from MongoDB (background task)
         asyncio.create_task(self.mcp_server_repo.delete_by_server_id(server_id, server.serverName))
         await server.delete(session=session)
+        await delete_entity_lease(ExtendedMCPServer, server.id)
         logger.info(f"Deleted server: {server.serverName} (ID: {server.id})")
 
     async def _fetch_and_update_tools(
