@@ -24,6 +24,7 @@ from ..models import (
     Federation,
     FederationSyncJob,
     Key,
+    LeaderLease,
     ModelGatewaySelection,
     ModelSource,
     NodeRun,
@@ -75,6 +76,7 @@ _DOCUMENT_MODELS: list[type[Document]] = [
     ModelSource,
     ModelGatewaySelection,
     EmbeddingReindexJob,
+    LeaderLease,
 ]
 
 

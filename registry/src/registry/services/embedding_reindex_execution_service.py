@@ -20,6 +20,7 @@ from registry.core.config import Settings
 from registry.core.mcp_config import MCPClientConfig
 from registry.core.vector_backend import build_backend_config_from_model_source
 from registry.services.federation_job_service import FederationJobService
+from registry.services.vector_sync_helpers import sync_agent_vectors, sync_server_vectors
 from registry.utils.concurrency import run_bounded
 from registry_pkgs.database.embedding_reindex_job_repository import embedding_reindex_repository
 from registry_pkgs.database.leased_job import Lease, LeaseLostError
@@ -91,24 +92,6 @@ def _drop_collection(client: DatabaseClient, name: str) -> None:
     if hasattr(adapter, "collection_exists") and not adapter.collection_exists(name):
         return
     adapter.drop_collection(name)
-
-
-async def _reindex_server(repo: MCPServerRepository, server: ExtendedMCPServer, *, is_delete: bool = False) -> None:
-    """Sync one server into the fresh generation; raise on failure so run_bounded records it.
-
-    ``is_delete=False`` (sweep) inserts into the empty generation; ``is_delete=True`` (catch-up)
-    replaces an entity already swept in, so a changed chunk count drops the stale trailing chunks.
-    """
-    result = await repo.sync_to_vector_db(server, is_delete=is_delete)
-    if not result or result.get("failed_tools"):
-        raise RuntimeError(result.get("error") if result else "vector sync returned no result")
-
-
-async def _reindex_agent(repo: A2AAgentRepository, agent: A2AAgent, *, is_delete: bool = False) -> None:
-    """Sync one agent into the fresh generation; raise on failure so run_bounded records it."""
-    result = await repo.sync_to_vector_db(agent, is_delete=is_delete)
-    if not result or result.get("failed"):
-        raise RuntimeError(result.get("error") if result else "vector sync returned no result")
 
 
 async def _sweep(cursor, handler, ensure_lease: Callable[[], Awaitable[None]]) -> tuple[int, int, set[str]]:
@@ -208,10 +191,10 @@ class EmbeddingReindexExecutionService:
                 await embedding_reindex_repository.assert_owned(lease)
 
             mcp_failed, mcp_total, swept_mcp_ids = await _sweep(
-                ExtendedMCPServer.find_all(), lambda s: _reindex_server(mcp_repo, s), ensure_lease
+                ExtendedMCPServer.find_all(), lambda s: sync_server_vectors(mcp_repo, s), ensure_lease
             )
             a2a_failed, a2a_total, swept_a2a_ids = await _sweep(
-                A2AAgent.find_all(), lambda a: _reindex_agent(a2a_repo, a), ensure_lease
+                A2AAgent.find_all(), lambda a: sync_agent_vectors(a2a_repo, a), ensure_lease
             )
             failed = mcp_failed + a2a_failed
             total = mcp_total + a2a_total
@@ -300,12 +283,12 @@ class EmbeddingReindexExecutionService:
         since = _as_utc(job.startedAt) - _CATCH_UP_WATERMARK_MARGIN
         mcp_failed, mcp_total, mcp_ids = await _sweep(
             ExtendedMCPServer.find({"updatedAt": {"$gte": since}}),
-            lambda s: _reindex_server(mcp_repo, s, is_delete=True),
+            lambda s: sync_server_vectors(mcp_repo, s, is_delete=True),
             ensure_lease,
         )
         a2a_failed, a2a_total, a2a_ids = await _sweep(
             A2AAgent.find({"updatedAt": {"$gte": since}}),
-            lambda a: _reindex_agent(a2a_repo, a, is_delete=True),
+            lambda a: sync_agent_vectors(a2a_repo, a, is_delete=True),
             ensure_lease,
         )
         swept_mcp_ids |= mcp_ids

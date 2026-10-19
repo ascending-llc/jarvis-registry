@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -60,18 +59,9 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
             await self.ensure_collection()
 
             if is_delete and self._collection_has_property("server_id"):
-                try:
-                    result.deleted = await asyncio.wait_for(
-                        self.adelete_by_filter({"server_id": server_id}),
-                        timeout=10.0,
-                    )
-                    if result.deleted:
-                        logger.debug("Deleted %d old docs for server_id=%s", result.deleted, server_id)
-                except TimeoutError:
-                    logger.warning(
-                        "adelete_by_filter timed out for server_id=%s — skipping delete, proceeding with insert",
-                        server_id,
-                    )
+                # Do not cancel a thread-backed delete and then insert: the late delete could
+                # erase the replacement. Transport timeouts propagate as a failed sync below.
+                result.deleted = await self.adelete_by_filter({"server_id": server_id})
 
             docs = server.to_documents()
             if not docs:

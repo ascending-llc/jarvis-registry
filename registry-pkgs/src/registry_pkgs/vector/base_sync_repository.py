@@ -84,6 +84,8 @@ class BaseVectorSyncRepository(Repository[T], ABC):
                     "Adapter does not support update_metadata; metadata-only update skipped for %s.",
                     filters,
                 )
+                result.failed = 1
+                result.error = "Adapter does not support metadata updates"
                 return result
 
             existing_docs = self.adapter.filter_by_metadata(
@@ -117,6 +119,12 @@ class BaseVectorSyncRepository(Repository[T], ABC):
                 )
 
             result.metadata_updated = success
+            result.failed = max(len(existing_docs) - success, 0)
+            if result.failed:
+                result.error = f"Only {success}/{len(existing_docs)} metadata updates succeeded"
+            if len(existing_docs) == _MAX_METADATA_DOCS:
+                result.failed = max(result.failed, 1)
+                result.error = "Metadata query reached its limit; a full rebuild is required"
             logger.info(
                 "Metadata-only update: %d/%d docs updated for %s",
                 success,
@@ -131,6 +139,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
                 exc_info=True,
             )
             result.error = str(e)
+            result.failed = max(result.failed, 1)
         return result
 
     @abstractmethod

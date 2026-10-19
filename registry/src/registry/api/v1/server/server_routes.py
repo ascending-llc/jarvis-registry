@@ -502,13 +502,16 @@ async def update_server(
                     session=mongo_session,
                 )
 
-                server = await server_service.update_server(
+                server, vector_plan = await server_service.update_server(
                     server_id=server_id,
                     data=data,
                     user_id=user_id,
                     session=mongo_session,
                 )
 
+        # Schedule the vector sync only after the transaction has committed, so the immediate task
+        # never lands before the marker it must clear and a rolled-back update leaves no stale vectors.
+        server_service.schedule_vector_sync(vector_plan)
         return convert_to_detail(server, acl_permission=permissions)
 
     except EmbeddingReindexInProgressException as exc:

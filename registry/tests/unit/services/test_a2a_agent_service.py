@@ -226,6 +226,7 @@ async def test_update_agent_passes_session_to_save():
     fake_agent = MagicMock()
     fake_agent.save = AsyncMock()
     fake_agent.config = SimpleNamespace(title="old", url="https://agent.example.com")
+    fake_agent.vectorSyncPendingAt = None
     fake_agent.vectorContentHash = "hash"
 
     data = AgentUpdateRequest(title="New Title")  # title-only -> no card fetch
@@ -252,6 +253,7 @@ async def test_update_agent_uses_card_url_fallback_to_skip_unchanged_url_fetch()
         description="card desc",
         url="https://agentcore.example.com",
     )
+    fake_agent.vectorSyncPendingAt = None
     fake_agent.vectorContentHash = "hash"
 
     data = AgentUpdateRequest(title="New Title", url="https://agentcore.example.com/")
@@ -286,6 +288,7 @@ async def test_update_agent_normalizes_existing_config_url_when_unchanged():
         description="card desc",
         url="https://agent.example.com/",
     )
+    fake_agent.vectorSyncPendingAt = None
     fake_agent.vectorContentHash = "hash"
 
     data = AgentUpdateRequest(title="New Title", url="https://agent.example.com")
@@ -328,6 +331,7 @@ async def test_update_agent_refetches_changed_card_url_with_auth_headers():
         lastSyncStatus="success",
         lastSyncVersion="1.0.0",
     )
+    fake_agent.vectorSyncPendingAt = None
     fake_agent.vectorContentHash = "hash"
 
     headers = {"Authorization": "Bearer agentcore-jwt"}
@@ -376,6 +380,7 @@ async def test_update_agent_refetches_without_auth_headers_when_header_build_fai
         lastSyncStatus="success",
         lastSyncVersion="1.0.0",
     )
+    fake_agent.vectorSyncPendingAt = None
     fake_agent.vectorContentHash = "hash"
 
     fetch = AsyncMock(return_value=updated_card)
@@ -408,6 +413,7 @@ async def test_delete_agent_passes_session_to_delete():
 
     with (
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch("registry.services.a2a_agent_service.delete_entity_lease", AsyncMock()) as drop_lease,
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
@@ -415,6 +421,7 @@ async def test_delete_agent_passes_session_to_delete():
 
     fake_agent.delete.assert_awaited_once()
     assert fake_agent.delete.await_args.kwargs["session"] is _SENTINEL_SESSION
+    drop_lease.assert_awaited_once()  # orphan per-entity lease is cleaned up on delete
 
 
 @pytest.mark.asyncio
@@ -423,6 +430,7 @@ async def test_toggle_agent_status_passes_session_to_save():
     fake_agent = MagicMock()
     fake_agent.save = AsyncMock()
     fake_agent.card = SimpleNamespace(name="Test Agent")
+    fake_agent.vectorSyncPendingAt = None
     fake_agent.vectorContentHash = "hash"
 
     with (
@@ -434,6 +442,7 @@ async def test_toggle_agent_status_passes_session_to_save():
 
     fake_agent.save.assert_awaited_once()
     assert fake_agent.save.await_args.kwargs["session"] is _SENTINEL_SESSION
+    assert fake_agent.vectorSyncPendingAt is not None  # toggle marks pending in the same save
 
 
 def _create_request() -> AgentCreateRequest:
@@ -502,6 +511,7 @@ async def test_update_agent_propagates_database_error():
     fake_agent = MagicMock()
     fake_agent.save = AsyncMock(side_effect=PyMongoError("connection reset"))
     fake_agent.config = SimpleNamespace(title="old", url="https://agent.example.com")
+    fake_agent.vectorSyncPendingAt = None
     fake_agent.vectorContentHash = "hash"
 
     with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
@@ -531,6 +541,7 @@ async def test_toggle_agent_status_propagates_database_error():
     fake_agent = MagicMock()
     fake_agent.save = AsyncMock(side_effect=PyMongoError("connection reset"))
     fake_agent.card = SimpleNamespace(name="Test Agent")
+    fake_agent.vectorSyncPendingAt = None
     fake_agent.vectorContentHash = "hash"
 
     with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
@@ -881,6 +892,7 @@ async def test_update_agent_passes_foundry_agent_card_path_override():
         ),
         federationMetadata=make_azure_foundry_metadata(agentCardPath="agentCard/v0.3"),
         federationRefId=PydanticObjectId(),
+        vectorSyncPendingAt=None,
         vectorContentHash="hash",
         updatedAt=None,
     )
@@ -983,3 +995,54 @@ class TestA2AReindexGate:
 
         with pytest.raises(EmbeddingReindexInProgressException):
             await service.sync_wellknown(agent_id="agent-gated")
+
+
+@pytest.mark.asyncio
+async def test_create_agent_marks_pending_and_returns_full_resync_plan():
+    """create stamps the pending marker in the same insert and returns a full-resync plan."""
+    service = _service()
+    request = AgentCreateRequest(
+        path="/test-agent", title="Test Agent", description="desc", url="https://agent.example.com", type="jsonrpc"
+    )
+    mock_card = SimpleNamespace(version="1.0.0", name="Test Agent", description="desc")
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_fetch_agent_card_from_url", AsyncMock(return_value=mock_card)),
+    ):
+        MockAgent.find_one = AsyncMock(return_value=None)
+        agent_instance = MockAgent.return_value
+        agent_instance.insert = AsyncMock()
+        agent_instance.id = PydanticObjectId()
+        agent_instance.config = SimpleNamespace(title="Test Agent")
+        agent_instance.path = "/test-agent"
+
+        agent, plan = await service.create_agent(data=request, user_id=str(PydanticObjectId()))
+
+    assert agent is agent_instance
+    assert agent_instance.vectorSyncPendingAt is not None  # marker set in the same insert
+    assert plan.doc is agent_instance
+    assert plan.full_resync is True
+    assert plan.marker == agent_instance.vectorSyncPendingAt
+
+
+@pytest.mark.asyncio
+async def test_update_agent_marks_pending_and_returns_plan():
+    """update stamps the marker; unchanged content -> metadata-only (full_resync False)."""
+    service = _service()
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock()
+    fake_agent.config = SimpleNamespace(title="old", url="https://agent.example.com")
+    fake_agent.vectorSyncPendingAt = None
+    fake_agent.vectorContentHash = "hash"  # save is mocked, so the hash hook never changes it
+
+    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+        _agent, plan = await service.update_agent(
+            agent_id=str(PydanticObjectId()), data=AgentUpdateRequest(title="New")
+        )
+
+    assert fake_agent.vectorSyncPendingAt is not None
+    assert plan.doc is fake_agent
+    assert plan.full_resync is False
+    assert plan.marker == fake_agent.vectorSyncPendingAt

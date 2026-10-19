@@ -495,6 +495,53 @@ async def test_update_server_route_returns_503_during_reindex(sample_user_contex
 
 
 @pytest.mark.asyncio
+async def test_update_server_route_schedules_vector_sync_after_commit(sample_user_context):
+    """The route schedules the returned plan's vector sync only after the transaction block exits."""
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    plan = MagicMock()
+    mock_server_service = MagicMock()
+    mock_server_service.update_server = AsyncMock(return_value=(_fake_mcp_server(enabled=True), plan))
+
+    with (
+        patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client,
+        patch("registry.api.v1.server.server_routes.convert_to_detail", return_value="ok"),
+    ):
+        _mock_mongo_transaction(mock_get_client)
+        result = await update_server(
+            server_id=str(PydanticObjectId()),
+            data=ServerUpdateRequest(),
+            user_context=sample_user_context,
+            acl_service=mock_acl_service,
+            server_service=mock_server_service,
+        )
+
+    assert result == "ok"
+    mock_server_service.schedule_vector_sync.assert_called_once_with(plan)
+
+
+@pytest.mark.asyncio
+async def test_update_server_route_does_not_schedule_when_transaction_raises(sample_user_context):
+    """A failure inside the transaction must leave the vector sync unscheduled (no stale write)."""
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(side_effect=RuntimeError("acl boom"))
+    mock_server_service = MagicMock()
+
+    with patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client:
+        _mock_mongo_transaction(mock_get_client)
+        with pytest.raises((HTTPException, RuntimeError)):
+            await update_server(
+                server_id=str(PydanticObjectId()),
+                data=ServerUpdateRequest(),
+                user_context=sample_user_context,
+                acl_service=mock_acl_service,
+                server_service=mock_server_service,
+            )
+
+    mock_server_service.schedule_vector_sync.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_delete_server_route_returns_503_during_reindex(sample_user_context):
     mock_acl_service = MagicMock()
     mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())

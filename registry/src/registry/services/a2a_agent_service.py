@@ -38,10 +38,11 @@ from registry_pkgs.workflows.a2a_client import build_headers, is_azure_foundry_r
 
 from ..core.config import settings
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
+from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
+from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, delete_entity_lease, sync_pending_vectors
 
 logger = logging.getLogger(__name__)
-
 
 _WELL_KNOWN_SUFFIX_RE = re.compile(r"/\.well-known(/.*)?$")
 _A2A_PROXY_SCOPE = "a2a-proxy-ops"
@@ -83,11 +84,13 @@ class A2AAgentService:
         *,
         azure_client_cache: AzureFoundryClientCache,
         embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
+        background_task_tracker: BackgroundTaskTracker | None = None,
     ):
         self._a2a_agent_repo = a2a_agent_repo
         self._jwt_config = jwt_config
         self._azure_client_cache = azure_client_cache
         self._embedding_maintenance_watcher = embedding_maintenance_watcher
+        self._task_tracker = background_task_tracker
 
     @staticmethod
     def _path_conflict_message(input_path: Any, normalized_path: str) -> str:
@@ -97,19 +100,32 @@ class A2AAgentService:
             f"Please choose a different path. (Your input '{input_path}' was normalized to '{normalized_path}')"
         )
 
-    def _schedule_sync(self, agent: A2AAgent, *, is_delete: bool) -> None:
-        """Schedule a non-blocking vector sync after a MongoDB write."""
-        if self._a2a_agent_repo is None:
+    @staticmethod
+    def _mark_vector_sync_pending(agent: A2AAgent) -> datetime:
+        """Stamp the pending marker so it commits atomically with the change, and reset the backoff.
+
+        Returns the marker value to carry in the :class:`VectorSyncPlan` for compare-and-clear. Callers
+        must set this *before* the ``save()``/``insert()`` that persists the change.
+        """
+        marker = datetime.now(UTC)
+        agent.vectorSyncPendingAt = marker
+        agent.vectorSyncAttempts = 0
+        return marker
+
+    def _spawn_vector_task(self, coro: Any, name: str) -> None:
+        """Spawn a vector task through the tracker; tolerate shutdown, and an unwired tracker in tests.
+
+        After shutdown the spawn is refused — the Mongo write has already committed, so the request
+        must still succeed and the reconciler heals the marker that stays set.
+        """
+        if self._task_tracker is None:
+            coro.close()
+            logger.warning("No background task tracker wired for %s; leaving pending work for reconciliation", name)
             return
-
-        async def _task():
-            try:
-                result = await self._a2a_agent_repo.sync_to_vector_db(agent, is_delete=is_delete)
-                logger.debug("Vector sync result for agent %s: %s", agent.id, result)
-            except Exception as e:
-                logger.error("Vector sync failed for agent %s: %s", agent.id, e, exc_info=True)
-
-        asyncio.create_task(_task())
+        try:
+            self._task_tracker.spawn(coro, name=name)
+        except TrackerShutdownError:
+            logger.info("Vector sync not scheduled (shutting down); the reconciler will heal it")
 
     def _schedule_delete(self, agent_id: str, agent_name: str | None = None) -> None:
         """Schedule removal of all Weaviate docs for an agent."""
@@ -124,23 +140,29 @@ class A2AAgentService:
 
         asyncio.create_task(_task())
 
-    def _schedule_vector_sync(self, agent: A2AAgent, old_hash: str | None) -> None:
-        """Schedule vector sync or metadata-only update based on content hash change."""
+    def schedule_vector_sync(self, plan: VectorSyncPlan) -> None:
+        """Run the immediate Weaviate sync for a committed write, tracked and marker-clearing.
+
+        On success the pending marker is compare-and-cleared on its exact value; on failure (a raised
+        exception, including a failed result dict from the shared helper) it is logged at ``warning``
+        and left for the reconciler. Transactional writes (create, update) call this only after the
+        commit (see the route layer); non-transactional writes call it from the service.
+        """
         if self._a2a_agent_repo is None:
             return
-        if agent.vectorContentHash != old_hash:
-            self._schedule_sync(agent, is_delete=True)
-        else:
+        agent = plan.doc
 
-            async def _task():
-                try:
-                    await self._a2a_agent_repo.update_entity_metadata(
-                        "agent_id", str(agent.id), {"enabled": agent.config.enabled if agent.config else False}
-                    )
-                except Exception as e:
-                    logger.error("Vector metadata update failed for agent %s: %s", agent.id, e, exc_info=True)
+        async def _sync_task() -> None:
+            try:
+                await sync_pending_vectors(A2AAgent, self._a2a_agent_repo, agent.id, plan=plan)
+            except VectorSyncBusyError:
+                logger.info("Vector sync already running for %s; pending work remains queued", agent.id)
+            except Exception:
+                logger.warning(
+                    "Vector sync failed for agent %s; marker left for the reconciler", agent.id, exc_info=True
+                )
 
-            asyncio.create_task(_task())
+        self._spawn_vector_task(_sync_task(), f"vector-sync-agent-{agent.id}")
 
     @staticmethod
     def _ensure_agent_config(agent: A2AAgent) -> AgentConfig:
@@ -512,7 +534,7 @@ class A2AAgentService:
         data: AgentCreateRequest,
         user_id: str,
         session: AsyncClientSession | None = None,
-    ) -> A2AAgent:
+    ) -> tuple[A2AAgent, VectorSyncPlan]:
         """
         Create a new agent. Automatically fetches agent card from provided URL.
 
@@ -584,13 +606,16 @@ class A2AAgentService:
                 lastSyncStatus="success",
                 lastSyncVersion=agent_card.version,
             )
+            marker = self._mark_vector_sync_pending(agent)
             await agent.insert(session=session)
             logger.info(
                 f"Created agent: {agent.config.title} (ID: {agent.id}, path: {agent.path}) with wellKnown sync enabled"
             )
 
-            self._schedule_sync(agent, is_delete=False)
-            return agent
+            # New agent: full sync. Scheduled by the route after the transaction commits (see note on
+            # update_agent's return), so the immediate task never lands before the marker it clears.
+            plan = VectorSyncPlan(doc=agent, marker=marker, full_resync=True)
+            return agent, plan
 
         except ValueError:
             raise
@@ -607,7 +632,7 @@ class A2AAgentService:
         agent_id: str,
         data: AgentUpdateRequest,
         session: AsyncClientSession | None = None,
-    ) -> A2AAgent:
+    ) -> tuple[A2AAgent, VectorSyncPlan]:
         """
         Update an existing agent. If URL is updated, automatically fetches new agent card.
 
@@ -748,11 +773,18 @@ class A2AAgentService:
 
             # Save changes
             old_hash = agent.vectorContentHash
+            had_pending_sync = agent.vectorSyncPendingAt is not None
+            marker = self._mark_vector_sync_pending(agent)
             await agent.save(session=session)
             logger.info(f"Updated agent: {agent.config.title} (ID: {agent_id})")
 
-            self._schedule_vector_sync(agent, old_hash)
-            return agent
+            # Hash is recomputed by the save hook, so compare post-save to pick the full-resync branch.
+            # Scheduled by the route after the transaction commits, so the immediate task never lands
+            # before the marker it must clear and a rolled-back update leaves no stale vectors.
+            plan = VectorSyncPlan(
+                doc=agent, marker=marker, full_resync=had_pending_sync or agent.vectorContentHash != old_hash
+            )
+            return agent, plan
 
         except ValueError:
             raise
@@ -788,7 +820,9 @@ class A2AAgentService:
             raise ValueError(f"Agent not found: {agent_id}")
 
         agent_name = agent.card.name
+        agent_object_id = agent.id
         await agent.delete(session=session)
+        await delete_entity_lease(A2AAgent, agent_object_id)
         logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
 
         self._schedule_delete(agent_id, agent_name)
@@ -823,16 +857,20 @@ class A2AAgentService:
         agent.updatedAt = datetime.now(UTC)
 
         old_hash = agent.vectorContentHash
+        had_pending_sync = agent.vectorSyncPendingAt is not None
+        marker = self._mark_vector_sync_pending(agent)
         await agent.save(session=session)
 
         logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
 
-        # When enabling, always force a full sync — Weaviate may be empty even if the
-        # content hash hasn't changed (e.g. after a collection reset or a previous failed sync).
-        if enabled:
-            self._schedule_vector_sync(agent, old_hash=None)
-        else:
-            self._schedule_vector_sync(agent, old_hash)
+        # When enabling, always force a full sync — Weaviate may be empty even if the content hash
+        # hasn't changed (e.g. after a collection reset or a previous failed sync). Toggle is not in a
+        # route transaction, so schedule from here.
+        effective_old_hash = None if enabled else old_hash
+        plan = VectorSyncPlan(
+            doc=agent, marker=marker, full_resync=had_pending_sync or agent.vectorContentHash != effective_old_hash
+        )
+        self.schedule_vector_sync(plan)
         return agent
 
     async def refresh_agent_capabilities(
@@ -959,11 +997,13 @@ class A2AAgentService:
             agent.updatedAt = datetime.now(UTC)
 
             # Save changes
+            marker = self._mark_vector_sync_pending(agent)
             await agent.save(session=session)
 
             logger.info(f"Successfully synced agent {agent.card.name} from well-known: {len(changes)} changes")
 
-            self._schedule_sync(agent, is_delete=True)
+            # Well-known re-sync is not in a route transaction, so schedule from here.
+            self.schedule_vector_sync(VectorSyncPlan(doc=agent, marker=marker, full_resync=True))
 
             return {
                 "message": "Well-known configuration synced successfully",
