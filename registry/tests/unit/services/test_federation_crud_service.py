@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
@@ -8,6 +8,16 @@ from beanie import PydanticObjectId
 from registry.services.federation_crud_service import FederationCrudService
 from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus
 from registry_pkgs.models.federation import FederationLastSync, FederationStats
+
+
+@pytest.fixture(autouse=True)
+def federation_collection(monkeypatch):
+    collection = MagicMock()
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
+    monkeypatch.setattr(
+        "registry.services.federation_crud_service.Federation.get_pymongo_collection", lambda: collection
+    )
+    return collection
 
 
 def _make_federation(
@@ -21,11 +31,32 @@ def _make_federation(
         syncStatus=sync_status,
         syncMessage=None,
         lastSync=None,
+        deletingJobId=None,
         stats=FederationStats(),
         deletedAt=None,
         save=AsyncMock(),
     )
     return federation
+
+
+@pytest.mark.asyncio
+async def test_update_federation_returns_persisted_updated_at(federation_collection):
+    federation = _make_federation()
+    federation.providerType = FederationProviderType.AWS_AGENTCORE
+    federation.updatedAt = datetime(2020, 1, 1, tzinfo=UTC)
+
+    result = await FederationCrudService().update_federation(
+        federation=federation,
+        display_name="Updated",
+        description=None,
+        tags=[],
+        provider_config={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/test"},
+        updated_by="editor",
+    )
+
+    written_at = federation_collection.update_one.await_args.args[1]["$set"]["updatedAt"]
+    assert result.updatedAt == written_at
+    assert result.updatedAt > datetime(2020, 1, 1, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -36,7 +67,7 @@ async def test_mark_sync_pending_uses_state_machine():
     result = await service.mark_sync_pending(federation)
 
     assert result.syncStatus == FederationSyncStatus.PENDING
-    federation.save.assert_awaited_once()
+    federation.save.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -49,7 +80,17 @@ async def test_mark_sync_pending_updates_last_sync_when_provided():
 
     assert result.syncStatus == FederationSyncStatus.PENDING
     assert result.lastSync == last_sync
-    federation.save.assert_awaited_once()
+    federation.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_sync_pending_accepts_matching_noop_update(federation_collection):
+    federation_collection.update_one.return_value = SimpleNamespace(matched_count=1, modified_count=0)
+    federation = _make_federation(sync_status=FederationSyncStatus.SUCCESS)
+
+    result = await FederationCrudService().mark_sync_pending(federation)
+
+    assert result.syncStatus == FederationSyncStatus.PENDING
 
 
 @pytest.mark.asyncio
@@ -67,55 +108,52 @@ async def test_mark_syncing_updates_last_sync_when_provided():
     federation = _make_federation(sync_status=FederationSyncStatus.PENDING)
     last_sync = FederationLastSync(status=FederationSyncStatus.SYNCING)
 
-    result = await service.mark_syncing(federation, last_sync=last_sync)
+    result = await service.mark_syncing(federation, last_sync=last_sync, job_id=PydanticObjectId())
 
     assert result.syncStatus == FederationSyncStatus.SYNCING
     assert result.lastSync == last_sync
-    federation.save.assert_awaited_once()
+    federation.save.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_mark_deleting_transitions_status_and_sync_status():
+async def test_mark_deleting_transitions_status_and_sync_status(federation_collection):
     service = FederationCrudService()
     federation = _make_federation(status=FederationStatus.ACTIVE, sync_status=FederationSyncStatus.IDLE)
 
-    result = await service.mark_deleting(federation)
+    job_id = PydanticObjectId()
+    result = await service.mark_deleting(federation, job_id=job_id)
 
     assert result.status == FederationStatus.DELETING
     assert result.syncStatus == FederationSyncStatus.PENDING
-    federation.save.assert_awaited_once()
+    assert result.deletingJobId == job_id
+    query = federation_collection.update_one.await_args.args[0]
+    assert query["syncStatus"] == {"$in": ["idle", "success", "failed"]}
+    federation.save.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_mark_deleted_requires_valid_transition():
-    service = FederationCrudService()
-    federation = _make_federation(status=FederationStatus.DELETED, sync_status=FederationSyncStatus.SUCCESS)
-
-    with pytest.raises(ValueError, match="cannot transition to deleted"):
-        await service.mark_deleted(federation)
-
-
-@pytest.mark.asyncio
-async def test_mark_delete_failed_restores_active_and_failed_sync_status():
+async def test_mark_delete_failed_restores_active_and_failed_sync_status(federation_collection):
     service = FederationCrudService()
     federation = _make_federation(status=FederationStatus.DELETING, sync_status=FederationSyncStatus.SYNCING)
 
-    result = await service.mark_delete_failed(federation, "delete failed")
+    job_id = PydanticObjectId()
+    result = await service.mark_delete_failed(federation, "delete failed", expected_job_id=job_id)
 
     assert result.status == FederationStatus.ACTIVE
     assert result.syncStatus == FederationSyncStatus.FAILED
     assert result.syncMessage == "delete failed"
-    federation.save.assert_awaited_once()
+    assert federation_collection.update_one.await_args.args[0]["deletingJobId"] == job_id
+    federation.save.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_mark_sync_success_updates_stats_and_last_sync():
     service = FederationCrudService()
     federation = _make_federation(sync_status=FederationSyncStatus.SYNCING)
-    now = datetime.now(UTC)
+    now = FederationLastSync(status=FederationSyncStatus.SUCCESS, finishedAt=datetime.now(UTC))
     stats = FederationStats(mcpServerCount=1, agentCount=2, toolCount=3, importedTotal=3)
 
-    result = await service.mark_sync_success(federation, last_sync=now, stats=stats)
+    result = await service.mark_sync_success(federation, last_sync=now, stats=stats, job_id=PydanticObjectId())
 
     assert result.syncStatus == FederationSyncStatus.SUCCESS
     assert result.lastSync == now
@@ -126,7 +164,7 @@ async def test_mark_sync_success_updates_stats_and_last_sync():
 async def test_mark_sync_failed_updates_last_sync_and_stats_when_provided():
     service = FederationCrudService()
     federation = _make_federation(sync_status=FederationSyncStatus.SYNCING)
-    last_sync = object()
+    last_sync = FederationLastSync(status=FederationSyncStatus.FAILED)
     stats = FederationStats(mcpServerCount=1, agentCount=2, toolCount=3, importedTotal=3)
 
     result = await service.mark_sync_failed(federation, "one resource failed", last_sync=last_sync, stats=stats)

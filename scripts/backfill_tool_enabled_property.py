@@ -26,6 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from registry.core.config import Settings
+from registry.core.vector_backend import resolve_vector_backend_config
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.vector.client import create_database_client
@@ -37,7 +38,7 @@ async def backfill_tool_enabled(dry_run: bool) -> dict:
 
     settings = Settings()
     await init_mongodb(settings.mongo_config)
-    db_client = create_database_client(settings.vector_backend_config)
+    db_client = create_database_client(await resolve_vector_backend_config(settings))
     try:
         mcp_repo = MCPServerRepository(db_client)
 
