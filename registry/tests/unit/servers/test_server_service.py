@@ -10,6 +10,7 @@ import pytest
 from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
 from registry.services.server_service import ServerServiceV1
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 
 @pytest.mark.unit
@@ -578,12 +579,65 @@ class TestReindexGate:
 @pytest.mark.unit
 @pytest.mark.servers
 @pytest.mark.asyncio
+class TestScheduleVectorSync:
+    @pytest.fixture
+    def sync_setup(self, monkeypatch):
+        repo = Mock(sync_entity_metadata=AsyncMock(), sync_to_vector_db=AsyncMock())
+        service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=repo)
+        server = Mock(spec=ExtendedMCPServer)
+        server.id = "srv-1"
+        server.vectorContentHash = "same-content"
+        server.mutable_metadata.return_value = {"enabled": False, "tags": ["ops"], "runtimeVersion": "7"}
+        captured = {}
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+        return service, repo, server, captured
+
+    async def test_unchanged_hash_syncs_metadata_with_mongo_reload(self, sync_setup):
+        service, repo, server, captured = sync_setup
+
+        with patch.object(ExtendedMCPServer, "get", new_callable=AsyncMock) as reload:
+            service._schedule_vector_sync(server, old_hash=server.vectorContentHash)
+            await captured["coro"]
+
+            repo.sync_entity_metadata.assert_awaited_once()
+            args = repo.sync_entity_metadata.await_args
+            assert args.args == (server, server.mutable_metadata.return_value)
+            reload.assert_not_awaited()
+            assert await args.kwargs["reload"]() is reload.return_value
+            reload.assert_awaited_once_with(server.id)
+
+        repo.sync_to_vector_db.assert_not_awaited()
+        repo.update_entity_metadata.assert_not_called()
+
+    async def test_changed_hash_keeps_full_rebuild(self, sync_setup):
+        service, repo, server, captured = sync_setup
+
+        service._schedule_vector_sync(server, old_hash="older-content")
+        await captured["coro"]
+
+        repo.sync_to_vector_db.assert_awaited_once_with(server, is_delete=True)
+        repo.sync_entity_metadata.assert_not_awaited()
+
+    async def test_metadata_sync_logs_errors_without_raising(self, sync_setup, caplog):
+        service, repo, server, captured = sync_setup
+        repo.sync_entity_metadata.side_effect = RuntimeError("weaviate down")
+
+        service._schedule_vector_sync(server, old_hash=server.vectorContentHash)
+        with caplog.at_level("ERROR", logger="registry.services.server_service"):
+            await captured["coro"]
+
+        assert "Vector metadata update failed for server srv-1" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
 class TestUpdateDisabledTools:
     """Test suite for update_disabled_tools and refresh-time pruning."""
 
     def _make_service(self):
         mock_repo = Mock()
-        mock_repo.update_tools_metadata = AsyncMock()
+        mock_repo.sync_tools_enabled = AsyncMock()
         service = ServerServiceV1(
             user_service=Mock(),
             token_service=Mock(),
@@ -624,7 +678,7 @@ class TestUpdateDisabledTools:
         assert result.registryDisabledTools == ["read_file"]  # ghost_tool dropped, sorted
         server.save.assert_awaited_once()
         # Only the real newly-disabled tool is scheduled for the Weaviate push.
-        mock_schedule.assert_called_once_with("srv-1", {"read_file"}, set())
+        mock_schedule.assert_called_once_with(server, {"read_file"}, set())
 
     async def test_schedules_flip_sets_for_weaviate_push(self):
         """update_disabled_tools schedules the flipped new/previous sets, not the server's whole tool set."""
@@ -637,7 +691,7 @@ class TestUpdateDisabledTools:
                 await service.update_disabled_tools("srv-1", ["write_file"])
 
         assert server.registryDisabledTools == ["write_file"]
-        mock_schedule.assert_called_once_with("srv-1", {"write_file"}, {"read_file"})
+        mock_schedule.assert_called_once_with(server, {"write_file"}, {"read_file"})
 
     async def test_noop_when_unchanged_skips_save_and_weaviate(self):
         """Submitting the same effective list is an idempotent no-op."""
@@ -651,45 +705,51 @@ class TestUpdateDisabledTools:
         server.save.assert_not_awaited()
         mock_schedule.assert_not_called()
 
-    async def test_schedule_tool_enabled_sync_batches_by_flip(self, monkeypatch):
-        """_schedule_tool_enabled_sync partitions the diff into disable/enable groups and pushes
-        each batch to Weaviate. Verified by capturing the coroutine handed to asyncio.create_task
-        (fire-and-forget) and running it to completion directly, instead of scheduling it."""
+    async def test_schedule_tool_enabled_sync_sends_one_diff_with_mongo_reload(self, monkeypatch):
+        """One repository call covers both flips and excludes unchanged disabled tools."""
         service, repo = self._make_service()
+        server = self._make_server(disabled=["delete_file", "write_file"])
         captured: dict = {}
         monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
 
-        service._schedule_tool_enabled_sync("srv-1", {"write_file"}, {"read_file"})
-        await captured["coro"]
+        with patch.object(ExtendedMCPServer, "get", new_callable=AsyncMock) as reload:
+            service._schedule_tool_enabled_sync(server, {"delete_file", "write_file"}, {"delete_file", "read_file"})
+            await captured["coro"]
 
-        repo.update_tools_metadata.assert_any_await("srv-1", ["write_file"], {"tool_enabled": False})
-        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": True})
+            repo.sync_tools_enabled.assert_awaited_once()
+            args = repo.sync_tools_enabled.await_args
+            assert args.args == (server, ["read_file", "write_file"])
+            reload.assert_not_awaited()
+            assert await args.kwargs["reload"]() is reload.return_value
+            reload.assert_awaited_once_with(server.id)
 
-    async def test_schedule_tool_enabled_sync_empty_group_still_pushed(self, monkeypatch):
-        """A group with no members is still passed through (repo no-ops on empty list), never crashes."""
+        repo.update_tools_metadata.assert_not_called()
+
+    async def test_schedule_tool_enabled_sync_handles_one_flip(self, monkeypatch):
         service, repo = self._make_service()
+        server = self._make_server(disabled=["read_file"])
         captured: dict = {}
         monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
 
-        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
+        service._schedule_tool_enabled_sync(server, {"read_file"}, set())
         await captured["coro"]
 
-        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": False})
-        repo.update_tools_metadata.assert_any_await("srv-1", [], {"tool_enabled": True})
+        repo.sync_tools_enabled.assert_awaited_once()
+        assert repo.sync_tools_enabled.await_args.args == (server, ["read_file"])
 
     async def test_schedule_tool_enabled_sync_no_repo_is_noop(self):
         """No mcp_server_repo configured -> returns without scheduling anything."""
         service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=None)
-        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())  # must not raise
+        service._schedule_tool_enabled_sync(self._make_server(), {"read_file"}, set())  # must not raise
 
     async def test_schedule_tool_enabled_sync_logs_errors_without_raising(self, monkeypatch, caplog):
         """A Weaviate failure in the background task is logged, not raised (MongoDB stays authoritative)."""
         service, repo = self._make_service()
-        repo.update_tools_metadata.side_effect = RuntimeError("weaviate down")
+        repo.sync_tools_enabled.side_effect = RuntimeError("weaviate down")
         captured: dict = {}
         monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
 
-        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
+        service._schedule_tool_enabled_sync(self._make_server(disabled=["read_file"]), {"read_file"}, set())
         with caplog.at_level("ERROR", logger="registry.services.server_service"):
             await captured["coro"]  # must not raise
 

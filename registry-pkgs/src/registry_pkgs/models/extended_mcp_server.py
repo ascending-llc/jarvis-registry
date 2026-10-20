@@ -292,7 +292,7 @@ class ExtendedMCPServer(MCPServer):
         """Recompute vectorContentHash before every write.
 
         Service layer captures the hash before .save() and compares after to decide whether to
-        call sync_to_vector_db (full rebuild) or update_entity_metadata (metadata-only patch).
+        call sync_to_vector_db (full rebuild) or sync_entity_metadata (patch with a doc-count check).
         This contract holds as long as config.enabled is NOT included in page_content — if
         to_documents() ever embeds those fields, toggle paths will incorrectly trigger full syncs.
         """

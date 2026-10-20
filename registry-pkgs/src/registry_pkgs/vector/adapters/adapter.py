@@ -288,7 +288,13 @@ class VectorStoreAdapter(ABC):
 
     @abstractmethod
     def filter_by_metadata(
-        self, filters: Any, limit: int, collection_name: str | None = None, **kwargs
+        self,
+        filters: Any,
+        limit: int,
+        collection_name: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        **kwargs,
     ) -> list[Document]:
         """
         Extended feature: Filter documents by metadata only (no vector search)
@@ -299,12 +305,17 @@ class VectorStoreAdapter(ABC):
             filters: Filter object (auto-converted if dict)
             limit: Maximum number of results
             collection_name: Target collection
+            raise_on_error: Propagate query errors instead of returning an empty list
 
         Returns:
             List of matching LangChain Documents
 
         """
         raise NotImplementedError()
+
+    def count_by_metadata(self, filters: Any, collection_name: str | None = None) -> int:
+        """Count all documents matching metadata filters, propagating lookup failures."""
+        raise NotImplementedError(f"{self.__class__.__name__} must implement count_by_metadata().")
 
     @abstractmethod
     def bm25_search(
