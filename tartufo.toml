@@ -147,4 +147,12 @@ exclude-signatures = [
     {signature = 'cc632ac2b2c1531fb61b5660cd9228ebce9c440c4b9551f6d17548f0ebe78af3', reason = 'docker-compose OTEL endpoint env-var defaults and dev profile diff is not a credential'},
     {signature = '042c4794e96f05be2a5a24f56fe13b2c2fb73ae65332f1552f8894651899c2da', reason = 'fake MongoDB credentials in create_mongo_client URL-building unit tests are not credentials'},
     {signature = '9775c81493dd8663f25171fe586cfa241f955ff688bf2eb10a7a055dc25f2125', reason = 'fake MongoDB credentials in create_mongo_client URL-building unit tests are not credentials'},
+    {signature = '78066d8b760cdb343da13d11a33c839d01c1a698403db467657fd9d63267a694', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = '57395e1c40f0ff1a227d665bd4d4633f6161ca785628e85c9e8a4b2bc4fd8907', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = 'a93152ccce2219a2698bc00311195a39e174ecb591a9fcda719a24d0d1c016c7', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = '69ceecd792bd8344b862f6a584af11827df9314b21d686fa50be875fb3b58db3', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = 'fa11765e29079d2dcdb8ea09bbb97a160ba41083ee3afdd135880ed808eee61f', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = '9dc17aee0f1238162c7695d6535914675bf3fb52b324349d5714c7e75e25b85c', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = '69937224536ad15ebc984d7fc9a78f0200a159c244cddb543df5386d499eacc4', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = 'ca4f7da5c2cc976422c65b232ee35009e20fa010fc0c9f9cb85b7b07f9770220', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
 ]

@@ -4,6 +4,7 @@ from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import OAuthStateStore
+from registry_pkgs.oauth.identity import IdentityService
 
 from .container import AuthContainer
 from .core.types import AllowedProvider
@@ -11,7 +12,6 @@ from .providers.base import AuthProvider
 from .services.client_registration_service import ClientRegistrationService
 from .services.server_service import ServerService
 from .services.token_grant_service import TokenGrantService
-from .services.user_service import UserService
 from .utils.config_loader import OAuth2Config
 
 
@@ -23,8 +23,8 @@ def get_server_service(container: AuthContainer = Depends(get_container)) -> Ser
     return container.server_service
 
 
-def get_user_service(container: AuthContainer = Depends(get_container)) -> UserService:
-    return container.user_service
+def get_identity_service(container: AuthContainer = Depends(get_container)) -> IdentityService:
+    return container.identity_service
 
 
 def get_oauth2_config(container: AuthContainer = Depends(get_container)) -> OAuth2Config:

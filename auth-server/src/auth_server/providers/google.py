@@ -95,19 +95,22 @@ class GoogleProvider(AuthProvider):
     async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
         """Verify the id_token, enforce the login gate, then resolve groups.
 
-        Returns the same shape as ``EntraIdProvider.get_user_info``:
-        ``{"username", "email", "name", "id", "groups"}`` — with ``groups`` set to the
-        list of group local parts on the configured Workspace domain.
+        Returns the shared identity contract from ``AuthProvider.get_user_info``.
+        Groups are restricted to the configured Workspace domain.
         """
         if not id_token:
             raise ValueError("Google login requires an id_token")
 
         claims = await self._verify_id_token(id_token)
+        subject = claims.get("sub")
+        if not isinstance(subject, str) or not subject.strip():
+            raise ValueError("Google ID token requires a non-empty sub")
         email = claims.get("email")
 
         # Login gate — enforced before any group lookup.
-        if claims.get("email_verified") is not True:
-            raise GoogleEmailNotVerifiedError(f"Email not verified for {email}")
+        if claims.get("email_verified") is not True or not isinstance(email, str) or not email.strip():
+            raise GoogleEmailNotVerifiedError("Google ID token requires a verified email")
+        email = email.strip().lower()
 
         if self.allowed_hd and claims.get("hd") != self.allowed_hd:
             raise GoogleDomainNotAllowedError(
@@ -124,6 +127,10 @@ class GoogleProvider(AuthProvider):
             "username": email,
             "email": email,
             "name": claims.get("name"),
-            "id": claims.get("sub"),
+            "id": subject,
             "groups": [group for g in groups if (group := scope_group_for_google_email(g.email, self.allowed_hd))],
+            "issuer": "https://accounts.google.com",
+            "subject": subject,
+            "object_id": None,
+            "email_trusted": True,
         }

@@ -24,6 +24,20 @@ def _provider() -> EntraIdProvider:
     )
 
 
+def _claims(**overrides: object) -> dict:
+    claims = {
+        "iss": "https://login.microsoftonline.com/tenant-id/v2.0",
+        "sub": "verified-sub",
+        "oid": "verified-oid",
+        "preferred_username": "verified@example.com",
+        "email": "verified@example.com",
+        "name": "Verified User",
+        "xms_edov": True,
+    }
+    claims.update(overrides)
+    return claims
+
+
 @pytest.mark.unit
 @pytest.mark.auth
 class TestEntraGetUserInfo:
@@ -33,27 +47,26 @@ class TestEntraGetUserInfo:
         provider.get_jwks = AsyncMock(return_value={"keys": [{"kid": "kid-1"}]})
         provider.get_scope_groups = AsyncMock(return_value=["engineering"])
 
-        verified_claims = {
-            "preferred_username": "verified@example.com",
-            "email": "verified@example.com",
-            "name": "Verified User",
-            "oid": "verified-oid",
-        }
+        verified_claims = _claims()
 
         with (
-            patch("auth_server.providers.entra.settings") as mock_settings,
             patch("auth_server.providers.entra.get_token_kid", return_value="kid-1"),
             patch("auth_server.providers.entra.decode_jwt_unverified", return_value={"iss": provider.issuer_v2}),
             patch("auth_server.providers.entra.decode_jwt_with_jwk", return_value=verified_claims) as mock_decode,
         ):
-            mock_settings.entra_token_kind = "id"
-
             user_info = await provider.get_user_info("access-token", id_token="id-token")
 
-        assert user_info["username"] == "verified@example.com"
-        assert user_info["email"] == "verified@example.com"
-        assert user_info["id"] == "verified-oid"
-        assert user_info["groups"] == ["engineering"]
+        assert user_info == {
+            "username": "verified@example.com",
+            "email": "verified@example.com",
+            "name": "Verified User",
+            "id": "verified-oid",
+            "groups": ["engineering"],
+            "issuer": provider.issuer_v2,
+            "subject": "verified-sub",
+            "object_id": "verified-oid",
+            "email_trusted": True,
+        }
         mock_decode.assert_called_once()
 
     @pytest.mark.asyncio
@@ -63,7 +76,6 @@ class TestEntraGetUserInfo:
         provider.get_scope_groups = AsyncMock()
 
         with (
-            patch("auth_server.providers.entra.settings") as mock_settings,
             patch("auth_server.providers.entra.get_token_kid", return_value="kid-1"),
             patch("auth_server.providers.entra.decode_jwt_unverified", return_value={"iss": provider.issuer_v2}),
             patch(
@@ -71,12 +83,79 @@ class TestEntraGetUserInfo:
                 side_effect=InvalidSignatureError("bad signature"),
             ),
         ):
-            mock_settings.entra_token_kind = "id"
-
             with pytest.raises(InvalidSignatureError):
                 await provider.get_user_info("access-token", id_token="id-token")
 
         provider.get_scope_groups.assert_not_called()
+
+    @pytest.mark.parametrize("id_token", [None, ""])
+    async def test_requires_id_token_before_any_provider_request(self, id_token: str | None) -> None:
+        provider = _provider()
+        provider._verify_user_info_token = AsyncMock()
+        provider.get_scope_groups = AsyncMock()
+        with pytest.raises(ValueError, match="Entra login requires an id_token"):
+            await provider.get_user_info("access-token", id_token=id_token)
+        provider._verify_user_info_token.assert_not_awaited()
+        provider.get_scope_groups.assert_not_awaited()
+
+    @pytest.mark.parametrize("field", ["iss", "sub", "oid"])
+    async def test_missing_identity_claim_rejects_login_before_group_lookup(self, field: str) -> None:
+        provider = _provider()
+        claims = _claims()
+        del claims[field]
+        provider._verify_user_info_token = AsyncMock(return_value=claims)
+        provider.get_scope_groups = AsyncMock()
+        with pytest.raises(ValueError, match=field):
+            await provider.get_user_info("access-token", id_token="id-token")
+        provider.get_scope_groups.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.auth
+class TestEntraExtractIdentity:
+    @pytest.mark.parametrize("trusted", [True, False, None, "true", "false", 1, 0])
+    def test_only_boolean_xms_edov_is_trusted(self, trusted: object) -> None:
+        identity = _provider()._extract_user_info_from_token(_claims(xms_edov=trusted))
+        assert identity["email_trusted"] is (trusted is True)
+
+    def test_missing_xms_edov_is_untrusted(self) -> None:
+        claims = _claims()
+        del claims["xms_edov"]
+        assert _provider()._extract_user_info_from_token(claims)["email_trusted"] is False
+
+    def test_normalizes_email_without_changing_subject_or_display_username(self) -> None:
+        identity = _provider()._extract_user_info_from_token(
+            _claims(email="  Verified@EXAMPLE.COM  ", preferred_username="Different@EXAMPLE.COM")
+        )
+        assert identity["email"] == "verified@example.com"
+        assert identity["username"] == "Different@EXAMPLE.COM"
+        assert identity["subject"] == "verified-sub"
+        assert identity["object_id"] == "verified-oid"
+
+    @pytest.mark.parametrize("email", [None, "", "  "])
+    def test_never_uses_upn_as_email(self, email: str | None) -> None:
+        identity = _provider()._extract_user_info_from_token(
+            _claims(email=email, preferred_username=None, upn="display@example.com")
+        )
+        assert identity["email"] is None
+        assert identity["username"] == "display@example.com"
+
+    def test_missing_email_is_allowed_for_stable_identity_lookup(self) -> None:
+        claims = _claims()
+        del claims["email"]
+        identity = _provider()._extract_user_info_from_token(claims)
+        assert identity["email"] is None
+        assert identity["subject"] == "verified-sub"
+
+    @pytest.mark.parametrize("field", ["iss", "sub", "oid"])
+    @pytest.mark.parametrize("value", [None, "", "  ", 123, True])
+    def test_rejects_invalid_identity_claim(self, field: str, value: object) -> None:
+        with pytest.raises(ValueError, match=field):
+            _provider()._extract_user_info_from_token(_claims(**{field: value}))
+
+    def test_rejects_non_string_email(self) -> None:
+        with pytest.raises(ValueError, match="email must be a string"):
+            _provider()._extract_user_info_from_token(_claims(email=["user@example.com"]))
 
 
 @pytest.mark.unit
@@ -104,20 +183,13 @@ class TestEntraGetScopeGroups:
         provider.get_jwks = AsyncMock(return_value={"keys": [{"kid": "kid-1"}]})
         provider.get_scope_groups = AsyncMock(return_value=[])
 
-        verified_claims = {
-            "preferred_username": "verified@example.com",
-            "email": "verified@example.com",
-            "name": "Verified User",
-            "oid": "verified-oid",
-        }
+        verified_claims = _claims()
 
         with (
-            patch("auth_server.providers.entra.settings") as mock_settings,
             patch("auth_server.providers.entra.get_token_kid", return_value="kid-1"),
             patch("auth_server.providers.entra.decode_jwt_unverified", return_value={"iss": provider.issuer_v2}),
             patch("auth_server.providers.entra.decode_jwt_with_jwk", return_value=verified_claims),
         ):
-            mock_settings.entra_token_kind = "id"
             await provider.get_user_info("access-token", id_token="id-token")
 
         provider.get_scope_groups.assert_awaited_once_with("access-token")

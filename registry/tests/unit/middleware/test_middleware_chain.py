@@ -73,7 +73,7 @@ def client() -> TestClient:
 
 def _session_cookie(scopes: list[str]) -> str:
     return generate_access_token(
-        user_id="u1",
+        user_id="507f1f77bcf86cd799439011",
         username="alice",
         email="alice@example.com",
         groups=["g1"],
