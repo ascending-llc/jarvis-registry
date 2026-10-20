@@ -868,14 +868,34 @@ class _BlockingAdapter(_FakeBatchAdapter):
         finally:
             self.trace.append((entity_id, f"{phase}:end"))
 
-    def filter_by_metadata(self, filters: dict, **kwargs) -> list[Document]:
+    def filter_by_metadata(
+        self, filters: dict, limit: int, collection_name: str | None = None, *, raise_on_error: bool = False, **kwargs
+    ) -> list[Document]:
         return self._perform(
-            filters["server_id"], "lookup", partial(super().filter_by_metadata, filters=filters, **kwargs)
+            filters["server_id"],
+            "lookup",
+            partial(
+                super().filter_by_metadata,
+                filters=filters,
+                limit=limit,
+                collection_name=collection_name,
+                raise_on_error=raise_on_error,
+                **kwargs,
+            ),
         )
 
-    def batch_update_properties(self, doc_ids: list[str], **kwargs) -> int:
+    def batch_update_properties(self, doc_ids: list[str], update_data: dict, collection_name: str | None = None) -> int:
         entity_id = next(doc.metadata["server_id"] for doc in self.docs if doc.id == doc_ids[0])
-        return self._perform(entity_id, "patch", partial(super().batch_update_properties, doc_ids=doc_ids, **kwargs))
+        return self._perform(
+            entity_id,
+            "patch",
+            partial(
+                super().batch_update_properties,
+                doc_ids=doc_ids,
+                update_data=update_data,
+                collection_name=collection_name,
+            ),
+        )
 
 
 def _make_blocking_case(phase: str) -> tuple[MCPServerRepository, SimpleNamespace, SimpleNamespace, _BlockingAdapter]:
