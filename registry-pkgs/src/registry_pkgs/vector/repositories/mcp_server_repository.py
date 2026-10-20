@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, ClassVar
+
+from langchain_core.documents import Document
 
 from ...models import ExtendedMCPServer
 from ...models.federation_metadata import extract_runtime_version
@@ -15,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
     """Vector sync repository for MCP servers."""
+
+    ENTITY_ID_PROPERTY: ClassVar[str] = "server_id"
 
     FILTERABLE_PROPERTIES = {
         "server_id": "text",
@@ -42,7 +47,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         *,
         is_delete: bool = True,
     ) -> dict:
-        """Full rebuild for an MCP server — caller must ensure content actually changed.
+        """Rebuild an MCP server's docs after content changes or detected index drift.
 
         Args:
             server: Server instance with current MongoDB state.
@@ -132,6 +137,45 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
 
         return result.to_dict_mcp()
 
+    def _result_dict(self, result: VectorSyncResult) -> dict:
+        return result.to_dict_mcp()
+
+    async def sync_tools_enabled(
+        self,
+        server: ExtendedMCPServer,
+        tool_names: list[str],
+        *,
+        reload: Callable[[], Awaitable[ExtendedMCPServer | None]] | None = None,
+    ) -> dict:
+        """Patch toggled tools' enabled state, rebuilding the server if their doc count differs."""
+        if not tool_names:
+            return self._result_dict(VectorSyncResult())
+
+        names = set(tool_names)
+        filters = {self.ENTITY_ID_PROPERTY: str(server.id), "tool_name": list(tool_names)}
+        expected = sum(doc.metadata.get("tool_name") in names for doc in server.to_documents())
+
+        def patch(docs: list[Document]) -> VectorSyncResult:
+            groups: dict[bool, list[Document]] = {False: [], True: []}
+            for doc in docs:
+                enabled = not server.is_tool_disabled(doc.metadata["tool_name"])
+                groups[enabled].append(doc)
+
+            result = VectorSyncResult()
+            for enabled, group in groups.items():
+                if not group:
+                    continue
+                outcome = self._patch_docs(group, {"tool_enabled": enabled}, filters)
+                result.metadata_updated += outcome.metadata_updated
+                if result.error is None:
+                    result.error = outcome.error
+            return result
+
+        return await self._run_metadata_sync(
+            str(server.id),
+            lambda: self._patch_or_rebuild(server, filters=filters, expected=expected, patch=patch, reload=reload),
+        )
+
     async def update_tools_metadata(
         self,
         server_id: str,
@@ -146,7 +190,10 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         if not tool_names:
             return VectorSyncResult()
         # Adapter maps a list value to contains_any (len>1) or equal (len==1); empty is guarded above.
-        return await self._update_metadata_by_filters({"server_id": server_id, "tool_name": list(tool_names)}, metadata)
+        return await self._run_metadata_sync(
+            str(server_id),
+            lambda: self._update_metadata_by_filters({"server_id": server_id, "tool_name": list(tool_names)}, metadata),
+        )
 
     async def delete_by_entity_id(self, entity_id: str, entity_name: str | None = None) -> int:
         """Remove all weaviate docs for an MCP server."""

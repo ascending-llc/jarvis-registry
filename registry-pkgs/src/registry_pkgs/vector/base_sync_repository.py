@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import Any, ClassVar, Protocol, TypeVar
+from weakref import WeakValueDictionary
 
+from langchain_core.documents import Document
+
+from .client import DatabaseClient
 from .protocols import VectorStorable
 from .repository import Repository
 from .sync_result import VectorSyncResult
 
-T = TypeVar("T", bound=VectorStorable)
+
+class _SyncEntity(VectorStorable, Protocol):
+    vectorContentHash: str | None
+
+    def to_documents(self) -> list[Document]: ...
+
+
+T = TypeVar("T", bound=_SyncEntity)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +35,33 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         sync_to_vector_db(entity, *, is_delete) -> dict
         delete_by_entity_id(entity_id, entity_name) -> int
     """
+
+    ENTITY_ID_PROPERTY: ClassVar[str]
+
+    def __init__(self, db_client: DatabaseClient, model_class: type[T]) -> None:
+        super().__init__(db_client, model_class)
+        self._metadata_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+    async def _run_metadata_sync[R](self, entity_id: str, operation: Callable[[], Awaitable[R]]) -> R:
+        # Each caller retains its lock while owning or awaiting it; idle locks disappear.
+        lock = self._metadata_locks.setdefault(entity_id, asyncio.Lock())
+        async with lock:
+            task = asyncio.ensure_future(operation())
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # Cancelling to_thread cannot stop its SDK writes. Finish the operation
+                # before releasing the lock, even if the caller is cancelled again.
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not task.cancelled():
+                    task.exception()
+                raise
 
     async def ensure_collection(self) -> bool:
         """Ensure the backing Weaviate collection exists and has all required filterable properties."""
@@ -67,7 +107,9 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         metadata: dict[str, Any],
     ) -> VectorSyncResult:
         """Patch metadata on all docs for an entity — no re-embedding (toggle/status-only changes)."""
-        return await self._update_metadata_by_filters({entity_id_field: entity_id}, metadata)
+        return await self._run_metadata_sync(
+            str(entity_id), lambda: self._update_metadata_by_filters({entity_id_field: entity_id}, metadata)
+        )
 
     async def _update_metadata_by_filters(
         self,
@@ -86,11 +128,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
                 )
                 return result
 
-            existing_docs = self.adapter.filter_by_metadata(
-                filters=filters,
-                limit=_MAX_METADATA_DOCS,
-                collection_name=self.collection,
-            )
+            existing_docs = await asyncio.to_thread(self._find_docs, filters)
             if not existing_docs:
                 logger.debug(
                     "No Weaviate docs found for %s during metadata-only update, skipping.",
@@ -98,7 +136,25 @@ class BaseVectorSyncRepository(Repository[T], ABC):
                 )
                 return result
 
-            doc_ids = [doc.id for doc in existing_docs]
+            return await asyncio.to_thread(self._patch_docs, existing_docs, metadata, filters)
+        except Exception as e:
+            # Keep the plain-patch API's lookup failures in the result for script callers.
+            logger.error("Metadata-only update failed for %s: %s", filters, e, exc_info=True)
+            result.error = str(e)
+        return result
+
+    def _find_docs(self, filters: dict[str, Any], *, raise_on_error: bool = False) -> list[Document]:
+        return self.adapter.filter_by_metadata(
+            filters=filters,
+            limit=_MAX_METADATA_DOCS,
+            collection_name=self.collection,
+            raise_on_error=raise_on_error,
+        )
+
+    def _patch_docs(self, docs: list[Document], metadata: dict[str, Any], filters: dict[str, Any]) -> VectorSyncResult:
+        result = VectorSyncResult()
+        try:
+            doc_ids = [doc.id for doc in docs]
             if hasattr(self.adapter, "batch_update_properties"):
                 success = self._write_adapter.batch_update_properties(
                     doc_ids=doc_ids,
@@ -120,7 +176,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
             logger.info(
                 "Metadata-only update: %d/%d docs updated for %s",
                 success,
-                len(existing_docs),
+                len(docs),
                 filters,
             )
         except Exception as e:
@@ -133,9 +189,89 @@ class BaseVectorSyncRepository(Repository[T], ABC):
             result.error = str(e)
         return result
 
+    def _result_dict(self, result: VectorSyncResult) -> dict:
+        return result.to_dict()
+
+    async def _patch_or_rebuild(
+        self,
+        entity: T,
+        *,
+        filters: dict[str, Any],
+        expected: int,
+        patch: Callable[[list[Document]], VectorSyncResult],
+        reload: Callable[[], Awaitable[T | None]] | None = None,
+    ) -> dict:
+        """Patch matching docs, rebuilding the snapshot only when a successful lookup finds drift."""
+        if not await self.ensure_collection():
+            raise RuntimeError(f"collection '{self.collection}' is not initialized")
+        if not hasattr(self.adapter, "update_metadata"):
+            logger.warning("Adapter does not support update_metadata; metadata-only update skipped for %s.", filters)
+            return self._result_dict(VectorSyncResult())
+
+        # A failed read is not evidence of missing docs and must never trigger embedding.
+        found = await asyncio.to_thread(self._find_docs, filters, raise_on_error=True)
+        found_count = len(found)
+        if expected == found_count == _MAX_METADATA_DOCS:
+            # Fetching limit + 1 can exceed Weaviate's QUERY_MAXIMUM_RESULTS.
+            found_count = await asyncio.to_thread(
+                self.adapter.count_by_metadata, filters=filters, collection_name=self.collection
+            )
+        if expected > _MAX_METADATA_DOCS:
+            logger.warning(
+                "Skipping doc-count comparison for entity %s: expected=%d exceeds metadata lookup limit=%d, filters=%s",
+                entity.id,
+                expected,
+                _MAX_METADATA_DOCS,
+                filters,
+            )
+        elif found_count != expected:
+            logger.warning(
+                "Vector doc-count mismatch for entity %s: found=%d expected=%d, filters=%s",
+                entity.id,
+                found_count,
+                expected,
+                filters,
+            )
+            if reload is not None:
+                current = await reload()
+                if current is None or current.vectorContentHash != entity.vectorContentHash:
+                    logger.info("Skipping vector rebuild for entity %s: entity deleted or content changed", entity.id)
+                    return self._result_dict(VectorSyncResult())
+
+            # Reload is only a guard: before commit it may still contain older metadata.
+            return await self.sync_to_vector_db(entity, is_delete=True)
+
+        if not found:
+            return self._result_dict(VectorSyncResult())
+        result = await asyncio.to_thread(patch, found)
+        if result.metadata_updated < len(found) and result.error is None:
+            result.error = f"Metadata-only update incomplete: {result.metadata_updated}/{len(found)} docs updated"
+            logger.error("%s for %s", result.error, filters)
+        return self._result_dict(result)
+
+    async def sync_entity_metadata(
+        self,
+        entity: T,
+        metadata: dict[str, Any],
+        *,
+        reload: Callable[[], Awaitable[T | None]] | None = None,
+    ) -> dict:
+        """Patch an entity's metadata, or rebuild its docs when their count differs."""
+        filters = {self.ENTITY_ID_PROPERTY: str(entity.id)}
+        return await self._run_metadata_sync(
+            str(entity.id),
+            lambda: self._patch_or_rebuild(
+                entity,
+                filters=filters,
+                expected=len(entity.to_documents()),
+                patch=lambda docs: self._patch_docs(docs, metadata, filters),
+                reload=reload,
+            ),
+        )
+
     @abstractmethod
-    async def sync_to_vector_db(self, entity: Any, *, is_delete: bool = True) -> dict:
-        """Re-embed and rebuild an entity's docs — call only when content changed.
+    async def sync_to_vector_db(self, entity: T, *, is_delete: bool = True) -> dict:
+        """Re-embed and rebuild an entity's docs after content changes or detected index drift.
 
         ``is_delete``: True (CRUD) deletes existing docs before reinserting; False (federation) inserts
         only, since the caller already deleted.
