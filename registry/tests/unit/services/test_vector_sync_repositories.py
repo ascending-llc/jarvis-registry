@@ -24,6 +24,7 @@ from registry_pkgs.vector.sync_result import VectorSyncResult
 class _FakeAdapter:
     def __init__(self, docs: list[Document]):
         self.docs = list(docs)
+        self.added_ids: list[str] = []
         self.deleted_ids: list[str] = []
         self.metadata_updates: list[tuple[str, dict]] = []
         self.filter_calls: list[dict] = []
@@ -71,6 +72,16 @@ class _FakeAdapter:
         if self.count_error is not None:
             raise self.count_error
         return len(self._matching_docs(filters))
+
+    def add_documents(self, documents: list[Document], collection_name: str | None = None, **kwargs) -> list[str]:
+        ids = []
+        for doc in documents:
+            assert doc.id is not None
+            ids.append(doc.id)
+        self.added_ids.extend(ids)
+        self.docs = [doc for doc in self.docs if doc.id not in ids]
+        self.docs.extend(doc.model_copy(deep=True) for doc in documents)
+        return ids
 
     def delete(self, ids: list[str], collection_name: str | None = None) -> None:
         self.deleted_ids.extend(ids)
@@ -461,6 +472,81 @@ async def test_metadata_sync_count_mismatch_rebuilds_once(
         and str(found) in record.getMessage()
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["entity", "tools"])
+@pytest.mark.parametrize("has_stale_docs", [False, True], ids=["missing", "stale"])
+async def test_metadata_sync_rebuild_restores_documents_and_tool_states(entry: str, has_stale_docs: bool) -> None:
+    """Exercise the real lookup, delete, save and verification chain against the in-memory adapter."""
+    server = ExtendedMCPServer.model_construct(
+        id=PydanticObjectId("65f000000000000000000001"),
+        serverName="repair-server",
+        path="/repair-server",
+        registryDisabledTools=["read_file"],
+        config={
+            "enabled": True,
+            "toolFunctions": {
+                "read_file": {"mcpToolName": "read_file", "function": {"description": "Read a file."}},
+                "write_file": {"mcpToolName": "write_file", "function": {"description": "Write a file."}},
+            },
+        },
+    )
+    server.refresh_content_hash()
+    expected_docs = server.to_documents()
+    initial_docs = []
+    if has_stale_docs:
+        initial_docs = [
+            doc.model_copy(
+                update={"page_content": "outdated content", "metadata": {**doc.metadata, "tool_enabled": True}},
+                deep=True,
+            )
+            for doc in expected_docs
+        ]
+        initial_docs.append(
+            Document(
+                id="stale-doc",
+                page_content="obsolete read_file chunk",
+                metadata={"server_id": str(server.id), "tool_name": "read_file", "tool_enabled": True},
+            )
+        )
+    unrelated = Document(
+        id="unrelated",
+        page_content="another server's tool",
+        metadata={"server_id": "other-server", "tool_name": "read_file", "tool_enabled": True},
+    )
+    repo = MCPServerRepository(_fake_db_client([*initial_docs, unrelated], batch=True))
+    reload = AsyncMock(return_value=server)
+
+    async def sync() -> dict:
+        if entry == "tools":
+            return await repo.sync_tools_enabled(server, ["read_file"], reload=reload)
+        return await repo.sync_entity_metadata(server, server.mutable_metadata(), reload=reload)
+
+    result = await sync()
+
+    assert result == VectorSyncResult(indexed=2, deleted=len(initial_docs)).to_dict_mcp()
+    restored = [doc for doc in repo.adapter.docs if doc.metadata["server_id"] == str(server.id)]
+    assert restored == expected_docs
+    assert {doc.metadata["tool_name"]: doc.metadata["tool_enabled"] for doc in restored} == {
+        "read_file": False,
+        "write_file": True,
+    }
+    assert [doc for doc in repo.adapter.docs if doc.metadata["server_id"] == "other-server"] == [unrelated]
+    expected_ids = [doc.id for doc in expected_docs]
+    deleted_ids = [doc.id for doc in initial_docs]
+    assert repo.adapter.added_ids == expected_ids
+    assert repo.adapter.deleted_ids == deleted_ids
+    assert repo.adapter.metadata_updates == []
+    reload.assert_awaited_once_with()
+
+    # Once repaired, the next metadata sync must patch without another delete or embedding write.
+    result = await sync()
+
+    assert result == VectorSyncResult(metadata_updated=1 if entry == "tools" else 2).to_dict_mcp()
+    assert repo.adapter.added_ids == expected_ids
+    assert repo.adapter.deleted_ids == deleted_ids
+    reload.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
