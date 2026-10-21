@@ -560,6 +560,53 @@ async def test_delete_server_route_returns_503_during_reindex(sample_user_contex
 
     assert excinfo.value.status_code == 503
     assert excinfo.value.detail["error"] == "reindex_in_progress"
+    # delete_server raised, so the block never committed: no vector delete is scheduled.
+    mock_server_service.schedule_vector_delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_server_route_schedules_vector_delete_after_commit(sample_user_context):
+    """The route removes vectors only after the delete transaction commits, using the returned name."""
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    mock_acl_service.delete_acl_entries_for_resource = AsyncMock(return_value=1)
+    mock_server_service = MagicMock()
+    mock_server_service.delete_server = AsyncMock(return_value="srv-x")
+    server_id = str(PydanticObjectId())
+
+    with patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client:
+        _mock_mongo_transaction(mock_get_client)
+        result = await delete_server(
+            server_id=server_id,
+            user_context=sample_user_context,
+            acl_service=mock_acl_service,
+            server_service=mock_server_service,
+        )
+
+    assert result is None
+    mock_server_service.schedule_vector_delete.assert_called_once_with(server_id, "srv-x")
+
+
+@pytest.mark.asyncio
+async def test_delete_server_route_does_not_schedule_when_acl_cleanup_fails(sample_user_context):
+    """A failure inside the transaction (ACL cleanup) must leave vectors in place (not scheduled)."""
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    mock_acl_service.delete_acl_entries_for_resource = AsyncMock(side_effect=RuntimeError("acl boom"))
+    mock_server_service = MagicMock()
+    mock_server_service.delete_server = AsyncMock(return_value="srv-x")
+
+    with patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client:
+        _mock_mongo_transaction(mock_get_client)
+        with pytest.raises((HTTPException, RuntimeError)):
+            await delete_server(
+                server_id=str(PydanticObjectId()),
+                user_context=sample_user_context,
+                acl_service=mock_acl_service,
+                server_service=mock_server_service,
+            )
+
+    mock_server_service.schedule_vector_delete.assert_not_called()
 
 
 def test_convert_to_detail_includes_disabled_tools():
