@@ -9,6 +9,9 @@ VERIFY (--verify) probes a RUNNING registry:
             window + backoff-eligibility. Observes only; writes nothing to Weaviate itself.
   crud    — drive the real repos and assert Weaviate create/read/update/delete + metadata patches.
             Runs on existing entities and restores them.
+  orphan  — confirm the live app started the orphan sweeper (leader lease, hourly nextRunAt), then
+            inject a synthetic orphan (vectors for a server_id with no Mongo entity), run one real
+            sweep pass, and assert the orphan is deleted while a real server's vectors survive.
 
 Reads settings from .env.
 
@@ -16,6 +19,7 @@ Usage:
     uv run python scripts/vector_sync.py --target mcp|a2a|all
     uv run python scripts/vector_sync.py --verify durable [--check-grace]
     uv run python scripts/vector_sync.py --verify crud
+    uv run python scripts/vector_sync.py --verify orphan
 """
 
 from __future__ import annotations
@@ -28,10 +32,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+from beanie import PydanticObjectId
 
 from registry.container import RegistryContainer
 from registry.core.config import Settings
 from registry.core.vector_backend import resolve_vector_backend_config
+from registry.services.vector_orphan_sweeper import VectorOrphanSweeper
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -300,13 +306,71 @@ async def _verify_crud(container: RegistryContainer, db_client, wv_url: str, wv_
     return all(results)
 
 
-# --- entry point ----------------------------------------------------------------------
+async def _verify_orphan(db, container: RegistryContainer, db_client, wv_url: str, wv_key: str) -> bool:
+    print("\n== VERIFY orphan (sweep deletes vectors with no Mongo entity) ==")
+    results = []
+
+    # 1. Liveness: the deployed image started the sweeper (ensure_leader_document) and scheduled it.
+    lease = await db["registry_leader_leases"].find_one({"_id": "vector-orphan-sweep"})
+    results.append(_ok("orphan-sweep leader-lease exists", lease is not None, "vector-orphan-sweep"))
+    if lease is not None:
+        results.append(
+            _ok(
+                "lease active with an hourly nextRunAt",
+                lease.get("status") == "active" and lease.get("nextRunAt") is not None,
+                str(lease.get("nextRunAt")),
+            )
+        )
+
+    wv = Weaviate(wv_url, wv_key, db_client.collection_generation)
+    mcp_repo = container.mcp_server_repo
+    base = ExtendedMCPServer.COLLECTION_NAME
+
+    # A real server is the control: its vectors must survive the sweep (it exists in Mongo).
+    real = await ExtendedMCPServer.find_one({"config.enabled": True}) or await ExtendedMCPServer.find_one({})
+    if real is None:
+        return _ok("a real server exists as the sweep control", False)
+    rid = str(real.id)
+    real_before = wv.count(base, "server_id", rid)
+    results.append(_ok("control server chunks present", real_before >= 1, f"{real_before}"))
+
+    # 2. Inject an orphan: write vectors for a brand-new id that was never saved to Mongo.
+    orphan = ExtendedMCPServer.model_construct(
+        id=PydanticObjectId(),
+        serverName=f"orphan-verify-{PydanticObjectId()}",
+        config=real.config,
+        author=real.author,
+        path=f"/orphan-verify-{PydanticObjectId()}",
+        registryDisabledTools=[],
+    )
+    oid = str(orphan.id)
+    try:
+        await mcp_repo.sync_to_vector_db(orphan, is_delete=False)
+        results.append(_ok("orphan vectors injected (no Mongo entity)", wv.count(base, "server_id", oid) >= 1, oid))
+
+        # 3. Run one real sweep pass in-process (the same logic the live hourly loop runs).
+        sweeper = VectorOrphanSweeper(
+            mcp_server_repo=container.mcp_server_repo,
+            a2a_agent_repo=container.a2a_agent_repo,
+            embedding_maintenance_watcher=container.embedding_maintenance_watcher,
+        )
+        interval = await sweeper._run_pass()
+        results.append(_ok("sweep pass ran at the hourly interval", interval == timedelta(hours=1), str(interval)))
+        results.append(_ok("orphan vectors deleted by the sweep", wv.count(base, "server_id", oid) == 0))
+        results.append(
+            _ok("control server's vectors survive the sweep", wv.count(base, "server_id", rid) == real_before)
+        )
+    finally:
+        # Best-effort cleanup if the sweep did not remove it (e.g. an assertion failed earlier).
+        if wv.count(base, "server_id", oid) > 0:
+            await mcp_repo.delete_by_server_id(oid, "orphan-verify-cleanup")
+    return all(results)
 
 
 async def run() -> int:
     parser = argparse.ArgumentParser(description="Vector DB sync + verification.")
     parser.add_argument("--target", choices=["mcp", "a2a", "all"], help="entities to sync (required unless --verify)")
-    parser.add_argument("--verify", choices=["durable", "crud"], help="run verification instead of sync")
+    parser.add_argument("--verify", choices=["durable", "crud", "orphan"], help="run verification instead of sync")
     parser.add_argument("--weaviate-url", default=_default_weaviate_url())
     parser.add_argument("--weaviate-api-key", default=os.getenv("WEAVIATE_API_KEY", ""))
     parser.add_argument("--timeout", type=int, default=180, help="durable: seconds to wait for a heal")
@@ -341,6 +405,8 @@ async def run() -> int:
             )
         elif args.verify == "crud":
             passed = await _verify_crud(container, db_client, args.weaviate_url, args.weaviate_api_key)
+        elif args.verify == "orphan":
+            passed = await _verify_orphan(db, container, db_client, args.weaviate_url, args.weaviate_api_key)
         else:
             targets = ["mcp", "a2a"] if args.target == "all" else [args.target]
             return await _sync(container, targets)
