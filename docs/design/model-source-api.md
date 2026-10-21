@@ -120,6 +120,8 @@ before storage and it is never returned:
 - `page` (optional, int, default 1, ≥1)
 - `per_page` (optional, int, default 20, 1–100)
 
+> **Per-node workflow model dropdown.** The frontend populates the per-node model picker (for MCP / A2A-pool workflow executor nodes) from this endpoint with `mode=chat`; soft-deleted sources are already excluded. The "use default" option reflects `defaultWorkflowModelSourceId` from `GET /api/v1/model-gateway/selection`. The chosen id is stored on the workflow node as `modelSourceId` (see `workflow-api-design.md`).
+
 **Response**: `200 OK`
 ```json
 {

@@ -194,7 +194,21 @@ async def build_executor_registry(
                 redis_key_prefix=redis_key_prefix,
                 mcp_headers_provider=mcp_headers_provider,
             )
-            built_by_combo[combo] = _instrumented_executor(raw, _detect_agent_type(raw), node.executor_key)
+            agent_type = _detect_agent_type(raw)
+            # A direct single-A2A agent runs its own model server-side and a builtin executor
+            # takes no LLM, so a model_source_id on such a node is silently ignored at runtime.
+            # Warn so the no-op is traceable instead of mystifying (the frontend should not offer
+            # the model dropdown on these node types; this is the backend backstop).
+            if node.model_source_id and agent_type in ("a2a", "builtin"):
+                logger.warning(
+                    "Node %r sets model_source_id=%s but resolves to a %s executor, which runs no "
+                    "registry-side LLM; the model selection is ignored. Clear it, or use an MCP or "
+                    "A2A-pool node to apply a model override.",
+                    node.name,
+                    node.model_source_id,
+                    agent_type,
+                )
+            built_by_combo[combo] = _instrumented_executor(raw, agent_type, node.executor_key)
         registry[node.id] = built_by_combo[combo]
 
     for node in pool_nodes or []:
