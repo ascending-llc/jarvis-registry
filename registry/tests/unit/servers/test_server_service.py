@@ -2,12 +2,15 @@
 Unit tests for server service.
 """
 
+import asyncio as _asyncio
+import logging as _logging
 from datetime import UTC, datetime
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 
 from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
+from registry.services.background_task_tracker import TrackerShutdownError as _TrackerShutdownError
 from registry.services.server_service import ServerServiceV1
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 
@@ -916,3 +919,93 @@ async def test_toggle_enable_marks_pending_and_forces_full_resync():
     assert plan.doc is server
     assert plan.full_resync is True
     assert plan.marker == server.vectorSyncPendingAt
+
+
+def _delete_service(repo, tracker=None):
+    return ServerServiceV1(
+        user_service=Mock(),
+        token_service=Mock(),
+        oauth_service=Mock(),
+        mcp_server_repo=repo,
+        background_task_tracker=tracker,
+    )
+
+
+class _RunningTracker:
+    """A tracker whose spawn runs the coroutine inline (and records the name)."""
+
+    def __init__(self):
+        self.names = []
+        self.task = None
+
+    def spawn(self, coro, name):
+        self.names.append(name)
+        self.task = _asyncio.ensure_future(coro)
+
+
+@pytest.mark.asyncio
+async def test_delete_server_no_longer_deletes_vectors():
+    from beanie import PydanticObjectId
+
+    repo = Mock()
+    repo.delete_by_server_id = AsyncMock()
+    service = _delete_service(repo)
+    fake_server = Mock()
+    fake_server.id = PydanticObjectId()
+    fake_server.serverName = "srv-x"
+    fake_server.delete = AsyncMock()
+
+    with (
+        patch("registry.services.server_service.ExtendedMCPServer") as MockServer,
+        patch("registry.services.server_service.delete_entity_lease", AsyncMock()),
+    ):
+        MockServer.get = AsyncMock(return_value=fake_server)
+        name = await service.delete_server(server_id=str(fake_server.id))
+
+    assert name == "srv-x"
+    repo.delete_by_server_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_goes_through_tracker():
+    repo = Mock()
+    repo.delete_by_server_id = AsyncMock(return_value=1)
+    tracker = _RunningTracker()
+    service = _delete_service(repo, tracker)
+
+    service.schedule_vector_delete("srv-1", "Srv One")
+    await tracker.task
+
+    assert tracker.names == ["vector-delete-server-srv-1"]
+    repo.delete_by_server_id.assert_awaited_once_with("srv-1", "Srv One")
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_logs_warning_on_repo_failure(caplog):
+    repo = Mock()
+    repo.delete_by_server_id = AsyncMock(side_effect=RuntimeError("weaviate down"))
+    tracker = _RunningTracker()
+    service = _delete_service(repo, tracker)
+
+    with caplog.at_level(_logging.WARNING):
+        service.schedule_vector_delete("srv-1", "Srv One")
+        await tracker.task  # must not raise
+
+    assert any("Vector delete failed for server srv-1" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_returns_when_tracker_refuses():
+    repo = Mock()
+    repo.delete_by_server_id = AsyncMock()
+
+    def _refuse(coro, name):
+        coro.close()  # the real tracker closes the coro before refusing
+        raise _TrackerShutdownError()
+
+    tracker = Mock()
+    tracker.spawn = _refuse
+    service = _delete_service(repo, tracker)
+
+    # Returns normally; the Mongo delete already committed, the sweep heals the orphan.
+    service.schedule_vector_delete("srv-1", "Srv One")

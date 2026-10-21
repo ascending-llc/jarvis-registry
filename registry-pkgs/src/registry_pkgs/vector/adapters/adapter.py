@@ -1,5 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from typing import Any
 
 from langchain_core.documents import Document
@@ -250,6 +251,25 @@ class VectorStoreAdapter(ABC):
     # Extended functionality - Not in base VectorStore
     # Subclasses should implement these
     # ========================================
+
+    def iter_property_values(self, property_name: str, collection_name: str | None = None) -> Iterator[str]:
+        """
+        Extended feature: Yield each object's value of a single property, cursor-based.
+
+        Used to enumerate stored entity ids without the offset-pagination cap. Skips objects whose
+        value is None. Subclasses implement this with a database-specific cursor iterator.
+
+        Args:
+            property_name: Property to read from every object
+            collection_name: Target collection
+
+        Yields:
+            The property value of each object (None values skipped)
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement iter_property_values(). "
+            "Use a database-specific cursor iterator to enumerate property values."
+        )
 
     def get_by_id(self, doc_id: str, collection_name: str | None = None) -> Document | None:
         """

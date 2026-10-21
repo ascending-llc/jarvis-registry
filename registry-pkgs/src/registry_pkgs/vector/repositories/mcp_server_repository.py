@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
     """Vector sync repository for MCP servers."""
 
+    ENTITY_ID_PROPERTY = "server_id"
+
     FILTERABLE_PROPERTIES = {
         "server_id": "text",
         "federation_id": "text",

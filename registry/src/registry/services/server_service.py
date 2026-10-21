@@ -11,7 +11,6 @@ ODM Schema:
 - updatedAt: datetime (auto-generated)
 """
 
-import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -690,6 +689,24 @@ class ServerServiceV1:
 
         self._spawn_vector_task(_sync_task(), f"vector-sync-server-{server.id}")
 
+    def schedule_vector_delete(self, entity_id: str, name: str | None = None) -> None:
+        """Remove an MCP server's Weaviate docs, tracked, after its Mongo delete commits.
+
+        Called by the route only once the delete transaction has committed, so a rolled-back delete
+        removes no vectors. A lost, refused or failed delete leaves an orphan, which the orphan sweep
+        removes. Failures are logged at ``warning`` and never surfaced to the request.
+        """
+        if self.mcp_server_repo is None:
+            return
+
+        async def _delete_task() -> None:
+            try:
+                await self.mcp_server_repo.delete_by_server_id(entity_id, name)
+            except Exception:
+                logger.warning("Vector delete failed for server %s", entity_id, exc_info=True)
+
+        self._spawn_vector_task(_delete_task(), f"vector-delete-server-{entity_id}")
+
     async def update_server(
         self,
         server_id: str,
@@ -776,9 +793,10 @@ class ServerServiceV1:
         server_id: str,
         user_id: str | None = None,
         session: AsyncClientSession | None = None,
-    ) -> None:
+    ) -> str:
         """
-        Delete a server.
+        Delete a server. Returns the server name so the route can schedule the vector delete
+        after the transaction commits.
 
         Args:
             server_id: Server document ID
@@ -800,11 +818,12 @@ class ServerServiceV1:
         if not server:
             raise ValueError("Server not found")
 
-        # Remove from vector DB before deleting from MongoDB (background task)
-        asyncio.create_task(self.mcp_server_repo.delete_by_server_id(server_id, server.serverName))
+        # The vector delete is scheduled by the route after the transaction commits, so a rolled-back
+        # delete (ACL or commit failure) removes no vectors. A lost delete leaves an orphan for the sweep.
         await server.delete(session=session)
         await delete_entity_lease(ExtendedMCPServer, server.id)
         logger.info(f"Deleted server: {server.serverName} (ID: {server.id})")
+        return server.serverName
 
     async def _fetch_and_update_tools(
         self,
