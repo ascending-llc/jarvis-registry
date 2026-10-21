@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
     """Vector sync repository for A2A agents."""
 
+    ENTITY_ID_PROPERTY = "agent_id"
+
     FILTERABLE_PROPERTIES = {
         "agent_id": "text",
         "federation_id": "text",

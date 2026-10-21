@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, TypeVar
@@ -21,7 +22,25 @@ class BaseVectorSyncRepository(Repository[T], ABC):
     Concrete subclasses must implement:
         sync_to_vector_db(entity, *, is_delete) -> dict
         delete_by_entity_id(entity_id, entity_name) -> int
+
+    Concrete subclasses must also set ``ENTITY_ID_PROPERTY`` (the Weaviate property holding the
+    MongoDB entity id, e.g. ``"server_id"`` / ``"agent_id"``).
     """
+
+    ENTITY_ID_PROPERTY: str
+
+    async def alist_entity_ids(self) -> set[str]:
+        """Distinct ``ENTITY_ID_PROPERTY`` values across the active-generation collection.
+
+        Reads through ``self.adapter`` (the read adapter / active generation, the same target search
+        uses — never reindex-gated) with the cursor iterator, so it is not bounded by the offset cap.
+        The whole synchronous generator runs in one thread, as with ``async_wrapper``.
+        """
+
+        def _collect() -> set[str]:
+            return {str(v) for v in self.adapter.iter_property_values(self.ENTITY_ID_PROPERTY, self.collection)}
+
+        return await asyncio.to_thread(_collect)
 
     async def ensure_collection(self) -> bool:
         """Ensure the backing Weaviate collection exists and has all required filterable properties."""
