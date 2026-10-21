@@ -17,7 +17,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from registry.services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
-from registry.services.vector_sync_helpers import delete_orphan_vectors
+from registry.services.vector_sync_helpers import OrphanSweepGuardError, delete_orphan_vectors
 from registry_pkgs.database.leased_job import Lease, LeasedJobRunner, LeasedRepository
 from registry_pkgs.models import LeaderLease
 from registry_pkgs.models.leader_lease import (
@@ -38,6 +38,12 @@ _SWEEP_INTERVAL = timedelta(hours=1)
 # While a reindex owns the collections (and its catch-up already deletes removed entities), skip the
 # pass and retry soon rather than waiting a full hour.
 _REINDEX_RETRY_INTERVAL = timedelta(minutes=5)
+
+# Circuit breaker: genuine orphans are a trickle, so if more than this share of a collection looks
+# orphaned the Mongo read is almost certainly bad — refuse to delete rather than wipe valid vectors.
+# Collections below _GUARD_MIN_TOTAL are exempt so a tiny set can't false-trip.
+_GUARD_MAX_ORPHAN_FRACTION = 0.5
+_GUARD_MIN_TOTAL = 20
 
 
 class VectorOrphanSweeper:
@@ -106,12 +112,19 @@ class VectorOrphanSweeper:
 
         vector_mcp_ids = await self._mcp_server_repo.alist_entity_ids()
         vector_a2a_ids = await self._a2a_agent_repo.alist_entity_ids()
-        mcp_deleted, a2a_deleted = await delete_orphan_vectors(
-            self._mcp_server_repo,
-            self._a2a_agent_repo,
-            vector_mcp_ids=vector_mcp_ids,
-            vector_a2a_ids=vector_a2a_ids,
-        )
+        try:
+            mcp_deleted, a2a_deleted = await delete_orphan_vectors(
+                self._mcp_server_repo,
+                self._a2a_agent_repo,
+                vector_mcp_ids=vector_mcp_ids,
+                vector_a2a_ids=vector_a2a_ids,
+                max_orphan_fraction=_GUARD_MAX_ORPHAN_FRACTION,
+                guard_min_total=_GUARD_MIN_TOTAL,
+            )
+        except OrphanSweepGuardError as exc:
+            # Deleted nothing. A spike this large is almost certainly a bad Mongo read; alert and retry.
+            logger.error("Vector orphan sweep ABORTED by safety guard; refusing to delete: %s", exc)
+            return _SWEEP_INTERVAL
         # Orphans mean a delete path lost a cleanup, so log at warning when anything was deleted.
         log = logger.warning if (mcp_deleted or a2a_deleted) else logger.info
         log("Vector orphan sweep pass: servers deleted=%d, agents deleted=%d", mcp_deleted, a2a_deleted)

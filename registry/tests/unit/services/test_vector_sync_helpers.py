@@ -7,6 +7,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services.vector_sync_helpers import (
+    OrphanSweepGuardError,
     VectorSyncPlan,
     clear_vector_sync_marker,
     delete_orphan_vectors,
@@ -27,6 +28,8 @@ def _mongo_ids_collection(ids):
 
     collection = Mock()
     collection.find = Mock(side_effect=lambda *a, **k: _cursor())
+    # delete_orphan_vectors pins the read to primary via .with_options(...); it returns the collection.
+    collection.with_options = Mock(return_value=collection)
     return collection
 
 
@@ -76,6 +79,73 @@ async def test_delete_orphan_vectors_one_failure_does_not_stop_others():
     # All three attempted; one raised, two succeeded.
     assert mcp_repo.delete_by_server_id.await_count == 3
     assert mcp_deleted == 2
+
+
+async def test_delete_orphan_vectors_guard_trips_and_deletes_nothing():
+    """Too large a share orphaned => raise and delete nothing from EITHER collection (bad Mongo read)."""
+    mcp_repo = Mock()
+    mcp_repo.delete_by_server_id = AsyncMock()
+    a2a_repo = Mock()
+    a2a_repo.delete_by_agent_id = AsyncMock()
+
+    # 30 vectors, Mongo returns only 5 => 25/30 (>50%) look orphaned.
+    vector_mcp = {f"s{i}" for i in range(30)}
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[f"s{i}" for i in range(5)], a2a_ids=[])
+    with mcp_patch, a2a_patch, pytest.raises(OrphanSweepGuardError):
+        await delete_orphan_vectors(
+            mcp_repo,
+            a2a_repo,
+            vector_mcp_ids=vector_mcp,
+            vector_a2a_ids=set(),
+            max_orphan_fraction=0.5,
+            guard_min_total=20,
+        )
+
+    # Guard checks both collections before deleting either, so nothing is removed.
+    mcp_repo.delete_by_server_id.assert_not_awaited()
+    a2a_repo.delete_by_agent_id.assert_not_awaited()
+
+
+async def test_delete_orphan_vectors_guard_exempts_small_collection():
+    """Below guard_min_total the fraction is ignored, so a tiny set can't false-trip."""
+    mcp_repo = Mock()
+    mcp_repo.delete_by_server_id = AsyncMock(return_value=1)
+    a2a_repo = Mock()
+    a2a_repo.delete_by_agent_id = AsyncMock()
+
+    # 3 vectors, none in Mongo => 100% orphaned, but total < min_total => no trip.
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[], a2a_ids=[])
+    with mcp_patch, a2a_patch:
+        mcp_deleted, _ = await delete_orphan_vectors(
+            mcp_repo,
+            a2a_repo,
+            vector_mcp_ids={"s1", "s2", "s3"},
+            vector_a2a_ids=set(),
+            max_orphan_fraction=0.5,
+            guard_min_total=20,
+        )
+
+    assert mcp_deleted == 3
+    assert mcp_repo.delete_by_server_id.await_count == 3
+
+
+async def test_delete_orphan_vectors_no_guard_when_fraction_unset():
+    """The reindex caller passes no fraction, so even a 100%-orphan diff deletes normally."""
+    mcp_repo = Mock()
+    mcp_repo.delete_by_server_id = AsyncMock(return_value=1)
+    a2a_repo = Mock()
+    a2a_repo.delete_by_agent_id = AsyncMock()
+
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[], a2a_ids=[])
+    with mcp_patch, a2a_patch:
+        mcp_deleted, _ = await delete_orphan_vectors(
+            mcp_repo,
+            a2a_repo,
+            vector_mcp_ids={f"s{i}" for i in range(50)},
+            vector_a2a_ids=set(),
+        )
+
+    assert mcp_deleted == 50
 
 
 async def test_sync_server_vectors_ok():

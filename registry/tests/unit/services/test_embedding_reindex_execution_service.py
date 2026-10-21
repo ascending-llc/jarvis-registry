@@ -137,16 +137,15 @@ def _wire(
     # Catch-up delete diff: projection over current Mongo ids. Default: same set the sweep saw.
     srv_ids = mongo_server_ids if mongo_server_ids is not None else [str(s.id) for s in servers]
     agt_ids = mongo_agent_ids if mongo_agent_ids is not None else [str(a.id) for a in agents]
-    monkeypatch.setattr(
-        exec_module.ExtendedMCPServer,
-        "get_pymongo_collection",
-        lambda: SimpleNamespace(find=lambda *a, **k: _AsyncIter([{"_id": i} for i in srv_ids])),
-    )
-    monkeypatch.setattr(
-        exec_module.A2AAgent,
-        "get_pymongo_collection",
-        lambda: SimpleNamespace(find=lambda *a, **k: _AsyncIter([{"_id": i} for i in agt_ids])),
-    )
+
+    def _ids_collection(ids):
+        # delete_orphan_vectors pins the read to primary via .with_options(...); return the collection.
+        coll = SimpleNamespace(find=lambda *a, **k: _AsyncIter([{"_id": i} for i in ids]))
+        coll.with_options = lambda **k: coll
+        return coll
+
+    monkeypatch.setattr(exec_module.ExtendedMCPServer, "get_pymongo_collection", lambda: _ids_collection(srv_ids))
+    monkeypatch.setattr(exec_module.A2AAgent, "get_pymongo_collection", lambda: _ids_collection(agt_ids))
     monkeypatch.setattr(exec_module, "_drop_collection", MagicMock())
 
     commit = AsyncMock(return_value=(selection if commit_result == "__ok__" else commit_result))

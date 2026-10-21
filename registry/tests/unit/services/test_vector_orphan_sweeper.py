@@ -11,6 +11,7 @@ from registry.services.vector_orphan_sweeper import (
     _SWEEP_INTERVAL,
     VectorOrphanSweeper,
 )
+from registry.services.vector_sync_helpers import OrphanSweepGuardError
 from registry_pkgs.database.leased_job import Lease
 
 pytestmark = pytest.mark.asyncio
@@ -50,7 +51,22 @@ async def test_pass_deletes_orphans_via_shared_helper():
         sweeper._a2a_agent_repo,
         vector_mcp_ids={"s1", "s2"},
         vector_a2a_ids={"a1"},
+        max_orphan_fraction=vos._GUARD_MAX_ORPHAN_FRACTION,
+        guard_min_total=vos._GUARD_MIN_TOTAL,
     )
+
+
+async def test_pass_aborted_by_guard_reschedules_normally():
+    """A tripped safety guard deletes nothing, logs, and reschedules at the hourly interval."""
+    sweeper = _make_sweeper()
+    trip = AsyncMock(side_effect=OrphanSweepGuardError("server: 25/30 look orphaned (> 50%)"))
+    with patch.object(vos, "delete_orphan_vectors", trip):
+        interval = await sweeper._run_pass()
+
+    assert interval == _SWEEP_INTERVAL
+    # The guard params are forwarded so the breaker can trip.
+    assert trip.await_args.kwargs["max_orphan_fraction"] == vos._GUARD_MAX_ORPHAN_FRACTION
+    assert trip.await_args.kwargs["guard_min_total"] == vos._GUARD_MIN_TOTAL
 
 
 async def test_pass_skipped_and_rescheduled_soon_during_reindex():

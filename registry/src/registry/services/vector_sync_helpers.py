@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from beanie import Document, PydanticObjectId
+from pymongo import ReadPreference
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.database.leased_job import Lease, LeasedRepository, LeaseLostError, run_with_lease
@@ -57,7 +59,13 @@ def require_metadata_success(result: VectorSyncResult) -> None:
         raise RuntimeError(result.error or f"{result.failed} metadata updates failed")
 
 
-async def _delete_each(delete_fn, orphan_ids: set[str], label: str) -> int:
+class OrphanSweepGuardError(RuntimeError):
+    """The orphan set is implausibly large — almost certainly a bad or partial Mongo read, not real
+    orphans. Deleting would wipe valid vectors (recoverable only by a full reindex), so the caller
+    refuses to delete anything this pass and retries next interval."""
+
+
+async def _delete_each(delete_fn: Callable[[str], Awaitable[int]], orphan_ids: set[str], label: str) -> int:
     """Delete each orphan id, counting successes; a single failure is logged and does not abort."""
     deleted = 0
     for entity_id in orphan_ids:
@@ -69,25 +77,64 @@ async def _delete_each(delete_fn, orphan_ids: set[str], label: str) -> int:
     return deleted
 
 
+def _guard_orphan_fraction(
+    label: str, orphans: set[str], vector_ids: set[str], max_fraction: float, min_total: int
+) -> None:
+    """Trip the circuit breaker when too large a share of a collection looks orphaned.
+
+    Genuine orphans are a trickle (an occasional lost delete). A large fraction means the Mongo id
+    read was partial/empty (wrong DB, a lagging read, a migration window), so deleting the diff would
+    destroy valid vectors. Collections below ``min_total`` are exempt so a tiny set can't false-trip.
+    """
+    total = len(vector_ids)
+    if total >= min_total and len(orphans) > max_fraction * total:
+        raise OrphanSweepGuardError(
+            f"{label}: {len(orphans)}/{total} vectors look orphaned (> {max_fraction:.0%}); refusing to delete"
+        )
+
+
 async def delete_orphan_vectors(
     mcp_repo: MCPServerRepository,
     a2a_repo: A2AAgentRepository,
     *,
     vector_mcp_ids: set[str],
     vector_a2a_ids: set[str],
+    max_orphan_fraction: float | None = None,
+    guard_min_total: int = 0,
 ) -> tuple[int, int]:
     """Delete vectors whose entity id is absent from Mongo; return ``(servers, agents)`` deleted.
 
-    Loads Mongo ids with ``_id``-only projections (the query ``_delete_removed`` already uses).
-    The caller must read the vector id sets *before* this runs, so Mongo is read second: an entity
-    created in between either isn't yet in the vector set or is in both sets (its vectors are written
-    after its Mongo commit), and an entity deleted in between correctly counts as an orphan. A single
-    failing delete is logged at ``warning`` and counted out; it does not stop the rest.
+    Loads Mongo ids with ``_id``-only projections (the query ``_delete_removed`` already uses), pinned
+    to the **primary** so the read reflects every committed write — the ordering invariant below
+    depends on it, and a lagging secondary read could drop a just-created entity and delete its
+    fresh vectors. The caller must read the vector id sets *before* this runs, so Mongo is read
+    second: an entity created in between either isn't yet in the vector set or is in both sets (its
+    vectors are written after its Mongo commit), and an entity deleted in between correctly counts as
+    an orphan. A single failing delete is logged at ``warning`` and counted out; it does not stop the
+    rest.
+
+    When ``max_orphan_fraction`` is set, a circuit breaker checks **both** collections before deleting
+    **either** and raises :class:`OrphanSweepGuardError` if an implausible share looks orphaned, so a
+    bad Mongo read can't wipe valid vectors. The reindex caller leaves it unset (its swept ids come
+    from the generation it just rebuilt from Mongo in the same pass).
+
+    Two callers, each satisfying the ordering with its own repository generation:
+    - the reindex ``_delete_removed`` passes ids swept from the *new* generation's job-local repos
+      earlier in the pass (``mcp_repo``/``a2a_repo`` target that generation);
+    - the orphan sweep passes ids just enumerated from the *active* generation's global repos.
+    Both read their vector ids before this Mongo read, so the invariant holds in either generation.
     """
-    mongo_mcp_ids = {str(d["_id"]) async for d in ExtendedMCPServer.get_pymongo_collection().find({}, {"_id": 1})}
-    mongo_a2a_ids = {str(d["_id"]) async for d in A2AAgent.get_pymongo_collection().find({}, {"_id": 1})}
-    mcp_deleted = await _delete_each(mcp_repo.delete_by_server_id, vector_mcp_ids - mongo_mcp_ids, "server")
-    a2a_deleted = await _delete_each(a2a_repo.delete_by_agent_id, vector_a2a_ids - mongo_a2a_ids, "agent")
+    mcp_coll = ExtendedMCPServer.get_pymongo_collection().with_options(read_preference=ReadPreference.PRIMARY)
+    a2a_coll = A2AAgent.get_pymongo_collection().with_options(read_preference=ReadPreference.PRIMARY)
+    mongo_mcp_ids = {str(d["_id"]) async for d in mcp_coll.find({}, {"_id": 1})}
+    mongo_a2a_ids = {str(d["_id"]) async for d in a2a_coll.find({}, {"_id": 1})}
+    mcp_orphans = vector_mcp_ids - mongo_mcp_ids
+    a2a_orphans = vector_a2a_ids - mongo_a2a_ids
+    if max_orphan_fraction is not None:
+        _guard_orphan_fraction("server", mcp_orphans, vector_mcp_ids, max_orphan_fraction, guard_min_total)
+        _guard_orphan_fraction("agent", a2a_orphans, vector_a2a_ids, max_orphan_fraction, guard_min_total)
+    mcp_deleted = await _delete_each(mcp_repo.delete_by_server_id, mcp_orphans, "server")
+    a2a_deleted = await _delete_each(a2a_repo.delete_by_agent_id, a2a_orphans, "agent")
     return mcp_deleted, a2a_deleted
 
 

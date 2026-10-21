@@ -921,9 +921,6 @@ async def test_toggle_enable_marks_pending_and_forces_full_resync():
     assert plan.marker == server.vectorSyncPendingAt
 
 
-# --- AS-1916: vector delete moves to the route (post-commit); service exposes a tracked helper ---
-
-
 def _delete_service(repo, tracker=None):
     return ServerServiceV1(
         user_service=Mock(),
