@@ -57,6 +57,40 @@ def require_metadata_success(result: VectorSyncResult) -> None:
         raise RuntimeError(result.error or f"{result.failed} metadata updates failed")
 
 
+async def _delete_each(delete_fn, orphan_ids: set[str], label: str) -> int:
+    """Delete each orphan id, counting successes; a single failure is logged and does not abort."""
+    deleted = 0
+    for entity_id in orphan_ids:
+        try:
+            await delete_fn(entity_id)
+            deleted += 1
+        except Exception:
+            logger.warning("Orphan vector delete failed for %s %s", label, entity_id, exc_info=True)
+    return deleted
+
+
+async def delete_orphan_vectors(
+    mcp_repo: MCPServerRepository,
+    a2a_repo: A2AAgentRepository,
+    *,
+    vector_mcp_ids: set[str],
+    vector_a2a_ids: set[str],
+) -> tuple[int, int]:
+    """Delete vectors whose entity id is absent from Mongo; return ``(servers, agents)`` deleted.
+
+    Loads Mongo ids with ``_id``-only projections (the query ``_delete_removed`` already uses).
+    The caller must read the vector id sets *before* this runs, so Mongo is read second: an entity
+    created in between either isn't yet in the vector set or is in both sets (its vectors are written
+    after its Mongo commit), and an entity deleted in between correctly counts as an orphan. A single
+    failing delete is logged at ``warning`` and counted out; it does not stop the rest.
+    """
+    mongo_mcp_ids = {str(d["_id"]) async for d in ExtendedMCPServer.get_pymongo_collection().find({}, {"_id": 1})}
+    mongo_a2a_ids = {str(d["_id"]) async for d in A2AAgent.get_pymongo_collection().find({}, {"_id": 1})}
+    mcp_deleted = await _delete_each(mcp_repo.delete_by_server_id, vector_mcp_ids - mongo_mcp_ids, "server")
+    a2a_deleted = await _delete_each(a2a_repo.delete_by_agent_id, vector_a2a_ids - mongo_a2a_ids, "agent")
+    return mcp_deleted, a2a_deleted
+
+
 async def clear_vector_sync_marker(
     model: type[Document], doc_id: PydanticObjectId, marker: datetime, *, session: AsyncClientSession | None = None
 ) -> None:

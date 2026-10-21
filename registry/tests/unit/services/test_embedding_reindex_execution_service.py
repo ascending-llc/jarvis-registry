@@ -566,3 +566,16 @@ def test_drop_collection_propagates_real_failure():
     adapter = SimpleNamespace(collection_exists=lambda name: True, drop_collection=_boom)
     with pytest.raises(RuntimeError, match="weaviate refused"):
         exec_module._drop_collection(SimpleNamespace(write_adapter=adapter), "MCP_Servers_gen")
+
+
+async def test_delete_removed_delegates_to_shared_helper(monkeypatch):
+    """`_delete_removed` forwards the swept id sets to the shared ``delete_orphan_vectors`` helper."""
+    delegate = AsyncMock(return_value=(0, 0))
+    monkeypatch.setattr(exec_module, "delete_orphan_vectors", delegate)
+
+    service = _service(SimpleNamespace(adapter=object(), write_adapter=object(), close=MagicMock()))
+    mcp_repo = MagicMock()
+    a2a_repo = MagicMock()
+    await service._delete_removed(mcp_repo, a2a_repo, {"s1", "s2"}, {"a1"})
+
+    delegate.assert_awaited_once_with(mcp_repo, a2a_repo, vector_mcp_ids={"s1", "s2"}, vector_a2a_ids={"a1"})
