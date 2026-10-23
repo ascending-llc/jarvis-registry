@@ -8,10 +8,12 @@ Use the [MCP Gateway guide](../features/mcp-gateway-registry.md) for registratio
 
 ## Understand the access boundaries
 
+**Roles define application capabilities; ACLs define access to specific resources.** To call a registered MCP server, the user's role must allow the action and the server's ACL must grant access. Both are required.
+
 | Control | What it checks | Limit of this exercise |
 |---|---|---|
-| Authentication and endpoint scope | The caller has an authenticated identity and the scope required by the endpoint. | Signing in does not grant access to every server. |
-| Server access-control list (ACL) | `execute_tool` resolves the caller's accessible server IDs on each invocation. | A previous discovery result does not authorize future calls. |
+| Application role | Allows gateway calls (`mcp-proxy-ops`) or server metadata reads (`servers-read`). | These capabilities do not grant access to a particular server. |
+| Server access-control list (ACL) | Grants access to the particular server; `execute_tool` checks it on every invocation. | Knowing the server ID or discovering it earlier does not grant access. |
 | Disabled tools | A server owner can disable tools for all consumers through normal discovery and `execute_tool`. | This is not a per-user permission, and the transparent proxy does not enforce this list. |
 | Downstream authorization | The downstream service and the credentials used for the request determine access to business operations and records. | A synthetic server-access test cannot prove record-level permissions in a business system. |
 
@@ -21,13 +23,13 @@ The transparent proxy and the Registry gateway are different execution paths. Th
 
 Use an isolated, non-production Registry deployment and synthetic data only. If you need a deployment first, follow the [Deployment Guide](../deployment-guide.md).
 
-- **Alice** owns the test server. She needs the endpoint scopes to create, read, enable, and share it, as well as permission to use the MCP gateway. The built-in power-user role includes the relevant scopes; resource ownership remains a separate requirement.
-- **Bob** is a second identity with `mcp-proxy-ops`, so he can reach the MCP gateway, and `servers-read`, so the metadata check can test server access. The built-in user role includes both. The built-in read-only role lacks `mcp-proxy-ops` and cannot isolate the server-ACL test.
+- **Alice** has the built-in power-user role and owns the test server. Her role allows the setup actions; ownership grants her access to this server.
+- **Bob** has the built-in user role, including the `mcp-proxy-ops` and `servers-read` scopes, but no ACL grant on the test server. Do not use the read-only role: it lacks the gateway capability.
 - Use separate browser profiles and client sessions with separate credentials. Verify each authenticated identity before testing.
 - Keep the test server private: turn off **Everyone** and avoid any group grant that includes Bob. Retain Alice as owner throughout.
 - Use a client that lets you inspect discovery results and invoke explicit tools. Record the deployed Registry version, client version, connection mode, and test server ID.
 
-For scope configuration, see [RBAC and scopes](../design/scopes.md). Entra deployments should also follow [Configure Entra scope groups](../runbooks/entra-scope-groups.md); a same-named group is not a substitute for the configured group Object ID.
+Verify each session or token includes the required scopes; a down-scoped token can have fewer capabilities than its user's role. See [RBAC and scopes](../design/scopes.md). Entra deployments should also follow [Configure Entra scope groups](../runbooks/entra-scope-groups.md); a same-named group is not a substitute for the configured group Object ID.
 
 ## 1. Check the synthetic MCP server locally
 
