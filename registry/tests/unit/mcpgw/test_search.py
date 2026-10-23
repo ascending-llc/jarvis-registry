@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mcp.types import CallToolResult
 
 from registry.mcpgw.tools.search import _run_search
 from registry_pkgs.core.exceptions import InternalServerException
@@ -46,7 +47,7 @@ async def test_run_search_success_returns_results() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock):
+async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock) -> CallToolResult:
     import mcp.types as types
     from mcp.server.fastmcp import FastMCP
     from mcp.server.lowlevel.server import request_ctx
@@ -77,7 +78,7 @@ async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock):
             method="tools/call",
             params=types.CallToolRequestParams(
                 name=tool_name,
-                arguments={"query": "x", "top_n": 3, "type_list": ["tool"]},
+                arguments={"query": "x", "top_n": 3},
             ),
         )
         return (await handler(req)).root
@@ -86,10 +87,23 @@ async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock):
 
 
 @pytest.mark.asyncio
-async def test_discover_tool_reports_generic_error_for_other_failures():
+@pytest.mark.parametrize("tool_name", ["discover_servers", "discover_agents"])
+async def test_discover_tool_reports_generic_error_for_other_failures(tool_name: str) -> None:
     search_entities = AsyncMock(side_effect=RuntimeError("boom"))
 
-    result = await _call_tool_e2e("discover_servers", search_entities)
+    result = await _call_tool_e2e(tool_name, search_entities)
 
     assert result.isError is True
     assert "entity discovery failed" in result.content[0].text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["discover_servers", "discover_agents"])
+async def test_discover_tool_empty_results_are_not_errors(tool_name: str) -> None:
+    search_entities = AsyncMock(return_value={"results": []})
+
+    result = await _call_tool_e2e(tool_name, search_entities)
+
+    assert result.isError is False
+    assert result.structuredContent == {"result": []}
+    search_entities.assert_awaited_once()

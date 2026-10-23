@@ -66,7 +66,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 description=(
                     "Concise keywords describing the atomic operation you need "
                     "(e.g. 'github list issues', 'send slack message', 'search web'). "
-                    "Pass '' with top_n=20 to survey all available MCP capabilities."
+                    "Pass '' with top_n=20 to survey up to 20 accessible MCP capabilities."
                 ),
             ),
         ] = "",
@@ -85,7 +85,10 @@ def get_tools() -> list[tuple[str, Callable]]:
             ),
         ] = Field(default_factory=lambda: [MCPEntityType.TOOL.value]),
     ) -> list[dict[str, Any]]:
-        """Search the MCP_Servers collection for tools, resources, or prompts.
+        """Discover MCP tools, resources, and prompts for a requested capability.
+
+        Before claiming a needed external operation is unavailable, search here when permitted.
+        Ordinary text-only work does not require discovery.
 
         Use this when the user needs an ATOMIC, stateless operation that completes in a single
         step: fetching data, running code, sending a message, querying an API, etc.
@@ -95,7 +98,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         - relevance_score: ranking signal only — verify the description, not the score
         - description: full embedded context — server name + server description + entity name
           + parameter list + tags. This is the primary signal; read it to confirm a match.
-        - server_id + server_name: required for all execution calls
+        - server_id: required for all execution calls; server_name: display and search context
         - tool_name    (entity_type='tool')     → execute_tool(tool_name, server_id, arguments)
         - input_schema (entity_type='tool')     → use this dict to construct correct arguments;
                                                   may be None if the server omitted it
@@ -105,8 +108,11 @@ def get_tools() -> list[tuple[str, Callable]]:
         Evaluating results: read each result's description to confirm it matches the
         user's intent. If the top result fits, execute it. If multiple results plausibly
         fit, ask the user to clarify. If none fit, refine the query or call with
-        query='' top_n=20 to survey all capabilities — then group mentally by server_name
-        and retry with that server name in the query to get exact identifiers."""
+        query='' top_n=20 to survey up to 20 accessible capabilities — then group by server_name
+        and retry with that server name in the query to get exact identifiers.
+        If it is unclear whether the task needs a tool or an agent, also use discover_agents.
+        Scores from the two discovery tools are not comparable; judge descriptions instead
+        of applying numeric thresholds. Avoid repeating identical searches."""
         return await _run_search(ctx, query, top_n, "hybrid", type_list, "mcp")
 
     async def discover_agents(
@@ -119,7 +125,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 description=(
                     "Concise keywords describing the complex task or domain you want to delegate "
                     "(e.g. 'deep intel analysis', 'customer support', 'code review'). "
-                    "Pass '' with top_n=20 to survey all registered A2A agents."
+                    "Pass '' with top_n=20 to survey up to 20 accessible A2A agents."
                 ),
             ),
         ] = "",
@@ -138,15 +144,21 @@ def get_tools() -> list[tuple[str, Callable]]:
             ),
         ] = Field(default_factory=lambda: [A2AEntityType.AGENT.value]),
     ) -> list[dict[str, Any]]:
-        """Search the A2a_agents collection for A2A agents or their individual skills.
+        """Discover A2A agents or their skills for tasks that benefit from delegation.
+
+        Before claiming a needed delegated capability is unavailable, search here when permitted.
+        Ordinary text-only work does not require discovery.
 
         Use this when the user needs a COMPLEX, multi-step task that requires reasoning,
         domain expertise, or coordination across multiple operations — and is best handled
         by delegating to a specialized autonomous agent via the A2A protocol.
+        When a task requests data retrieval followed by delegation, retrieve the real data
+        through discovered MCP tools first, then include that output in the agent message.
+        Do not substitute fabricated data or a fabricated summary for the requested input.
 
         Each result contains:
         - entity_type: 'agent' | 'skill'
-        - relevance_score: compare RELATIVELY across results
+        - relevance_score: ranking signal within these results, not a numeric match threshold
         - description: embedded agent context including capabilities, skills, and card info
         - agent_id + agent_name: agent identity
         - path: registry path used to invoke the agent via A2A protocol
@@ -161,7 +173,10 @@ def get_tools() -> list[tuple[str, Callable]]:
         domain matches the user's task — do not rely on the score alone. If the top
         result fits, delegate to it. If multiple agents plausibly fit, ask the user
         which domain they prefer. If none fit, broaden the query or call with
-        query='' top_n=20 to survey all registered agents."""
+        query='' top_n=20 to survey up to 20 accessible agents.
+        If it is unclear whether the task needs an agent or a tool, also use discover_servers.
+        Scores from the two discovery tools are not comparable; judge descriptions instead.
+        Avoid repeating identical searches."""
         return await _run_search(ctx, query, top_n, "hybrid", type_list, "a2a")
 
     return [
