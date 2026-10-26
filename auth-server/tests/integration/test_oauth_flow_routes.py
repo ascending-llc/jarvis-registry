@@ -8,6 +8,7 @@ Tests:
 Note: All OAuth endpoints are served under /auth prefix when AUTH_SERVER_API_PREFIX=/auth.
 """
 
+import html
 import time
 from http.cookies import SimpleCookie
 from types import SimpleNamespace
@@ -1665,6 +1666,8 @@ class TestCallbackIdentityResolution:
             device = device_codes_storage[device_code]
             assert device["status"] == "failed"
             assert device["error_description"] == expected
+            assert html.escape(expected, quote=False) in response.text
+            assert "try again" not in response.text
         else:
             assert response.status_code == 302
             assert parse_qs(urlparse(response.headers["location"]).query)["error"] == [expected]

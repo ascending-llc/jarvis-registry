@@ -84,6 +84,7 @@ from .consent_templates import (
     render_device_code_confirm_page,
     render_device_code_entry_page,
     render_device_denied_page,
+    render_device_identity_error_page,
     render_device_link_error_page,
     render_device_scope_error_page,
     render_device_server_error_page,
@@ -1295,7 +1296,7 @@ async def oauth2_callback(
         message = IDENTITY_CONFLICT_MESSAGE if isinstance(exc, IdentityConflictError) else UNTRUSTED_EMAIL_MESSAGE
         if is_device_flow and isinstance(device_code, str):
             _finish_device_failure(device_code, "failed", store, error_description=message)
-            response = HTMLResponse(render_device_server_error_page(), status_code=400)
+            response = HTMLResponse(render_device_identity_error_page(message), status_code=400)
             response.delete_cookie(settings.oauth2_temp_session_cookie_name)
             return response
         return _redirect_to_login_error(message)
