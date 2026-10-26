@@ -149,3 +149,23 @@ async def test_cancelled_holder_releases_lock() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert KEY not in redis.store
+
+
+@pytest.mark.asyncio
+async def test_timeout_inside_held_lease_is_not_reported_as_refresh_in_progress() -> None:
+    redis = FakeRedis()
+    with pytest.raises(TimeoutError):
+        async with refresh_lock(redis, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
+            raise TimeoutError("IdP call timed out")
+    assert KEY not in redis.store
+
+
+@pytest.mark.asyncio
+async def test_held_lease_outlives_acquire_wait_without_cancelling_body() -> None:
+    redis = FakeRedis()
+    async with refresh_lock(redis, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
+        # Longer than REFRESH_LOCK_WAIT_SECONDS (patched to 0.1s): the body is never cancelled.
+        await asyncio.sleep(0.15)
+        finished = True
+    assert finished
+    assert KEY not in redis.store
