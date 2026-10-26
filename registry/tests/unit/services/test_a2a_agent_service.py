@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -97,6 +98,69 @@ def _managed_card_agent(
         config=config,
         author=PydanticObjectId(),
     )
+
+
+@pytest.mark.asyncio
+async def test_unchanged_hash_syncs_all_agent_metadata_with_mongo_reload(monkeypatch):
+    repo = MagicMock(sync_entity_metadata=AsyncMock())
+    service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock())
+    agent = _managed_card_agent(config=AgentConfig(title="Weather", type="jsonrpc", enabled=True))
+    agent.tags = ["ops"]
+    agent.federationMetadata = make_agentcore_a2a_metadata(runtime_version="7")
+    agent.refresh_content_hash()
+    old_hash = agent.vectorContentHash
+    agent.config.enabled = False
+    agent.refresh_content_hash()
+    assert agent.vectorContentHash == old_hash
+    captured = {}
+    monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+
+    with patch.object(A2AAgent, "get", new_callable=AsyncMock) as reload:
+        service._schedule_vector_sync(agent, old_hash)
+        await captured["coro"]
+
+        repo.sync_entity_metadata.assert_awaited_once()
+        args = repo.sync_entity_metadata.await_args
+        assert args.args == (agent, {"enabled": False, "tags": ["ops"], "runtimeVersion": "7"})
+        reload.assert_not_awaited()
+        assert await args.kwargs["reload"]() is reload.return_value
+        reload.assert_awaited_once_with(agent.id)
+
+    repo.sync_to_vector_db.assert_not_called()
+    repo.update_entity_metadata.assert_not_called()
+
+
+def test_agent_tags_change_keeps_full_rebuild():
+    repo = MagicMock()
+    service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock())
+    agent = _managed_card_agent()
+    agent.refresh_content_hash()
+    old_hash = agent.vectorContentHash
+    agent.tags = ["ops"]
+    agent.refresh_content_hash()
+    assert agent.vectorContentHash != old_hash
+
+    with patch.object(service, "_schedule_sync") as sync:
+        service._schedule_vector_sync(agent, old_hash)
+
+    sync.assert_called_once_with(agent, is_delete=True)
+    repo.sync_entity_metadata.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agent_metadata_sync_logs_errors_without_raising(monkeypatch, caplog):
+    repo = MagicMock(sync_entity_metadata=AsyncMock(side_effect=RuntimeError("weaviate down")))
+    service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock())
+    agent = _managed_card_agent()
+    agent.refresh_content_hash()
+    captured = {}
+    monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
+
+    service._schedule_vector_sync(agent, old_hash=agent.vectorContentHash)
+    with caplog.at_level("ERROR", logger="registry.services.a2a_agent_service"):
+        await captured["coro"]
+
+    assert f"Vector metadata update failed for agent {agent.id}" in caplog.text
 
 
 def test_build_managed_agent_card_applies_all_transformations(monkeypatch: pytest.MonkeyPatch) -> None:

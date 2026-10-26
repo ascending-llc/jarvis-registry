@@ -125,20 +125,22 @@ class A2AAgentService:
         asyncio.create_task(_task())
 
     def _schedule_vector_sync(self, agent: A2AAgent, old_hash: str | None) -> None:
-        """Schedule vector sync or metadata-only update based on content hash change."""
+        """Schedule a rebuild for changed content or a metadata sync with a document-count check."""
         if self._a2a_agent_repo is None:
             return
         if agent.vectorContentHash != old_hash:
             self._schedule_sync(agent, is_delete=True)
         else:
+            metadata = agent.mutable_metadata()
 
-            async def _task():
+            async def _task(a: A2AAgent = agent) -> None:
                 try:
-                    await self._a2a_agent_repo.update_entity_metadata(
-                        "agent_id", str(agent.id), {"enabled": agent.config.enabled if agent.config else False}
+                    result = await self._a2a_agent_repo.sync_entity_metadata(
+                        a, metadata, reload=lambda: A2AAgent.get(a.id)
                     )
+                    logger.debug("Vector metadata update result for agent %s: %s", a.id, result)
                 except Exception as e:
-                    logger.error("Vector metadata update failed for agent %s: %s", agent.id, e, exc_info=True)
+                    logger.error("Vector metadata update failed for agent %s: %s", a.id, e, exc_info=True)
 
             asyncio.create_task(_task())
 
