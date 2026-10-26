@@ -11,6 +11,8 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
+from auth_server.core.config import settings
+
 
 def int_to_base64url(value):
     """Converts an integer to a Base64url-encoded string as per RFC 7518."""
@@ -69,10 +71,7 @@ class TestWellKnownRoutes:
         assert "code_challenge_methods_supported" in data
         assert "S256" in data["code_challenge_methods_supported"]
 
-        # Verify scopes
-        assert "scopes_supported" in data
-        assert isinstance(data["scopes_supported"], list)
-        assert len(data["scopes_supported"]) > 0
+        assert data["scopes_supported"] == sorted(settings.scopes_list)
 
     def test_a2a_oauth_authorization_server_metadata(self, test_client: TestClient):
         """A2A metadata overrides issuer and registration_endpoint; everything else matches root."""
@@ -103,14 +102,15 @@ class TestWellKnownRoutes:
         data = response.json()
 
         # Required OIDC fields
-        assert "issuer" in data
-        assert "authorization_endpoint" in data
-        assert "token_endpoint" in data
-        assert "userinfo_endpoint" in data
-        assert "jwks_uri" in data
-
-        # Verify OIDC-specific endpoints (include /auth prefix when AUTH_SERVER_API_PREFIX is set)
-        assert data["userinfo_endpoint"] == "http://localhost:8888/auth/oauth2/userinfo"
+        assert {
+            "issuer",
+            "authorization_endpoint",
+            "jwks_uri",
+            "response_types_supported",
+            "subject_types_supported",
+            "id_token_signing_alg_values_supported",
+        } <= data.keys()
+        assert "userinfo_endpoint" not in data
 
         # Verify subject types
         assert "subject_types_supported" in data
@@ -121,18 +121,18 @@ class TestWellKnownRoutes:
         assert "HS256" not in data["id_token_signing_alg_values_supported"]
         assert "RS256" in data["id_token_signing_alg_values_supported"]
 
-        # Verify OIDC scopes
-        assert "scopes_supported" in data
-        assert "openid" in data["scopes_supported"]
-        assert "profile" in data["scopes_supported"]
-        assert "email" in data["scopes_supported"]
+        assert data["scopes_supported"] == sorted(settings.scopes_list)
 
-        # Verify claims
-        assert "claims_supported" in data
-        assert "sub" in data["claims_supported"]
-        assert "email" in data["claims_supported"]
-        assert "name" in data["claims_supported"]
-        assert "groups" in data["claims_supported"]
+        assert data["claims_supported"] == [
+            "sub",
+            "user_id",
+            "preferred_username",
+            "email",
+            "name",
+            "groups",
+            "scope",
+            "client_id",
+        ]
 
         # Verify device flow support in OIDC config
         assert "device_authorization_endpoint" in data
@@ -152,8 +152,6 @@ class TestWellKnownRoutes:
         assert len(data["keys"]) == 1
 
         key = data["keys"][0]
-
-        from auth_server.core.config import settings
 
         assert key["alg"] == "RS256"
         assert key["kid"] == settings.jwt_self_signed_kid
@@ -184,6 +182,17 @@ class TestWellKnownRoutes:
         assert oauth_data["token_endpoint"] == oidc_data["token_endpoint"]
         assert oauth_data["jwks_uri"] == oidc_data["jwks_uri"]
         assert oauth_data["device_authorization_endpoint"] == oidc_data["device_authorization_endpoint"]
+
+        resource_response = test_client.get(
+            f"/.well-known/oauth-protected-resource{settings.service_base_path}/proxy/mcpgw/mcp"
+        )
+        assert resource_response.status_code == 200
+        assert (
+            oauth_data["scopes_supported"]
+            == oidc_data["scopes_supported"]
+            == resource_response.json()["scopes_supported"]
+            == sorted(settings.scopes_list)
+        )
 
     def test_well_known_response_headers(self, test_client: TestClient):
         """Test that .well-known endpoints return correct content-type headers."""

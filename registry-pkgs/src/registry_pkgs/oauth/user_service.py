@@ -1,5 +1,4 @@
 import logging
-from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
@@ -8,22 +7,8 @@ from registry_pkgs.models import User
 
 logger = logging.getLogger(__name__)
 
-_GOOGLE_PROVIDER = "google"
-
 
 class UserService:
-    async def find_by_source_id(self, source_id: str) -> User | None:
-        """Find a user by idOnTheSource (Entra ID or similar)."""
-        if not source_id:
-            logger.warning("No source_id provided to find_by_source_id.")
-            return None
-        try:
-            user = await User.find_one({"idOnTheSource": source_id})
-            return user
-        except Exception as e:
-            logger.error(f"Error finding user by source_id '{source_id}': {e}")
-            return None
-
     async def get_user_by_user_id(
         self,
         user_id: str,
@@ -44,29 +29,6 @@ class UserService:
             logger.error(f"Error finding user by user_id '{user_id}': {e}")
             return None
 
-    async def get_or_create_user(self, email: str) -> User | None:
-        """
-        Get or create an user
-            :param email: email of the user
-        """
-        user = await User.find_one({"email": email})
-        if not user:
-            now = datetime.now(UTC)
-            # Create user
-            user_data = {
-                "email": email,
-                "emailVerified": False,
-                "role": "USER",
-                "provider": "local",
-                "createdAt": now,
-                "updatedAt": now,
-            }
-            collection = User.get_pymongo_collection()
-            await collection.insert_one(user_data)
-            logger.info(f"Created user record for token storage: {email}")
-            user = await User.find_one({"email": email})
-        return user
-
     async def search_users(self, query: str, limit: int = 30) -> list[User]:
         """
         Search users by name, email, or username. Returns User model objects.
@@ -84,54 +46,3 @@ class UserService:
         except Exception as e:
             logger.error(f"Error searching users with query '{search_query}': {e}")
             return []
-
-    async def create_user(self, user_claims: dict) -> User | None:
-        """
-        Create a new user in MongoDB.
-
-        Args:
-            user_claims: Dictionary containing user information (name, username, email, idp_id)
-
-        Returns:
-            user_id as string if created, None on error
-        """
-        try:
-            provider = user_claims.get("auth_provider", "")
-            idp_id = user_claims.get("idp_id")
-            # The managed-agent access token never carries a bare "email" claim (see
-            # TokenGrantService._mint_response) — sub is the email-shaped username for every
-            # provider, including Google (GoogleProvider.get_user_info sets username=email;
-            # Google's own opaque numeric sub is carried separately as idp_id).
-            email = user_claims.get("email") or user_claims.get("sub")
-
-            if provider == _GOOGLE_PROVIDER:
-                # Google is a LibreChat-native provider (Chat's googleStrategy.js sets googleId).
-                provider_fields: dict = {"provider": _GOOGLE_PROVIDER, "googleId": idp_id}
-                id_on_source = email  # Cloud Identity Groups API is email-keyed — see AS-1826.
-            else:
-                provider_fields = {"provider": "openid", "openidId": idp_id or ""}
-                id_on_source = idp_id
-
-            new_user = User(
-                name=user_claims.get("name"),
-                username=user_claims.get("sub"),
-                email=email,
-                emailVerified=True,
-                role="USER",
-                idOnTheSource=id_on_source,
-                plugins=[],
-                termsAccepted=False,
-                favorites=[],
-                createdAt=datetime.now(UTC),
-                updatedAt=datetime.now(UTC),
-                **provider_fields,
-            )
-
-            created_user = await new_user.create()
-            logger.info(
-                f"Created new user record in MongoDB with id: {created_user.id} for username: {user_claims.get('username')}"
-            )
-            return created_user
-        except Exception as e:
-            logger.error(f"Error creating new user for username: {user_claims.get('username')}: {e}")
-            return None

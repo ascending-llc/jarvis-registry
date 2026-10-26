@@ -29,12 +29,13 @@ _ORIGINAL_HAS_PERMISSION = ScopePermissionMiddleware._has_permission
 def _mint_managed_agent_token(client_id: str, scope: str = "a2a-proxy-ops") -> str:
     return mint_managed_agent_token(
         settings.jwt_token_config,
-        subject="integration-user",
+        subject=_USER_ID,
         client_id=client_id,
         requested_scopes=scope,
         expires_in_seconds=3600,
         extra_claims={
             "user_id": _USER_ID,
+            "preferred_username": "integration-user",
         },
     )
 
