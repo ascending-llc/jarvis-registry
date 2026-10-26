@@ -35,6 +35,9 @@ _STARTABLE_SYNC_STATUSES = [
     FederationSyncStatus.SUCCESS.value,
     FederationSyncStatus.FAILED.value,
 ]
+# A job's terminal parent write applies only while the parent still shows that job in flight, so a
+# late write cannot overwrite a reaper repair (or another terminal write) for the same job.
+_IN_FLIGHT_SYNC_STATUSES = [FederationSyncStatus.PENDING.value, FederationSyncStatus.SYNCING.value]
 
 
 def _enum_value(value: Any) -> Any:
@@ -336,7 +339,11 @@ class FederationCrudService:
                 "lastSync": last_sync.model_dump(),
                 "stats": stats.model_dump(),
             },
-            expected={"status": FederationStatus.ACTIVE.value, "lastSync.jobId": job_id},
+            expected={
+                "status": FederationStatus.ACTIVE.value,
+                "syncStatus": {"$in": _IN_FLIGHT_SYNC_STATUSES},
+                "lastSync.jobId": job_id,
+            },
             session=session,
         )
         if not updated:
@@ -367,12 +374,18 @@ class FederationCrudService:
             set_fields["stats"] = stats.model_dump()
         # Guard on the owning job only when one is known; the stuck-federation reaper pass calls
         # this with no job to repair a federation that has no live job at all.
-        expected = {"status": FederationStatus.ACTIVE.value, "lastSync.jobId": job_id} if job_id is not None else {}
+        expected: dict[str, Any] = {}
+        if job_id is not None:
+            expected = {
+                "status": FederationStatus.ACTIVE.value,
+                "syncStatus": {"$in": _IN_FLIGHT_SYNC_STATUSES},
+                "lastSync.jobId": job_id,
+            }
         if expected_updated_at is not None:
             expected.update(
                 {
                     "status": FederationStatus.ACTIVE.value,
-                    "syncStatus": {"$in": [FederationSyncStatus.PENDING.value, FederationSyncStatus.SYNCING.value]},
+                    "syncStatus": {"$in": _IN_FLIGHT_SYNC_STATUSES},
                     "updatedAt": expected_updated_at,
                 }
             )

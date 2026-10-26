@@ -516,16 +516,13 @@ class FederationSyncService:
         last_sync = self._build_last_sync(job, apply_summary)
         self._complete_last_sync(last_sync, failed=sync_failed)
 
-        # Fence the terminal job write before touching its parent. A stale executor must not
-        # change federation state after losing its token. The reaper's stuck-parent pass repairs
-        # a parent if execution stops between these two writes.
+        # The terminal job write releases the lease, so it must be the last write: the heartbeat
+        # keeps running until this coroutine returns, and a renewal against a released lease raises
+        # LeaseLostError and cancels whatever write is still in flight. Prove ownership first so a
+        # stale executor does not touch the parent; the parent guards (lastSync.jobId plus an
+        # in-flight syncStatus) keep a write that races a reaper repair from overwriting it.
+        await federation_sync_lease_repository.assert_owned(lease)
         if sync_failed:
-            await self.federation_job_service.mark_failed(
-                job,
-                FederationJobPhase.FAILED,
-                message or "Federation sync failed",
-                lease,
-            )
             await self.federation_crud_service.mark_sync_failed(
                 federation,
                 message or "Federation sync failed",
@@ -533,12 +530,18 @@ class FederationSyncService:
                 stats=stats,
                 job_id=job.id,
             )
+            await self.federation_job_service.mark_failed(
+                job,
+                FederationJobPhase.FAILED,
+                message or "Federation sync failed",
+                lease,
+            )
             return
 
-        await self.federation_job_service.mark_success(job, lease, message=message)
         await self.federation_crud_service.mark_sync_success(
             federation, last_sync, stats, job_id=job.id, message=message
         )
+        await self.federation_job_service.mark_success(job, lease, message=message)
 
     async def preview_manual_sync(
         self,
@@ -987,6 +990,14 @@ class FederationSyncService:
             # Legacy deletions have no owner marker. The guarded write also prevents an old
             # finalizer from restoring a newer deletion that installed a different owner ID.
             await self.federation_crud_service.mark_delete_failed(federation, reason, expected_job_id=owner_id)
+            return
+
+        if _enum_value(federation.syncStatus) not in {
+            FederationSyncStatus.PENDING.value,
+            FederationSyncStatus.SYNCING.value,
+        }:
+            # The executor wrote the parent's terminal status before it stopped (the parent write
+            # precedes the terminal job write); nothing is wedged.
             return
 
         if job_doc is not None:

@@ -290,6 +290,75 @@ async def test_lost_job_fence_never_writes_federation(storage, at_finalize):
     assert not storage.federations.writes
 
 
+@pytest.mark.parametrize("sync_failed", [False, True])
+async def test_terminal_parent_write_lands_before_lease_release(storage, sync_failed):
+    service = storage.service
+    job, lease = await _pending(storage)
+    await service.federation_job_service.mark_syncing(job, FederationJobPhase.SYNCING_VECTORS, lease)
+    if sync_failed:
+        job.discoverySummary.discoveredMcpServers = 1
+    service._build_federation_stats = AsyncMock(return_value=FederationStats())
+    crud = service.federation_crud_service
+    method_name = "mark_sync_failed" if sync_failed else "mark_sync_success"
+    parent_write = getattr(crud, method_name)
+    job_at_parent_write = {}
+
+    async def snapshot_then_write(*args, **kwargs):
+        job_at_parent_write.update(deepcopy(storage.jobs.documents[job.id]))
+        return await parent_write(*args, **kwargs)
+
+    setattr(crud, method_name, snapshot_then_write)
+    await service._finalize_sync_status(
+        storage.federation,
+        job,
+        FederationSyncMutationResult(FederationApplySummary()),
+        VectorSyncOutcome(),
+        lease,
+    )
+
+    # The heartbeat runs until the execution returns, so the lease must still be held while the
+    # parent is written; releasing it first lets a renewal raise LeaseLostError mid-write.
+    assert job_at_parent_write["leaseToken"] == lease.token
+    assert job_at_parent_write["status"] == FederationJobStatus.SYNCING
+    expected_job = FederationJobStatus.FAILED if sync_failed else FederationJobStatus.SUCCESS
+    expected_parent = FederationSyncStatus.FAILED if sync_failed else FederationSyncStatus.SUCCESS
+    assert storage.jobs.documents[job.id]["status"] == expected_job
+    assert storage.jobs.documents[job.id]["leaseToken"] is None
+    assert storage.federations.documents[storage.federation.id]["syncStatus"] == expected_parent
+
+
+async def test_late_terminal_parent_write_cannot_overwrite_reaper_repair(storage):
+    job, _ = await _pending(storage)
+    stale = storage.federation.model_copy(deep=True)
+    fed = storage.federations.documents[storage.federation.id]
+    fed["syncStatus"] = FederationSyncStatus.FAILED
+    fed["syncMessage"] = "Executor lost: lease expired"
+
+    await storage.service.federation_crud_service.mark_sync_success(
+        stale,
+        FederationLastSync(jobId=job.id, status=FederationSyncStatus.SUCCESS),
+        FederationStats(),
+        job_id=job.id,
+    )
+
+    assert fed["syncStatus"] == FederationSyncStatus.FAILED
+    assert fed["syncMessage"] == "Executor lost: lease expired"
+
+
+async def test_reaper_leaves_parent_alone_when_executor_already_finalized_it(storage):
+    job, _ = await _pending(storage)
+    stored = storage.jobs.documents[job.id]
+    stored["status"] = FederationJobStatus.SYNCING
+    stored["leaseExpiresAt"] = datetime.now(UTC) - timedelta(seconds=1)
+    fed = storage.federations.documents[storage.federation.id]
+    fed["syncStatus"] = FederationSyncStatus.SUCCESS
+
+    await storage.service.reap_expired_federation_jobs()
+
+    assert stored["status"] == FederationJobStatus.FAILED
+    assert fed["syncStatus"] == FederationSyncStatus.SUCCESS
+
+
 async def test_lost_lease_during_discovery_never_writes_federation(storage):
     service = storage.service
     job, lease = await _pending(storage)

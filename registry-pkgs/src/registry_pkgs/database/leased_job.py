@@ -360,6 +360,10 @@ async def run_with_lease[D: Document, T](
     heartbeat: asyncio.Task[NoReturn] = asyncio.ensure_future(keep_lease_alive(repo, lease))
     try:
         done, _pending = await asyncio.wait({execution, heartbeat}, return_when=asyncio.FIRST_COMPLETED)
+        if execution in done and not execution.cancelled() and execution.exception() is None:
+            # A completed execution's lease-held writes were all fenced, so its result stands even
+            # when a renewal raced its final, lease-releasing write and lost.
+            return execution.result()
         if heartbeat in done:
             _ = await heartbeat  # heartbeat only ever completes by raising LeaseLostError
             raise AssertionError("keep_lease_alive returned without raising")  # pragma: no cover
