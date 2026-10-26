@@ -1013,6 +1013,27 @@ class FederationSyncService:
                 federation, reason, expected_updated_at=scanned_updated_at
             )
 
+    async def _repair_abandoned_parent(
+        self,
+        federation_id: PydanticObjectId,
+        job_doc: FederationSyncJob | None,
+        **kwargs: Any,
+    ) -> None:
+        """Reaper wrapper around ``_finalize_abandoned_job`` that logs a failure instead of raising.
+
+        One parent whose repair raises must not end the tick: the remaining jobs and federations still
+        need their repair, and a federation that raises on every tick would otherwise block every
+        federation after it in the stuck scan.
+        """
+        try:
+            await self._finalize_abandoned_job(federation_id, job_doc, **kwargs)
+        except Exception:
+            logger.exception(
+                "federation reaper: failed to repair federation %s (job=%s)",
+                federation_id,
+                getattr(job_doc, "id", None),
+            )
+
     async def reap_expired_federation_jobs(self) -> int:
         """Finalize abandoned federation jobs and unwedge federations left behind. Returns the count.
 
@@ -1039,7 +1060,7 @@ class FederationSyncService:
             )
             if job is None:
                 break
-            await self._finalize_abandoned_job(job.federationId, job, reason=_REAP_LEASE_EXPIRED)
+            await self._repair_abandoned_parent(job.federationId, job, reason=_REAP_LEASE_EXPIRED)
             reaped += 1
 
         collection = FederationSyncJob.get_pymongo_collection()
@@ -1065,7 +1086,7 @@ class FederationSyncService:
             if document is None:
                 break
             job = FederationSyncJob.model_validate(document)
-            await self._finalize_abandoned_job(job.federationId, job, reason=_REAP_LEGACY)
+            await self._repair_abandoned_parent(job.federationId, job, reason=_REAP_LEGACY)
             reaped += 1
 
         now = datetime.now(UTC)
@@ -1120,7 +1141,7 @@ class FederationSyncService:
                 # A terminal job may have just released its lease; allow its parent write to finish.
                 if recent_job is not None and recent_job.updatedAt > stuck_cutoff:
                     continue
-                await self._finalize_abandoned_job(
+                await self._repair_abandoned_parent(
                     federation_id,
                     recent_job,
                     reason=_REAP_STUCK,

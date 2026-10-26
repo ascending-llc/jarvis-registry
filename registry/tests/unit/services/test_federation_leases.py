@@ -359,6 +359,38 @@ async def test_reaper_leaves_parent_alone_when_executor_already_finalized_it(sto
     assert fed["syncStatus"] == FederationSyncStatus.SUCCESS
 
 
+async def test_reaper_continues_past_a_failing_parent_repair(storage, monkeypatch):
+    service = storage.service
+    job, _ = await _pending(storage)
+    stored = storage.jobs.documents[job.id]
+    stored["status"] = FederationJobStatus.SYNCING
+    stored["leaseExpiresAt"] = datetime.now(UTC) - timedelta(seconds=1)
+    storage.federations.documents[storage.federation.id]["syncStatus"] = FederationSyncStatus.SYNCING
+    stuck = Federation(
+        id=PydanticObjectId(),
+        providerType=FederationProviderType.AWS_AGENTCORE,
+        displayName="Stuck",
+        providerConfig={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/Test"},
+        status=FederationStatus.ACTIVE,
+        syncStatus=FederationSyncStatus.SYNCING,
+        updatedAt=datetime.now(UTC) - timedelta(minutes=3),
+    )
+    storage.federations.documents[stuck.id] = stuck.model_dump(by_alias=True)
+    finalize = service._finalize_abandoned_job
+
+    async def flaky_finalize(federation_id, *args, **kwargs):
+        if federation_id == storage.federation.id:
+            raise RuntimeError("mongo blip")
+        return await finalize(federation_id, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_finalize_abandoned_job", flaky_finalize)
+    await service.reap_expired_federation_jobs()
+
+    assert stored["status"] == FederationJobStatus.FAILED
+    # Pass 3 still ran after pass 1's repair raised.
+    assert storage.federations.documents[stuck.id]["syncStatus"] == FederationSyncStatus.FAILED
+
+
 async def test_lost_lease_during_discovery_never_writes_federation(storage):
     service = storage.service
     job, lease = await _pending(storage)
