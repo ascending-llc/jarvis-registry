@@ -19,6 +19,7 @@ from httpx._decoders import SUPPORTED_DECODERS
 from opentelemetry import baggage, trace
 from redis import Redis
 
+from registry.core.mcp_config import MCPClientConfig
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.exceptions import (
     DownstreamAuthRejectedException,
@@ -203,6 +204,8 @@ _INIT_METHODS = frozenset({"initialize", "tools/list"})
 # required before the request can proceed — shared by the downstream-OAuth-expired and
 # consent-required elicitation paths.
 _URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
+_JSONRPC_INVALID_REQUEST = -32600
+_JSONRPC_INTERNAL_ERROR = -32603
 
 
 def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
@@ -220,6 +223,19 @@ def _build_jsonrpc_error(request_id: str | int | None, code: int, message: str, 
     if data is not None:
         error_response["error"]["data"] = data
     return error_response
+
+
+def _build_method_error(
+    request_id: str | int | None,
+    message: str,
+    *,
+    method: str | None,
+    code: int = _JSONRPC_INTERNAL_ERROR,
+) -> dict[str, Any]:
+    """Shape a gateway-generated failure for the method that triggered it."""
+    if method == "tools/call":
+        return _build_jsonrpc_error_result(request_id, message)
+    return _build_jsonrpc_error(request_id, code, message)
 
 
 def _get_elicitation_id(auth_url: str) -> str:
@@ -390,6 +406,7 @@ async def _forward_to_downstream(
     proxy_client: httpx.AsyncClient,
     headers: dict[str, str],
     server_name: str = "",
+    mcp_method: str | None = None,
     on_unauthorized: UnauthorizedCallback | None = None,
 ) -> Response:
     """Send the proxied request downstream and relay the response (buffered JSON or SSE stream).
@@ -411,10 +428,12 @@ async def _forward_to_downstream(
             logger.error(f"Accept header: '{accept_header}' from a client of a streamable-http MCP server")
             return JSONResponse(
                 status_code=200,
-                content=_build_jsonrpc_error_result(
+                content=_build_method_error(
                     request_id,
                     "The client is trying to communicate with an MCP server on Streamable HTTP transport, so its "
                     f"Accept header MUST include 'text/event-stream'. However, the Accept header is '{accept_header}'.",
+                    method=mcp_method,
+                    code=_JSONRPC_INVALID_REQUEST,
                 ),
             )
 
@@ -435,8 +454,10 @@ async def _forward_to_downstream(
             if is_retry:
                 return JSONResponse(
                     status_code=200,
-                    content=_build_jsonrpc_error_result(
-                        request_id, f"Authorization for {server_name} changed during this call; retry it."
+                    content=_build_method_error(
+                        request_id,
+                        f"Authorization for {server_name} changed during this call; retry it.",
+                        method=mcp_method,
                     ),
                 )
             headers = outcome
@@ -592,7 +613,10 @@ async def proxy_to_mcp_server(
                     )
                 except DownstreamAuthRejectedException as exc:
                     # Even for handshake methods: a 401 challenge here would restart the login loop.
-                    return JSONResponse(status_code=200, content=_build_jsonrpc_error_result(request_id, str(exc)))
+                    return JSONResponse(
+                        status_code=200,
+                        content=_build_method_error(request_id, str(exc), method=mcp_method),
+                    )
                 # Headers when a token is available (resend), else Registry's own 401 challenge for
                 # handshake methods or the URL elicitation for the rest.
                 return await _prepare_proxy_headers(
@@ -613,6 +637,7 @@ async def proxy_to_mcp_server(
             proxy_client=proxy_client,
             headers=headers,
             server_name=server.serverName,
+            mcp_method=mcp_method,
             on_unauthorized=on_unauthorized,
         )
 
@@ -993,8 +1018,9 @@ async def dynamic_mcp_post_proxy(
     if request_id is None:
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error_result(
+            content=_build_jsonrpc_error(
                 request_id,
+                _JSONRPC_INVALID_REQUEST,
                 "The JSON-RPC request body is malformed. The 'id' field doesn't exist or is not of the right type.",
             ),
         )
@@ -1006,8 +1032,10 @@ async def dynamic_mcp_post_proxy(
     if matched_server_path is None:
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error_result(
-                request_id, "The path portion of the MCP server URL is misconfigured. Prompt user to re-configure it."
+            content=_build_jsonrpc_error(
+                request_id,
+                _JSONRPC_INVALID_REQUEST,
+                "The path portion of the MCP server URL is misconfigured. Prompt user to re-configure it.",
             ),
         )
 
@@ -1016,8 +1044,10 @@ async def dynamic_mcp_post_proxy(
     if server is None:
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error_result(
-                request_id, "The path portion of the MCP server URL is misconfigured. Prompt user to re-configure it."
+            content=_build_jsonrpc_error(
+                request_id,
+                _JSONRPC_INVALID_REQUEST,
+                "The path portion of the MCP server URL is misconfigured. Prompt user to re-configure it.",
             ),
         )
 
@@ -1031,7 +1061,7 @@ async def dynamic_mcp_post_proxy(
     except HTTPException:
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error_result(request_id, "Access denied to this MCP server."),
+            content=_build_method_error(request_id, "Access denied to this MCP server.", method=msg_body.get("method")),
         )
 
     user_id = auth_context["user_id"]
@@ -1043,8 +1073,10 @@ async def dynamic_mcp_post_proxy(
     if not isinstance(mcp_method, str):
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error_result(
-                request_id, "The JSON-RPC request body is malformed. The 'method' field is missing or not a string."
+            content=_build_jsonrpc_error(
+                request_id,
+                _JSONRPC_INVALID_REQUEST,
+                "The JSON-RPC request body is malformed. The 'method' field is missing or not a string.",
             ),
         )
     tool_name = None
@@ -1090,15 +1122,19 @@ async def dynamic_mcp_post_proxy(
     if not config.get("enabled", False):
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error_result(request_id, f"Server '{server.serverName}' is disabled"),
+            content=_build_method_error(request_id, f"Server '{server.serverName}' is disabled", method=mcp_method),
         )
-    elif config.get("type", "") != "streamable-http":
+    elif config.get("type", "") != MCPClientConfig.TRANSPORT_HTTP:
+        configured_transport = config.get("type") or "unknown"
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error_result(
+            content=_build_method_error(
                 request_id,
-                f"The target server with path '{server_path}' is on legacy SSE transport. Such servers much be "
-                "reached via the Jarvis Registry MCP Gateway. Only servers on Streamable HTTP transport can be reached directly.",
+                f"MCP server '{server.serverName}' is registered with the '{configured_transport}' transport, which "
+                "cannot be reached through this direct Streamable HTTP proxy. Reach it through the Jarvis Registry MCP "
+                "Gateway instead, or, if its endpoint supports Streamable HTTP, update the server's transport to "
+                "'streamable-http' (and its URL to the Streamable HTTP endpoint) in the registry.",
+                method=mcp_method,
             ),
         )
 
@@ -1107,11 +1143,13 @@ async def dynamic_mcp_post_proxy(
         target_url = get_target_url(server)
     except InternalServerException:
         # POST requests use JSON-RPC. There is no problem at the HTTP layer, so use status code 200 for HTTP
-        # and embed JSON-RPC error code -32603 in response body.
+        # and embed a JSON-RPC error in the response body.
         return JSONResponse(
             status_code=200,
             content=_build_jsonrpc_error(
-                request_id, -32603, "Server URL is not configured. The MCP server is not reachable."
+                request_id,
+                _JSONRPC_INTERNAL_ERROR,
+                "Server URL is not configured. The MCP server is not reachable.",
             ),
         )
 
