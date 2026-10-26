@@ -28,6 +28,7 @@ from registry_pkgs.core.redirect_uri import (
     redirect_uri_matches,
     validate_registration_redirect_uri,
 )
+from registry_pkgs.oauth.errors import OAuthCoordinationError
 from registry_pkgs.oauth.flow_state_manager import FlowStateManager
 from registry_pkgs.oauth.schemas import (
     MCPClientContext,
@@ -615,6 +616,10 @@ async def refresh_oauth_tokens(
     except HTTPException:
         # Re-raise HTTP exceptions with their original status code
         raise
+    except OAuthCoordinationError as e:
+        # Transient (refresh in progress, Redis unavailable, write conflict): the client should retry.
+        logger.warning(f"[OAuth Refresh] Coordination failure for {server_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Failed to refresh OAuth tokens: {str(e)}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")

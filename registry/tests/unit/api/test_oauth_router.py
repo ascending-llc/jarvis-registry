@@ -10,6 +10,8 @@ from registry.api.v1.mcp.oauth_router import router
 from registry.core.session_store import SessionStore
 from registry.deps import get_container
 from registry.services.oauth.mcp_service import MCPService
+from registry_pkgs.oauth.errors import OAuthCoordinationError
+from registry_pkgs.oauth.refresh_lock import REFRESH_IN_PROGRESS_MESSAGE
 from registry_pkgs.oauth.schemas import OAuthFlowStatus, OAuthFlowStatusResponse
 from tests.conftest import make_container_factory
 
@@ -342,6 +344,19 @@ class TestOAuthRouter:
 
         assert response.status_code == 400
         assert "Failed to refresh tokens" in response.json()["detail"]
+
+    def test_refresh_oauth_tokens_coordination_error_is_retryable(self, client, monkeypatch):
+        """A transient coordination failure (e.g. a double-clicked refresh) is a 503 with the retry message."""
+        monkeypatch.setattr(
+            mock_mcp_service.oauth_service,
+            "validate_and_refresh_tokens",
+            AsyncMock(side_effect=OAuthCoordinationError(REFRESH_IN_PROGRESS_MESSAGE)),
+        )
+
+        response = client.post(f"/mcp/oauth/refresh/{TEST_SERVER_ID}")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == REFRESH_IN_PROGRESS_MESSAGE
 
     def test_oauth_callback_success(self, client):
         """Test successful OAuth callback"""
