@@ -206,6 +206,12 @@ _INIT_METHODS = frozenset({"initialize", "tools/list"})
 _URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 _JSONRPC_INVALID_REQUEST = -32600
 _JSONRPC_INTERNAL_ERROR = -32603
+# The gateway deliberately refused the request (access denied, server disabled, unsupported
+# transport, downstream authorization rejected or changed mid-call). It sits in JSON-RPC 2.0's
+# implementation-defined server-error range (-32000 to -32099), avoiding the codes the MCP spec
+# and SDKs already use (-32000 connection closed, -32001 request timeout, -32002 resource not
+# found, -32042 URL elicitation required).
+_MCP_REQUEST_REFUSED_ERROR_CODE = -32003
 
 
 def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
@@ -230,7 +236,7 @@ def _build_method_error(
     message: str,
     *,
     method: str | None,
-    code: int = _JSONRPC_INTERNAL_ERROR,
+    code: int = _MCP_REQUEST_REFUSED_ERROR_CODE,
 ) -> dict[str, Any]:
     """Shape a gateway-generated failure for the method that triggered it."""
     if method == "tools/call":

@@ -433,7 +433,7 @@ async def test_post_proxy_without_server_consent_allows_handshake_methods(monkey
     # Handshake methods have a fixed result schema, so a refusal must be a JSON-RPC error — not an
     # isError-shaped result, which the client would reject as an invalid initialize/tools-list result.
     assert "result" not in body
-    assert body["error"]["code"] == -32603
+    assert body["error"]["code"] == -32003
     assert "disabled" in body["error"]["message"].lower()
     consent_store.has_server_consent.assert_not_called()
 
@@ -465,7 +465,7 @@ async def test_post_proxy_wrong_transport_returns_jsonrpc_error_for_handshake(mo
     body = json.loads(resp.body)
     assert resp.status_code == 200
     assert "result" not in body
-    assert body["error"]["code"] == -32603
+    assert body["error"]["code"] == -32003
     # The message names the configured transport and tells the user how to fix it.
     assert "sse" in body["error"]["message"]
     assert "streamable-http" in body["error"]["message"]
@@ -1087,7 +1087,7 @@ async def test_post_proxy_second_401_loop_guard(monkeypatch, method):
         assert body["result"]["isError"] is True
     else:
         assert "result" not in body
-        assert body["error"]["code"] == -32603
+        assert body["error"]["code"] == -32003
     assert message in json.dumps(body)
     assert len(downstream.sent_headers) == 2
 
