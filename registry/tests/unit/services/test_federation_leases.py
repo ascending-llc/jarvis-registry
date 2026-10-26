@@ -391,6 +391,26 @@ async def test_reaper_continues_past_a_failing_parent_repair(storage, monkeypatc
     assert storage.federations.documents[stuck.id]["syncStatus"] == FederationSyncStatus.FAILED
 
 
+@pytest.mark.parametrize("repairable", [True, False])
+async def test_stuck_pass_counts_only_federations_it_repaired(storage, repairable):
+    job, _ = await _pending(storage)
+    stored = storage.jobs.documents[job.id]
+    stored["status"] = FederationJobStatus.FAILED
+    stored["updatedAt"] = datetime.now(UTC) - timedelta(minutes=3)
+    fed = storage.federations.documents[storage.federation.id]
+    fed["syncStatus"] = FederationSyncStatus.SYNCING
+    fed["updatedAt"] = datetime.now(UTC) - timedelta(minutes=3)
+    if not repairable:
+        # The parent names another job, so the lastSync.jobId guard rejects every repair.
+        fed["lastSync"]["jobId"] = PydanticObjectId()
+
+    reaped = await storage.service.reap_expired_federation_jobs()
+
+    assert reaped == (1 if repairable else 0)
+    expected = FederationSyncStatus.FAILED if repairable else FederationSyncStatus.SYNCING
+    assert fed["syncStatus"] == expected
+
+
 async def test_lost_lease_during_discovery_never_writes_federation(storage):
     service = storage.service
     job, lease = await _pending(storage)
