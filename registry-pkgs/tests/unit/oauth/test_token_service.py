@@ -1,13 +1,19 @@
 """Unit tests for TokenService (token_service.py)."""
 
+import copy
+import hashlib
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from pymongo.errors import DuplicateKeyError
 
-from registry_pkgs.core.crypto_utils import encrypt_value
+from registry_pkgs.core.crypto_utils import decrypt_value, encrypt_value
 from registry_pkgs.models import Token, TokenType
+from registry_pkgs.oauth.errors import OAuthCoordinationError
 from registry_pkgs.oauth.schemas import OAuthTokens
 from registry_pkgs.oauth.token_service import (
     REGISTRY_TOKEN_IDENTIFIER_PREFIX,
@@ -759,3 +765,243 @@ async def test_batch_status_projects_no_credentials_and_matches_type() -> None:
     projection = collection.find.call_args.args[1]
     assert "token" not in projection and projection["metadata"] == 1
     service.get_user_by_user_id.assert_awaited_once()
+
+
+# ----------------------------------------------------------------------
+# Conditional commit (token_write_snapshot + commit_oauth_tokens)
+# ----------------------------------------------------------------------
+
+
+class _FakeTransaction:
+    """Rolls the collection back to its pre-transaction documents if the body raises."""
+
+    def __init__(self, collection: "_FakeTokenCollection") -> None:
+        self._collection = collection
+
+    async def __aenter__(self) -> None:
+        self._before = copy.deepcopy(self._collection.docs)
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if exc_type is not None:
+            self._collection.docs = self._before
+            self._collection.aborted += 1
+
+
+class _FakeSession:
+    def __init__(self, collection: "_FakeTokenCollection") -> None:
+        self._collection = collection
+
+    async def __aenter__(self) -> "_FakeSession":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+    async def start_transaction(self) -> _FakeTransaction:
+        return _FakeTransaction(self._collection)
+
+
+class _FakeTokenCollection:
+    """The subset of the pymongo ``tokens`` collection the commit path uses, with transactions."""
+
+    def __init__(self) -> None:
+        self.docs: dict[Any, dict[str, Any]] = {}
+        self.aborted = 0
+        self.database = SimpleNamespace(client=SimpleNamespace(start_session=lambda: _FakeSession(self)))
+
+    def _matches(self, doc: dict[str, Any], query: dict[str, Any]) -> bool:
+        for key, expected in query.items():
+            if key == "$or":
+                if not any(self._matches(doc, sub) for sub in expected):
+                    return False
+            elif doc.get(key) != expected:
+                return False
+        return True
+
+    def find(self, query: dict[str, Any]) -> Mock:
+        cursor = Mock()
+        cursor.to_list = AsyncMock(
+            return_value=[copy.deepcopy(d) for d in self.docs.values() if self._matches(d, query)]
+        )
+        return cursor
+
+    def _first(self, query: dict[str, Any]) -> dict[str, Any] | None:
+        return next((d for d in self.docs.values() if self._matches(d, query)), None)
+
+    async def update_one(self, query: dict[str, Any], update: dict[str, Any], *, session: Any) -> SimpleNamespace:
+        doc = self._first(query)
+        if doc is not None:
+            doc.update(copy.deepcopy(update["$set"]))
+        return SimpleNamespace(matched_count=int(doc is not None))
+
+    async def delete_one(self, query: dict[str, Any], *, session: Any) -> SimpleNamespace:
+        doc = self._first(query)
+        if doc is not None:
+            del self.docs[doc["_id"]]
+        return SimpleNamespace(deleted_count=int(doc is not None))
+
+    async def insert_one(self, document: dict[str, Any], *, session: Any) -> None:
+        if document["_id"] in self.docs:
+            raise DuplicateKeyError("E11000 duplicate key error")
+        self.docs[document["_id"]] = copy.deepcopy(document)
+
+    def put(self, identifier: str, token_type: str, value: str, metadata: dict[str, Any] | None = None) -> Any:
+        doc_id = PydanticObjectId()
+        self.docs[doc_id] = {
+            "_id": doc_id,
+            "userId": _USER_ID,
+            "type": token_type,
+            "identifier": identifier,
+            "token": encrypt_value(value, encryption_key=_TEST_ENCRYPTION_KEY),
+            "metadata": metadata,
+        }
+        return doc_id
+
+    def by_identifier(self, identifier: str) -> list[dict[str, Any]]:
+        return [d for d in self.docs.values() if d["identifier"] == identifier]
+
+
+_USER_ID = PydanticObjectId("507f1f77bcf86cd799439011")
+_ACCESS = registry_access_token_identifier("atlassian")
+_REFRESH = registry_refresh_token_identifier("atlassian")
+_ACCESS_TYPE = TokenType.MCP_OAUTH_ACCESS.value
+_REFRESH_TYPE = TokenType.MCP_OAUTH_REFRESH.value
+_BINDING = {"clientId": "client-1", "issuer": "https://as", "resource": "https://mcp"}
+
+
+def _deterministic_id(token_type: str, identifier: str) -> PydanticObjectId:
+    return PydanticObjectId(hashlib.sha256(f"{_USER_ID}:{token_type}:{identifier}".encode()).hexdigest()[:24])
+
+
+def _plain(doc: dict[str, Any]) -> str:
+    return decrypt_value(doc["token"], encryption_key=_TEST_ENCRYPTION_KEY)
+
+
+class TestConditionalCommit:
+    @pytest.fixture
+    def collection(self):
+        collection = _FakeTokenCollection()
+        with patch.object(Token, "get_pymongo_collection", return_value=collection):
+            yield collection
+
+    @pytest.fixture
+    def service(self):
+        service = TokenService(user_service=Mock(), encryption_key=_TEST_ENCRYPTION_KEY)
+        service.get_user = AsyncMock(return_value=SimpleNamespace(id=_USER_ID, email="u@example.com"))
+        return service
+
+    async def _commit(self, service: TokenService, tokens: OAuthTokens, snapshot: dict[str, Any] | None = None):
+        snapshot = snapshot or await service.token_write_snapshot("u", "atlassian")
+        await service.commit_oauth_tokens("atlassian", tokens, _BINDING, snapshot)
+
+    @pytest.mark.asyncio
+    async def test_snapshot_reads_only_registry_rows_of_matching_type(self, collection, service) -> None:
+        collection.put(_ACCESS, _ACCESS_TYPE, "a1")
+        collection.put(_REFRESH, _REFRESH_TYPE, "r1")
+        collection.put("mcp:atlassian", _ACCESS_TYPE, "chat-access")  # Jarvis Chat's record
+        collection.put(_ACCESS, _REFRESH_TYPE, "wrong-type")
+
+        snapshot = await service.token_write_snapshot("u", "atlassian")
+
+        assert set(snapshot["rows"]) == {_ACCESS, _REFRESH}
+        assert _plain(snapshot["rows"][_ACCESS]) == "a1"
+        assert service.snapshot_matches_refresh(snapshot, "atlassian", "r1")
+        assert not service.snapshot_matches_refresh(snapshot, "atlassian", "other")
+
+    @pytest.mark.asyncio
+    async def test_snapshot_with_duplicate_rows_raises(self, collection, service) -> None:
+        collection.put(_REFRESH, _REFRESH_TYPE, "r1")
+        collection.put(_REFRESH, _REFRESH_TYPE, "r1-duplicate")
+
+        with pytest.raises(OAuthCoordinationError, match="Duplicate"):
+            await service.token_write_snapshot("u", "atlassian")
+
+    @pytest.mark.asyncio
+    async def test_first_commit_inserts_with_deterministic_ids(self, collection, service) -> None:
+        await self._commit(service, OAuthTokens(access_token="a1", refresh_token="r1", expires_in=3600))
+
+        access = collection.docs[_deterministic_id(_ACCESS_TYPE, _ACCESS)]
+        refresh = collection.docs[_deterministic_id(_REFRESH_TYPE, _REFRESH)]
+        assert (_plain(access), _plain(refresh)) == ("a1", "r1")
+        assert access["type"] == _ACCESS_TYPE and refresh["type"] == _REFRESH_TYPE
+        assert access["metadata"] == refresh["metadata"] == _BINDING
+        assert access["userId"] == _USER_ID and access["email"] == "u@example.com"
+
+    @pytest.mark.asyncio
+    async def test_commit_updates_existing_rows_in_place(self, collection, service) -> None:
+        access_id = collection.put(_ACCESS, _ACCESS_TYPE, "a1", {"clientId": "old"})
+        refresh_id = collection.put(_REFRESH, _REFRESH_TYPE, "r1", {"clientId": "old"})
+
+        await self._commit(service, OAuthTokens(access_token="a2", refresh_token="r2"))
+
+        assert set(collection.docs) == {access_id, refresh_id}
+        assert (_plain(collection.docs[access_id]), _plain(collection.docs[refresh_id])) == ("a2", "r2")
+        assert collection.docs[refresh_id]["metadata"] == _BINDING
+
+    @pytest.mark.asyncio
+    async def test_commit_without_refresh_token_deletes_refresh_row(self, collection, service) -> None:
+        access_id = collection.put(_ACCESS, _ACCESS_TYPE, "a1")
+        collection.put(_REFRESH, _REFRESH_TYPE, "r1")
+
+        await self._commit(service, OAuthTokens(access_token="a2"))
+
+        assert set(collection.docs) == {access_id}
+        assert _plain(collection.docs[access_id]) == "a2"
+
+    @pytest.mark.asyncio
+    async def test_commit_without_refresh_token_inserts_no_refresh_row(self, collection, service) -> None:
+        await self._commit(service, OAuthTokens(access_token="a1"))
+
+        assert collection.by_identifier(_REFRESH) == []
+        assert len(collection.by_identifier(_ACCESS)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["token", "metadata"])
+    async def test_row_changed_after_snapshot_conflicts_and_rolls_back(self, collection, service, field) -> None:
+        access_id = collection.put(_ACCESS, _ACCESS_TYPE, "a1", _BINDING)
+        refresh_id = collection.put(_REFRESH, _REFRESH_TYPE, "r1", _BINDING)
+        snapshot = await service.token_write_snapshot("u", "atlassian")
+        # Another writer re-encrypted (fresh ciphertext) or rebound the refresh row meanwhile.
+        concurrent = (
+            encrypt_value("r1", encryption_key=_TEST_ENCRYPTION_KEY) if field == "token" else {"clientId": "other"}
+        )
+        collection.docs[refresh_id][field] = concurrent
+
+        with pytest.raises(OAuthCoordinationError, match="changed"):
+            await self._commit(service, OAuthTokens(access_token="a2", refresh_token="r2"), snapshot)
+
+        assert collection.aborted == 1
+        assert _plain(collection.docs[access_id]) == "a1"  # the access update was rolled back
+        assert collection.docs[refresh_id][field] == concurrent
+
+    @pytest.mark.asyncio
+    async def test_row_deleted_after_snapshot_conflicts(self, collection, service) -> None:
+        refresh_id = collection.put(_REFRESH, _REFRESH_TYPE, "r1")
+        snapshot = await service.token_write_snapshot("u", "atlassian")
+        del collection.docs[refresh_id]
+
+        with pytest.raises(OAuthCoordinationError):
+            await self._commit(service, OAuthTokens(access_token="a2"), snapshot)
+
+        assert collection.docs == {}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_insert_conflicts(self, collection, service) -> None:
+        snapshot = await service.token_write_snapshot("u", "atlassian")
+        # Another pod's first login committed after our snapshot.
+        await self._commit(service, OAuthTokens(access_token="other-a", refresh_token="other-r"))
+
+        with pytest.raises(OAuthCoordinationError, match="commit failed") as exc_info:
+            await self._commit(service, OAuthTokens(access_token="a1", refresh_token="r1"), snapshot)
+
+        assert isinstance(exc_info.value.__cause__, DuplicateKeyError)
+        assert [_plain(d) for d in collection.by_identifier(_ACCESS)] == ["other-a"]
+
+    @pytest.mark.asyncio
+    async def test_commit_without_access_token_is_rejected(self, collection, service) -> None:
+        snapshot = await service.token_write_snapshot("u", "atlassian")
+
+        with pytest.raises(ValueError, match="no access token"):
+            await service.commit_oauth_tokens("atlassian", OAuthTokens(refresh_token="r1"), _BINDING, snapshot)
+
+        assert collection.docs == {}

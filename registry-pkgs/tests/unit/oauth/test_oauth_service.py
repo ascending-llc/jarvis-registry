@@ -200,6 +200,9 @@ class FakeTokenService:
         if self.access.get(key) != snapshot["access"] or self.refresh.get(key) != snapshot["refresh"]:
             raise OAuthCoordinationError("OAuth credentials changed during refresh; retry")
         await self.store_oauth_tokens(key[0], service_name, tokens, metadata)
+        if not tokens.refresh_token:
+            # Like the real commit: a response without a refresh token deletes the stored one.
+            self.refresh.pop(key, None)
 
     async def store_oauth_tokens(
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
@@ -729,6 +732,71 @@ class TestLogin:
 
         assert not success and error is not None and "changed" in error
         assert h.tokens.commit_oauth_tokens.await_count == LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS
+
+
+# ----------------------------------------------------------------------
+# Stored-authorization status (no network)
+# ----------------------------------------------------------------------
+
+
+class TestHasUsableStoredAuthorization:
+    STATIC = {"client_id": "static-id", "client_secret": "s"}
+
+    @pytest.mark.parametrize(
+        "tokens,expected",
+        [
+            ({"refresh": {"clientId": "static-id", "issuer": None, "resource": None}}, True),
+            ({"access": {"clientId": "static-id", "issuer": "https://anything"}}, True),
+            ({"access": {"clientId": "other-id"}, "refresh": {"clientId": "other-id"}}, False),
+            ({}, False),
+        ],
+    )
+    def test_static_client_binds_on_client_id_only(self, h: Harness, tokens: dict, expected: bool) -> None:
+        assert h.service.has_usable_stored_authorization(h.server(oauth=self.STATIC), tokens) is expected
+
+    def test_dcr_without_state_is_not_authorized(self, h: Harness) -> None:
+        binding = {"clientId": "client-1", "issuer": ATLASSIAN_ISSUER, "resource": ATLASSIAN_URL}
+
+        assert h.service.has_usable_stored_authorization(h.server(), {"access": binding, "refresh": binding}) is False
+
+    @pytest.mark.asyncio
+    async def test_dcr_state_bound_to_another_url_is_not_authorized(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        binding = h.dcr_binding(state)
+
+        server = h.server(url="https://mcp.example.com/mcp")
+        assert h.service.has_usable_stored_authorization(server, {"access": binding, "refresh": binding}) is False
+
+    @pytest.mark.asyncio
+    async def test_dcr_access_binds_on_issuer_and_resource(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        reregistered = {**h.dcr_binding(state), "clientId": "previous-client"}
+        old_issuer = {**h.dcr_binding(state), "issuer": "https://auth.atlassian.com"}
+
+        assert h.service.has_usable_stored_authorization(h.server(), {"access": reregistered}) is True
+        assert h.service.has_usable_stored_authorization(h.server(), {"access": old_issuer}) is False
+
+    @pytest.mark.asyncio
+    async def test_dcr_refresh_only_requires_current_client(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        current = h.dcr_binding(state)
+        other_client = {**current, "clientId": "previous-client"}
+
+        assert h.service.has_usable_stored_authorization(h.server(), {"refresh": current}) is True
+        assert h.service.has_usable_stored_authorization(h.server(), {"refresh": other_client}) is False
+        # A mismatched access token falls through to the refresh token's binding.
+        mismatched_access = {**current, "resource": "https://elsewhere"}
+        tokens = {"access": mismatched_access, "refresh": current}
+        assert h.service.has_usable_stored_authorization(h.server(), tokens) is True
+
+    @pytest.mark.asyncio
+    async def test_dcr_refresh_without_registered_client_is_not_authorized(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        binding = h.dcr_binding(state)
+        assert state.client is not None
+        await h.service.invalidate_registry_oauth_client(h.server(), state.client.clientId)
+
+        assert h.service.has_usable_stored_authorization(h.server(), {"refresh": binding}) is False
 
 
 # ----------------------------------------------------------------------
