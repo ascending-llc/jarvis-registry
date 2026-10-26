@@ -35,6 +35,9 @@ _STARTABLE_SYNC_STATUSES = [
     FederationSyncStatus.SUCCESS.value,
     FederationSyncStatus.FAILED.value,
 ]
+# A job's terminal parent write applies only while the parent still shows that job in flight, so a
+# late write cannot overwrite a reaper repair (or another terminal write) for the same job.
+_IN_FLIGHT_SYNC_STATUSES = [FederationSyncStatus.PENDING.value, FederationSyncStatus.SYNCING.value]
 
 
 def _enum_value(value: Any) -> Any:
@@ -336,7 +339,11 @@ class FederationCrudService:
                 "lastSync": last_sync.model_dump(),
                 "stats": stats.model_dump(),
             },
-            expected={"status": FederationStatus.ACTIVE.value, "lastSync.jobId": job_id},
+            expected={
+                "status": FederationStatus.ACTIVE.value,
+                "syncStatus": {"$in": _IN_FLIGHT_SYNC_STATUSES},
+                "lastSync.jobId": job_id,
+            },
             session=session,
         )
         if not updated:
@@ -353,7 +360,12 @@ class FederationCrudService:
         job_id: PydanticObjectId | None = None,
         expected_updated_at: datetime | None = None,
         session: AsyncClientSession | None = None,
-    ) -> Federation:
+    ) -> bool:
+        """Fail the federation's sync, mutating ``federation`` in place.
+
+        Returns whether the guarded write applied; ``False`` means the stored federation no longer
+        matched (a newer job owns it, or it already left the in-flight state) and nothing was written.
+        """
         federation.syncStatus = FederationStateMachine.transition_to_sync_failed(federation.syncStatus)
         federation.syncMessage = message
         if last_sync is not None:
@@ -367,19 +379,25 @@ class FederationCrudService:
             set_fields["stats"] = stats.model_dump()
         # Guard on the owning job only when one is known; the stuck-federation reaper pass calls
         # this with no job to repair a federation that has no live job at all.
-        expected = {"status": FederationStatus.ACTIVE.value, "lastSync.jobId": job_id} if job_id is not None else {}
+        expected: dict[str, Any] = {}
+        if job_id is not None:
+            expected = {
+                "status": FederationStatus.ACTIVE.value,
+                "syncStatus": {"$in": _IN_FLIGHT_SYNC_STATUSES},
+                "lastSync.jobId": job_id,
+            }
         if expected_updated_at is not None:
             expected.update(
                 {
                     "status": FederationStatus.ACTIVE.value,
-                    "syncStatus": {"$in": [FederationSyncStatus.PENDING.value, FederationSyncStatus.SYNCING.value]},
+                    "syncStatus": {"$in": _IN_FLIGHT_SYNC_STATUSES},
                     "updatedAt": expected_updated_at,
                 }
             )
         updated = await self._update_federation(federation.id, set_fields, expected=expected, session=session)
         if not updated:
             logger.warning("mark_sync_failed skipped: federation %s no longer owned by job %s", federation.id, job_id)
-        return federation
+        return updated
 
     async def mark_delete_failed(
         self,
@@ -388,7 +406,12 @@ class FederationCrudService:
         *,
         expected_job_id: PydanticObjectId | None,
         session: AsyncClientSession | None = None,
-    ) -> Federation:
+    ) -> bool:
+        """Restore a DELETING federation to ACTIVE with a failed sync, mutating ``federation`` in place.
+
+        Returns whether the guarded write applied; ``False`` means the federation is gone or a
+        different delete job owns it, and nothing was written.
+        """
         federation.status = FederationStateMachine.transition_to_delete_failed(federation.status)
         federation.syncStatus = FederationStateMachine.transition_to_sync_failed(federation.syncStatus)
         federation.syncMessage = message
@@ -410,7 +433,7 @@ class FederationCrudService:
                 federation.id,
                 expected_job_id,
             )
-        return federation
+        return updated
 
     async def mark_deleting(
         self,
