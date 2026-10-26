@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 # Lost compare-and-swap writes on registryOAuth tolerated by one ensure_registry_oauth_state call.
 ENSURE_STATE_MAX_ATTEMPTS = 3
+# Concurrent token writes tolerated by one login-callback commit before the login fails.
+LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS = 3
 _REFRESH_IO_CONCURRENCY = 8
 
 INVALID_CLIENT_ERROR = "invalid_client"
@@ -672,8 +674,8 @@ class MCPOAuthService:
             if not tokens:
                 return False, "Failed to exchange code for tokens"
 
-            # Store under the refresh lock so an in-flight refresh with the old client can't overwrite
-            # these tokens after this write.
+            # A conditional commit: an in-flight refresh with the old client conflicts instead of
+            # overwriting these tokens after this write.
             await self._store_login_tokens(flow.user_id, flow.server_id, flow.server_name, tokens, flow.metadata)
             await self.flow_manager.complete_flow(flow_id, tokens)
             logger.info(f"Persisted OAuth tokens to database for {flow.user_id}/{flow.server_id}")
@@ -693,11 +695,21 @@ class MCPOAuthService:
         tokens: OAuthTokens,
         flow_metadata: MCPOAuthFlowMetadata,
     ) -> None:
+        """Commit login tokens without the refresh lock; the authorization code is already spent.
+
+        Login tokens always win. A concurrent refresh commits against an older snapshot and
+        conflicts, so it can't overwrite them; a conflict here just means a fresh snapshot.
+        """
         binding = self._flow_binding(flow_metadata)
-        async with self._refresh_lock(user_id, server_id) as lease:
+        for attempt in range(1, LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS + 1):
             snapshot = await self.token_service.token_write_snapshot(user_id, server_name)
-            await lease.ensure_owned()
-            await self.token_service.commit_oauth_tokens(server_name, tokens, binding, snapshot)
+            try:
+                await self.token_service.commit_oauth_tokens(server_name, tokens, binding, snapshot)
+                return
+            except OAuthCoordinationError:
+                if attempt == LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS:
+                    raise
+                logger.info(f"Login token commit conflicted for {user_id}/{server_id}; retrying")
 
     async def get_valid_access_token(
         self,

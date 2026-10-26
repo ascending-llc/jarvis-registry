@@ -35,7 +35,11 @@ from registry_pkgs.oauth.errors import (
     OAuthTokenEndpointError,
     RegistryOAuthStateConflictError,
 )
-from registry_pkgs.oauth.oauth_service import ENSURE_STATE_MAX_ATTEMPTS, MCPOAuthService
+from registry_pkgs.oauth.oauth_service import (
+    ENSURE_STATE_MAX_ATTEMPTS,
+    LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS,
+    MCPOAuthService,
+)
 from registry_pkgs.oauth.oauth_utils import get_default_redirect_uri
 from registry_pkgs.oauth.refresh_lock import refresh_lock
 from registry_pkgs.oauth.schemas import (
@@ -686,13 +690,45 @@ class TestLogin:
         assert h.register.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_redis_error_on_lock_does_not_store_login_tokens(self, h: Harness) -> None:
+    async def test_login_tokens_stored_without_refresh_lock(self, h: Harness) -> None:
         h.service._lock_redis_client = FakeRedis(fail_set=True)  # type: ignore[assignment]
 
-        success, _ = await self._start_and_complete(h)
+        success, error = await self._start_and_complete(h)
 
-        assert not success
-        assert (USER, "atlassian") not in h.tokens.access
+        assert success and error is None
+        assert h.tokens.access[(USER, "atlassian")].token == "login-access"
+
+    @pytest.mark.asyncio
+    async def test_login_commit_conflict_retries_with_fresh_snapshot(self, h: Harness) -> None:
+        commit = h.tokens.commit_oauth_tokens
+        calls = 0
+
+        async def concurrent_write_once(*args: Any) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                # A racing refresh committed between our snapshot and our commit.
+                h.tokens.put("atlassian", access="racing-refresh", refresh="racing-r")
+            await commit(*args)
+
+        h.tokens.commit_oauth_tokens = concurrent_write_once  # type: ignore[method-assign]
+        success, error = await self._start_and_complete(h)
+
+        assert success and error is None
+        assert calls == 2
+        assert h.tokens.access[(USER, "atlassian")].token == "login-access"
+        assert h.tokens.refresh[(USER, "atlassian")].token == "login-refresh"
+
+    @pytest.mark.asyncio
+    async def test_login_commit_fails_after_max_attempts(self, h: Harness) -> None:
+        h.tokens.commit_oauth_tokens = AsyncMock(  # type: ignore[method-assign]
+            side_effect=OAuthCoordinationError("OAuth credentials changed during refresh; retry")
+        )
+
+        success, error = await self._start_and_complete(h)
+
+        assert not success and error is not None and "changed" in error
+        assert h.tokens.commit_oauth_tokens.await_count == LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS
 
 
 # ----------------------------------------------------------------------
