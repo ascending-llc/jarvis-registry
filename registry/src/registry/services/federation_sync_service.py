@@ -49,7 +49,7 @@ from registry_pkgs.models.federation_sync_job import (
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
-from .background_task_tracker import BackgroundTaskTracker
+from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
@@ -810,11 +810,13 @@ class FederationSyncService:
     ) -> FederationSyncJob:
         """Create a leased manual-sync job and spawn it through the shared background task tracker.
 
-        The job is already inserted (leased) before the spawn, so if the tracker refuses it (shutdown
-        has begun) we fail the job here (fenced + released) and repair its federation, then re-raise
-        the tracker's ``RuntimeError`` for the route to map to 503.
+        The job is already inserted (leased) before the spawn, so if the spawn fails we fail the job
+        here (fenced + released) and repair its federation. A tracker refusal because shutdown has
+        begun is re-raised as ``FederationSyncShuttingDownError`` for the route to map to 503; any
+        other spawn error propagates unchanged.
         """
-        assert self._background_task_tracker is not None, "background_task_tracker is required for POST /sync"
+        if self._background_task_tracker is None:
+            raise RuntimeError("background_task_tracker is required for POST /sync")
         job, lease, author_id = await self.create_manual_sync_job(
             federation=federation,
             reason=reason,
@@ -838,20 +840,24 @@ class FederationSyncService:
 
         try:
             self._background_task_tracker.spawn(_job(), name=f"federation-sync-{job.id}")
-        except RuntimeError as exc:
+        except Exception as exc:
+            shutting_down = isinstance(exc, TrackerShutdownError)
+            reason = _INTERRUPTED_REASON if shutting_down else str(exc)
             matched = await federation_sync_lease_repository.transition(
                 lease,
                 {
                     "status": FederationJobStatus.FAILED.value,
                     "phase": FederationJobPhase.FAILED.value,
-                    "error": _INTERRUPTED_REASON,
+                    "error": reason,
                     "finishedAt": datetime.now(UTC),
                 },
                 release=True,
             )
             if matched:
-                await self._finalize_abandoned_job(federation.id, job, reason=_INTERRUPTED_REASON)
-            raise FederationSyncShuttingDownError(str(exc)) from exc
+                await self._finalize_abandoned_job(federation.id, job, reason=reason)
+            if shutting_down:
+                raise FederationSyncShuttingDownError(str(exc)) from exc
+            raise
         return job
 
     async def start_delete(

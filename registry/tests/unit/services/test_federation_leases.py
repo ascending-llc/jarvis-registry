@@ -466,6 +466,33 @@ async def test_tracker_rejects_spawn_and_finalizes_both_records(storage):
     assert storage.federations.documents[storage.federation.id]["syncStatus"] == FederationSyncStatus.FAILED
 
 
+async def test_unrelated_spawn_error_is_not_reported_as_shutdown(storage, monkeypatch):
+    service = storage.service
+
+    def broken_spawn(coro, *, name):
+        coro.close()
+        raise RuntimeError("no running event loop")
+
+    monkeypatch.setattr(service._background_task_tracker, "spawn", broken_spawn)
+    with pytest.raises(RuntimeError, match="no running event loop") as exc:
+        await service.start_manual_sync_background(federation=storage.federation, reason=None, triggered_by="user-1")
+    assert not isinstance(exc.value, FederationSyncShuttingDownError)
+    stored = next(iter(storage.jobs.documents.values()))
+    assert stored["status"] == FederationJobStatus.FAILED
+    assert stored["leaseToken"] is None
+    assert stored["error"] == "no running event loop"
+    assert storage.federations.documents[storage.federation.id]["syncStatus"] == FederationSyncStatus.FAILED
+
+
+async def test_background_sync_requires_tracker(storage):
+    storage.service._background_task_tracker = None
+    with pytest.raises(RuntimeError, match="background_task_tracker is required"):
+        await storage.service.start_manual_sync_background(
+            federation=storage.federation, reason=None, triggered_by="user-1"
+        )
+    assert not storage.jobs.documents
+
+
 async def test_tracker_cancellation_repairs_parent_after_execution_stops(storage):
     service = storage.service
     started = asyncio.Event()
