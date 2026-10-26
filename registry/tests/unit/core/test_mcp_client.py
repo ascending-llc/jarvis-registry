@@ -981,22 +981,40 @@ class TestPerformHealthCheck:
             assert init_result is None
 
     @pytest.mark.asyncio
-    async def test_perform_health_check_404_hints_transport_mismatch(self):
-        """A 404 on the initialize endpoint flags a likely config.url/config.type mismatch."""
-        url = "https://mcp.atlassian.com/v1/sse"
-        error = httpx.HTTPStatusError(
-            "not found",
-            request=httpx.Request("POST", url),
-            response=httpx.Response(404, request=httpx.Request("POST", url)),
-        )
+    @pytest.mark.parametrize(
+        ("transport", "status_code"),
+        [("streamable-http", 404), ("streamable-http", 405), ("sse", 404), ("sse", 405)],
+    )
+    async def test_perform_health_check_404_405_hints_transport_mismatch(self, transport, status_code):
+        """A 404/405 on the initialize endpoint flags a likely config.url/config.type mismatch.
 
-        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(side_effect=error)):
-            is_healthy, status, response_time, init_result = await perform_health_check(url, "streamable-http")
+        Drives the real mcp client over a mock transport: for streamable-http the SDK reports a 404
+        in-band as "Session terminated" rather than raising HTTPStatusError.
+        """
+        real_async_client = httpx.AsyncClient
+
+        def async_client_with_status(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(status_code))
+            return real_async_client(*args, **kwargs)
+
+        with patch("httpx.AsyncClient", new=async_client_with_status):
+            is_healthy, status, _, init_result = await perform_health_check("https://example.com/v1/sse", transport)
 
         assert is_healthy is False
-        assert "404" in status
+        assert str(status_code) in status
         assert "config.type" in status
         assert init_result is None
+
+    @pytest.mark.asyncio
+    async def test_initialize_mcp_does_not_treat_other_mcp_errors_as_404(self):
+        """Only the SDK's in-band 404 maps to InitializeEndpointNotFoundError."""
+        from mcp.shared.exceptions import McpError
+        from mcp.types import ErrorData
+
+        error = ExceptionGroup("tg", [McpError(ErrorData(code=-32602, message="Unsupported protocol version"))])
+
+        with patch("registry.core.mcp_client.streamable_http_client", side_effect=error):
+            assert await initialize_mcp("https://example.com/mcp", transport_type="streamable-http") is None
 
     @pytest.mark.asyncio
     async def test_perform_health_check_invalid_response(self):

@@ -22,6 +22,7 @@ from httpx_sse import EventSource
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import McpError
 from redis import Redis
 
 from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
@@ -328,6 +329,20 @@ def _clear_session(session_key: str, redis_client: Redis | None = None) -> None:
         logger.error(f"Failed to clear session from Redis: {e}")
 
 
+# mcp's streamable_http_client doesn't raise on a 404 POST: it answers the pending request in-band
+# with this error instead (`_send_session_terminated_error` in mcp/client/streamable_http.py).
+# During initialize no session exists yet, so it can only mean the endpoint itself returned 404.
+_SDK_SESSION_TERMINATED_MESSAGE = "Session terminated"
+
+
+class InitializeEndpointNotFoundError(Exception):
+    """The MCP endpoint answered the initialize request with HTTP 404."""
+
+
+def _is_sdk_initialize_404(exc: BaseException) -> bool:
+    return isinstance(exc, McpError) and exc.error.message == _SDK_SESSION_TERMINATED_MESSAGE
+
+
 async def initialize_mcp(
     target_url: str, headers: dict[str, str] = None, transport_type: str = "streamable-http"
 ) -> Any | None:
@@ -348,6 +363,8 @@ async def initialize_mcp(
 
     Raises:
         httpx.HTTPStatusError: Re-raised to allow caller to inspect HTTP status codes
+        InitializeEndpointNotFoundError: The streamable-http endpoint returned 404, which the SDK
+            reports in-band rather than as an HTTPStatusError
     """
 
     # Use provided headers or default MCP headers
@@ -389,12 +406,20 @@ async def initialize_mcp(
             if isinstance(exc, httpx.HTTPStatusError):
                 logger.debug(f"HTTP error during MCP initialization for {target_url}: {exc.response.status_code}")
                 raise exc  # Re-raise the unwrapped HTTPStatusError
+        # The SDK nests its task groups, so search the whole tree rather than the top level.
+        if eg.subgroup(_is_sdk_initialize_404) is not None:
+            raise InitializeEndpointNotFoundError(target_url) from eg
         logger.error(f"MCP initialization failed for {target_url}: ExceptionGroup - {eg}")
         return None
     except httpx.HTTPStatusError as e:
         # Re-raise HTTP errors so caller can inspect status code (e.g., 401 for health checks)
         logger.debug(f"HTTP error during MCP initialization for {target_url}: {e.response.status_code}")
         raise
+    except McpError as e:
+        if _is_sdk_initialize_404(e):
+            raise InitializeEndpointNotFoundError(target_url) from e
+        logger.error(f"MCP initialization failed for {target_url}: McpError - {e}")
+        return None
     except Exception as e:
         logger.error(f"MCP initialization failed for {target_url}: {type(e).__name__} - {e}")
         return None
@@ -450,6 +475,9 @@ async def perform_health_check(
         init_result = await initialize_mcp(target_url=url, headers=headers, transport_type=transport)
     except httpx.HTTPStatusError as e:
         http_status_code = e.response.status_code
+        logger.debug(f"HTTP error {http_status_code} during health check for {url}")
+    except InitializeEndpointNotFoundError:
+        http_status_code = HTTPStatus.NOT_FOUND
         logger.debug(f"HTTP error {http_status_code} during health check for {url}")
     except Exception as e:
         logger.debug(f"Non-HTTP error during health check for {url}: {type(e).__name__} - {e}")
