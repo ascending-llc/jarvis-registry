@@ -5,11 +5,9 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Protocol, TypeVar
-from weakref import WeakValueDictionary
 
 from langchain_core.documents import Document
 
-from .client import DatabaseClient
 from .protocols import VectorStorable
 from .repository import Repository
 from .sync_result import VectorSyncResult
@@ -37,31 +35,6 @@ class BaseVectorSyncRepository(Repository[T], ABC):
     """
 
     ENTITY_ID_PROPERTY: ClassVar[str]
-
-    def __init__(self, db_client: DatabaseClient, model_class: type[T]) -> None:
-        super().__init__(db_client, model_class)
-        self._metadata_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
-
-    async def _run_metadata_sync[R](self, entity_id: str, operation: Callable[[], Awaitable[R]]) -> R:
-        # Each caller retains its lock while owning or awaiting it; idle locks disappear.
-        lock = self._metadata_locks.setdefault(entity_id, asyncio.Lock())
-        async with lock:
-            task = asyncio.ensure_future(operation())
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                # Cancelling to_thread cannot stop its SDK writes. Finish the operation
-                # before releasing the lock, even if the caller is cancelled again.
-                while not task.done():
-                    try:
-                        await asyncio.shield(task)
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception:
-                        break
-                if not task.cancelled():
-                    task.exception()
-                raise
 
     async def ensure_collection(self) -> bool:
         """Ensure the backing Weaviate collection exists and has all required filterable properties."""
@@ -107,9 +80,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         metadata: dict[str, Any],
     ) -> VectorSyncResult:
         """Patch metadata on all docs for an entity — no re-embedding (toggle/status-only changes)."""
-        return await self._run_metadata_sync(
-            str(entity_id), lambda: self._update_metadata_by_filters({entity_id_field: entity_id}, metadata)
-        )
+        return await self._update_metadata_by_filters({entity_id_field: entity_id}, metadata)
 
     async def _update_metadata_by_filters(
         self,
@@ -258,15 +229,12 @@ class BaseVectorSyncRepository(Repository[T], ABC):
     ) -> dict:
         """Patch an entity's metadata, or rebuild its docs when their count differs."""
         filters = {self.ENTITY_ID_PROPERTY: str(entity.id)}
-        return await self._run_metadata_sync(
-            str(entity.id),
-            lambda: self._patch_or_rebuild(
-                entity,
-                filters=filters,
-                expected=len(entity.to_documents()),
-                patch=lambda docs: self._patch_docs(docs, metadata, filters),
-                reload=reload,
-            ),
+        return await self._patch_or_rebuild(
+            entity,
+            filters=filters,
+            expected=len(entity.to_documents()),
+            patch=lambda docs: self._patch_docs(docs, metadata, filters),
+            reload=reload,
         )
 
     @abstractmethod

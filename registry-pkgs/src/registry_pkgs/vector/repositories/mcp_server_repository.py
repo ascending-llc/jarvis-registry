@@ -171,10 +171,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
                     result.error = outcome.error
             return result
 
-        return await self._run_metadata_sync(
-            str(server.id),
-            lambda: self._patch_or_rebuild(server, filters=filters, expected=expected, patch=patch, reload=reload),
-        )
+        return await self._patch_or_rebuild(server, filters=filters, expected=expected, patch=patch, reload=reload)
 
     async def update_tools_metadata(
         self,
@@ -190,10 +187,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         if not tool_names:
             return VectorSyncResult()
         # Adapter maps a list value to contains_any (len>1) or equal (len==1); empty is guarded above.
-        return await self._run_metadata_sync(
-            str(server_id),
-            lambda: self._update_metadata_by_filters({"server_id": server_id, "tool_name": list(tool_names)}, metadata),
-        )
+        return await self._update_metadata_by_filters({"server_id": server_id, "tool_name": list(tool_names)}, metadata)
 
     async def delete_by_entity_id(self, entity_id: str, entity_name: str | None = None) -> int:
         """Remove all weaviate docs for an MCP server."""

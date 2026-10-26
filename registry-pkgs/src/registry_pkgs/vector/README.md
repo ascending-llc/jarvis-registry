@@ -52,13 +52,9 @@ an aggregate count checks for excess docs without exceeding Weaviate's fetch lim
 lookups do not need this extra count. If the expected count exceeds 10,000, the sync warns and
 patches the returned docs without comparing counts. Zero expected and found docs is a no-op.
 
-Within one repository instance, metadata operations for the same entity are serialized from
-the initial lookup through the patch or fallback rebuild. This covers both new `sync_*` methods
-and the legacy `update_*` patches, including calls with different tool filters. Different entities
-can proceed concurrently. Cancelling a caller waits for its active operation to finish before
-releasing the lock, because cancellation cannot stop an SDK write running in a worker thread.
-This coordination is local to the process and repository instance;
-it does not coordinate other instances or processes, or independent full rebuild/delete calls.
+Metadata syncs are not serialized. Overlapping rebuilds of the same entity converge, because
+doc ids are deterministic per collection, entity and position, so a re-insert replaces docs
+instead of duplicating them.
 
 The new `sync_*` methods return an `error` if the adapter reports fewer successful metadata
 updates than the number of matched docs, while `metadata_updated` retains the successful count.
