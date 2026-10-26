@@ -3,8 +3,9 @@ from typing import Any
 
 from beanie import Document, Insert, Replace, Save, before_event
 from pydantic import BaseModel, ConfigDict, Field
-from pymongo import IndexModel
+from pymongo import ASCENDING, IndexModel
 
+from registry_pkgs.database.leased_job import LeasedDocumentMixin
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobStatus,
@@ -42,7 +43,7 @@ class FederationApplySummary(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class FederationSyncJob(Document):
+class FederationSyncJob(LeasedDocumentMixin, Document):
     """
     Federation 同步任务表
     用于记录每一次：
@@ -83,6 +84,14 @@ class FederationSyncJob(Document):
     startedAt: datetime | None = None
     finishedAt: datetime | None = None
 
+    # Lease fields: a job is owned by the pod executing it, written only through
+    # ``LeasedRepository`` (fenced on ``leaseToken``). ``LeasedDocumentMixin`` makes a stray
+    # ``save()`` raise so it can't silently reset the lease the heartbeat renews out-of-band.
+    leaseOwner: str | None = None
+    leaseToken: str | None = None
+    leaseExpiresAt: datetime | None = None
+    heartbeatAt: datetime | None = None
+
     createdAt: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updatedAt: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -93,6 +102,9 @@ class FederationSyncJob(Document):
         indexes = [
             IndexModel([("federationId", 1), ("createdAt", -1)]),
             IndexModel([("federationId", 1), ("status", 1)]),
+            # Serves the reaper's expired-lease pass and the global has_active_jobs /
+            # list_active_jobs queries, which are status-led with no federationId.
+            IndexModel([("status", ASCENDING), ("leaseExpiresAt", ASCENDING)]),
         ]
 
     @before_event(Insert, Replace, Save)
