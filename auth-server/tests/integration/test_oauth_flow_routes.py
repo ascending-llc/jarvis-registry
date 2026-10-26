@@ -1690,6 +1690,8 @@ class TestCallbackIdentityResolution:
         service.resolve_or_provision.assert_awaited_once()
         assert sensitive not in caplog.text
         assert f"provider=entra error_type={type(error).__name__}" in caplog.text
+        assert "in oauth2_callback" in caplog.text
+        assert "resolve_or_provision(identity)" in caplog.text
         assert not authorization_codes_storage
         assert not test_pending_consent_store.pending
         if flow == "device":

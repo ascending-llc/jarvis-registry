@@ -9,6 +9,7 @@ import json
 import logging
 import secrets
 import time
+import traceback
 from typing import Any, NamedTuple, cast
 from urllib.parse import urlencode, urlparse
 
@@ -121,6 +122,11 @@ class NoScopesResolvedError(Exception):
 class _RedirectValidationError(NamedTuple):
     error: str
     error_description: str
+
+
+def _traceback_frames(exc: BaseException) -> str:
+    """Return the stack frames of ``exc`` without its message, which may embed user data."""
+    return "".join(traceback.format_tb(exc.__traceback__)).rstrip()
 
 
 def _trusted_error_redirect_uris() -> frozenset[str]:
@@ -1307,7 +1313,12 @@ async def oauth2_callback(
             "account yet. Contact your administrator to be added to a group."
         )
     except Exception as exc:
-        logger.error("OAuth callback failed provider=%s error_type=%s", provider, type(exc).__name__)
+        logger.error(
+            "OAuth callback failed provider=%s error_type=%s\n%s",
+            provider,
+            type(exc).__name__,
+            _traceback_frames(exc),
+        )
 
         if is_device_flow and isinstance(device_code, str):
             try:
@@ -1318,7 +1329,12 @@ async def oauth2_callback(
                     error_description="Unexpected error during sign-in",
                 )
             except Exception as failure:
-                logger.error("Device failure update failed provider=%s error_type=%s", provider, type(failure).__name__)
+                logger.error(
+                    "Device failure update failed provider=%s error_type=%s\n%s",
+                    provider,
+                    type(failure).__name__,
+                    _traceback_frames(failure),
+                )
             response = HTMLResponse(render_device_server_error_page(), status_code=500)
             response.delete_cookie(settings.oauth2_temp_session_cookie_name)
             return response
