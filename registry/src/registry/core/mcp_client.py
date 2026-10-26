@@ -467,6 +467,20 @@ async def perform_health_check(
         )
         return True, "connected (initialize requires authentication)", response_time_ms, None
 
+    # 404/405 on the initialize endpoint usually means the URL or transport is misconfigured:
+    if http_status_code in (HTTPStatus.NOT_FOUND, HTTPStatus.METHOD_NOT_ALLOWED):
+        logger.warning(
+            f"Health check failed for {url}: endpoint returned {http_status_code} for '{transport}' transport "
+            "— likely a config.url/config.type mismatch"
+        )
+        return (
+            False,
+            f"unhealthy: endpoint returned {int(http_status_code)} for '{transport}' transport — verify config.url "
+            "and config.type (a Streamable HTTP endpoint usually ends in /mcp, a legacy SSE endpoint in /sse)",
+            response_time_ms,
+            None,
+        )
+
     # Validate init_result structure per MCP spec
     if init_result is None:
         logger.warning(f"Health check failed for {url}: initialization failed")

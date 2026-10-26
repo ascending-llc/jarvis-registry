@@ -14,6 +14,7 @@ from registry.core.mcp_client import (
     call_tool_via_sse_ephemeral,
     get_tools_and_capabilities_from_server,
     initialize_mcp,
+    perform_health_check,
 )
 from registry.core.mcp_config import MCPClientConfig
 from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
@@ -931,8 +932,6 @@ class TestPerformHealthCheck:
     @pytest.mark.asyncio
     async def test_perform_health_check_success(self, mock_init_result):
         """Test successful health check."""
-        from registry.core.mcp_client import perform_health_check
-
         url = "https://example.com/api"
         transport = "streamable-http"
 
@@ -950,8 +949,6 @@ class TestPerformHealthCheck:
     @pytest.mark.asyncio
     async def test_perform_health_check_no_url(self):
         """Test health check with no URL."""
-        from registry.core.mcp_client import perform_health_check
-
         is_healthy, status, response_time, init_result = await perform_health_check("", "streamable-http")
 
         assert is_healthy is False
@@ -962,7 +959,6 @@ class TestPerformHealthCheck:
     @pytest.mark.asyncio
     async def test_perform_health_check_stdio_skipped(self):
         """Test health check is skipped for stdio transport."""
-        from registry.core.mcp_client import perform_health_check
 
         is_healthy, status, response_time, init_result = await perform_health_check("/path/to/binary", "stdio")
 
@@ -974,8 +970,6 @@ class TestPerformHealthCheck:
     @pytest.mark.asyncio
     async def test_perform_health_check_initialization_failed(self):
         """Test health check when initialization returns None."""
-        from registry.core.mcp_client import perform_health_check
-
         url = "https://example.com/api"
 
         with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=None)):
@@ -985,6 +979,24 @@ class TestPerformHealthCheck:
             assert "initialization failed" in status.lower()
             assert response_time is not None
             assert init_result is None
+
+    @pytest.mark.asyncio
+    async def test_perform_health_check_404_hints_transport_mismatch(self):
+        """A 404 on the initialize endpoint flags a likely config.url/config.type mismatch."""
+        url = "https://mcp.atlassian.com/v1/sse"
+        error = httpx.HTTPStatusError(
+            "not found",
+            request=httpx.Request("POST", url),
+            response=httpx.Response(404, request=httpx.Request("POST", url)),
+        )
+
+        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(side_effect=error)):
+            is_healthy, status, response_time, init_result = await perform_health_check(url, "streamable-http")
+
+        assert is_healthy is False
+        assert "404" in status
+        assert "config.type" in status
+        assert init_result is None
 
     @pytest.mark.asyncio
     async def test_perform_health_check_invalid_response(self):
@@ -1023,10 +1035,6 @@ class TestPerformHealthCheck:
     @pytest.mark.asyncio
     async def test_perform_health_check_401_response(self):
         """Test health check when server returns 401 (Unauthorized) - should still be considered healthy."""
-        import httpx
-
-        from registry.core.mcp_client import perform_health_check
-
         url = "https://example.com/api"
 
         # Create a mock 401 response
@@ -1048,10 +1056,6 @@ class TestPerformHealthCheck:
     @pytest.mark.asyncio
     async def test_perform_health_check_401_direct_exception(self):
         """Test health check with direct HTTPStatusError (without ExceptionGroup wrapper)."""
-        import httpx
-
-        from registry.core.mcp_client import perform_health_check
-
         url = "https://example.com/api"
 
         # Create a mock 401 response
@@ -1073,10 +1077,6 @@ class TestPerformHealthCheck:
     @pytest.mark.asyncio
     async def test_perform_health_check_403_response(self):
         """Test health check when server returns 403 (Forbidden) - should still be considered healthy."""
-        import httpx
-
-        from registry.core.mcp_client import perform_health_check
-
         url = "https://example.com/api"
 
         # Create a mock 403 response
