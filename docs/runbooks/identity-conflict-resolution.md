@@ -45,7 +45,10 @@ details inside approved admin tools; do not paste tokens or full user documents 
 | `duplicate_email` | Multiple records match the normalized email. Check the deployed shared collection's indexes and account ownership. Do not let the resolver pick an arbitrary record. |
 | `concurrent_identity_change` | The matched identity changed during a conditional update. Retry once after competing writes settle; investigate persistent changes before any manual cleanup. |
 
-Untrusted email is a separate error, not an `IDENTITY_CONFLICT` event. For Entra, configure the ID-token
+Untrusted email is a separate error, not an `IDENTITY_CONFLICT` event. Search auth-server logs for
+`IDENTITY_UNTRUSTED_EMAIL`: `has_email=False` means the ID token carried no `email` claim, and
+`email_trusted=False` means `xms_edov` was absent or not `true`. The event has no user ID, because no
+account matched. For Entra, configure the ID-token
 optional claim `xms_edov`, ensure the token contains `email`, and correct the user's Entra `mail`
 attribute to an appropriate tenant-verified domain when necessary. The claim must be boolean true.
 Chat and Registry must use the same Entra app registration (`client_id`) in each environment. See the

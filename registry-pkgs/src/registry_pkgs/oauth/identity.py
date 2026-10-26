@@ -80,6 +80,12 @@ class IdentityService:
         if document is not None:
             return await self._update_matched(identity, document)
         if not identity.email_trusted or not identity.email:
+            logger.warning(
+                "IDENTITY_UNTRUSTED_EMAIL provider=%s has_email=%s email_trusted=%s",
+                identity.provider,
+                identity.email is not None,
+                identity.email_trusted,
+            )
             raise UntrustedEmailError()
         document = self._new_document(identity)
         try:

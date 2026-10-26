@@ -308,6 +308,19 @@ async def test_provision_requires_trusted_nonempty_email(users: MemoryUsers, val
     assert users.insert_attempts == 0
 
 
+@pytest.mark.parametrize(
+    ("values", "has_email", "trusted"),
+    [({"email_trusted": False}, True, False), ({"email": None}, False, True)],
+)
+async def test_untrusted_email_refusal_is_logged_without_email(
+    users: MemoryUsers, values: dict, has_email: bool, trusted: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    with pytest.raises(UntrustedEmailError):
+        await IdentityService().resolve_or_provision(identity(**values))
+    assert f"IDENTITY_UNTRUSTED_EMAIL provider=entra has_email={has_email} email_trusted={trusted}" in caplog.text
+    assert "ada@example.com" not in caplog.text
+
+
 async def test_trusted_email_updates_only_email_and_verification(users: MemoryUsers) -> None:
     existing = user(openidId="subject-1", openidIssuer=ISSUER, idOnTheSource="object-1")
     users.documents = [existing]
