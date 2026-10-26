@@ -47,10 +47,8 @@ flipped tools, then up to two metadata patches, or one full server rebuild on a 
 Counts include document chunks, not just tools.
 
 Both paths use strict metadata lookups: a failed read propagates instead of being mistaken for
-zero docs and triggering embedding. When exactly 10,000 docs are both expected and returned,
-an aggregate count checks for excess docs without exceeding Weaviate's fetch limit. Other
-lookups do not need this extra count. If the expected count exceeds 10,000, the sync warns and
-patches the returned docs without comparing counts. Zero expected and found docs is a no-op.
+zero docs and triggering embedding. The lookup is capped at 10,000 docs, so if the expected
+count reaches that limit, the sync warns and patches the returned docs without comparing counts. Zero expected and found docs is a no-op.
 
 Metadata syncs are not serialized. Overlapping rebuilds of the same entity converge, because
 doc ids are deterministic per collection, entity and position, so a re-insert replaces docs

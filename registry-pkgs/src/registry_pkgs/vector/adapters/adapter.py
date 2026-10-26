@@ -313,10 +313,6 @@ class VectorStoreAdapter(ABC):
         """
         raise NotImplementedError()
 
-    def count_by_metadata(self, filters: Any, collection_name: str | None = None) -> int:
-        """Count all documents matching metadata filters, propagating lookup failures."""
-        raise NotImplementedError(f"{self.__class__.__name__} must implement count_by_metadata().")
-
     @abstractmethod
     def bm25_search(
         self, query: str, k: int = 10, filters: Any = None, collection_name: str | None = None, **kwargs

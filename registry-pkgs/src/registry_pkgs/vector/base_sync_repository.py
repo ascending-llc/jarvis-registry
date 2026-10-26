@@ -181,25 +181,20 @@ class BaseVectorSyncRepository(Repository[T], ABC):
 
         # A failed read is not evidence of missing docs and must never trigger embedding.
         found = await asyncio.to_thread(self._find_docs, filters, raise_on_error=True)
-        found_count = len(found)
-        if expected == found_count == _MAX_METADATA_DOCS:
-            # Fetching limit + 1 can exceed Weaviate's QUERY_MAXIMUM_RESULTS.
-            found_count = await asyncio.to_thread(
-                self.adapter.count_by_metadata, filters=filters, collection_name=self.collection
-            )
-        if expected > _MAX_METADATA_DOCS:
+        if expected >= _MAX_METADATA_DOCS:
+            # The lookup is capped at the limit, so excess docs beyond it can't be counted.
             logger.warning(
-                "Skipping doc-count comparison for entity %s: expected=%d exceeds metadata lookup limit=%d, filters=%s",
+                "Skipping doc-count comparison for entity %s: expected=%d reaches metadata lookup limit=%d, filters=%s",
                 entity.id,
                 expected,
                 _MAX_METADATA_DOCS,
                 filters,
             )
-        elif found_count != expected:
+        elif len(found) != expected:
             logger.warning(
                 "Vector doc-count mismatch for entity %s: found=%d expected=%d, filters=%s",
                 entity.id,
-                found_count,
+                len(found),
                 expected,
                 filters,
             )

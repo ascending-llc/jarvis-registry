@@ -24,9 +24,7 @@ class _FakeAdapter:
         self.deleted_ids: list[str] = []
         self.metadata_updates: list[tuple[str, dict]] = []
         self.filter_calls: list[dict] = []
-        self.count_calls: list[dict] = []
         self.lookup_error: Exception | None = None
-        self.count_error: Exception | None = None
         self.patch_error: Exception | None = None
         self.failed_update_ids: set[str] = set()
 
@@ -62,12 +60,6 @@ class _FakeAdapter:
             return True
 
         return [doc for doc in self.docs if matches(doc)]
-
-    def count_by_metadata(self, filters: dict, collection_name: str | None = None) -> int:
-        self.count_calls.append({"filters": filters, "collection_name": collection_name})
-        if self.count_error is not None:
-            raise self.count_error
-        return len(self._matching_docs(filters))
 
     def add_documents(self, documents: list[Document], collection_name: str | None = None, **kwargs) -> list[str]:
         ids = []
@@ -439,7 +431,6 @@ async def test_metadata_sync_matching_count_patches_all_docs(sync_kind: str, bat
     assert repo.adapter.metadata_updates == [(f"doc-{i}", metadata) for i in range(3)]
     assert len(repo.adapter.filter_calls) == 1
     assert repo.adapter.filter_calls[0]["raise_on_error"] is True
-    assert repo.adapter.count_calls == []
     repo.sync_to_vector_db.assert_not_awaited()
     reload.assert_not_awaited()
 
@@ -559,12 +550,13 @@ async def test_metadata_sync_empty_entity_is_noop(sync_kind: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("expected", [2, 3], ids=["at-cap", "above-cap"])
 @pytest.mark.parametrize("found", [0, 3], ids=["empty-query", "capped-query"])
-async def test_metadata_sync_above_query_cap_skips_rebuild(
-    sync_kind: str, found: int, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+async def test_metadata_sync_at_or_above_query_cap_skips_rebuild(
+    sync_kind: str, expected: int, found: int, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr("registry_pkgs.vector.base_sync_repository._MAX_METADATA_DOCS", 2)
-    repo, entity = _make_sync_case(sync_kind, expected=3, found=found)
+    repo, entity = _make_sync_case(sync_kind, expected=expected, found=found)
     reload = AsyncMock()
 
     with caplog.at_level(logging.WARNING):
@@ -573,53 +565,7 @@ async def test_metadata_sync_above_query_cap_skips_rebuild(
     assert result == _sync_result(sync_kind, metadata_updated=min(found, 2))
     assert len(repo.adapter.metadata_updates) == min(found, 2)
     assert repo.adapter.filter_calls[0]["limit"] == 2
-    assert repo.adapter.count_calls == []
     assert any(record.levelno == logging.WARNING for record in caplog.records)
-    repo.sync_to_vector_db.assert_not_awaited()
-    reload.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("found", [1, 2, 3], ids=["partial", "exact", "extra"])
-async def test_metadata_sync_at_query_cap_checks_complete_count(
-    sync_kind: str, found: int, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("registry_pkgs.vector.base_sync_repository._MAX_METADATA_DOCS", 2)
-    repo, entity = _make_sync_case(sync_kind, expected=2, found=found)
-
-    result = await _run_metadata_sync(sync_kind, repo, entity)
-
-    assert len(repo.adapter.filter_calls) == 1
-    assert repo.adapter.filter_calls[0]["limit"] == 2
-    assert len(repo.adapter.count_calls) == (1 if found >= 2 else 0)
-    if repo.adapter.count_calls:
-        assert repo.adapter.count_calls[0] == {
-            "filters": repo.adapter.filter_calls[0]["filters"],
-            "collection_name": repo.collection,
-        }
-    if found == 2:
-        assert result == _sync_result(sync_kind, metadata_updated=2)
-        repo.sync_to_vector_db.assert_not_awaited()
-    else:
-        repo.sync_to_vector_db.assert_awaited_once_with(entity, is_delete=True)
-        assert result is repo.sync_to_vector_db.return_value
-        assert repo.adapter.metadata_updates == []
-
-
-@pytest.mark.asyncio
-async def test_metadata_sync_at_query_cap_count_failure_does_not_rebuild(
-    sync_kind: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("registry_pkgs.vector.base_sync_repository._MAX_METADATA_DOCS", 2)
-    repo, entity = _make_sync_case(sync_kind, expected=2, found=3)
-    repo.adapter.count_error = RuntimeError("count unavailable")
-    reload = AsyncMock()
-
-    with pytest.raises(RuntimeError, match="count unavailable"):
-        await _run_metadata_sync(sync_kind, repo, entity, reload=reload)
-
-    assert len(repo.adapter.count_calls) == 1
-    assert repo.adapter.metadata_updates == []
     repo.sync_to_vector_db.assert_not_awaited()
     reload.assert_not_awaited()
 
@@ -731,7 +677,6 @@ async def test_plain_metadata_patch_preserves_incomplete_write_result(tools: boo
         result = await repo.update_entity_metadata("server_id", server.id, {"enabled": False})
 
     assert result == VectorSyncResult(metadata_updated=updated)
-    assert repo.adapter.count_calls == []
     repo.sync_to_vector_db.assert_not_awaited()
 
 

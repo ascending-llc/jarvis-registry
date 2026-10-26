@@ -470,15 +470,6 @@ class WeaviateStore(VectorStoreAdapter):
                 raise
             return []
 
-    def count_by_metadata(self, filters: Any, collection_name: str | None = None) -> int:
-        """Count matching docs without the fetch query's result limit; failures propagate."""
-        collection = self.get_collection(collection_name)
-        normalized_filters = self.normalize_filters(filters)
-        result = collection.aggregate.over_all(filters=normalized_filters, total_count=True)
-        if result.total_count is None:
-            raise RuntimeError("Weaviate metadata count response has no total_count")
-        return result.total_count
-
     def bm25_search(
         self, query: str, k: int = 10, filters: Any = None, collection_name: str | None = None, **kwargs
     ) -> list[Document]:

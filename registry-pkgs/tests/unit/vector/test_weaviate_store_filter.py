@@ -77,38 +77,3 @@ def test_filter_preserves_setup_error_propagation(
         store.filter_by_metadata(None)
 
     collection.query.fetch_objects.assert_not_called()
-
-
-@pytest.mark.parametrize("count", [0, 10_001], ids=["empty", "above-fetch-limit"])
-def test_metadata_count_uses_filtered_aggregate(
-    store_and_collection: tuple[WeaviateStore, MagicMock], count: int
-) -> None:
-    store, collection = store_and_collection
-    collection.aggregate.over_all.return_value = SimpleNamespace(total_count=count)
-
-    assert store.count_by_metadata({"server_id": "server-1"}, collection_name="MCPServer") == count
-
-    store.get_collection.assert_called_once_with("MCPServer")
-    collection.aggregate.over_all.assert_called_once_with(
-        filters=Filter.by_property("server_id").equal("server-1"), total_count=True
-    )
-    collection.query.fetch_objects.assert_not_called()
-
-
-def test_metadata_count_propagates_aggregate_error(store_and_collection: tuple[WeaviateStore, MagicMock]) -> None:
-    store, collection = store_and_collection
-    error = RuntimeError("aggregate unavailable")
-    collection.aggregate.over_all.side_effect = error
-
-    with pytest.raises(RuntimeError, match="aggregate unavailable") as raised:
-        store.count_by_metadata({"server_id": "server-1"})
-
-    assert raised.value is error
-
-
-def test_metadata_count_rejects_missing_total(store_and_collection: tuple[WeaviateStore, MagicMock]) -> None:
-    store, collection = store_and_collection
-    collection.aggregate.over_all.return_value = SimpleNamespace(total_count=None)
-
-    with pytest.raises(RuntimeError, match="no total_count"):
-        store.count_by_metadata({"server_id": "server-1"})
