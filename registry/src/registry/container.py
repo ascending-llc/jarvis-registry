@@ -574,7 +574,6 @@ class RegistryContainer:
         logger.info("Initializing services via registry container...")
 
         logger.info("Loading ACL role cache...")
-        await self.flow_state_manager.initialize()
         loaded = await load_role_cache()
         self.role_cache.clear()
         self.role_cache.update(loaded)
@@ -591,7 +590,7 @@ class RegistryContainer:
         logger.info("Initializing health monitoring service...")
         await self.health_service.initialize()
 
-        logger.info("Initializing MCP service...")
+        logger.info("Initializing MCP service (OAuth flow state storage)...")
         await self.mcp_service.initialize()
 
         logger.info("Initializing federation service...")
