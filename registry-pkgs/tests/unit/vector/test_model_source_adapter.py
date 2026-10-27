@@ -2,9 +2,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
+from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    OpenAIModelConfig,
+)
 from registry_pkgs.vector.config import model_source_adapter
-from registry_pkgs.vector.config.config import AzureOpenAIEmbeddingConfig, BedrockEmbeddingConfig
+from registry_pkgs.vector.config.config import (
+    AzureOpenAIEmbeddingConfig,
+    BedrockEmbeddingConfig,
+    OpenAIEmbeddingConfig,
+)
 from registry_pkgs.vector.enum.enums import EmbeddingProvider
 
 
@@ -67,4 +76,23 @@ def test_azure_model_source_without_api_key_raises():
     )
 
     with pytest.raises(ValueError, match="requires apiKeyEncrypted"):
+        model_source_adapter.embedding_config_from_model_source(source, encryption_key=b"key")
+
+
+def test_openai_model_source_decrypts_key(monkeypatch):
+    monkeypatch.setattr(model_source_adapter, "decrypt_value", lambda *_a, **_kw: "sk-plain")
+    source = _source(OpenAIModelConfig(modelId="text-embedding-3-large", baseUrl=None, apiKeyEncrypted="iv:ciphertext"))
+
+    config = model_source_adapter.embedding_config_from_model_source(source, encryption_key=b"key")
+
+    assert isinstance(config, OpenAIEmbeddingConfig)
+    assert config.provider == EmbeddingProvider.OPENAI
+    assert config.api_key == "sk-plain"
+    assert config.model == "text-embedding-3-large"
+
+
+def test_anthropic_model_source_for_embedding_raises():
+    source = _source(AnthropicModelConfig(modelId="claude-sonnet-4-5", baseUrl=None, apiKeyEncrypted="iv:x"))
+
+    with pytest.raises(ValueError, match="does not provide embedding"):
         model_source_adapter.embedding_config_from_model_source(source, encryption_key=b"key")

@@ -27,7 +27,11 @@ from registry.services.model_gateway_selection_service import (
     ModelSourceNotFoundError,
 )
 from registry_pkgs.models.enums import EmbeddingReindexJobStatus, ModelSourceMode
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
+from registry_pkgs.models.model_source import (
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    OpenAIModelConfig,
+)
 
 USER_ID = "000000000000000000000111"
 
@@ -149,6 +153,51 @@ def test_create_azure_response_masks_secret(ctx) -> None:
     assert provider["hasApiKey"] is True
     assert "apiKeyEncrypted" not in provider
     assert "apiKey" not in provider
+
+
+def test_create_openai_first_party_response_masks_secret(ctx) -> None:
+    ctx.crud.create_source = AsyncMock(
+        return_value=_make_source(
+            mode=ModelSourceMode.CHAT,
+            providerConfig=OpenAIModelConfig(
+                modelId="gpt-4.1",
+                baseUrl=None,
+                apiKeyEncrypted="iv:ciphertext",
+            ),
+        )
+    )
+    body = {
+        "displayName": "GPT-4.1",
+        "mode": "chat",
+        "providerConfig": {
+            "providerType": "openai",
+            "modelId": "gpt-4.1",
+            "apiKey": "super-secret",
+        },
+    }
+    response = ctx.client.post("/model-sources", json=body)
+    assert response.status_code == 201
+    provider = response.json()["providerConfig"]
+    assert provider["providerType"] == "openai"
+    assert provider["modelId"] == "gpt-4.1"
+    assert provider["hasApiKey"] is True
+    assert "apiKey" not in provider
+    assert "apiKeyEncrypted" not in provider
+
+
+def test_create_first_party_rejects_non_https_base_url(ctx) -> None:
+    body = {
+        "displayName": "Anthropic",
+        "mode": "chat",
+        "providerConfig": {
+            "providerType": "anthropic",
+            "modelId": "claude-sonnet-4-5",
+            "baseUrl": "http://insecure.example.com",
+            "apiKey": "sk-ant",
+        },
+    }
+    response = ctx.client.post("/model-sources", json=body)
+    assert response.status_code == 422
 
 
 def test_list_returns_paged(ctx) -> None:

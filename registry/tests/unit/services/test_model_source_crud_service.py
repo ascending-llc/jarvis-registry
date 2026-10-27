@@ -4,16 +4,23 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
+from fastapi import HTTPException
 
 from registry.schemas.model_source_api_schemas import (
+    AnthropicModelConfigInput,
     AwsBedrockModelConfigInput,
     AzureOpenAIModelConfigInput,
+    OpenAIModelConfigInput,
 )
 from registry.services import model_source_crud_service as crud_module
 from registry.services.model_source_crud_service import ModelSourceCrudService
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
+from registry_pkgs.models.model_source import (
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    OpenAIModelConfig,
+)
 from registry_pkgs.models.workflow import WorkflowNode
 
 VALID_ID = "0" * 24
@@ -108,6 +115,59 @@ def test_to_stored_config_azure_without_key_leaves_none(service) -> None:
         )
     )
     assert stored.apiKeyEncrypted is None
+
+
+def test_to_stored_config_openai_encrypts_key(service) -> None:
+    stored = service._to_stored_config(
+        OpenAIModelConfigInput(modelId="gpt-4.1", baseUrl="https://proxy.example.com/v1", apiKey="sk-plain")
+    )
+    assert isinstance(stored, OpenAIModelConfig)
+    assert stored.modelId == "gpt-4.1"
+    assert stored.baseUrl == "https://proxy.example.com/v1"
+    assert stored.apiKeyEncrypted and is_encrypted(stored.apiKeyEncrypted)
+
+
+async def test_create_first_party_without_key_raises_400(service, monkeypatch) -> None:
+    monkeypatch.setattr(crud_module, "ModelSource", _StubModelSource)
+    with pytest.raises(HTTPException) as exc:
+        await service.create_source(
+            display_name="Claude",
+            description=None,
+            tags=[],
+            mode=ModelSourceMode.CHAT,
+            provider_config=AnthropicModelConfigInput(modelId="claude-sonnet-4-5"),
+            created_by="u1",
+        )
+    assert exc.value.status_code == 400
+
+
+async def test_create_anthropic_embedding_raises_400(service, monkeypatch) -> None:
+    monkeypatch.setattr(crud_module, "ModelSource", _StubModelSource)
+    with pytest.raises(HTTPException) as exc:
+        await service.create_source(
+            display_name="Claude",
+            description=None,
+            tags=[],
+            mode=ModelSourceMode.EMBEDDING,
+            provider_config=AnthropicModelConfigInput(modelId="claude-sonnet-4-5", apiKey="sk-ant"),
+            created_by="u1",
+        )
+    assert exc.value.status_code == 400
+
+
+async def test_create_first_party_inserts(service, monkeypatch) -> None:
+    monkeypatch.setattr(crud_module, "ModelSource", _StubModelSource)
+    source = await service.create_source(
+        display_name="GPT-4.1",
+        description=None,
+        tags=[],
+        mode=ModelSourceMode.CHAT,
+        provider_config=OpenAIModelConfigInput(modelId="gpt-4.1", apiKey="sk-plain"),
+        created_by="u1",
+    )
+    assert isinstance(source.providerConfig, OpenAIModelConfig)
+    assert source.providerConfig.apiKeyEncrypted
+    source.insert.assert_awaited_once()
 
 
 def test_encrypt_secret_is_idempotent(service) -> None:
