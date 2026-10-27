@@ -4,7 +4,7 @@ regex = true
 entropy = true
 
 exclude-path-patterns = [
-    {path-pattern = 'uv\.lock$', reason = 'uv lock file'},
+    {path-pattern = '.*uv\.lock$', reason = 'uv lock file (root or any workspace)'},
     {path-pattern = '.*package-lock\.json$', reason = 'npm lock file'},
     {path-pattern = 'tartufo\.toml$', reason = 'Tartufo config file'},
     {path-pattern = '.*\.svg$', reason = 'SVG assets are static images and can trigger entropy false positives'},
@@ -13,8 +13,6 @@ exclude-path-patterns = [
 ]
 
 exclude-entropy-patterns = [
-    {path-pattern = '\\.env\\.example$', pattern = 'JWT_PRIVATE_KEY=.*', reason = '.env.example JWT private key placeholder is not a credential'},
-    {path-pattern = '\\.env\\.example$', pattern = 'JWT_PUBLIC_KEY=.*', reason = '.env.example JWT public key placeholder is not a credential'},
     {path-pattern = '(registry-pkgs|registry)/tests/.*', pattern = '.*VCeDsk8ZHncYF1g234fKtc4lNipbBhu3.*', reason = "Atlassian MCP's public authorization-server tenant ID in captured discovery fixtures is not a credential"},
     {path-pattern = 'docs/.*\.md$', pattern = '.*github\.com/ascending-llc/jarvis-registry/blob/[0-9a-f]{40}/.*', reason = 'commit SHAs in GitHub permalinks to this repository are not credentials'},
 ]
