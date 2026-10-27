@@ -199,3 +199,27 @@ async def test_reconciler_uses_one_owner_for_leader_and_entity_leases():
     rec = _make_reconciler()
     assert rec._owner == "owner-1"
     assert rec._runner._owner == "owner-1"
+
+
+async def test_reconcile_all_busy_full_batch_is_not_reported_full():
+    """an all-busy batch made no progress; continuing at once would spin on the same locked docs."""
+    from registry.services.vector_sync_helpers import VectorSyncBusyError
+
+    rec = _make_reconciler()
+    now = datetime.now(UTC)
+    docs = [_doc(now - timedelta(minutes=5)) for _ in range(vsr._BATCH)]
+    sync_fn = AsyncMock(side_effect=VectorSyncBusyError("busy"))
+    with _patch_find(ExtendedMCPServer, docs), patch.object(vsr, "sync_pending_vectors", sync_fn):
+        assert await rec._reconcile(ExtendedMCPServer, rec._mcp_server_repo, now) == (0, 0, False)
+
+
+async def test_reconcile_partly_busy_full_batch_is_still_full():
+    from registry.services.vector_sync_helpers import VectorSyncBusyError
+
+    rec = _make_reconciler()
+    now = datetime.now(UTC)
+    docs = [_doc(now - timedelta(minutes=5)) for _ in range(vsr._BATCH)]
+    sync_fn = AsyncMock(side_effect=[VectorSyncBusyError("busy"), *([True] * (vsr._BATCH - 1))])
+    with _patch_find(ExtendedMCPServer, docs), patch.object(vsr, "sync_pending_vectors", sync_fn):
+        synced, _, full = await rec._reconcile(ExtendedMCPServer, rec._mcp_server_repo, now)
+    assert (synced, full) == (vsr._BATCH - 1, True)

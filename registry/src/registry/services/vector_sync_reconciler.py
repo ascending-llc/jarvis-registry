@@ -145,6 +145,8 @@ class VectorSyncReconciler:
 
         Returns ``(synced, failed, batch_was_full)``. A future marker (set by a re-queue) is not
         eligible until it is ``_GRACE`` in the past, so a failing document stops blocking newer ones.
+        A full batch that was entirely busy doesn't count as full: busy markers stay due and sort first,
+        so continuing at once would re-query the same locked documents in a tight loop.
         """
         cutoff = now - _GRACE
         docs = (
@@ -159,13 +161,13 @@ class VectorSyncReconciler:
         results = await run_bounded(
             docs, lambda d: sync_pending_vectors(model, repo, d.id, owner=self._owner), limit=_CONCURRENCY
         )
-        synced = failed = 0
+        synced = failed = busy = 0
         for result in results:
             doc = result.item
             if result.ok:
                 synced += int(bool(result.result))
             elif isinstance(result.error, VectorSyncBusyError):
-                continue  # Contention is not a provider failure; leave the marker due.
+                busy += 1  # Contention is not a provider failure; leave the marker due.
             else:
                 failed += 1
                 logger.warning(
@@ -175,7 +177,7 @@ class VectorSyncReconciler:
                     exc_info=result.exc_info,
                 )
                 await self._requeue(model, doc, now)
-        return synced, failed, len(docs) == _BATCH
+        return synced, failed, len(docs) == _BATCH and busy < len(docs)
 
     @staticmethod
     async def _requeue(model: type[VectorModel], doc: VectorModel, now: datetime) -> None:
