@@ -95,6 +95,26 @@ async def test_delete_orphan_vectors_one_failure_does_not_stop_others():
     assert mcp_deleted == 2
 
 
+async def test_delete_orphan_vectors_strict_raises_on_first_failure():
+    """Strict mode (the reindex caller) propagates a failed delete instead of logging past it."""
+    mcp_repo = Mock()
+    mcp_repo.delete_by_server_id = AsyncMock(side_effect=RuntimeError("boom"))
+    a2a_repo = Mock()
+    a2a_repo.delete_by_agent_id = AsyncMock(return_value=1)
+
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[], a2a_ids=[])
+    with mcp_patch, a2a_patch, pytest.raises(RuntimeError, match="boom"):
+        await delete_orphan_vectors(
+            mcp_repo,
+            a2a_repo,
+            vector_mcp_ids={"a"},
+            vector_a2a_ids={"x"},
+            strict=True,
+        )
+
+    a2a_repo.delete_by_agent_id.assert_not_awaited()
+
+
 async def test_delete_orphan_vectors_deletes_a_fully_orphaned_collection():
     """No orphan-share cap: a lost federation cleanup can orphan most of a collection, and it is swept."""
     mcp_repo = Mock()

@@ -68,14 +68,19 @@ async def sync_agent_vectors(repo: A2AAgentRepository, agent: A2AAgent, *, is_de
     _raise_if_failed(await repo.sync_to_vector_db(agent, is_delete=is_delete))
 
 
-async def _delete_each(delete_fn: Callable[[str], Awaitable[int]], orphan_ids: set[str], label: str) -> int:
-    """Delete each orphan id, counting successes; a single failure is logged and does not abort."""
+async def _delete_each(
+    delete_fn: Callable[[str], Awaitable[int]], orphan_ids: set[str], label: str, *, strict: bool
+) -> int:
+    """Delete each orphan id, counting successes. In best-effort mode a single failure is logged and
+    does not abort; in strict mode it propagates."""
     deleted = 0
     for entity_id in orphan_ids:
         try:
             await delete_fn(entity_id)
             deleted += 1
         except Exception:
+            if strict:
+                raise
             logger.warning("Orphan vector delete failed for %s %s", label, entity_id, exc_info=True)
     return deleted
 
@@ -86,6 +91,7 @@ async def delete_orphan_vectors(
     *,
     vector_mcp_ids: set[str],
     vector_a2a_ids: set[str],
+    strict: bool = False,
 ) -> tuple[int, int]:
     """Delete vectors whose entity id is absent from Mongo; return ``(servers, agents)`` deleted.
 
@@ -96,12 +102,15 @@ async def delete_orphan_vectors(
     second: an entity created in between either isn't yet in the vector set or is in both sets (its
     vectors are written after its Mongo commit), and an entity deleted in between correctly counts as
     an orphan. A single failing delete is logged at ``warning`` and counted out; it does not stop the
-    rest.
+    rest. With ``strict=True`` the first failing delete raises instead, for a caller that must not
+    proceed with a generation still holding a removed entity's vectors.
 
     Two callers, each satisfying the ordering with its own repository generation:
     - the reindex ``_delete_removed`` passes ids swept from the *new* generation's job-local repos
-      earlier in the pass (``mcp_repo``/``a2a_repo`` target that generation);
-    - the orphan sweep passes ids just enumerated from the *active* generation's global repos.
+      earlier in the pass (``mcp_repo``/``a2a_repo`` target that generation), strictly, so a failed
+      delete blocks the generation switch;
+    - the orphan sweep passes ids just enumerated from the *active* generation's global repos,
+      best-effort (its next pass retries).
     Both read their vector ids before this Mongo read, so the invariant holds in either generation.
     """
     mcp_coll = ExtendedMCPServer.get_pymongo_collection().with_options(read_preference=ReadPreference.PRIMARY)
@@ -110,8 +119,8 @@ async def delete_orphan_vectors(
     mongo_a2a_ids = {str(d["_id"]) async for d in a2a_coll.find({}, {"_id": 1})}
     mcp_orphans = vector_mcp_ids - mongo_mcp_ids
     a2a_orphans = vector_a2a_ids - mongo_a2a_ids
-    mcp_deleted = await _delete_each(mcp_repo.delete_by_server_id, mcp_orphans, "server")
-    a2a_deleted = await _delete_each(a2a_repo.delete_by_agent_id, a2a_orphans, "agent")
+    mcp_deleted = await _delete_each(mcp_repo.delete_by_server_id, mcp_orphans, "server", strict=strict)
+    a2a_deleted = await _delete_each(a2a_repo.delete_by_agent_id, a2a_orphans, "agent", strict=strict)
     return mcp_deleted, a2a_deleted
 
 

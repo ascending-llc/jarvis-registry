@@ -334,8 +334,14 @@ class EmbeddingReindexExecutionService:
         swept_mcp_ids: set[str],
         swept_a2a_ids: set[str],
     ) -> None:
-        """Drop, from the new generation, entities that were swept but no longer exist in Mongo."""
-        await delete_orphan_vectors(mcp_repo, a2a_repo, vector_mcp_ids=swept_mcp_ids, vector_a2a_ids=swept_a2a_ids)
+        """Drop, from the new generation, entities that were swept but no longer exist in Mongo.
+
+        Strict: a failed delete raises, so the job is not committed with a generation that still holds
+        a removed entity's vectors.
+        """
+        await delete_orphan_vectors(
+            mcp_repo, a2a_repo, vector_mcp_ids=swept_mcp_ids, vector_a2a_ids=swept_a2a_ids, strict=True
+        )
 
     async def finish_exhausted_job(self, job: EmbeddingReindexJob, lease: Lease) -> None:
         """Finalize a job that has used up its retries: complete it if the switch already happened
