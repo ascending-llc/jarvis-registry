@@ -350,6 +350,35 @@ def test_convert_to_detail_omits_status():
 
 
 @pytest.mark.asyncio
+async def test_get_server_oauth_fallback_reads_requires_oauth_on_status_error(sample_user_context):
+    """When the connection-status lookup raises, the fallback reads config.requiresOAuth (camelCase)."""
+    from registry.api.v1.server.server_routes import get_server as get_server_route
+
+    server = _fake_mcp_server(enabled=True)
+    server.config["requiresOAuth"] = True
+
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=None)
+    server_service = MagicMock()
+    server_service.get_server_by_id = AsyncMock(return_value=server)
+
+    with patch(
+        "registry.api.v1.server.server_routes.get_single_server_connection_status",
+        new=AsyncMock(side_effect=RuntimeError("status backend down")),
+    ):
+        detail = await get_server_route(
+            server_id=str(server.id),
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            server_service=server_service,
+            mcp_service=MagicMock(),
+            status_resolver=MagicMock(),
+        )
+
+    assert detail.requiresOauth is True
+
+
+@pytest.mark.asyncio
 async def test_list_servers_route_requests_all_servers_with_enabled_only_false(sample_user_context):
     """The list endpoint dropped ?status and must ask the service for all servers."""
     from registry.api.v1.server.server_routes import list_servers as list_servers_route
