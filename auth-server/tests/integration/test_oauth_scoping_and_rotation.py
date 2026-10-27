@@ -6,6 +6,7 @@ Tests:
 - Refresh token rotation (OAuth 2.1 best practice)
 """
 
+import logging
 import secrets
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,7 +28,7 @@ from auth_server.routes.consent_templates import render_device_scope_error_page
 from auth_server.server import app
 from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core import client_categories
-from registry_pkgs.core.client_categories import ClientCategory
+from registry_pkgs.core.client_categories import CLAUDE_DESKTOP_CLIENT_ID, ClientCategory
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS as REFRESH_TOKEN_EXPIRY_SECONDS
 from tests.conftest import test_consent_store
@@ -45,6 +46,7 @@ API_PREFIX = "/auth"
 # PKCE constants for testing
 TEST_CODE_VERIFIER = "test-verifier-1234567890123456789012345678901234567890"  # At least 43 chars
 TEST_CODE_CHALLENGE = create_s256_code_challenge(TEST_CODE_VERIFIER)
+DESKTOP_REDIRECT_URI = "http://127.0.0.1:47280/callback"
 
 
 @pytest.fixture
@@ -105,6 +107,112 @@ class TestAccessTokenScoping:
         }
 
         return authorization_code, user_info
+
+    def test_desktop_public_code_exchange_caps_scope(
+        self,
+        test_client_with_user_service: TestClient,
+        clear_device_storage: None,
+    ) -> None:
+        auth_code, _ = self._create_mock_callback_state(CLAUDE_DESKTOP_CLIENT_ID, DESKTOP_REDIRECT_URI)
+        authorization_codes_storage[auth_code]["resolved_scope"] = [
+            "mcp-proxy-ops",
+            "servers-read",
+            "a2a-proxy-ops",
+        ]
+
+        response = test_client_with_user_service.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": DESKTOP_REDIRECT_URI,
+                "client_id": CLAUDE_DESKTOP_CLIENT_ID,
+                "code_verifier": TEST_CODE_VERIFIER,
+            },
+        )
+
+        assert response.status_code == 200
+        token_data = response.json()
+        jwt_payload = decode_jwt_unverified(token_data["access_token"])
+        assert jwt_payload["client_id"] == CLAUDE_DESKTOP_CLIENT_ID
+        assert jwt_payload["scope"] == token_data["scope"] == "mcp-proxy-ops"
+        assert token_data["refresh_token"]
+        refresh_data = refresh_tokens_storage[token_data["refresh_token"]]
+        assert refresh_data["client_id"] == CLAUDE_DESKTOP_CLIENT_ID
+        assert refresh_data["scope"] == "mcp-proxy-ops"
+        assert auth_code not in authorization_codes_storage
+
+    @pytest.mark.parametrize(
+        ("redirect_uri", "code_verifier", "challenge_method", "expected_error", "expected_reason"),
+        [
+            (
+                "http://127.0.0.1:51234/callback",
+                TEST_CODE_VERIFIER,
+                "S256",
+                "invalid_grant",
+                "redirect_uri mismatch",
+            ),
+            (DESKTOP_REDIRECT_URI, None, "S256", "invalid_request", "code_verifier required"),
+            (
+                DESKTOP_REDIRECT_URI,
+                TEST_CODE_VERIFIER,
+                "plain",
+                "invalid_request",
+                "code_challenge_method must be S256",
+            ),
+            (
+                DESKTOP_REDIRECT_URI,
+                "wrong-verifier-1234567890123456789012345678901234567890",
+                "S256",
+                "invalid_grant",
+                "code_verifier validation failed",
+            ),
+        ],
+        ids=["redirect-mismatch", "missing-verifier", "non-s256", "wrong-verifier"],
+    )
+    def test_desktop_code_exchange_rejections_log_reason_without_credentials(
+        self,
+        test_client_with_user_service: TestClient,
+        clear_device_storage: None,
+        caplog: pytest.LogCaptureFixture,
+        redirect_uri: str,
+        code_verifier: str | None,
+        challenge_method: str,
+        expected_error: str,
+        expected_reason: str,
+    ) -> None:
+        auth_code, _ = self._create_mock_callback_state(CLAUDE_DESKTOP_CLIENT_ID, DESKTOP_REDIRECT_URI)
+        authorization_codes_storage[auth_code]["code_challenge_method"] = challenge_method
+        sensitive_secret = "sensitive-client-secret-for-log-test"
+        request_data = {
+            "grant_type": "authorization_code",
+            "code": auth_code,
+            "redirect_uri": redirect_uri,
+            "client_id": CLAUDE_DESKTOP_CLIENT_ID,
+            "client_secret": sensitive_secret,
+        }
+        if code_verifier is not None:
+            request_data["code_verifier"] = code_verifier
+
+        with caplog.at_level(logging.WARNING, logger="auth_server.services.token_grant_service"):
+            response = test_client_with_user_service.post(f"{API_PREFIX}/oauth2/token", data=request_data)
+
+        assert response.status_code == 400
+        assert response.json()["error"] == expected_error
+        assert expected_reason in response.json()["error_description"]
+        assert any(
+            record.name == "auth_server.services.token_grant_service"
+            and record.levelno == logging.WARNING
+            and CLAUDE_DESKTOP_CLIENT_ID in record.getMessage()
+            and expected_reason in record.getMessage()
+            for record in caplog.records
+        )
+        sensitive_values = [auth_code, TEST_CODE_VERIFIER, sensitive_secret, "mock-idp-token", "mock-id-token"]
+        if code_verifier is not None:
+            sensitive_values.append(code_verifier)
+        assert all(value not in caplog.text for value in sensitive_values)
+        assert auth_code in authorization_codes_storage
+        assert not refresh_tokens_storage
 
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     def test_no_scope_requested_uses_default_user_scopes(
@@ -654,14 +762,15 @@ class TestRefreshTokenRotation:
         assert old_refresh_token in refresh_tokens_storage
         assert list(refresh_tokens_storage) == [old_refresh_token]
 
+    @pytest.mark.parametrize("client_id", ["mcp-client-user-gen", CLAUDE_DESKTOP_CLIENT_ID])
     def test_refresh_token_requires_client_consent(
         self,
         test_client_with_user_service: TestClient,
         clear_device_storage,
         mock_user_service,
+        client_id: str,
     ):
         """Existing refresh tokens must not mint new access tokens until the user consents."""
-        client_id = "mcp-client-user-gen"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
         user_info = {
@@ -697,13 +806,14 @@ class TestRefreshTokenRotation:
         assert len(refresh_tokens_storage) == 1
         mock_user_service.resolve_user_id.assert_awaited_once_with(user_info)
 
+    @pytest.mark.parametrize("client_id", ["mcp-client-user-gen", CLAUDE_DESKTOP_CLIENT_ID])
     def test_refresh_token_with_client_consent_rotates(
         self,
         test_client_with_user_service: TestClient,
         clear_device_storage,
+        client_id: str,
     ):
         """A prior consent record allows refresh-token rotation to continue."""
-        client_id = "mcp-client-user-gen"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
         user_info = {
@@ -736,11 +846,19 @@ class TestRefreshTokenRotation:
         assert old_refresh_token not in refresh_tokens_storage
         assert new_refresh_token in refresh_tokens_storage
 
-    def test_old_refresh_token_cannot_be_reused(self, test_client_with_user_service: TestClient, clear_device_storage):
+    @pytest.mark.parametrize("client_id", ["mcp-client-user-gen", CLAUDE_DESKTOP_CLIENT_ID])
+    def test_old_refresh_token_cannot_be_reused(
+        self,
+        test_client_with_user_service: TestClient,
+        clear_device_storage: None,
+        monkeypatch: pytest.MonkeyPatch,
+        client_id: str,
+    ) -> None:
         """Test that after rotation, old refresh token is invalidated."""
 
         # Setup initial refresh token
-        client_id = "mcp-client-user-gen"
+        monkeypatch.setattr(test_consent_store, "default_client_consent", False)
+        test_consent_store.grant_client_consent("user-id-123", client_id)
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
