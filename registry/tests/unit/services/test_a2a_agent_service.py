@@ -508,7 +508,7 @@ async def test_schedule_vector_delete_logs_warning_on_repo_failure(caplog):
 
 
 @pytest.mark.asyncio
-async def test_schedule_vector_delete_returns_when_tracker_refuses():
+async def test_schedule_vector_delete_returns_when_tracker_refuses(caplog):
     repo = MagicMock()
     repo.delete_by_agent_id = AsyncMock()
 
@@ -521,7 +521,12 @@ async def test_schedule_vector_delete_returns_when_tracker_refuses():
     service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock(), background_task_tracker=tracker)
 
     # Returns normally; the Mongo delete already committed, the sweep heals the orphan.
-    service.schedule_vector_delete("agent-1", "Agent One")
+    with caplog.at_level(logging.INFO, logger="registry.services.a2a_agent_service"):
+        service.schedule_vector_delete("agent-1", "Agent One")
+
+    # The log names the orphan sweep, not the reconciler (which never heals deletes).
+    assert "the orphan sweep will remove its vectors" in caplog.text
+    assert "reconciler" not in caplog.text
 
 
 @pytest.mark.asyncio

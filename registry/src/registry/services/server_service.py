@@ -35,6 +35,7 @@ from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
+from ..constants import VECTOR_DELETE_SKIPPED_FALLBACK, VECTOR_SYNC_SKIPPED_FALLBACK
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.server_api_schemas import (
     ServerCreateRequest,
@@ -652,20 +653,21 @@ class ServerServiceV1:
         server.vectorSyncAttempts = 0
         return marker
 
-    def _spawn_vector_task(self, coro: Any, name: str) -> None:
+    def _spawn_vector_task(self, coro: Any, name: str, *, fallback: str = VECTOR_SYNC_SKIPPED_FALLBACK) -> None:
         """Spawn a vector task through the tracker; tolerate shutdown, and an unwired tracker in tests.
 
         After shutdown the spawn is refused — the Mongo write has already committed, so the request
-        must still succeed and the reconciler heals the marker that stays set.
+        must still succeed. ``fallback`` names what repairs the skipped work: the reconciler heals a
+        sync's marker that stays set, and the orphan sweep removes a skipped delete's vectors.
         """
         if self._task_tracker is None:
             coro.close()
-            logger.warning("No background task tracker wired for %s; leaving pending work for reconciliation", name)
+            logger.warning("No background task tracker wired for %s; %s", name, fallback)
             return
         try:
             self._task_tracker.spawn(coro, name=name)
         except TrackerShutdownError:
-            logger.info("Vector sync not scheduled (shutting down); the reconciler will heal it")
+            logger.info("Vector task %s not scheduled (shutting down); %s", name, fallback)
 
     def schedule_vector_sync(self, plan: VectorSyncPlan) -> None:
         """Run the immediate Weaviate sync for a committed write, tracked and marker-clearing.
@@ -709,7 +711,9 @@ class ServerServiceV1:
             except Exception:
                 logger.warning("Vector delete failed for server %s", entity_id, exc_info=True)
 
-        self._spawn_vector_task(_delete_task(), f"vector-delete-server-{entity_id}")
+        self._spawn_vector_task(
+            _delete_task(), f"vector-delete-server-{entity_id}", fallback=VECTOR_DELETE_SKIPPED_FALLBACK
+        )
 
     async def update_server(
         self,

@@ -984,7 +984,7 @@ async def test_schedule_vector_delete_logs_warning_on_repo_failure(caplog):
 
 
 @pytest.mark.asyncio
-async def test_schedule_vector_delete_returns_when_tracker_refuses():
+async def test_schedule_vector_delete_returns_when_tracker_refuses(caplog):
     repo = Mock()
     repo.delete_by_server_id = AsyncMock()
 
@@ -997,7 +997,12 @@ async def test_schedule_vector_delete_returns_when_tracker_refuses():
     service = _delete_service(repo, tracker)
 
     # Returns normally; the Mongo delete already committed, the sweep heals the orphan.
-    service.schedule_vector_delete("srv-1", "Srv One")
+    with caplog.at_level(_logging.INFO, logger="registry.services.server_service"):
+        service.schedule_vector_delete("srv-1", "Srv One")
+
+    # The log names the orphan sweep, not the reconciler (which never heals deletes).
+    assert "the orphan sweep will remove its vectors" in caplog.text
+    assert "reconciler" not in caplog.text
 
 
 def _record_marker_at_save(doc) -> list[tuple]:
