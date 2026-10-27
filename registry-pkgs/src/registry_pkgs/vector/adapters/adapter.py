@@ -257,7 +257,9 @@ class VectorStoreAdapter(ABC):
         Extended feature: Yield each object's value of a single property, cursor-based.
 
         Used to enumerate stored entity ids without the offset-pagination cap. Skips objects whose
-        value is None. Subclasses implement this with a database-specific cursor iterator.
+        value is None, and yields nothing for a collection that does not exist yet (collections are
+        created lazily). Backend failures propagate. Subclasses implement this with a database-specific
+        cursor iterator.
 
         Args:
             property_name: Property to read from every object
