@@ -43,12 +43,6 @@ async def oauth_authorization_server_metadata():
     # Get current auth provider from settings
     auth_provider = settings.auth_provider
 
-    # Load scopes from scopes.yml
-    scopes_config = settings.scopes_config
-
-    # Get all scope names (excluding group_mappings)
-    scope_names = [key for key in scopes_config if key != "group_mappings"]
-
     return {
         "issuer": settings.jwt_issuer,
         "authorization_endpoint": f"{auth_server_url}/oauth2/login/{auth_provider}",
@@ -64,7 +58,7 @@ async def oauth_authorization_server_metadata():
         ],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "none"],
         "code_challenge_methods_supported": ["S256"],
-        "scopes_supported": scope_names,
+        "scopes_supported": sorted(settings.scopes_list),
         "service_documentation": f"{auth_server_url}/docs",
     }
 
@@ -118,14 +112,12 @@ async def downstream_authorization_server_metadata(user_id: str, server_path: st
 @router.get("/.well-known/openid-configuration")
 async def openid_configuration():
     """
-    OpenID Connect Discovery endpoint.
+    Discovery for JWT verifiers, including AgentCore's custom JWT authorizer.
 
-    Provides OpenID Connect configuration metadata for clients that
-    expect OIDC discovery.
+    Verifiers discover the issuer and JWKS here; auth-server does not issue ID tokens.
 
     Per OIDC spec, the issuer MUST be at the root origin without any prefix.
-    Operational endpoints include the prefix if configured.
-    use auth_server_url which includes the prefix.
+    Operational endpoints use auth_server_url, which includes the configured prefix.
     """
     auth_server_url = settings.auth_server_external_url
 
@@ -138,15 +130,15 @@ async def openid_configuration():
         "token_endpoint": f"{auth_server_url}/oauth2/token",
         "device_authorization_endpoint": f"{auth_server_url}/oauth2/device/code",
         "registration_endpoint": f"{auth_server_url}/oauth2/register",
-        "userinfo_endpoint": f"{auth_server_url}/oauth2/userinfo",
         "jwks_uri": f"{settings.jwt_issuer}/.well-known/jwks.json",
         "response_types_supported": ["code"],
         "subject_types_supported": ["public"],
+        # Retained only for OIDC discovery-document conformance.
         "id_token_signing_alg_values_supported": ["RS256"],
-        "scopes_supported": ["openid", "profile", "email"],
+        "scopes_supported": sorted(settings.scopes_list),
         "token_endpoint_auth_methods_supported": ["client_secret_post", "none"],
         "code_challenge_methods_supported": ["S256"],
-        "claims_supported": ["sub", "email", "name", "groups"],
+        "claims_supported": ["sub", "user_id", "preferred_username", "email", "name", "groups", "scope", "client_id"],
         "grant_types_supported": [
             "authorization_code",
             "refresh_token",
@@ -219,6 +211,6 @@ async def protected_resource_metadata(
     return {
         "resource": f"{settings.registry_url}/proxy/{server_path}",
         "authorization_servers": authorization_servers,
-        "scopes_supported": settings.scopes_list,
+        "scopes_supported": sorted(settings.scopes_list),
         "bearer_methods_supported": ["header"],
     }

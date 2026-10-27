@@ -462,9 +462,15 @@ class WeaviateStore(VectorStoreAdapter):
             return False
 
     def filter_by_metadata(
-        self, filters: Any, limit: int = 100, collection_name: str | None = None, **kwargs
+        self,
+        filters: Any,
+        limit: int = 100,
+        collection_name: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        **kwargs,
     ) -> list[Document]:
-        """Implement Weaviate metadata filtering (filters already normalized)."""
+        """Filter metadata, optionally propagating query errors for consistency checks."""
         collection = self.get_collection(collection_name)
         normalized_filters = self.normalize_filters(filters)
         try:
@@ -473,6 +479,8 @@ class WeaviateStore(VectorStoreAdapter):
             return docs
         except Exception as e:
             logger.error(f"Filter by metadata failed: {e}")
+            if raise_on_error:
+                raise
             return []
 
     def bm25_search(

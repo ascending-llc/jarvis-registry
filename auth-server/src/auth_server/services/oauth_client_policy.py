@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from registry_pkgs.core.client_categories import (
+    CLAUDE_DESKTOP_CLIENT_ID,
     REGISTRY_CLI_CLIENT_ID,
     ClientCategory,
     get_client_policy,
@@ -15,6 +16,7 @@ from registry_pkgs.core.oauth_state_store import OAuthStateStoreProtocol
 from ..core.config import settings
 
 PUBLIC_CLIENT_CREDENTIAL = None
+CLAUDE_DESKTOP_REDIRECT_URI = "http://127.0.0.1:47280/callback"
 
 
 @dataclass(frozen=True)
@@ -25,22 +27,46 @@ class ClientAuthorizationResult:
     grant_authorized: bool
 
 
-def _build_static_client_metadata() -> dict[str, dict[str, Any]]:
-    cli_policy = get_client_policy(ClientCategory.REGISTRY_CLI)
-    if cli_policy is None or cli_policy.token_endpoint_auth_method is None:
-        raise RuntimeError("Registry CLI client policy is not configured")
+def _static_entry(
+    *,
+    client_id: str,
+    category: ClientCategory,
+    client_name: str,
+    redirect_uris: list[str],
+    response_types: list[str],
+) -> dict[str, Any]:
+    policy = get_client_policy(category)
+    if policy is None or policy.token_endpoint_auth_method is None:
+        raise RuntimeError(f"{client_name} client policy is not configured")
 
     return {
-        REGISTRY_CLI_CLIENT_ID: {
-            "client_id": REGISTRY_CLI_CLIENT_ID,
-            "client_name": "Jarvis Registry CLI",
-            "client_secret": PUBLIC_CLIENT_CREDENTIAL,
-            "redirect_uris": [],
-            "grant_types": list(cli_policy.allowed_grant_types),
-            "response_types": [],
-            "scope": cli_policy.default_scope,
-            "token_endpoint_auth_method": cli_policy.token_endpoint_auth_method,
-        },
+        "client_id": client_id,
+        "client_name": client_name,
+        "client_secret": PUBLIC_CLIENT_CREDENTIAL,
+        "redirect_uris": redirect_uris,
+        "grant_types": list(policy.allowed_grant_types),
+        "response_types": response_types,
+        "scope": policy.default_scope,
+        "token_endpoint_auth_method": policy.token_endpoint_auth_method,
+    }
+
+
+def _build_static_client_metadata() -> dict[str, dict[str, Any]]:
+    return {
+        REGISTRY_CLI_CLIENT_ID: _static_entry(
+            client_id=REGISTRY_CLI_CLIENT_ID,
+            category=ClientCategory.REGISTRY_CLI,
+            client_name="Jarvis Registry CLI",
+            redirect_uris=[],
+            response_types=[],
+        ),
+        CLAUDE_DESKTOP_CLIENT_ID: _static_entry(
+            client_id=CLAUDE_DESKTOP_CLIENT_ID,
+            category=ClientCategory.CLAUDE_DESKTOP,
+            client_name="Claude Desktop",
+            redirect_uris=[CLAUDE_DESKTOP_REDIRECT_URI],
+            response_types=["code"],
+        ),
     }
 
 

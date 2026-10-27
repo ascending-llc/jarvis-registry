@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from ...models import A2AAgent
 from ...models.federation_metadata import extract_runtime_version
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
     """Vector sync repository for A2A agents."""
 
-    ENTITY_ID_PROPERTY = "agent_id"
+    ENTITY_ID_PROPERTY: ClassVar[str] = "agent_id"
 
     FILTERABLE_PROPERTIES = {
         "agent_id": "text",
@@ -33,7 +34,7 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
         *,
         is_delete: bool = True,
     ) -> dict:
-        """Full rebuild for an A2A agent — caller must ensure content actually changed.
+        """Rebuild an A2A agent's docs after content changes or detected index drift.
 
         Args:
             agent: Agent instance with current MongoDB state.

@@ -9,6 +9,10 @@ _DEFAULT_USER_INFO: dict[str, Any] = {
     "name": "Test User",
     "id": "user-123",
     "groups": [],
+    "issuer": "https://login.microsoftonline.com/tenant/v2.0",
+    "subject": "provider-subject-123",
+    "object_id": "provider-object-123",
+    "email_trusted": True,
 }
 
 
@@ -20,5 +24,5 @@ def _mock_entra_provider(user_info: dict[str, Any] | None = None) -> MagicMock:
     ``user_info`` as a request-body dependency.
     """
     provider = MagicMock()
-    provider.get_user_info = AsyncMock(return_value=dict(_DEFAULT_USER_INFO) if user_info is None else user_info)
+    provider.get_user_info = AsyncMock(return_value=dict(_DEFAULT_USER_INFO) | (user_info or {}))
     return provider

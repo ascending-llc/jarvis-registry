@@ -1,6 +1,10 @@
 """Unit tests for auth-server consent HTML rendering."""
 
-from auth_server.routes.consent_templates import render_consent_page, render_redirect_error_consent_page
+from auth_server.routes.consent_templates import (
+    render_consent_page,
+    render_device_identity_error_page,
+    render_redirect_error_consent_page,
+)
 
 
 def test_consent_page_escapes_attacker_controlled_client_metadata() -> None:
@@ -84,3 +88,11 @@ def test_redirect_error_consent_page_escapes_attacker_controlled_values() -> Non
     assert 'method="POST"' in html
     assert 'action="/auth/oauth2/redirect-error-consent/approve?x=&quot;bad&quot;"' in html
     assert 'action="/auth/oauth2/redirect-error-consent/deny?x=&quot;bad&quot;"' in html
+
+
+def test_device_identity_error_page_shows_escaped_message() -> None:
+    html = render_device_identity_error_page("Contact <b>your</b> administrator.")
+
+    assert "Contact &lt;b&gt;your&lt;/b&gt; administrator. You can close this window." in html
+    assert "<b>" not in html
+    assert "try again" not in html

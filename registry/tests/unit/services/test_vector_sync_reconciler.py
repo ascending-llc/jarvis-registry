@@ -53,7 +53,7 @@ async def test_reconcile_clears_marker_on_success():
         synced, failed, full = await rec._reconcile(ExtendedMCPServer, rec._mcp_server_repo, now)
 
     assert (synced, failed, full) == (1, 0, False)
-    sync_fn.assert_awaited_once_with(ExtendedMCPServer, rec._mcp_server_repo, doc.id)
+    sync_fn.assert_awaited_once_with(ExtendedMCPServer, rec._mcp_server_repo, doc.id, owner="owner-1")
 
 
 async def test_reconcile_requeues_with_backoff_on_failure():
@@ -133,3 +133,93 @@ async def test_execute_releases_even_when_pass_raises():
         with pytest.raises(RuntimeError):
             await rec._execute(Mock(), lease)
     release.assert_awaited_once_with(rec._repo, lease, interval=vsr._PASS_INTERVAL)
+
+
+async def test_reconcile_queries_only_markers_past_the_grace_window():
+    """a just-written document's immediate task gets _GRACE before the reconciler also tries it."""
+    rec = _make_reconciler()
+    now = datetime.now(UTC)
+    with _patch_find(ExtendedMCPServer, []) as find:
+        await rec._reconcile(ExtendedMCPServer, rec._mcp_server_repo, now)
+    find.assert_called_once_with({"vectorSyncPendingAt": {"$lte": now - timedelta(seconds=60)}})
+    find.return_value.sort.assert_called_once_with("+vectorSyncPendingAt")
+    find.return_value.limit.assert_called_once_with(vsr._BATCH)
+
+
+async def test_reconcile_busy_entity_is_neither_failed_nor_requeued():
+    """contention with an in-flight sync is not a provider failure: keep the marker due, no backoff."""
+    from registry.services.vector_sync_helpers import VectorSyncBusyError
+
+    rec = _make_reconciler()
+    now = datetime.now(UTC)
+    doc = _doc(now - timedelta(minutes=5), attempts=2)
+    sync_fn = AsyncMock(side_effect=VectorSyncBusyError("busy"))
+    coll_patch, collection = _patch_collection(ExtendedMCPServer)
+    with _patch_find(ExtendedMCPServer, [doc]), coll_patch, patch.object(vsr, "sync_pending_vectors", sync_fn):
+        synced, failed, _ = await rec._reconcile(ExtendedMCPServer, rec._mcp_server_repo, now)
+
+    assert (synced, failed) == (0, 0)
+    collection.update_one.assert_not_awaited()
+
+
+async def test_run_pass_logs_remaining_due_backlog(caplog):
+    """the pass summary reports what is still due after the pass, per entity type."""
+    import logging
+
+    from registry_pkgs.models import A2AAgent
+
+    rec = _make_reconciler()
+    server_collection = Mock(count_documents=AsyncMock(return_value=7))
+    agent_collection = Mock(count_documents=AsyncMock(return_value=0))
+    with (
+        patch.object(rec, "_reconcile", AsyncMock(side_effect=[(3, 1, True), (0, 0, False)])),
+        patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=server_collection),
+        patch.object(A2AAgent, "get_pymongo_collection", return_value=agent_collection),
+        caplog.at_level(logging.INFO, logger=vsr.__name__),
+    ):
+        assert await rec._run_pass() is True
+
+    assert "servers synced=3 failed=1 remaining=7, agents synced=0 failed=0 remaining=0" in caplog.text
+    (query,), _ = server_collection.count_documents.await_args
+    assert set(query["vectorSyncPendingAt"]) == {"$lte"}
+
+
+async def test_run_pass_skips_remaining_count_when_idle():
+    rec = _make_reconciler()
+    collection = Mock(count_documents=AsyncMock())
+    with (
+        patch.object(rec, "_reconcile", AsyncMock(return_value=(0, 0, False))),
+        patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection),
+    ):
+        await rec._run_pass()
+    collection.count_documents.assert_not_awaited()
+
+
+async def test_reconciler_uses_one_owner_for_leader_and_entity_leases():
+    rec = _make_reconciler()
+    assert rec._owner == "owner-1"
+    assert rec._runner._owner == "owner-1"
+
+
+async def test_reconcile_all_busy_full_batch_is_not_reported_full():
+    """an all-busy batch made no progress; continuing at once would spin on the same locked docs."""
+    from registry.services.vector_sync_helpers import VectorSyncBusyError
+
+    rec = _make_reconciler()
+    now = datetime.now(UTC)
+    docs = [_doc(now - timedelta(minutes=5)) for _ in range(vsr._BATCH)]
+    sync_fn = AsyncMock(side_effect=VectorSyncBusyError("busy"))
+    with _patch_find(ExtendedMCPServer, docs), patch.object(vsr, "sync_pending_vectors", sync_fn):
+        assert await rec._reconcile(ExtendedMCPServer, rec._mcp_server_repo, now) == (0, 0, False)
+
+
+async def test_reconcile_partly_busy_full_batch_is_still_full():
+    from registry.services.vector_sync_helpers import VectorSyncBusyError
+
+    rec = _make_reconciler()
+    now = datetime.now(UTC)
+    docs = [_doc(now - timedelta(minutes=5)) for _ in range(vsr._BATCH)]
+    sync_fn = AsyncMock(side_effect=[VectorSyncBusyError("busy"), *([True] * (vsr._BATCH - 1))])
+    with _patch_find(ExtendedMCPServer, docs), patch.object(vsr, "sync_pending_vectors", sync_fn):
+        synced, _, full = await rec._reconcile(ExtendedMCPServer, rec._mcp_server_repo, now)
+    assert (synced, full) == (vsr._BATCH - 1, True)

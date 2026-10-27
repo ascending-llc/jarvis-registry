@@ -46,7 +46,7 @@ from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title
 from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
-from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, delete_entity_lease, sync_pending_vectors
+from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +323,7 @@ class ServerServiceV1:
         mcp_server_repo: MCPServerRepository,
         embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
         background_task_tracker: BackgroundTaskTracker | None = None,
+        lease_owner: str = "registry-unowned",
     ):
         """Initialize server service with search index manager."""
         self.mcp_server_repo = mcp_server_repo
@@ -331,6 +332,7 @@ class ServerServiceV1:
         self.oauth_service = oauth_service
         self._embedding_maintenance_watcher = embedding_maintenance_watcher
         self._task_tracker = background_task_tracker
+        self._lease_owner = lease_owner
         logger.info("ServerServiceV1 initialized with search index manager")
 
     async def list_servers(
@@ -679,7 +681,9 @@ class ServerServiceV1:
 
         async def _sync_task() -> None:
             try:
-                await sync_pending_vectors(ExtendedMCPServer, self.mcp_server_repo, server.id, plan=plan)
+                await sync_pending_vectors(
+                    ExtendedMCPServer, self.mcp_server_repo, server.id, owner=self._lease_owner, plan=plan
+                )
             except VectorSyncBusyError:
                 logger.info("Vector sync already running for %s; pending work remains queued", server.id)
             except Exception:
@@ -821,7 +825,6 @@ class ServerServiceV1:
         # The vector delete is scheduled by the route after the transaction commits, so a rolled-back
         # delete (ACL or commit failure) removes no vectors. A lost delete leaves an orphan for the sweep.
         await server.delete(session=session)
-        await delete_entity_lease(ExtendedMCPServer, server.id)
         logger.info(f"Deleted server: {server.serverName} (ID: {server.id})")
         return server.serverName
 
@@ -988,9 +991,9 @@ class ServerServiceV1:
         """Full-replace the server's disabled-tools list.
 
         Silently drops any submitted name that isn't a current tool (validated against the cached
-        config["toolFunctions"] snapshot, no live downstream call). Pushes tool_enabled metadata to
-        Weaviate only for tools whose status actually flipped — batched by new state, at most two
-        round-trips, not the server's entire tool set.
+        config["toolFunctions"] snapshot, no live downstream call). Looks up the tools whose status
+        flipped once, then patches tool_enabled in up to two groups or rebuilds the server's vectors
+        if the document count does not match.
         """
         # Guard before the Mongo write: the scheduled tool_enabled push would fail during a reindex
         # while Mongo already changed, so block it (503) until the reindex ends.

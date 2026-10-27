@@ -290,6 +290,127 @@ async def test_lost_job_fence_never_writes_federation(storage, at_finalize):
     assert not storage.federations.writes
 
 
+@pytest.mark.parametrize("sync_failed", [False, True])
+async def test_terminal_parent_write_lands_before_lease_release(storage, sync_failed):
+    service = storage.service
+    job, lease = await _pending(storage)
+    await service.federation_job_service.mark_syncing(job, FederationJobPhase.SYNCING_VECTORS, lease)
+    if sync_failed:
+        job.discoverySummary.discoveredMcpServers = 1
+    service._build_federation_stats = AsyncMock(return_value=FederationStats())
+    crud = service.federation_crud_service
+    method_name = "mark_sync_failed" if sync_failed else "mark_sync_success"
+    parent_write = getattr(crud, method_name)
+    job_at_parent_write = {}
+
+    async def snapshot_then_write(*args, **kwargs):
+        job_at_parent_write.update(deepcopy(storage.jobs.documents[job.id]))
+        return await parent_write(*args, **kwargs)
+
+    setattr(crud, method_name, snapshot_then_write)
+    await service._finalize_sync_status(
+        storage.federation,
+        job,
+        FederationSyncMutationResult(FederationApplySummary()),
+        VectorSyncOutcome(),
+        lease,
+    )
+
+    # The heartbeat runs until the execution returns, so the lease must still be held while the
+    # parent is written; releasing it first lets a renewal raise LeaseLostError mid-write.
+    assert job_at_parent_write["leaseToken"] == lease.token
+    assert job_at_parent_write["status"] == FederationJobStatus.SYNCING
+    expected_job = FederationJobStatus.FAILED if sync_failed else FederationJobStatus.SUCCESS
+    expected_parent = FederationSyncStatus.FAILED if sync_failed else FederationSyncStatus.SUCCESS
+    assert storage.jobs.documents[job.id]["status"] == expected_job
+    assert storage.jobs.documents[job.id]["leaseToken"] is None
+    assert storage.federations.documents[storage.federation.id]["syncStatus"] == expected_parent
+
+
+async def test_late_terminal_parent_write_cannot_overwrite_reaper_repair(storage):
+    job, _ = await _pending(storage)
+    stale = storage.federation.model_copy(deep=True)
+    fed = storage.federations.documents[storage.federation.id]
+    fed["syncStatus"] = FederationSyncStatus.FAILED
+    fed["syncMessage"] = "Executor lost: lease expired"
+
+    await storage.service.federation_crud_service.mark_sync_success(
+        stale,
+        FederationLastSync(jobId=job.id, status=FederationSyncStatus.SUCCESS),
+        FederationStats(),
+        job_id=job.id,
+    )
+
+    assert fed["syncStatus"] == FederationSyncStatus.FAILED
+    assert fed["syncMessage"] == "Executor lost: lease expired"
+
+
+async def test_reaper_leaves_parent_alone_when_executor_already_finalized_it(storage):
+    job, _ = await _pending(storage)
+    stored = storage.jobs.documents[job.id]
+    stored["status"] = FederationJobStatus.SYNCING
+    stored["leaseExpiresAt"] = datetime.now(UTC) - timedelta(seconds=1)
+    fed = storage.federations.documents[storage.federation.id]
+    fed["syncStatus"] = FederationSyncStatus.SUCCESS
+
+    await storage.service.reap_expired_federation_jobs()
+
+    assert stored["status"] == FederationJobStatus.FAILED
+    assert fed["syncStatus"] == FederationSyncStatus.SUCCESS
+
+
+async def test_reaper_continues_past_a_failing_parent_repair(storage, monkeypatch):
+    service = storage.service
+    job, _ = await _pending(storage)
+    stored = storage.jobs.documents[job.id]
+    stored["status"] = FederationJobStatus.SYNCING
+    stored["leaseExpiresAt"] = datetime.now(UTC) - timedelta(seconds=1)
+    storage.federations.documents[storage.federation.id]["syncStatus"] = FederationSyncStatus.SYNCING
+    stuck = Federation(
+        id=PydanticObjectId(),
+        providerType=FederationProviderType.AWS_AGENTCORE,
+        displayName="Stuck",
+        providerConfig={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/Test"},
+        status=FederationStatus.ACTIVE,
+        syncStatus=FederationSyncStatus.SYNCING,
+        updatedAt=datetime.now(UTC) - timedelta(minutes=3),
+    )
+    storage.federations.documents[stuck.id] = stuck.model_dump(by_alias=True)
+    finalize = service._finalize_abandoned_job
+
+    async def flaky_finalize(federation_id, *args, **kwargs):
+        if federation_id == storage.federation.id:
+            raise RuntimeError("mongo blip")
+        return await finalize(federation_id, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_finalize_abandoned_job", flaky_finalize)
+    await service.reap_expired_federation_jobs()
+
+    assert stored["status"] == FederationJobStatus.FAILED
+    # Pass 3 still ran after pass 1's repair raised.
+    assert storage.federations.documents[stuck.id]["syncStatus"] == FederationSyncStatus.FAILED
+
+
+@pytest.mark.parametrize("repairable", [True, False])
+async def test_stuck_pass_counts_only_federations_it_repaired(storage, repairable):
+    job, _ = await _pending(storage)
+    stored = storage.jobs.documents[job.id]
+    stored["status"] = FederationJobStatus.FAILED
+    stored["updatedAt"] = datetime.now(UTC) - timedelta(minutes=3)
+    fed = storage.federations.documents[storage.federation.id]
+    fed["syncStatus"] = FederationSyncStatus.SYNCING
+    fed["updatedAt"] = datetime.now(UTC) - timedelta(minutes=3)
+    if not repairable:
+        # The parent names another job, so the lastSync.jobId guard rejects every repair.
+        fed["lastSync"]["jobId"] = PydanticObjectId()
+
+    reaped = await storage.service.reap_expired_federation_jobs()
+
+    assert reaped == (1 if repairable else 0)
+    expected = FederationSyncStatus.FAILED if repairable else FederationSyncStatus.SYNCING
+    assert fed["syncStatus"] == expected
+
+
 async def test_lost_lease_during_discovery_never_writes_federation(storage):
     service = storage.service
     job, lease = await _pending(storage)
@@ -343,6 +464,33 @@ async def test_tracker_rejects_spawn_and_finalizes_both_records(storage):
     assert stored["leaseToken"] is None
     assert stored["error"] == _INTERRUPTED_REASON
     assert storage.federations.documents[storage.federation.id]["syncStatus"] == FederationSyncStatus.FAILED
+
+
+async def test_unrelated_spawn_error_is_not_reported_as_shutdown(storage, monkeypatch):
+    service = storage.service
+
+    def broken_spawn(coro, *, name):
+        coro.close()
+        raise RuntimeError("no running event loop")
+
+    monkeypatch.setattr(service._background_task_tracker, "spawn", broken_spawn)
+    with pytest.raises(RuntimeError, match="no running event loop") as exc:
+        await service.start_manual_sync_background(federation=storage.federation, reason=None, triggered_by="user-1")
+    assert not isinstance(exc.value, FederationSyncShuttingDownError)
+    stored = next(iter(storage.jobs.documents.values()))
+    assert stored["status"] == FederationJobStatus.FAILED
+    assert stored["leaseToken"] is None
+    assert stored["error"] == "no running event loop"
+    assert storage.federations.documents[storage.federation.id]["syncStatus"] == FederationSyncStatus.FAILED
+
+
+async def test_background_sync_requires_tracker(storage):
+    storage.service._background_task_tracker = None
+    with pytest.raises(RuntimeError, match="background_task_tracker is required"):
+        await storage.service.start_manual_sync_background(
+            federation=storage.federation, reason=None, triggered_by="user-1"
+        )
+    assert not storage.jobs.documents
 
 
 async def test_tracker_cancellation_repairs_parent_after_execution_stops(storage):
