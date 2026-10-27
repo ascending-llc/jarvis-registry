@@ -54,8 +54,42 @@ class AzureOpenAIModelConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class _FirstPartyModelConfig(BaseModel):
+    """Shared shape for a direct (first-party) provider reached with an API key.
+
+    Unlike Bedrock/Azure there is no ambient identity (no IRSA / Workload Identity), so the API key
+    is required. The provider-native model id is already a canonical litellm key, so a single
+    ``modelId`` serves both the actual call and the metadata lookup — no separate ``baseModelId``.
+    """
+
+    modelId: str = Field(
+        min_length=1,
+        description="Provider-native model id, e.g. 'gpt-4.1' or 'claude-sonnet-4-5'. Used both for "
+        "the actual API call and as the key for litellm.get_model_info().",
+    )
+    baseUrl: str | None = Field(
+        default=None,
+        description="Override base URL for a proxy or regional endpoint. None uses the provider's public API.",
+    )
+    apiKeyEncrypted: str | None = Field(
+        default=None,
+        description="API key, encrypted at rest. Required at creation (first-party providers have no "
+        "ambient identity); nullable only so an update may omit it to keep the stored key.",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AnthropicModelConfig(_FirstPartyModelConfig):
+    providerType: Literal[ModelSourceProviderType.ANTHROPIC] = ModelSourceProviderType.ANTHROPIC
+
+
+class OpenAIModelConfig(_FirstPartyModelConfig):
+    providerType: Literal[ModelSourceProviderType.OPENAI] = ModelSourceProviderType.OPENAI
+
+
 ModelSourceProviderConfig = Annotated[
-    AwsBedrockModelConfig | AzureOpenAIModelConfig,
+    AwsBedrockModelConfig | AzureOpenAIModelConfig | AnthropicModelConfig | OpenAIModelConfig,
     Field(discriminator="providerType"),
 ]
 
