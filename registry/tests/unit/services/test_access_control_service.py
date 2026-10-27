@@ -82,7 +82,12 @@ class TestACLService:
 
     @pytest.mark.asyncio
     async def test_grant_permission_missing_principal_id(self):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+            reload_role_cache=AsyncMock(return_value={("other", 1): PydanticObjectId()}),
+        )
         with pytest.raises(ValueError):
             await service.grant_permission(
                 principal_type="user",
@@ -95,7 +100,12 @@ class TestACLService:
     @pytest.mark.asyncio
     async def test_grant_permission_no_matching_role_raises(self):
         """Null-guard: perm_bits with no matching role in the cache raises ValueError."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+            reload_role_cache=AsyncMock(return_value={("other", 1): PydanticObjectId()}),
+        )
         with pytest.raises(ValueError, match="No role found"):
             await service.grant_permission(
                 principal_type="user",
@@ -112,7 +122,12 @@ class TestACLService:
         Structural backstop for the route guard — a public OWNER/EDITOR grant is
         rejected at the write boundary regardless of how it arrived.
         """
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+            reload_role_cache=AsyncMock(return_value={("other", 1): PydanticObjectId()}),
+        )
         with pytest.raises(ValueError, match="VIEW"):
             await service.grant_permission(
                 principal_type=PrincipalType.PUBLIC.value,
@@ -125,7 +140,12 @@ class TestACLService:
     @pytest.mark.asyncio
     async def test_grant_permission_public_view_passes_invariant(self):
         """PUBLIC + VIEW clears the invariant (then fails later only on empty role_cache)."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+            reload_role_cache=AsyncMock(return_value={("other", 1): PydanticObjectId()}),
+        )
         # With an empty cache, a VIEW grant gets past the public clamp and fails on the
         # role lookup instead — proving the clamp does not block the legitimate VIEW path.
         with pytest.raises(ValueError, match="No role found"):
@@ -156,7 +176,11 @@ class TestACLService:
         user_id = PydanticObjectId()
         group_a_id = PydanticObjectId()
         group_b_id = PydanticObjectId()
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
 
         mock_user.get = AsyncMock(return_value=MagicMock(idOnTheSource="entra-uuid-123"))
         mock_group.find.return_value.to_list = AsyncMock(
@@ -175,7 +199,11 @@ class TestACLService:
     @patch("registry_pkgs.access_control.ExtendedGroup")
     @patch("registry_pkgs.access_control.User")
     async def test_resolve_group_ids_local_user_returns_empty(self, mock_user, mock_group):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_user.get = AsyncMock(return_value=MagicMock(idOnTheSource=None))
 
         result = await service._resolve_group_ids_for_user(PydanticObjectId())
@@ -187,7 +215,11 @@ class TestACLService:
     @patch("registry_pkgs.access_control.ExtendedGroup")
     @patch("registry_pkgs.access_control.User")
     async def test_resolve_group_ids_user_not_found_returns_empty(self, mock_user, mock_group):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_user.get = AsyncMock(return_value=None)
 
         result = await service._resolve_group_ids_for_user(PydanticObjectId())
@@ -199,7 +231,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_delete_acl_entries_for_resource(self, mock_acl_entry):
         mock_session = AsyncMock()
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_result = MagicMock()
         mock_result.deleted_count = 2
         mock_acl_entry.find.return_value.delete = AsyncMock(return_value=mock_result)
@@ -213,7 +249,11 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_delete_acl_entries_for_resource_exception(self, mock_acl_entry):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_acl_entry.find.return_value.delete = AsyncMock(side_effect=Exception("fail"))
         deleted = await service.delete_acl_entries_for_resource(
             resource_type=ResourceType.MCPSERVER.value, resource_id=PydanticObjectId()
@@ -224,7 +264,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resource_edit_only(self, mock_acl_entry):
         """EDIT bit (2) should only grant EDIT, not VIEW."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         entry = MagicMock()
         entry.permBits = PermissionBits.EDIT
 
@@ -250,7 +294,11 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_group_grant_only(self, mock_acl_entry):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         group_id = PydanticObjectId()
         entry = MagicMock(
             principalType=PrincipalType.GROUP.value,
@@ -274,7 +322,11 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_group_grant_higher_than_user_grant(self, mock_acl_entry):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         group_id = PydanticObjectId()
         user_entry = MagicMock(
             principalType=PrincipalType.USER.value,
@@ -302,7 +354,11 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_no_group_membership_skips_group_clause(self, mock_acl_entry):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         self._mock_sorted_acl_query(mock_acl_entry, [])
         service._resolve_group_ids_for_user = AsyncMock(return_value=[])
 
@@ -320,7 +376,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_delete_permission(self, mock_acl_entry):
         mock_session = AsyncMock()
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_result = MagicMock()
         mock_result.deleted_count = 1
         mock_acl_entry.find.return_value.delete = AsyncMock(return_value=mock_result)
@@ -336,7 +396,11 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_delete_permission_exception(self, mock_acl_entry):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_acl_entry.find.return_value.delete = AsyncMock(side_effect=Exception("fail"))
         deleted = await service.delete_permission(
             resource_type=ResourceType.MCPSERVER.value,
@@ -350,7 +414,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resource_owner(self, mock_acl_entry):
         """User with OWNER bits should resolve all permissions."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         entry = MagicMock()
         entry.permBits = RoleBits.OWNER  # 15
 
@@ -377,7 +445,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resource_no_match(self, mock_acl_entry):
         """No ACL entry should return all-False permissions."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
 
         # Mock the chained methods: find().sort().to_list() returning empty list
         mock_find_result = MagicMock()
@@ -401,7 +473,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resource_exception(self, mock_acl_entry):
         """A DB failure must raise, not silently resolve to all-False permissions."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
 
         # Mock find() to raise exception
         mock_acl_entry.find = MagicMock(side_effect=Exception("db error"))
@@ -418,7 +494,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_check_user_permission_allowed(self, mock_acl_entry):
         """User with VIEW should pass the VIEW check."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         entry = MagicMock()
         entry.permBits = RoleBits.VIEWER  # 1
 
@@ -442,7 +522,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_check_user_permission_denied(self, mock_acl_entry):
         """User with VIEW-only should be denied EDIT."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         entry = MagicMock()
         entry.permBits = RoleBits.VIEWER  # 1 = VIEW only
 
@@ -467,7 +551,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_check_user_permission_no_entry(self, mock_acl_entry):
         """No ACL entry should raise 403."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
 
         # Mock the chained methods: find().sort().to_list() returning empty list
         mock_find_result = MagicMock()
@@ -489,7 +577,11 @@ class TestACLService:
     @pytest.mark.asyncio
     async def test_check_user_permission_runtime_error_returns_503(self):
         """ACL lookup failures surface as temporarily unavailable, not permission denied."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         service.get_user_permissions_for_resource = AsyncMock(side_effect=RuntimeError("acl unavailable"))
 
         with pytest.raises(HTTPException) as exc_info:
@@ -507,7 +599,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_accessible_resource_ids(self, mock_acl_entry):
         """Should return deduplicated resource IDs with VIEW bit set."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         rid1 = PydanticObjectId()
         rid2 = PydanticObjectId()
 
@@ -536,7 +632,11 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_accessible_ids_includes_group_only_resource(self, mock_acl_entry):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         group_id = PydanticObjectId()
         resource_id = PydanticObjectId()
         entry = MagicMock(
@@ -560,7 +660,11 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_accessible_ids_deduplicates_user_and_group_grant(self, mock_acl_entry):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         group_id = PydanticObjectId()
         resource_id = PydanticObjectId()
         entries = [
@@ -593,7 +697,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_accessible_resource_ids_with_none_user_id_returns_public_only(self, mock_acl_entry):
         """When user_id is None, only PUBLIC ACL entries are matched."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
 
         public_entry = MagicMock()
         public_entry.permBits = RoleBits.VIEWER  # 1 = VIEW
@@ -615,7 +723,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_accessible_resource_ids_exception(self, mock_acl_entry):
         """A DB failure must raise, not silently resolve to 'no accessible resources'."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_acl_entry.find.return_value.to_list = AsyncMock(side_effect=Exception("fail"))
         service._resolve_group_ids_for_user = AsyncMock(return_value=[])
         with pytest.raises(RuntimeError):
@@ -628,7 +740,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resources_batches_single_query(self, mock_acl_entry):
         """Batch resolution uses a single $in query and resolves per-resource permissions."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         rid_a, rid_b, rid_missing = PydanticObjectId(), PydanticObjectId(), PydanticObjectId()
 
         entry_a = MagicMock(resourceId=rid_a, permBits=PermissionBits.VIEW | PermissionBits.EDIT)
@@ -660,7 +776,11 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_batch_permissions_group_grant_populates_result(self, mock_acl_entry):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         group_id = PydanticObjectId()
         resource_id_a = PydanticObjectId()
         resource_id_b = PydanticObjectId()
@@ -687,7 +807,11 @@ class TestACLService:
     @pytest.mark.asyncio
     async def test_get_user_permissions_for_resource_group_resolution_failure_denies_access(self):
         """_resolve_group_ids_for_user raising causes fail-closed by surfacing ACL unavailability."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
 
         with pytest.raises(RuntimeError):
@@ -700,7 +824,11 @@ class TestACLService:
     @pytest.mark.asyncio
     async def test_get_user_permissions_for_resources_group_resolution_failure_denies_access(self):
         """_resolve_group_ids_for_user raising causes fail-closed by surfacing ACL unavailability."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
         rid = PydanticObjectId()
 
@@ -714,7 +842,11 @@ class TestACLService:
     @pytest.mark.asyncio
     async def test_get_accessible_resource_ids_group_resolution_failure_raises(self):
         """_resolve_group_ids_for_user raising propagates as RuntimeError (fail-closed: surface the failure)."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
 
         with pytest.raises(RuntimeError):
@@ -727,7 +859,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.ExtendedGroup")
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_resource_permissions_returns_group_principal(self, mock_acl_entry, mock_group):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         group_id = PydanticObjectId()
         role_id = PydanticObjectId()
         entry = MagicMock(
@@ -761,7 +897,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.User")
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_resource_permissions_batch_fetch_not_n_plus_1(self, mock_acl_entry, mock_user):
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         user_ids = [PydanticObjectId(), PydanticObjectId(), PydanticObjectId()]
         role_id = PydanticObjectId()
         entries = [
@@ -827,7 +967,11 @@ class TestACLService:
         user_service.search_users = AsyncMock(return_value=users)
         group_service = Mock()
         group_service.search_groups = AsyncMock(return_value=groups)
-        service = ACLService(user_service=user_service, group_service=group_service, role_cache={})
+        service = ACLService(
+            user_service=user_service,
+            group_service=group_service,
+            role_cache={},
+        )
 
         result = await service.search_principals(query="al", limit=30)
 
@@ -841,7 +985,11 @@ class TestACLService:
         user_service.search_users = AsyncMock(return_value=[])
         group_service = Mock()
         group_service.search_groups = AsyncMock(return_value=[])
-        service = ACLService(user_service=user_service, group_service=group_service, role_cache={})
+        service = ACLService(
+            user_service=user_service,
+            group_service=group_service,
+            role_cache={},
+        )
 
         result = await service.search_principals(query="al", limit=None)
 
@@ -853,7 +1001,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resources_empty_input_skips_query(self, mock_acl_entry):
         """Empty resource_ids short-circuits without touching the database."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_acl_entry.find = MagicMock(side_effect=AssertionError("find must not be called"))
 
         result = await service.get_user_permissions_for_resources(
@@ -869,7 +1021,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resources_exception_raises_runtime_error(self, mock_acl_entry):
         """A DB failure must raise, not silently resolve to empty permissions."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         mock_acl_entry.find = MagicMock(side_effect=Exception("db error"))
         service._resolve_group_ids_for_user = AsyncMock(return_value=[])
 
@@ -912,7 +1068,11 @@ class TestACLService:
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_validate_owner_remains_unknown_role_not_counted_as_owner(self, mock_acl_entry):
         """A roleId absent from the cache is NOT counted as owner (closes client-permBits bypass)."""
-        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={},
+        )
         principal_id = PydanticObjectId()
         entry = MagicMock(principalType=PrincipalType.USER.value, principalId=principal_id, permBits=RoleBits.OWNER)
         mock_acl_entry.find.return_value.to_list = AsyncMock(return_value=[entry])
@@ -984,3 +1144,74 @@ class TestACLService:
                 removed_principals=[],
             )
         assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_role_catalog_empty_and_database_failure_propagate() -> None:
+    from registry.services.access_control_service import load_role_cache
+
+    with patch("registry.services.access_control_service.RegistryAccessRole") as roles:
+        roles.find.return_value.to_list = AsyncMock(return_value=[])
+        with pytest.raises(RuntimeError, match="catalog is empty"):
+            await load_role_cache()
+        roles.find.return_value.to_list.side_effect = RuntimeError("database down")
+        with pytest.raises(RuntimeError, match="database down"):
+            await load_role_cache()
+
+
+@pytest.mark.asyncio
+async def test_reload_merges_concurrent_misses_and_preserves_reference() -> None:
+    import asyncio
+
+    role_id = PydanticObjectId()
+    cache = {("old", 1): PydanticObjectId()}
+    reload = AsyncMock(return_value={("new", 2): role_id})
+    service = ACLService(Mock(), Mock(), cache, reload)
+    await asyncio.gather(*(service._reload_on_miss(("new", 2)) for _ in range(20)))
+    reload.assert_awaited_once()
+    assert service._role_cache is cache
+    assert cache == {("new", 2): role_id}
+    await service._reload_on_miss(("missing", 1))
+    reload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reload_failure_preserves_cache_and_is_throttled(monkeypatch) -> None:
+    # Exact float values so `now - last_attempt` hits the 60s boundary without rounding error.
+    now = 1000.0
+    monkeypatch.setattr("registry.services.access_control_service.time.monotonic", lambda: now)
+    cache = {("old", 1): PydanticObjectId()}
+    original = dict(cache)
+    reload = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    service = ACLService(Mock(), Mock(), cache, reload)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await service._reload_on_miss(("new", 2))
+    with pytest.raises(RuntimeError, match="reload unavailable"):
+        await service._reload_on_miss(("new", 2))
+    assert cache == original
+    reload.assert_awaited_once()
+    now = 1060.0
+    reload.side_effect = None
+    reload.return_value = {("new", 2): PydanticObjectId()}
+    await service._reload_on_miss(("new", 2))
+    assert reload.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_grant_permission_recovers_new_role() -> None:
+    role_id = PydanticObjectId()
+    loader = AsyncMock(return_value={("mcpServer", PermissionBits.VIEW): role_id})
+    service = ACLService(Mock(), Mock(), {}, loader)
+    service._upsert_acl_entry = AsyncMock(return_value="entry")
+    assert (
+        await service.grant_permission(
+            principal_type=PrincipalType.USER,
+            principal_id="user",
+            resource_type="mcpServer",
+            resource_id=PydanticObjectId(),
+            perm_bits=PermissionBits.VIEW,
+        )
+        == "entry"
+    )
+    loader.assert_awaited_once()
+    assert service._upsert_acl_entry.await_args.kwargs["role_id"] == role_id

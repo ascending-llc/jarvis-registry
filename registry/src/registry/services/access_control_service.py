@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,30 +27,31 @@ from .group_service import GroupService
 
 logger = logging.getLogger(__name__)
 
+_ROLE_CACHE_RELOAD_MIN_INTERVAL_SECONDS = 60
+
 _REGISTRY_ROLE_RESOURCE_TYPES = [rt.value for rt in RegistryResourceType]
 
 
 async def load_role_cache() -> dict[tuple[str, int], PydanticObjectId]:
     """Load the static ACL role catalog into an in-memory map keyed by (resourceType, permBits)."""
     cache: dict[tuple[str, int], PydanticObjectId] = {}
-    try:
-        roles = await RegistryAccessRole.find({"resourceType": {"$in": _REGISTRY_ROLE_RESOURCE_TYPES}}).to_list()
-        for role in roles:
-            key = (str(role.resourceType), role.permBits)
-            if key in cache:
-                logger.error(
-                    "Duplicate ACL role for %s: roles %s and %s share resourceType+permBits. "
-                    "Keeping %s, skipping %s. The (resourceType, permBits) -> roleId mapping must be unique.",
-                    key,
-                    cache[key],
-                    role.id,
-                    cache[key],
-                    role.id,
-                )
-                continue
-            cache[key] = role.id
-    except Exception as e:  # noqa: BLE001
-        logger.error("Failed to load ACL role catalog: %s", e)
+    roles = await RegistryAccessRole.find({"resourceType": {"$in": _REGISTRY_ROLE_RESOURCE_TYPES}}).to_list()
+    for role in roles:
+        key = (str(role.resourceType), role.permBits)
+        if key in cache:
+            logger.error(
+                "Duplicate ACL role for %s: roles %s and %s share resourceType+permBits. "
+                "Keeping %s, skipping %s. The (resourceType, permBits) -> roleId mapping must be unique.",
+                key,
+                cache[key],
+                role.id,
+                cache[key],
+                role.id,
+            )
+            continue
+        cache[key] = role.id
+    if not cache:
+        raise RuntimeError("ACL role catalog is empty")
     return cache
 
 
@@ -57,10 +61,36 @@ class ACLService:
         user_service: UserService,
         group_service: GroupService,
         role_cache: dict[tuple[str, int], PydanticObjectId],
+        reload_role_cache: Callable[[], Awaitable[dict[tuple[str, int], PydanticObjectId]]] = load_role_cache,
     ):
         self.user_service = user_service
         self.group_service = group_service
         self._role_cache = role_cache
+        self._reload_role_cache = reload_role_cache
+        self._reload_lock = asyncio.Lock()
+        self._last_reload_attempt: float | None = None
+        self._reload_failed = False
+
+    async def _reload_on_miss(self, key: tuple[str, int]) -> None:
+        async with self._reload_lock:
+            if key in self._role_cache:
+                return
+            now = time.monotonic()
+            if (
+                self._last_reload_attempt is not None
+                and now - self._last_reload_attempt < _ROLE_CACHE_RELOAD_MIN_INTERVAL_SECONDS
+            ):
+                if self._reload_failed:
+                    raise RuntimeError("ACL role catalog reload unavailable")
+                return
+            self._last_reload_attempt = now
+            self._reload_failed = True
+            loaded = await self._reload_role_cache()
+            if not loaded:
+                raise RuntimeError("ACL role catalog is empty")
+            self._role_cache.clear()
+            self._role_cache.update(loaded)
+            self._reload_failed = False
 
     @property
     def _role_id_to_key(self) -> dict[PydanticObjectId, tuple[str, int]]:
@@ -199,7 +229,10 @@ class ACLService:
         if principal_type == PrincipalType.PUBLIC and perm_bits != PermissionBits.VIEW:
             raise ValueError("PUBLIC principal may only be granted VIEW permission")
 
-        role_id = self._role_cache.get((resource_type, perm_bits))
+        key = (resource_type, perm_bits)
+        if key not in self._role_cache:
+            await self._reload_on_miss(key)
+        role_id = self._role_cache.get(key)
         if role_id is None:
             raise ValueError(f"No role found for resource_type={resource_type!r}, perm_bits={perm_bits!r}")
 

@@ -9,6 +9,7 @@ import pytest
 from registry_pkgs.oauth.flow_state_manager import FlowStateManager
 from registry_pkgs.oauth.schemas import OAuthFlowStatus
 from registry_pkgs.oauth.types import ClientBranding, StateMetadata
+from tests.fake_redis import FakeRedis
 
 
 @pytest.mark.unit
@@ -17,22 +18,22 @@ class TestFlowStateManager:
 
     def test_init_default_values(self):
         """Test initialization with default values."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
 
         assert manager._flow_ttl == 600
-        assert manager._memory_flows == {}
+        assert not hasattr(manager, "_memory_flows")
         assert manager.DEFAULT_FLOW_TTL == 600
 
     def test_init_fallback_to_memory(self):
         """Test initialization with memory fallback."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry", fallback_to_memory=True)
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
 
         # Should initialize with memory storage when Redis is unavailable
-        assert manager._memory_flows is not None
+        assert not hasattr(manager, "_memory_flows")
 
     def test_generate_flow_id(self):
         """Test flow ID generation."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         user_id = "test-user"
         server_name = "test-server"
 
@@ -43,7 +44,7 @@ class TestFlowStateManager:
 
     def test_encode_decode_state(self) -> None:
         """Test encoding and decoding state parameter."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
 
         # Encode/decode with flow_id
         flow_id = "test-flow-id"
@@ -85,7 +86,7 @@ class TestFlowStateManager:
 
     def test_decode_state_invalid_format(self):
         """Test decoding invalid state format."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
 
         with pytest.raises(ValueError, match="state is not valid base64url encoded JSON string"):
             manager.decode_state("not encoded JSON string")
@@ -100,7 +101,7 @@ class TestFlowStateManager:
 
     def test_create_flow_metadata(self):
         """Test creating flow metadata."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
 
         server_name = "test-server"
         server_path = "/test-server"
@@ -149,9 +150,10 @@ class TestFlowStateManager:
         assert state_dict["meta"]["client_branding"] == branding
         assert UUID(elicitation_id).version == 4
 
-    def test_create_flow_success(self):
+    @pytest.mark.asyncio
+    async def test_create_flow_success(self):
         """Test successful flow creation."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -177,16 +179,17 @@ class TestFlowStateManager:
             redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
 
-        flow = manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+        flow = await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         assert flow.flow_id == flow_id
         assert flow.server_name == server_name
         assert flow.user_id == user_id
         assert flow.status == OAuthFlowStatus.PENDING
 
-    def test_get_flow_found(self):
+    @pytest.mark.asyncio
+    async def test_get_flow_found(self):
         """Test retrieving an existing flow."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -211,27 +214,29 @@ class TestFlowStateManager:
             flow_id,
             redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
-        manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+        await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Retrieve flow
-        flow = manager.get_flow(flow_id)
+        flow = await manager.get_flow(flow_id)
 
         assert flow is not None
         assert flow.flow_id == flow_id
         assert flow.status == OAuthFlowStatus.PENDING
 
-    def test_get_flow_not_found(self):
+    @pytest.mark.asyncio
+    async def test_get_flow_not_found(self):
         """Test retrieving a non-existent flow."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "non-existent-flow"
 
-        result = manager.get_flow(flow_id)
+        result = await manager.get_flow(flow_id)
 
         assert result is None
 
-    def test_is_flow_expired(self):
+    @pytest.mark.asyncio
+    async def test_is_flow_expired(self):
         """Test checking if flow is expired."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -256,7 +261,7 @@ class TestFlowStateManager:
             flow_id,
             redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
-        flow = manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+        flow = await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Should not be expired immediately
         assert not manager.is_flow_expired(flow)
@@ -265,9 +270,10 @@ class TestFlowStateManager:
         flow.created_at = time.time() - 700  # More than DEFAULT_FLOW_TTL
         assert manager.is_flow_expired(flow)
 
-    def test_complete_flow_success(self):
+    @pytest.mark.asyncio
+    async def test_complete_flow_success(self):
         """Test successfully completing a flow."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -292,23 +298,24 @@ class TestFlowStateManager:
             flow_id,
             redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
-        manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+        await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Complete the flow
         from registry_pkgs.oauth.schemas import OAuthTokens
 
         tokens = OAuthTokens(access_token="test-token", token_type="Bearer", expires_in=3600)
-        manager.complete_flow(flow_id, tokens)
+        await manager.complete_flow(flow_id, tokens)
 
         # Verify the flow was updated
-        flow = manager.get_flow(flow_id)
+        flow = await manager.get_flow(flow_id)
         assert flow is not None
         assert flow.status == OAuthFlowStatus.COMPLETED
         assert flow.tokens == tokens
 
-    def test_complete_flow_not_found(self):
+    @pytest.mark.asyncio
+    async def test_complete_flow_not_found(self):
         """Test completing a non-existent flow."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "non-existent-flow"
 
         from registry_pkgs.oauth.schemas import OAuthTokens
@@ -316,11 +323,13 @@ class TestFlowStateManager:
         tokens = OAuthTokens(access_token="test-token", token_type="Bearer", expires_in=3600)
 
         # Should not raise an exception
-        manager.complete_flow(flow_id, tokens)
+        with pytest.raises(ValueError, match="not found"):
+            await manager.complete_flow(flow_id, tokens)
 
-    def test_fail_flow_success(self):
+    @pytest.mark.asyncio
+    async def test_fail_flow_success(self):
         """Test successfully failing a flow."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -346,29 +355,32 @@ class TestFlowStateManager:
             flow_id,
             redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
-        manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+        await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Fail the flow
-        manager.fail_flow(flow_id, error_message)
+        await manager.fail_flow(flow_id, error_message)
 
         # Verify the flow was updated
-        flow = manager.get_flow(flow_id)
+        flow = await manager.get_flow(flow_id)
         assert flow is not None
         assert flow.status == OAuthFlowStatus.FAILED
         assert flow.error == error_message
 
-    def test_fail_flow_not_found(self):
+    @pytest.mark.asyncio
+    async def test_fail_flow_not_found(self):
         """Test failing a non-existent flow."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "non-existent-flow"
         error_message = "Authentication failed"
 
         # Should not raise an exception
-        manager.fail_flow(flow_id, error_message)
+        with pytest.raises(ValueError, match="not found"):
+            await manager.fail_flow(flow_id, error_message)
 
-    def test_delete_flow_success(self):
+    @pytest.mark.asyncio
+    async def test_delete_flow_success(self):
         """Test successfully deleting a flow."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         flow_id = "test-flow-id"
         server_name = "test-server"
         server_id = "test-server"
@@ -393,21 +405,22 @@ class TestFlowStateManager:
             flow_id,
             redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
-        manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+        await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Verify it exists
-        assert manager.get_flow(flow_id) is not None
+        assert await manager.get_flow(flow_id) is not None
 
         # Delete the flow
-        manager.delete_flow(flow_id)
+        await manager.delete_flow(flow_id)
 
         # Verify it's deleted
-        assert manager.get_flow(flow_id) is None
+        assert await manager.get_flow(flow_id) is None
 
-    def test_cancel_user_flow(self):
+    @pytest.mark.asyncio
+    async def test_cancel_user_flow(self):
         """Test cancelling a user flow."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
-        flow_id = "test-flow-id"
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
+        flow_id = "test-user:test-server"
         server_name = "test-server"
         server_id = "test-server"
         user_id = "test-user"
@@ -431,20 +444,21 @@ class TestFlowStateManager:
             flow_id,
             redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
-        manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+        await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Cancel the flow
-        result = manager.cancel_user_flow(user_id, server_id)
+        result = await manager.cancel_user_flow(user_id, server_id)
 
         assert result is True
 
         # Verify flow is marked as failed
-        flow = manager.get_flow(flow_id)
+        flow = await manager.get_flow(flow_id)
         assert flow.status == OAuthFlowStatus.FAILED
 
-    def test_get_user_flows(self):
+    @pytest.mark.asyncio
+    async def test_get_user_flows(self):
         """Test getting user flows."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         server_name = "test-server"
         server_id = "test-server"
         user_id = "test-user"
@@ -458,8 +472,8 @@ class TestFlowStateManager:
             "token_url": "https://example.com/token",
         }
 
-        for i in range(3):
-            flow_id = f"flow-{i}"
+        for _i in range(3):
+            flow_id = "test-user:test-server"
             metadata = manager.create_flow_metadata(
                 server_name,
                 "/test-server",
@@ -471,12 +485,12 @@ class TestFlowStateManager:
                 flow_id,
                 redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
             )
-            manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+            await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Get user flows
-        flows = manager.get_user_flows(user_id, server_id)
+        flows = await manager.get_user_flows(user_id, server_id)
 
-        assert len(flows) == 3
+        assert len(flows) == 1
         for flow in flows:
             assert flow.user_id == user_id
             assert flow.server_name == server_name
@@ -484,7 +498,7 @@ class TestFlowStateManager:
     @pytest.mark.asyncio
     async def test_cleanup_expired_flows(self):
         """Test cleanup of expired flows."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
 
         # Create some flows
         flows = []
@@ -512,10 +526,11 @@ class TestFlowStateManager:
                 flow_id,
                 redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
             )
-            flow = manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+            flow = await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
             # Make first flow expired
             if i == 0:
                 flow.created_at = time.time() - 700
+                manager._redis_storage.save_flow(flow)
             flows.append(flow_id)
 
         # Clean up expired flows
@@ -529,9 +544,10 @@ class TestFlowStateManager:
 class TestFlowStateManagerIntegration:
     """Integration tests for FlowStateManager."""
 
-    def test_full_flow_lifecycle(self):
+    @pytest.mark.asyncio
+    async def test_full_flow_lifecycle(self):
         """Test a complete OAuth flow lifecycle."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
         user_id = "test-user"
         server_name = "test-server"
         server_id = "test-server"
@@ -558,10 +574,10 @@ class TestFlowStateManagerIntegration:
             flow_id,
             redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
         )
-        manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+        await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Verify flow exists and is pending
-        flow = manager.get_flow(flow_id)
+        flow = await manager.get_flow(flow_id)
         assert flow is not None
         assert flow.status == OAuthFlowStatus.PENDING
 
@@ -571,22 +587,23 @@ class TestFlowStateManagerIntegration:
         tokens = OAuthTokens(
             access_token="test-access-token", refresh_token="test-refresh-token", token_type="Bearer", expires_in=3600
         )
-        manager.complete_flow(flow_id, tokens)
+        await manager.complete_flow(flow_id, tokens)
 
         # Verify flow is completed
-        completed_flow = manager.get_flow(flow_id)
+        completed_flow = await manager.get_flow(flow_id)
         assert completed_flow.status == OAuthFlowStatus.COMPLETED
         assert completed_flow.tokens.access_token == "test-access-token"
 
         # Delete the flow
-        manager.delete_flow(flow_id)
+        await manager.delete_flow(flow_id)
 
         # Verify flow is deleted
-        assert manager.get_flow(flow_id) is None
+        assert await manager.get_flow(flow_id) is None
 
-    def test_concurrent_flows(self):
+    @pytest.mark.asyncio
+    async def test_concurrent_flows(self):
         """Test handling multiple concurrent flows."""
-        manager = FlowStateManager(redis_key_prefix="jarvis-registry")
+        manager = FlowStateManager(FakeRedis(), redis_key_prefix="jarvis-registry")
 
         # Create multiple flows
         flows = []
@@ -614,19 +631,19 @@ class TestFlowStateManagerIntegration:
                 flow_id,
                 redirect_uri="https://example.com/api/v1/mcp/test-server/oauth/callback",
             )
-            manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
+            await manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
             flows.append(flow_id)
 
         # Verify all flows exist
         for flow_id in flows:
-            flow = manager.get_flow(flow_id)
+            flow = await manager.get_flow(flow_id)
             assert flow is not None
             assert flow.flow_id == flow_id
 
         # Delete all flows
         for flow_id in flows:
-            manager.delete_flow(flow_id)
+            await manager.delete_flow(flow_id)
 
         # Verify all flows are deleted
         for flow_id in flows:
-            assert manager.get_flow(flow_id) is None
+            assert await manager.get_flow(flow_id) is None

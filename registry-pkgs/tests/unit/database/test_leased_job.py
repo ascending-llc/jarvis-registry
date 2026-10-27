@@ -58,7 +58,12 @@ def _repo(collection, **spec_overrides) -> LeasedRepository:
 
 
 def _lease(doc_id=None) -> Lease:
-    return Lease(doc_id=doc_id or PydanticObjectId(), owner="worker-1", token="tok-1", expires_at=datetime.now(UTC))
+    return Lease(
+        doc_id=doc_id or PydanticObjectId(),
+        owner="worker-1",
+        token="tok-1",
+        expires_at=datetime.now(UTC) + timedelta(seconds=1),
+    )
 
 
 async def test_field_name_constants():
@@ -77,7 +82,7 @@ async def test_self_fence_margin_defaults_to_half_the_interval():
 
 async def test_insert_leased_doc_can_heartbeat_and_transition():
     collection = MagicMock()
-    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     repo = _repo(collection)
     doc_id = PydanticObjectId()
 
@@ -120,7 +125,7 @@ async def test_claim_returns_none_when_nothing_matched():
 
 async def test_heartbeat_returns_renewed_lease_then_none():
     collection = MagicMock()
-    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     repo = _repo(collection)
     lease = _lease()
 
@@ -128,24 +133,37 @@ async def test_heartbeat_returns_renewed_lease_then_none():
     assert renewed is not None and renewed.expires_at > lease.expires_at
     assert renewed.token == lease.token
 
-    collection.update_one.return_value = SimpleNamespace(modified_count=0)
+    collection.update_one.return_value = SimpleNamespace(matched_count=0, modified_count=0)
     assert await repo.heartbeat(lease) is None
 
 
-async def test_fence_uses_token_and_status():
+async def test_matching_noop_lease_writes_keep_ownership():
     collection = MagicMock()
-    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=0))
+    repo = _repo(collection)
+    lease = _lease()
+
+    assert await repo.heartbeat(lease) is not None
+    assert await repo.transition(lease, {"phase": "running"}) is True
+
+
+async def test_fence_uses_token_status_and_unexpired_deadline():
+    collection = MagicMock()
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     repo = _repo(collection)
     lease = _lease()
 
     await repo.heartbeat(lease)
     fence = collection.update_one.await_args.args[0]
-    assert fence == {"_id": lease.doc_id, "leaseToken": lease.token, "status": {"$in": ["running"]}}
+    assert fence["_id"] == lease.doc_id
+    assert fence["leaseToken"] == lease.token
+    assert fence["status"] == {"$in": ["running"]}
+    assert fence["leaseExpiresAt"]["$gt"] <= datetime.now(UTC)
 
 
 async def test_transition_or_raise_raises_on_miss():
     collection = MagicMock()
-    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=0))
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=0, modified_count=0))
     repo = _repo(collection)
 
     with pytest.raises(LeaseLostError):
@@ -154,7 +172,7 @@ async def test_transition_or_raise_raises_on_miss():
 
 async def test_transition_release_clears_lease_fields():
     collection = MagicMock()
-    collection.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     repo = _repo(collection)
 
     await repo.transition(_lease(), {"status": "done"}, release=True)
@@ -287,6 +305,29 @@ async def test_run_with_lease_propagates_execution_error():
 
     with pytest.raises(ValueError, match="boom"):
         await run_with_lease(repo, _lease(), _coro())
+
+
+async def test_run_with_lease_returns_completed_result_despite_simultaneous_lease_loss(monkeypatch):
+    async def _lost(_repo, _lease):
+        raise LeaseLostError("released")
+
+    async def _completed():
+        return "done"
+
+    monkeypatch.setattr("registry_pkgs.database.leased_job.keep_lease_alive", _lost)
+    assert await run_with_lease(_heartbeat_repo(AsyncMock()), _lease(), _completed()) == "done"
+
+
+async def test_run_with_lease_prioritizes_lease_loss_over_simultaneous_execution_error(monkeypatch):
+    async def _lost(_repo, _lease):
+        raise LeaseLostError("expired")
+
+    async def _failed():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("registry_pkgs.database.leased_job.keep_lease_alive", _lost)
+    with pytest.raises(LeaseLostError, match="expired"):
+        await run_with_lease(_heartbeat_repo(AsyncMock()), _lease(), _failed())
 
 
 async def test_run_with_lease_runs_on_cancelled_before_cancelling_execution():

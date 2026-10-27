@@ -210,7 +210,7 @@ def _real_oauth_service(access_record, state):
         registry_app_name="jarvis-registry",
         base_redirect_url="http://localhost",
         encryption_key=bytes(16),
-        redis_client=None,
+        redis_client=MagicMock(),
         redis_key_prefix="test",
     )
     service.ensure_registry_oauth_state = AsyncMock(return_value=state)

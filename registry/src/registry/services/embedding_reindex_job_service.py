@@ -125,14 +125,14 @@ class EmbeddingReindexJobService:
         return selection
 
     async def _ensure_no_federation_sync_active(self) -> None:
-        """Raise if any federation sync job is PENDING/SYNCING, naming the jobs found."""
+        """Raise if any live federation sync job is in flight, naming the jobs found."""
         active_jobs = await self._federation_job_service.list_active_jobs(limit=_FEDERATION_JOBS_REPORTED)
         if not active_jobs:
             return
         raise EmbeddingReindexFederationSyncActiveError(
             "Cannot start an embedding-model reindex while a federation sync is in flight: "
-            f"{_describe_federation_jobs(active_jobs)}. Retry once it finishes; a job that never finishes "
-            "was orphaned by a registry restart and must be marked FAILED in Mongo."
+            f"{_describe_federation_jobs(active_jobs)}. Retry once it finishes; "
+            "an orphaned job is failed automatically within a few minutes; retry then."
         )
 
     async def claim_job(self, *, owner: str) -> tuple[EmbeddingReindexJob, Lease] | None:

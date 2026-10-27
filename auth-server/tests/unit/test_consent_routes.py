@@ -1,5 +1,6 @@
 """Unit tests for auth-server consent routes."""
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
@@ -13,11 +14,11 @@ from auth_server.core.config import settings
 from auth_server.deps import (
     get_auth_provider,
     get_consent_store,
+    get_identity_service,
     get_oauth2_config,
     get_oauth_state_store,
     get_pending_consent_store,
     get_signer,
-    get_user_service,
 )
 from auth_server.routes.oauth_flow import router
 from tests.support.auth_provider import _mock_entra_provider
@@ -118,9 +119,9 @@ def _oauth2_config() -> dict[str, Any]:
     }
 
 
-def _user_service() -> MagicMock:
+def _identity_service() -> MagicMock:
     service = MagicMock()
-    service.resolve_user_id = AsyncMock(return_value="507f1f77bcf86cd799439011")
+    service.resolve_or_provision = AsyncMock(return_value=SimpleNamespace(id="507f1f77bcf86cd799439011"))
     return service
 
 
@@ -495,7 +496,7 @@ def test_oauth_callback_without_client_consent_redirects_to_consent(
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
     client.app.dependency_overrides[get_signer] = lambda: signer
     client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
-    client.app.dependency_overrides[get_user_service] = _user_service
+    client.app.dependency_overrides[get_identity_service] = _identity_service
 
     session_data = {
         "state": "internal-state",
@@ -542,7 +543,7 @@ def test_oauth_callback_with_cached_client_consent_skips_consent(
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
     client.app.dependency_overrides[get_signer] = lambda: signer
     client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
-    client.app.dependency_overrides[get_user_service] = _user_service
+    client.app.dependency_overrides[get_identity_service] = _identity_service
 
     session_data = {
         "state": "internal-state",
@@ -588,7 +589,7 @@ def test_oauth_callback_registry_client_skips_consent(
     client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
     client.app.dependency_overrides[get_signer] = lambda: signer
     client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
-    client.app.dependency_overrides[get_user_service] = _user_service
+    client.app.dependency_overrides[get_identity_service] = _identity_service
 
     session_data = {
         "state": "internal-state",

@@ -154,9 +154,9 @@ def _wire(
 
     monkeypatch.setattr(exec_module.MongoDB, "get_client", lambda: SimpleNamespace(start_session=_FakeSession))
     # Every job write runs through the real LeasedRepository, whose update_one we mock here; default to
-    # "we own the lease" (modified_count 1). The per-batch lease check reads the job via find_one;
+    # "we own the lease" (matched_count 1). The per-batch lease check reads the job via find_one;
     # default to "still owned" (truthy doc).
-    transition = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    transition = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     lease_probe = AsyncMock(return_value={"_id": "held"})
     monkeypatch.setattr(
         exec_module.EmbeddingReindexJob,
@@ -289,7 +289,7 @@ async def test_commit_aborts_and_raises_when_lease_lost(monkeypatch):
     servers = [SimpleNamespace(id="s1")]
     mcp_sync = AsyncMock(return_value={"indexed_tools": 1, "failed_tools": 0, "error": None})
     w = _wire(monkeypatch, servers=servers, agents=[], mcp_sync=mcp_sync, a2a_sync=AsyncMock(), current_generation=None)
-    w.transition.return_value = SimpleNamespace(modified_count=0)  # no longer our lease
+    w.transition.return_value = SimpleNamespace(matched_count=0, modified_count=0)  # no longer our lease
 
     with pytest.raises(EmbeddingReindexLeaseLostError):
         await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
@@ -523,7 +523,7 @@ async def test_await_pre_gate_writers_fails_reindex_on_federation_drain_timeout(
     job = _job()
     job.startedAt = started
     fed = SimpleNamespace(has_active_jobs=AsyncMock(return_value=True))
-    transition = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    transition = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     monkeypatch.setattr(
         exec_module.EmbeddingReindexJob,
         "get_pymongo_collection",

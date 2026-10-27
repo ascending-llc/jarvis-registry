@@ -9,6 +9,8 @@ from registry.api.v1.mcp.connection_router import router
 from registry.deps import get_container
 from registry.schemas.enums import ConnectionState
 from registry.services.oauth.mcp_service import MCPService
+from registry_pkgs.oauth.errors import OAuthCoordinationError
+from registry_pkgs.oauth.refresh_lock import REFRESH_IN_PROGRESS_MESSAGE
 from tests.conftest import make_container_factory
 
 # Valid MongoDB ObjectId for testing (24 hex characters)
@@ -68,7 +70,7 @@ for attr in dir(mock_connection_service):
 
 # Set up the TestClient with the necessary dependencies overridden
 @pytest.fixture
-def client():
+async def client():
     from fastapi import FastAPI
 
     app = FastAPI()
@@ -195,6 +197,24 @@ class TestConnectionRouter:
         # Should return 500 internal server error
         assert response.status_code == 500
         assert "Internal server error" in response.json()["detail"]
+
+    def test_reinitialize_server_coordination_error_is_retryable(self, client, monkeypatch):
+        """A transient coordination failure during the auth refresh is a 503 with the retry message."""
+        mock_server = Mock()
+        mock_server.id = ObjectId(TEST_SERVER_ID)
+        mock_server.serverName = TEST_SERVER_NAME
+        mock_server.config = {"oauth": {"provider": "github"}}
+        mock_server_service.get_server_by_id.return_value = mock_server
+        monkeypatch.setattr(
+            mock_mcp_service.oauth_service,
+            "handle_reinitialize_auth",
+            AsyncMock(side_effect=OAuthCoordinationError(REFRESH_IN_PROGRESS_MESSAGE)),
+        )
+
+        response = client.post(f"/mcp/{TEST_SERVER_ID}/reinitialize")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == REFRESH_IN_PROGRESS_MESSAGE
 
     def test_reinitialize_server_connection_failure(self, client):
         """Test reinitialization when connection creation fails"""

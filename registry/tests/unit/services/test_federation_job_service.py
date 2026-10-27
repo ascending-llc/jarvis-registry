@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 
-from registry.services.federation_job_service import FederationJobService
+from registry.services.federation_job_service import FederationJobService, federation_sync_lease_repository
+from registry_pkgs.models.federation_sync_job import FederationApplySummary
+
+_TEST_LEASE = federation_sync_lease_repository.new_lease("test-pod", doc_id=PydanticObjectId())
 from registry_pkgs.models.enums import FederationJobPhase, FederationJobStatus
 
 
@@ -17,6 +20,7 @@ def _make_job(status: FederationJobStatus = FederationJobStatus.PENDING):
         startedAt=None,
         finishedAt=None,
         save=AsyncMock(),
+        applySummary=FederationApplySummary(),
     )
 
 
@@ -111,7 +115,7 @@ async def test_mark_syncing_rejects_terminal_job_transition():
     job = _make_job(FederationJobStatus.SUCCESS)
 
     with pytest.raises(ValueError, match="cannot transition to syncing"):
-        await service.mark_syncing(job, FederationJobPhase.DISCOVERING)
+        await service.mark_syncing(job, FederationJobPhase.DISCOVERING, _TEST_LEASE)
 
 
 @pytest.mark.asyncio
@@ -120,17 +124,22 @@ async def test_mark_failed_rejects_terminal_job_transition():
     job = _make_job(FederationJobStatus.SUCCESS)
 
     with pytest.raises(ValueError, match="cannot transition to failed"):
-        await service.mark_failed(job, FederationJobPhase.FAILED, "boom")
+        await service.mark_failed(job, FederationJobPhase.FAILED, "boom", _TEST_LEASE)
 
 
 @pytest.mark.asyncio
-async def test_mark_success_updates_terminal_fields():
+async def test_mark_success_updates_terminal_fields(monkeypatch):
+    transition = AsyncMock()
+    monkeypatch.setattr(federation_sync_lease_repository, "transition_or_raise", transition)
     service = FederationJobService()
     job = _make_job(FederationJobStatus.SYNCING)
 
-    result = await service.mark_success(job)
+    result = await service.mark_success(job, _TEST_LEASE)
 
     assert result.status == FederationJobStatus.SUCCESS
     assert result.phase == FederationJobPhase.COMPLETED
     assert isinstance(result.finishedAt, datetime)
-    job.save.assert_awaited_once()
+    job.save.assert_not_awaited()
+    assert transition.await_args.kwargs["release"] is True
+    assert transition.await_args.args[0] is _TEST_LEASE
+    assert transition.await_args.args[1]["applySummary"] == job.applySummary.model_dump()

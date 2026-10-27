@@ -15,6 +15,7 @@ from registry.deps import (
     get_federation_job_service,
     get_federation_sync_service,
 )
+from registry.services.federation_sync_service import FederationSyncShuttingDownError
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobStatus,
@@ -55,7 +56,7 @@ def federation_route_context():
     crud_service.get_federation = AsyncMock(return_value=federation)
     crud_service.validate_provider_config = MagicMock(return_value=federation.providerConfig)
     sync_service = MagicMock()
-    sync_service.create_manual_sync_job = AsyncMock(return_value=(job, PydanticObjectId(USER_ID)))
+    sync_service.start_manual_sync_background = AsyncMock(return_value=job)
     sync_service.run_sync = AsyncMock()
     job_service = MagicMock()
     job_service.get_job = AsyncMock(return_value=job)
@@ -98,7 +99,19 @@ def test_federation_sync_returns_202_and_pending_job(federation_route_context):
         "finishedAt": None,
         "error": None,
     }
-    context.sync_service.run_sync.assert_awaited_once()
+    context.sync_service.start_manual_sync_background.assert_awaited_once()
+
+
+def test_federation_sync_returns_503_after_tracker_shutdown(federation_route_context):
+    context = federation_route_context
+    context.sync_service.start_manual_sync_background.side_effect = FederationSyncShuttingDownError(
+        "BackgroundTaskTracker is shutting down"
+    )
+
+    response = context.client.post(f"/federations/{context.federation.id}/sync", json={"dryRun": False})
+
+    assert response.status_code == 503
+    assert "shutting down" in response.json()["detail"]["message"]
 
 
 def test_federation_sync_dry_run_stays_200(federation_route_context):
@@ -134,7 +147,7 @@ def test_federation_sync_dry_run_stays_200(federation_route_context):
 
     assert response.status_code == 200
     assert response.json()["dryRun"] is True
-    context.sync_service.create_manual_sync_job.assert_not_awaited()
+    context.sync_service.start_manual_sync_background.assert_not_awaited()
 
 
 def test_federation_job_poll_returns_status_phase_and_error(federation_route_context):

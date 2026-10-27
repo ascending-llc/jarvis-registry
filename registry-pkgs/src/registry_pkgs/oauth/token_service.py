@@ -1,12 +1,15 @@
+import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from beanie import PydanticObjectId
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from registry_pkgs.models import Token, TokenType, User
 
 from ..core.crypto_utils import decrypt_value, encrypt_value
+from .errors import OAuthCoordinationError
 from .schemas import OAuthTokens
 from .user_service import UserService
 
@@ -36,6 +39,39 @@ class TokenService:
         """
         self.user_service = user_service
         self._encryption_key = encryption_key
+
+    async def get_authorization_status(
+        self, user_id: str, service_names: list[str]
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        """Read only status metadata for this page; never fetch/decrypt credential values."""
+        if not service_names:
+            return {}
+        user_obj_id = await self.get_user_by_user_id(user_id)
+        identifiers = {
+            (self._get_access_identifier(name), TokenType.MCP_OAUTH_ACCESS.value): (name, "access")
+            for name in service_names
+        }
+        identifiers.update(
+            {
+                (self._get_refresh_identifier(name), TokenType.MCP_OAUTH_REFRESH.value): (name, "refresh")
+                for name in service_names
+            }
+        )
+        query = {
+            "userId": PydanticObjectId(user_obj_id),
+            "identifier": {"$in": list({identifier for identifier, _ in identifiers})},
+            "type": {"$in": [TokenType.MCP_OAUTH_ACCESS.value, TokenType.MCP_OAUTH_REFRESH.value]},
+            "token": {"$exists": True, "$nin": [None, ""]},
+            "$or": [{"expiresAt": None}, {"expiresAt": {"$gt": datetime.now(UTC) + timedelta(seconds=3)}}],
+        }
+        rows = await Token.get_pymongo_collection().find(query, {"identifier": 1, "type": 1, "metadata": 1}).to_list()
+        result: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            match = identifiers.get((row["identifier"], row["type"]))
+            if match is not None:
+                name, kind = match
+                result.setdefault(name, {})[kind] = row.get("metadata") or {}
+        return result
 
     async def get_user(self, user_id: str) -> User | None:
         user = await self.user_service.get_user_by_user_id(user_id)
@@ -191,6 +227,106 @@ class TokenService:
             await token_doc.insert()
             logger.info(f"Created OAuth refresh token for user={user_id}, service={service_name}")
             return token_doc
+
+    async def token_write_snapshot(self, user_id: str, service_name: str) -> dict[str, Any]:
+        user = await self.get_user(user_id)
+        identifiers = [self._get_access_identifier(service_name), self._get_refresh_identifier(service_name)]
+        collection = Token.get_pymongo_collection()
+        rows = await collection.find(
+            {
+                "userId": user.id,
+                "$or": [
+                    {"identifier": identifiers[0], "type": TokenType.MCP_OAUTH_ACCESS.value},
+                    {"identifier": identifiers[1], "type": TokenType.MCP_OAUTH_REFRESH.value},
+                ],
+            }
+        ).to_list()
+        if len({r["identifier"] for r in rows}) != len(rows):
+            raise OAuthCoordinationError("Duplicate OAuth credential records require repair")
+        return {"user": user, "rows": {r["identifier"]: r for r in rows}}
+
+    def snapshot_matches_refresh(self, snapshot: dict[str, Any], service_name: str, token: str) -> bool:
+        previous = snapshot["rows"].get(self._get_refresh_identifier(service_name))
+        return previous is not None and decrypt_value(previous["token"], encryption_key=self._encryption_key) == token
+
+    async def commit_oauth_tokens(
+        self, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any], snapshot: dict[str, Any]
+    ) -> None:
+        """CAS both credential records in one transaction; no IdP call is retried here.
+
+        Existing records keep their IDs. Deterministic IDs for absent records make
+        concurrent first-login inserts conflict even without a new unique index.
+        MongoDB replica-set transactions are required (also used by workflows).
+        """
+        if not tokens.access_token:
+            raise ValueError("OAuth response has no access token")
+        user = snapshot["user"]
+        collection = Token.get_pymongo_collection()
+        now = datetime.now(UTC)
+        values = [
+            (
+                self._get_access_identifier(service_name),
+                TokenType.MCP_OAUTH_ACCESS.value,
+                tokens.access_token,
+                self._calculate_expiration(tokens.expires_in),
+            ),
+            (
+                self._get_refresh_identifier(service_name),
+                TokenType.MCP_OAUTH_REFRESH.value,
+                tokens.refresh_token,
+                now + timedelta(days=365),
+            ),
+        ]
+        try:
+            async with collection.database.client.start_session() as session:
+                async with await session.start_transaction():
+                    for identifier, token_type, value, expiry in values:
+                        previous = snapshot["rows"].get(identifier)
+                        if previous is not None:
+                            # Include the previous binding as well as randomized ciphertext.
+                            condition = {
+                                "_id": previous["_id"],
+                                "token": previous["token"],
+                                "metadata": previous.get("metadata"),
+                            }
+                            if value is None:
+                                result = await collection.delete_one(condition, session=session)
+                                matched = result.deleted_count
+                            else:
+                                result = await collection.update_one(
+                                    condition,
+                                    {
+                                        "$set": {
+                                            "token": encrypt_value(value, encryption_key=self._encryption_key),
+                                            "expiresAt": expiry,
+                                            "metadata": metadata,
+                                        }
+                                    },
+                                    session=session,
+                                )
+                                matched = result.matched_count
+                            if matched != 1:
+                                raise OAuthCoordinationError("OAuth credentials changed during refresh; retry")
+                        elif value is not None:
+                            document_id = PydanticObjectId(
+                                hashlib.sha256(f"{user.id}:{token_type}:{identifier}".encode()).hexdigest()[:24]
+                            )
+                            await collection.insert_one(
+                                {
+                                    "_id": document_id,
+                                    "userId": user.id,
+                                    "email": user.email,
+                                    "type": token_type,
+                                    "identifier": identifier,
+                                    "token": encrypt_value(value, encryption_key=self._encryption_key),
+                                    "createdAt": now,
+                                    "expiresAt": expiry,
+                                    "metadata": metadata,
+                                },
+                                session=session,
+                            )
+        except (DuplicateKeyError, OperationFailure) as exc:
+            raise OAuthCoordinationError("OAuth credential commit failed; retry") from exc
 
     async def store_oauth_tokens(
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None

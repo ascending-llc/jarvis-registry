@@ -65,7 +65,7 @@ async def test_no_matching_job_returns_none(monkeypatch: pytest.MonkeyPatch) -> 
 
 def _patch_update(monkeypatch: pytest.MonkeyPatch, modified_count: int) -> AsyncMock:
     collection = AsyncMock()
-    collection.update_one.return_value = SimpleNamespace(modified_count=modified_count)
+    collection.update_one.return_value = SimpleNamespace(matched_count=modified_count, modified_count=modified_count)
     monkeypatch.setattr(repository.EmbeddingReindexJob, "get_pymongo_collection", classmethod(lambda cls: collection))
     return collection
 
@@ -93,7 +93,7 @@ async def test_transition_applies_write_when_token_holds_running_lease(monkeypat
 
 @pytest.mark.asyncio
 async def test_transition_returns_false_when_token_stale_or_finished(monkeypatch: pytest.MonkeyPatch) -> None:
-    # modified_count == 0: the fence matched nothing (lease re-claimed with a new token, or the job is
+    # matched_count == 0: the fence matched nothing (lease re-claimed with a new token, or the job is
     # already COMPLETED/FAILED so status != RUNNING).
     _patch_update(monkeypatch, 0)
 

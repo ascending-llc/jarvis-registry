@@ -76,7 +76,6 @@ def _create_entra_provider(entra_config: EntraConfig, settings: JarvisBaseSettin
     # Optional claim mappings from oauth2_providers.yml
     username_claim = entra_config.get("username_claim")
     groups_claim = entra_config.get("groups_claim")
-    email_claim = entra_config.get("email_claim")
     name_claim = entra_config.get("name_claim")
 
     # Validate required configuration
@@ -123,7 +122,6 @@ def _create_entra_provider(entra_config: EntraConfig, settings: JarvisBaseSettin
         grant_type=grant_type,
         username_claim=username_claim,
         groups_claim=groups_claim,
-        email_claim=email_claim,
         name_claim=name_claim,
         scope_group_ids=scope_group_ids,
     )

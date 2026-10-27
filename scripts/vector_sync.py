@@ -34,10 +34,12 @@ from typing import Any
 
 from registry.container import RegistryContainer
 from registry.core.config import Settings
+from registry.core.vector_backend import resolve_vector_backend_config
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.vector.adapters.factory import VectorStoreFactory
 from registry_pkgs.vector.client import create_database_client
 
 VALID_TARGETS = {"mcp", "a2a", "all"}
@@ -324,8 +326,11 @@ async def run() -> int:
         redis_client = create_redis_client(settings.redis_config)
         print("✓ Redis connected")
 
-        db_client = create_database_client(settings.vector_backend_config)
-        print(f"✓ Vector DB connected  (store={settings.vector_store_type}, provider={settings.embedding_provider})\n")
+        config = await resolve_vector_backend_config(settings)
+        embedding = VectorStoreFactory._create_embedding(config)
+        await asyncio.to_thread(embedding.embed_query, "vector sync preflight")
+        db_client = create_database_client(config)
+        print(f"✓ Vector DB connected  (generation={db_client.collection_generation})\n")
 
         container = RegistryContainer(
             settings=settings,

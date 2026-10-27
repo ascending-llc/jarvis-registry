@@ -1,22 +1,32 @@
+import logging
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from beanie import PydanticObjectId
 from langchain_core.documents import Document
 
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.testing.federation_metadata import (
     make_agentcore_a2a_metadata,
     make_agentcore_mcp_metadata,
 )
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
+from registry_pkgs.vector.sync_result import VectorSyncResult
 
 
 class _FakeAdapter:
     def __init__(self, docs: list[Document]):
         self.docs = list(docs)
+        self.added_ids: list[str] = []
         self.deleted_ids: list[str] = []
         self.metadata_updates: list[tuple[str, dict]] = []
+        self.filter_calls: list[dict] = []
+        self.lookup_error: Exception | None = None
+        self.patch_error: Exception | None = None
+        self.failed_update_ids: set[str] = set()
 
     def collection_exists(self, _collection: str) -> bool:
         return True
@@ -27,7 +37,17 @@ class _FakeAdapter:
     def has_property(self, _collection: str, _property_name: str) -> bool:
         return True
 
-    def filter_by_metadata(self, filters, limit: int, collection_name: str | None = None, **kwargs) -> list[Document]:
+    def filter_by_metadata(
+        self, filters, limit: int, collection_name: str | None = None, *, raise_on_error: bool = False, **kwargs
+    ) -> list[Document]:
+        self.filter_calls.append(
+            {"filters": filters, "limit": limit, "collection_name": collection_name, "raise_on_error": raise_on_error}
+        )
+        if self.lookup_error is not None:
+            raise self.lookup_error
+        return self._matching_docs(filters)[:limit]
+
+    def _matching_docs(self, filters: dict) -> list[Document]:
         def matches(doc) -> bool:
             for k, v in filters.items():
                 field = doc.metadata.get(k)
@@ -39,8 +59,17 @@ class _FakeAdapter:
                     return False
             return True
 
-        matched = [doc for doc in self.docs if matches(doc)]
-        return matched[:limit]
+        return [doc for doc in self.docs if matches(doc)]
+
+    def add_documents(self, documents: list[Document], collection_name: str | None = None, **kwargs) -> list[str]:
+        ids = []
+        for doc in documents:
+            assert doc.id is not None
+            ids.append(doc.id)
+        self.added_ids.extend(ids)
+        self.docs = [doc for doc in self.docs if doc.id not in ids]
+        self.docs.extend(doc.model_copy(deep=True) for doc in documents)
+        return ids
 
     def delete(self, ids: list[str], collection_name: str | None = None) -> None:
         self.deleted_ids.extend(ids)
@@ -54,6 +83,10 @@ class _FakeAdapter:
         return len(ids)
 
     def update_metadata(self, doc_id: str, metadata: dict, collection_name: str | None = None) -> bool:
+        if self.patch_error is not None:
+            raise self.patch_error
+        if doc_id in self.failed_update_ids:
+            return False
         self.metadata_updates.append((doc_id, metadata))
         return True
 
@@ -61,10 +94,20 @@ class _FakeAdapter:
         pass
 
 
-def _fake_db_client(docs: list[Document]) -> SimpleNamespace:
+class _FakeBatchAdapter(_FakeAdapter):
+    def __init__(self, docs: list[Document]):
+        super().__init__(docs)
+        self.batch_updates: list[tuple[list[str], dict]] = []
+
+    def batch_update_properties(self, doc_ids: list[str], update_data: dict, collection_name: str | None = None) -> int:
+        self.batch_updates.append((doc_ids, update_data))
+        return sum(self.update_metadata(doc_id, update_data, collection_name) for doc_id in doc_ids)
+
+
+def _fake_db_client(docs: list[Document], *, batch: bool = False) -> SimpleNamespace:
     # Reads use .adapter, writes use .write_adapter (same underlying fake here, since
     # no reindex is active), and .collection is resolved via .collection_name_for (generation 0).
-    adapter = _FakeAdapter(docs)
+    adapter = (_FakeBatchAdapter if batch else _FakeAdapter)(docs)
     return SimpleNamespace(
         adapter=adapter,
         write_adapter=adapter,
@@ -324,3 +367,491 @@ async def test_update_entity_metadata_still_delegates_to_shared_helper():
     assert result.metadata_updated == 2  # both srv-1 docs, regardless of tool_name
     updated_ids = {doc_id for doc_id, _ in repo.adapter.metadata_updates}
     assert updated_ids == {"d1", "d2"}
+
+
+# Shared repair rules are exercised through all three public entry points.
+@pytest.fixture(params=["mcp", "a2a", "tools"])
+def sync_kind(request: pytest.FixtureRequest) -> str:
+    return request.param
+
+
+def _sync_result(kind: str, **values) -> dict:
+    result = VectorSyncResult(**values)
+    return result.to_dict() if kind == "a2a" else result.to_dict_mcp()
+
+
+def _make_sync_case(
+    kind: str, *, expected: int = 3, found: int = 3, batch: bool = False
+) -> tuple[A2AAgentRepository | MCPServerRepository, SimpleNamespace]:
+    entity = _make_agent() if kind == "a2a" else _make_server()
+    entity.vectorContentHash = "current-content"
+    entity.registryDisabledTools = ["read_file"]
+    entity.is_tool_disabled = lambda name: name in entity.registryDisabledTools
+    id_property = "agent_id" if kind == "a2a" else "server_id"
+
+    def documents(count: int) -> list[Document]:
+        return [
+            Document(
+                id=f"doc-{i}",
+                page_content=f"chunk {i}",
+                metadata={id_property: str(entity.id), "tool_name": "read_file", "chunk_index": i},
+            )
+            for i in range(count)
+        ]
+
+    entity.to_documents = lambda: documents(expected)
+    repo_class = A2AAgentRepository if kind == "a2a" else MCPServerRepository
+    repo = repo_class(_fake_db_client(documents(found), batch=batch))
+    repo.sync_to_vector_db = AsyncMock(return_value=_sync_result(kind, indexed=expected, deleted=found))
+    return repo, entity
+
+
+async def _run_metadata_sync(
+    kind: str,
+    repo: A2AAgentRepository | MCPServerRepository,
+    entity: SimpleNamespace,
+    *,
+    reload: Callable[[], Awaitable[SimpleNamespace | None]] | None = None,
+) -> dict:
+    if kind == "tools":
+        return await repo.sync_tools_enabled(entity, ["read_file"], reload=reload)
+    return await repo.sync_entity_metadata(entity, {"enabled": False}, reload=reload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch", [False, True], ids=["individual-patch", "batch-patch"])
+async def test_metadata_sync_matching_count_patches_all_docs(sync_kind: str, batch: bool) -> None:
+    repo, entity = _make_sync_case(sync_kind, batch=batch)
+    reload = AsyncMock()
+
+    result = await _run_metadata_sync(sync_kind, repo, entity, reload=reload)
+
+    metadata = {"tool_enabled": False} if sync_kind == "tools" else {"enabled": False}
+    assert result == _sync_result(sync_kind, metadata_updated=3)
+    assert repo.adapter.metadata_updates == [(f"doc-{i}", metadata) for i in range(3)]
+    assert len(repo.adapter.filter_calls) == 1
+    assert repo.adapter.filter_calls[0]["raise_on_error"] is True
+    repo.sync_to_vector_db.assert_not_awaited()
+    reload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "expected,found", [(3, 0), (3, 1), (3, 4), (0, 2)], ids=["missing", "partial", "extra", "stale"]
+)
+async def test_metadata_sync_count_mismatch_rebuilds_once(
+    sync_kind: str, expected: int, found: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    repo, entity = _make_sync_case(sync_kind, expected=expected, found=found)
+
+    with caplog.at_level(logging.WARNING):
+        result = await _run_metadata_sync(sync_kind, repo, entity)
+
+    repo.sync_to_vector_db.assert_awaited_once_with(entity, is_delete=True)
+    assert result is repo.sync_to_vector_db.return_value
+    assert result == _sync_result(sync_kind, indexed=expected, deleted=found)
+    assert repo.adapter.metadata_updates == []
+    assert len(repo.adapter.filter_calls) == 1
+    assert any(
+        record.levelno == logging.WARNING
+        and str(entity.id) in record.getMessage()
+        and str(expected) in record.getMessage()
+        and str(found) in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["entity", "tools"])
+@pytest.mark.parametrize("has_stale_docs", [False, True], ids=["missing", "stale"])
+async def test_metadata_sync_rebuild_restores_documents_and_tool_states(entry: str, has_stale_docs: bool) -> None:
+    """Exercise the real lookup, delete, save and verification chain against the in-memory adapter."""
+    server = ExtendedMCPServer.model_construct(
+        id=PydanticObjectId("65f000000000000000000001"),
+        serverName="repair-server",
+        path="/repair-server",
+        registryDisabledTools=["read_file"],
+        config={
+            "enabled": True,
+            "toolFunctions": {
+                "read_file": {"mcpToolName": "read_file", "function": {"description": "Read a file."}},
+                "write_file": {"mcpToolName": "write_file", "function": {"description": "Write a file."}},
+            },
+        },
+    )
+    server.refresh_content_hash()
+    expected_docs = server.to_documents()
+    initial_docs = []
+    if has_stale_docs:
+        initial_docs = [
+            doc.model_copy(
+                update={"page_content": "outdated content", "metadata": {**doc.metadata, "tool_enabled": True}},
+                deep=True,
+            )
+            for doc in expected_docs
+        ]
+        initial_docs.append(
+            Document(
+                id="stale-doc",
+                page_content="obsolete read_file chunk",
+                metadata={"server_id": str(server.id), "tool_name": "read_file", "tool_enabled": True},
+            )
+        )
+    unrelated = Document(
+        id="unrelated",
+        page_content="another server's tool",
+        metadata={"server_id": "other-server", "tool_name": "read_file", "tool_enabled": True},
+    )
+    repo = MCPServerRepository(_fake_db_client([*initial_docs, unrelated], batch=True))
+    reload = AsyncMock(return_value=server)
+
+    async def sync() -> dict:
+        if entry == "tools":
+            return await repo.sync_tools_enabled(server, ["read_file"], reload=reload)
+        return await repo.sync_entity_metadata(server, server.mutable_metadata(), reload=reload)
+
+    result = await sync()
+
+    assert result == VectorSyncResult(indexed=2, deleted=len(initial_docs)).to_dict_mcp()
+    restored = [doc for doc in repo.adapter.docs if doc.metadata["server_id"] == str(server.id)]
+    assert restored == expected_docs
+    assert {doc.metadata["tool_name"]: doc.metadata["tool_enabled"] for doc in restored} == {
+        "read_file": False,
+        "write_file": True,
+    }
+    assert [doc for doc in repo.adapter.docs if doc.metadata["server_id"] == "other-server"] == [unrelated]
+    expected_ids = [doc.id for doc in expected_docs]
+    deleted_ids = [doc.id for doc in initial_docs]
+    assert repo.adapter.added_ids == expected_ids
+    assert repo.adapter.deleted_ids == deleted_ids
+    assert repo.adapter.metadata_updates == []
+    reload.assert_awaited_once_with()
+
+    # Once repaired, the next metadata sync must patch without another delete or embedding write.
+    result = await sync()
+
+    assert result == VectorSyncResult(metadata_updated=1 if entry == "tools" else 2).to_dict_mcp()
+    assert repo.adapter.added_ids == expected_ids
+    assert repo.adapter.deleted_ids == deleted_ids
+    reload.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_metadata_sync_empty_entity_is_noop(sync_kind: str) -> None:
+    repo, entity = _make_sync_case(sync_kind, expected=0, found=0)
+    reload = AsyncMock()
+
+    result = await _run_metadata_sync(sync_kind, repo, entity, reload=reload)
+
+    assert result == _sync_result(sync_kind)
+    assert repo.adapter.metadata_updates == []
+    repo.sync_to_vector_db.assert_not_awaited()
+    reload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expected", [2, 3], ids=["at-cap", "above-cap"])
+@pytest.mark.parametrize("found", [0, 3], ids=["empty-query", "capped-query"])
+async def test_metadata_sync_at_or_above_query_cap_skips_rebuild(
+    sync_kind: str, expected: int, found: int, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr("registry_pkgs.vector.base_sync_repository._MAX_METADATA_DOCS", 2)
+    repo, entity = _make_sync_case(sync_kind, expected=expected, found=found)
+    reload = AsyncMock()
+
+    with caplog.at_level(logging.WARNING):
+        result = await _run_metadata_sync(sync_kind, repo, entity, reload=reload)
+
+    assert result == _sync_result(sync_kind, metadata_updated=min(found, 2))
+    assert len(repo.adapter.metadata_updates) == min(found, 2)
+    assert repo.adapter.filter_calls[0]["limit"] == 2
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+    repo.sync_to_vector_db.assert_not_awaited()
+    reload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metadata_sync_lookup_failure_propagates_without_rebuild(sync_kind: str) -> None:
+    repo, entity = _make_sync_case(sync_kind)
+    repo.adapter.lookup_error = RuntimeError("lookup unavailable")
+    reload = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="lookup unavailable"):
+        await _run_metadata_sync(sync_kind, repo, entity, reload=reload)
+
+    assert repo.adapter.filter_calls[0]["raise_on_error"] is True
+    assert repo.adapter.metadata_updates == []
+    repo.sync_to_vector_db.assert_not_awaited()
+    reload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metadata_sync_matching_reload_hash_rebuilds_original_snapshot(sync_kind: str) -> None:
+    repo, entity = _make_sync_case(sync_kind, found=0)
+    committed = SimpleNamespace(**vars(entity))
+    committed.config = SimpleNamespace(enabled=False) if sync_kind == "a2a" else {"enabled": False}
+    committed.registryDisabledTools = []
+    committed.tags = ["previously-committed-tag"]
+    reload = AsyncMock(return_value=committed)
+
+    result = await _run_metadata_sync(sync_kind, repo, entity, reload=reload)
+
+    reload.assert_awaited_once_with()
+    repo.sync_to_vector_db.assert_awaited_once_with(entity, is_delete=True)
+    assert repo.sync_to_vector_db.await_args.args[0] is entity
+    assert result is repo.sync_to_vector_db.return_value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["newer-content", "deleted-entity"])
+async def test_metadata_sync_reload_guard_skips_obsolete_snapshot(
+    sync_kind: str, deleted: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    repo, entity = _make_sync_case(sync_kind, found=0)
+    latest = SimpleNamespace(**vars(entity))
+    latest.vectorContentHash = "newer-content"
+    reload = AsyncMock(return_value=None if deleted else latest)
+
+    with caplog.at_level(logging.INFO):
+        result = await _run_metadata_sync(sync_kind, repo, entity, reload=reload)
+
+    reload.assert_awaited_once_with()
+    assert result == _sync_result(sync_kind)
+    assert repo.adapter.metadata_updates == []
+    repo.sync_to_vector_db.assert_not_awaited()
+    assert any(record.levelno == logging.INFO and str(entity.id) in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_metadata_sync_reload_failure_does_not_rebuild(sync_kind: str) -> None:
+    repo, entity = _make_sync_case(sync_kind, found=0)
+    reload = AsyncMock(side_effect=RuntimeError("Mongo unavailable"))
+
+    with pytest.raises(RuntimeError, match="Mongo unavailable"):
+        await _run_metadata_sync(sync_kind, repo, entity, reload=reload)
+
+    assert repo.adapter.metadata_updates == []
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch", [False, True], ids=["individual-patch", "batch-patch"])
+async def test_metadata_sync_patch_failure_returns_error_without_rebuild(sync_kind: str, batch: bool) -> None:
+    repo, entity = _make_sync_case(sync_kind, batch=batch)
+    repo.adapter.patch_error = RuntimeError("patch unavailable")
+
+    result = await _run_metadata_sync(sync_kind, repo, entity)
+
+    assert result == _sync_result(sync_kind, error="patch unavailable")
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch", [False, True], ids=["individual-patch", "batch-patch"])
+@pytest.mark.parametrize("updated", [0, 2], ids=["all-writes-fail", "partial-success"])
+async def test_metadata_sync_incomplete_patch_returns_error_without_rebuild(
+    sync_kind: str, batch: bool, updated: int
+) -> None:
+    repo, entity = _make_sync_case(sync_kind, batch=batch)
+    repo.adapter.failed_update_ids = {f"doc-{i}" for i in range(updated, 3)}
+
+    result = await _run_metadata_sync(sync_kind, repo, entity)
+
+    assert result["error"]
+    assert result == _sync_result(sync_kind, metadata_updated=updated, error=result["error"])
+    assert len(repo.adapter.metadata_updates) == updated
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [False, True], ids=["entity", "tools"])
+@pytest.mark.parametrize("batch", [False, True], ids=["individual-patch", "batch-patch"])
+@pytest.mark.parametrize("updated", [0, 2], ids=["all-writes-fail", "partial-success"])
+async def test_plain_metadata_patch_preserves_incomplete_write_result(tools: bool, batch: bool, updated: int) -> None:
+    repo, server = _make_sync_case("tools", batch=batch)
+    repo.adapter.failed_update_ids = {f"doc-{i}" for i in range(updated, 3)}
+
+    if tools:
+        result = await repo.update_tools_metadata(server.id, ["read_file"], {"tool_enabled": False})
+    else:
+        result = await repo.update_entity_metadata("server_id", server.id, {"enabled": False})
+
+    assert result == VectorSyncResult(metadata_updated=updated)
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metadata_sync_collection_failure_propagates(sync_kind: str) -> None:
+    repo, entity = _make_sync_case(sync_kind)
+    repo.ensure_collection = AsyncMock(return_value=False)
+
+    with pytest.raises(RuntimeError, match="not initialized"):
+        await _run_metadata_sync(sync_kind, repo, entity)
+
+    assert repo.adapter.filter_calls == []
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metadata_sync_unsupported_adapter_skips_lookup(sync_kind: str) -> None:
+    repo, entity = _make_sync_case(sync_kind)
+    legacy = SimpleNamespace(filter_by_metadata=MagicMock())
+    repo.db_client.adapter = legacy
+    repo.db_client.write_adapter = legacy
+    repo.ensure_collection = AsyncMock(return_value=True)
+
+    result = await _run_metadata_sync(sync_kind, repo, entity)
+
+    assert result == _sync_result(sync_kind)
+    legacy.filter_by_metadata.assert_not_called()
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [False, True], ids=["entity", "tools"])
+@pytest.mark.parametrize("lookup_fails", [False, True], ids=["successful-query", "lookup-exception"])
+async def test_plain_metadata_patches_keep_non_strict_lookup_and_error_contract(
+    tools: bool, lookup_fails: bool
+) -> None:
+    repo, entity = _make_sync_case("tools")
+    if lookup_fails:
+        repo.adapter.lookup_error = RuntimeError("adapter lookup failed")
+
+    if tools:
+        result = await repo.update_tools_metadata(entity.id, ["read_file"], {"tool_enabled": False})
+    else:
+        result = await repo.update_entity_metadata("server_id", entity.id, {"enabled": False})
+
+    assert isinstance(result, VectorSyncResult)
+    assert result.error == ("adapter lookup failed" if lookup_fails else None)
+    assert result.metadata_updated == (0 if lookup_fails else 3)
+    assert repo.adapter.filter_calls[0]["raise_on_error"] is False
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [False, True], ids=["entity", "tools"])
+async def test_plain_metadata_patch_collection_failure_still_raises(tools: bool) -> None:
+    repo, entity = _make_sync_case("tools")
+    repo.ensure_collection = AsyncMock(return_value=False)
+
+    with pytest.raises(RuntimeError, match="not initialized"):
+        if tools:
+            await repo.update_tools_metadata(entity.id, ["read_file"], {"tool_enabled": False})
+        else:
+            await repo.update_entity_metadata("server_id", entity.id, {"enabled": False})
+
+    assert repo.adapter.filter_calls == []
+
+
+@pytest.mark.asyncio
+async def test_tools_enabled_counts_chunks_and_ignores_other_tools_and_servers() -> None:
+    server = ExtendedMCPServer.model_construct(
+        id=PydanticObjectId("65f000000000000000000001"),
+        serverName="chunked-server",
+        path="/chunked-server",
+        registryDisabledTools=["read_file"],
+        config={
+            "enabled": True,
+            "toolFunctions": {
+                "read_file_mcp_chunked": {
+                    "mcpToolName": "read_file",
+                    "function": {"description": "Read file contents and return the requested text. " * 100},
+                },
+                "write_file_mcp_chunked": {
+                    "mcpToolName": "write_file",
+                    "function": {"description": "Write a file."},
+                },
+            },
+            "resources": [{"name": "readme", "uri": "file:///README.md"}],
+        },
+    )
+    docs = server.to_documents()
+    selected_docs = [doc for doc in docs if doc.metadata.get("tool_name") == "read_file"]
+    assert len(selected_docs) > 1
+    assert [doc.metadata["chunk_index"] for doc in selected_docs] == list(range(len(selected_docs)))
+    assert all(doc.metadata["total_chunks"] == len(selected_docs) for doc in selected_docs)
+    assert all(doc.metadata["tool_enabled"] is False for doc in selected_docs)
+    assert any(doc.metadata.get("tool_name") == "write_file" for doc in docs)
+    assert any("tool_name" not in doc.metadata for doc in docs)
+    unrelated = Document(
+        id="unrelated", page_content="other server", metadata={"server_id": "other-server", "tool_name": "read_file"}
+    )
+    repo = MCPServerRepository(_fake_db_client([*docs, unrelated], batch=True))
+    repo.sync_to_vector_db = AsyncMock()
+
+    result = await repo.sync_tools_enabled(server, ["read_file"])
+
+    assert result == _sync_result("tools", metadata_updated=len(selected_docs))
+    assert repo.adapter.batch_updates == [([doc.id for doc in selected_docs], {"tool_enabled": False})]
+    assert repo.adapter.filter_calls[0]["filters"] == {"server_id": str(server.id), "tool_name": ["read_file"]}
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+def _make_mixed_tools_case(*, missing: bool = False) -> tuple[MCPServerRepository, SimpleNamespace]:
+    repo, server = _make_sync_case("tools", expected=2, found=2, batch=True)
+    docs = server.to_documents()
+    docs[1].metadata["tool_name"] = "write_file"
+    server.to_documents = lambda: docs
+    repo.adapter.docs = docs[:1] if missing else docs
+    return repo, server
+
+
+@pytest.mark.asyncio
+async def test_tools_enabled_patches_both_states_from_server_snapshot() -> None:
+    repo, server = _make_mixed_tools_case()
+
+    result = await repo.sync_tools_enabled(server, ["read_file", "write_file"])
+
+    assert result == _sync_result("tools", metadata_updated=2)
+    assert repo.adapter.batch_updates == [
+        (["doc-0"], {"tool_enabled": False}),
+        (["doc-1"], {"tool_enabled": True}),
+    ]
+    assert len(repo.adapter.filter_calls) == 1
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tools_enabled_missing_one_toggled_tool_rebuilds_once_without_patch() -> None:
+    repo, server = _make_mixed_tools_case(missing=True)
+
+    result = await repo.sync_tools_enabled(server, ["read_file", "write_file"])
+
+    repo.sync_to_vector_db.assert_awaited_once_with(server, is_delete=True)
+    assert result is repo.sync_to_vector_db.return_value
+    assert repo.adapter.batch_updates == []
+    assert len(repo.adapter.filter_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("both_fail", [False, True], ids=["second-group-succeeds", "both-groups-fail"])
+async def test_tools_enabled_attempts_both_groups_and_preserves_first_error(both_fail: bool) -> None:
+    repo, server = _make_mixed_tools_case()
+    repo.adapter.batch_update_properties = MagicMock(
+        side_effect=[RuntimeError("first patch failed"), RuntimeError("second patch failed") if both_fail else 1]
+    )
+
+    result = await repo.sync_tools_enabled(server, ["read_file", "write_file"])
+
+    assert result == _sync_result("tools", metadata_updated=0 if both_fail else 1, error="first patch failed")
+    assert repo.adapter.batch_update_properties.call_count == 2
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tools_enabled_empty_names_skips_all_work() -> None:
+    repo, server = _make_sync_case("tools")
+    repo.ensure_collection = AsyncMock()
+    server.to_documents = MagicMock()
+    reload = AsyncMock()
+
+    result = await repo.sync_tools_enabled(server, [], reload=reload)
+
+    assert result == _sync_result("tools")
+    assert repo.adapter.filter_calls == []
+    assert repo.adapter.metadata_updates == []
+    repo.ensure_collection.assert_not_awaited()
+    server.to_documents.assert_not_called()
+    repo.sync_to_vector_db.assert_not_awaited()
+    reload.assert_not_awaited()

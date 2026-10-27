@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from beanie import Document, Insert, Replace, Save, before_event
+from beanie import Document, Insert, PydanticObjectId, Replace, Save, before_event
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo import IndexModel
 
@@ -208,6 +208,7 @@ class Federation(Document):
 
     stats: FederationStats = Field(default_factory=FederationStats)
     lastSync: FederationLastSync | None = Field(default=None)
+    deletingJobId: PydanticObjectId | None = Field(default=None, description="Job that owns an in-progress deletion")
 
     createdBy: str | None = None
     updatedBy: str | None = None

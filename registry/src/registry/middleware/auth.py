@@ -19,7 +19,7 @@ from ..constants import (
 )
 from ..core.config import settings
 from ..core.telemetry_decorators import AuthMetricsContext
-from ..utils.crypto_utils import verify_access_token
+from ..utils.crypto_utils import identity_from_claims, verify_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +282,7 @@ class UnifiedAuthMiddleware:
 
         Accepts a managed-agent token (the proxy credential, including the access token issued by the
         direct-connect downstream ``/token`` endpoint). On direct-connect routes, the token's
-        ``user_id`` and ``server_path`` must match the URL.
+        ``sub`` (the user ID) and ``server_path`` must match the URL.
         """
         access_token = _parse_bearer_token(request)
         if access_token is None:
@@ -311,17 +311,18 @@ class UnifiedAuthMiddleware:
             return None
 
         logger.info(
-            f"Managed-agent token validated: sub={claims.get('sub')}, "
+            f"Managed-agent token validated: user_id={claims.get('sub')}, "
             f"aud={claims.get('aud')}, client_id={claims.get('client_id')}"
         )
         return claims
 
     def _build_managed_agent_context(self, claims: dict, path: str) -> UserContextDict | None:
         """Build a user context from validated managed-agent claims, enforcing direct-connect binding."""
-        username = claims.get("sub", "")
-        if not username:
-            logger.debug("JWT token missing 'sub' claim")
+        identity = identity_from_claims(claims)
+        if identity is None:
+            logger.debug("JWT token missing a valid user ID in 'sub'")
             return None
+        user_id, username = identity
 
         groups = claims.get("groups", [])
 
@@ -339,8 +340,6 @@ class UnifiedAuthMiddleware:
             )
             return None
 
-        user_id = claims.get("user_id")
-
         binding = DIRECT_CONNECT_RE.match(path)
         if binding is not None:
             url_user_id = binding.group(1)
@@ -357,7 +356,7 @@ class UnifiedAuthMiddleware:
                 return None
 
         token_class = claims.get("token_class", "unknown")
-        logger.info(f"Managed-agent token validated for user: {username}, class: {token_class}, scopes: {scopes}")
+        logger.info(f"Managed-agent token validated for user ID: {user_id}, class: {token_class}, scopes: {scopes}")
 
         return self._build_user_context(
             user_id=user_id,
@@ -386,8 +385,11 @@ class UnifiedAuthMiddleware:
                 return None
 
             # Valid access token - extract user info and build context
-            username = claims.get("sub")
-            user_id = claims.get("user_id")
+            identity = identity_from_claims(claims)
+            if identity is None:
+                logger.debug("Session token missing a valid user ID in 'sub'")
+                return None
+            user_id, username = identity
             groups = claims.get("groups", [])
             auth_method = claims.get("auth_method", "traditional")
 
@@ -400,7 +402,7 @@ class UnifiedAuthMiddleware:
                 scopes = map_groups_to_scopes(groups)
                 logger.info(f"Mapped session groups {groups} to scopes: {scopes}")
 
-            logger.debug(f"JWT access token valid for user {username} (user_id: {user_id})")
+            logger.debug(f"JWT access token valid for user ID: {user_id}")
 
             return self._build_user_context(
                 username=username,

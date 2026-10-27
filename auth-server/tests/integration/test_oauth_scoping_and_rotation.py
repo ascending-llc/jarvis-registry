@@ -9,6 +9,7 @@ Tests:
 import logging
 import secrets
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,11 +19,11 @@ from fastapi.testclient import TestClient
 from auth_server.core.config import settings
 from auth_server.deps import (
     get_auth_provider,
+    get_identity_service,
     get_oauth2_config,
     get_oauth_state_store,
     get_signer,
     get_token_grant_service,
-    get_user_service,
 )
 from auth_server.routes.consent_templates import render_device_scope_error_page
 from auth_server.server import app
@@ -50,23 +51,20 @@ DESKTOP_REDIRECT_URI = "http://127.0.0.1:47280/callback"
 
 
 @pytest.fixture
-def mock_user_service():
-    """Mock user_service for user_id resolution."""
+def mock_identity_service():
+    """Mock identity_service for user_id resolution."""
     mock_service = MagicMock()
-    mock_service.resolve_user_id = AsyncMock(return_value="user-id-123")
+    mock_service.resolve_or_provision = AsyncMock(return_value=SimpleNamespace(id="user-id-123"))
     return mock_service
 
 
 @pytest.fixture
-def test_client_with_user_service(mock_user_service):
-    """Create test client with a TokenGrantService built around the mock user_service.
-
-    /oauth2/token only depends on get_token_grant_service now, so overriding get_user_service
-    directly here would never reach it (that override is only load-bearing for oauth2_callback).
-    """
+def test_client_with_identity_service(mock_identity_service):
+    """Use in-memory grant stores and a stubbed callback identity resolver."""
     app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+    app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
     app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-        mock_user_service, test_oauth_state_store, test_consent_store
+        test_oauth_state_store, test_consent_store
     )
     client = TestClient(app)
     yield client
@@ -85,6 +83,7 @@ class TestAccessTokenScoping:
 
         # Mock user info with groups that map to scopes
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "name": "Test User",
@@ -110,7 +109,7 @@ class TestAccessTokenScoping:
 
     def test_desktop_public_code_exchange_caps_scope(
         self,
-        test_client_with_user_service: TestClient,
+        test_client_with_identity_service: TestClient,
         clear_device_storage: None,
     ) -> None:
         auth_code, _ = self._create_mock_callback_state(CLAUDE_DESKTOP_CLIENT_ID, DESKTOP_REDIRECT_URI)
@@ -120,7 +119,7 @@ class TestAccessTokenScoping:
             "a2a-proxy-ops",
         ]
 
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "authorization_code",
@@ -172,7 +171,7 @@ class TestAccessTokenScoping:
     )
     def test_desktop_code_exchange_rejections_log_reason_without_credentials(
         self,
-        test_client_with_user_service: TestClient,
+        test_client_with_identity_service: TestClient,
         clear_device_storage: None,
         caplog: pytest.LogCaptureFixture,
         redirect_uri: str,
@@ -195,7 +194,7 @@ class TestAccessTokenScoping:
             request_data["code_verifier"] = code_verifier
 
         with caplog.at_level(logging.WARNING, logger="auth_server.services.token_grant_service"):
-            response = test_client_with_user_service.post(f"{API_PREFIX}/oauth2/token", data=request_data)
+            response = test_client_with_identity_service.post(f"{API_PREFIX}/oauth2/token", data=request_data)
 
         assert response.status_code == 400
         assert response.json()["error"] == expected_error
@@ -216,7 +215,7 @@ class TestAccessTokenScoping:
 
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     def test_no_scope_requested_uses_default_user_scopes(
-        self, mock_map_groups, test_client_with_user_service: TestClient, clear_device_storage
+        self, mock_map_groups, test_client_with_identity_service: TestClient, clear_device_storage
     ):
         """Test that when no scope is requested, user receives their default scopes."""
         # Setup mocks
@@ -229,7 +228,7 @@ class TestAccessTokenScoping:
         auth_code, user_info = self._create_mock_callback_state(client_id, redirect_uri, requested_scope=None)
 
         # Token request
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "authorization_code",
@@ -252,7 +251,7 @@ class TestAccessTokenScoping:
 
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     def test_requested_scope_subset_of_user_scopes(
-        self, mock_map_groups, test_client_with_user_service: TestClient, clear_device_storage
+        self, mock_map_groups, test_client_with_identity_service: TestClient, clear_device_storage
     ):
         """Test that when client requests a subset of user scopes, intersection is returned."""
         # Setup mocks
@@ -269,7 +268,7 @@ class TestAccessTokenScoping:
         authorization_codes_storage[auth_code]["resolved_scope"] = requested_scopes
 
         # Token request
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "authorization_code",
@@ -303,7 +302,7 @@ class TestAccessTokenScoping:
         mock_exchange,
         mock_map_groups,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
     ):
         """Test scope negotiation by calling actual /oauth2/callback route with proper mocks."""
         from itsdangerous import URLSafeTimedSerializer
@@ -359,7 +358,7 @@ class TestAccessTokenScoping:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
@@ -420,7 +419,7 @@ class TestAccessTokenScoping:
         mock_exchange,
         mock_map_groups,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
     ):
         """Test that empty scope intersection redirects with invalid_scope error."""
         from itsdangerous import URLSafeTimedSerializer
@@ -476,7 +475,7 @@ class TestAccessTokenScoping:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: test_signer
             app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
 
@@ -540,7 +539,7 @@ class TestAccessTokenScoping:
         mock_exchange,
         mock_map_groups,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
     ):
         """Device scope rejection renders a distinct page and immediately stops token polling."""
         from itsdangerous import URLSafeTimedSerializer
@@ -591,11 +590,11 @@ class TestAccessTokenScoping:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_identity_service] = lambda: mock_identity_service
             app.dependency_overrides[get_signer] = lambda: signer
             app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
             app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
-                mock_user_service, test_oauth_state_store, test_consent_store
+                test_oauth_state_store, test_consent_store
             )
 
             test_client = TestClient(app)
@@ -632,7 +631,7 @@ class TestAccessTokenScoping:
 
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     def test_backward_compatibility_without_resolved_scope(
-        self, mock_map_groups, test_client_with_user_service: TestClient, clear_device_storage
+        self, mock_map_groups, test_client_with_identity_service: TestClient, clear_device_storage
     ):
         """Test that old authorization codes without resolved_scope still work."""
         # Setup mocks
@@ -648,7 +647,7 @@ class TestAccessTokenScoping:
         del authorization_codes_storage[auth_code]["resolved_scope"]
 
         # Token request should still work
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "authorization_code",
@@ -674,7 +673,7 @@ class TestRefreshTokenRotation:
     """Integration tests for refresh token rotation (OAuth 2.1)."""
 
     def test_refresh_token_rotation_generates_new_token(
-        self, test_client_with_user_service: TestClient, clear_device_storage
+        self, test_client_with_identity_service: TestClient, clear_device_storage
     ):
         """Test that using a refresh token generates a new refresh token."""
 
@@ -684,6 +683,7 @@ class TestRefreshTokenRotation:
         current_time = int(time.time())
 
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "groups": ["jarvis-registry-admin"],
@@ -697,7 +697,7 @@ class TestRefreshTokenRotation:
         }
 
         # Use refresh token to get new access token
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -733,14 +733,14 @@ class TestRefreshTokenRotation:
 
     def test_refresh_token_is_not_rotated_when_access_token_minting_fails(
         self,
-        test_client_with_user_service: TestClient,
+        test_client_with_identity_service: TestClient,
         clear_device_storage,
     ):
         client_id = "mcp-client-user-gen"
         old_refresh_token = secrets.token_urlsafe(32)
         refresh_tokens_storage[old_refresh_token] = {
             "client_id": client_id,
-            "user_info": {"username": "test_user", "groups": ["jarvis-registry-admin"]},
+            "user_info": {"user_id": "user-id-123", "username": "test_user", "groups": ["jarvis-registry-admin"]},
             "scope": "mcp-proxy-ops",
             "expires_at": int(time.time()) + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
@@ -749,7 +749,7 @@ class TestRefreshTokenRotation:
             "auth_server.services.token_grant_service.mint_managed_agent_token_with_scope",
             side_effect=RuntimeError("signer unavailable"),
         ):
-            response = test_client_with_user_service.post(
+            response = test_client_with_identity_service.post(
                 f"{API_PREFIX}/oauth2/token",
                 data={
                     "grant_type": "refresh_token",
@@ -765,15 +765,16 @@ class TestRefreshTokenRotation:
     @pytest.mark.parametrize("client_id", ["mcp-client-user-gen", CLAUDE_DESKTOP_CLIENT_ID])
     def test_refresh_token_requires_client_consent(
         self,
-        test_client_with_user_service: TestClient,
+        test_client_with_identity_service: TestClient,
         clear_device_storage,
-        mock_user_service,
+        mock_identity_service,
         client_id: str,
     ):
         """Existing refresh tokens must not mint new access tokens until the user consents."""
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "groups": ["jarvis-registry-admin"],
@@ -787,7 +788,7 @@ class TestRefreshTokenRotation:
 
         test_consent_store.default_client_consent = False
         try:
-            response = test_client_with_user_service.post(
+            response = test_client_with_identity_service.post(
                 f"{API_PREFIX}/oauth2/token",
                 data={
                     "grant_type": "refresh_token",
@@ -804,12 +805,12 @@ class TestRefreshTokenRotation:
         assert "consent" in body["error_description"].lower()
         assert old_refresh_token in refresh_tokens_storage
         assert len(refresh_tokens_storage) == 1
-        mock_user_service.resolve_user_id.assert_awaited_once_with(user_info)
+        mock_identity_service.resolve_or_provision.assert_not_awaited()
 
     @pytest.mark.parametrize("client_id", ["mcp-client-user-gen", CLAUDE_DESKTOP_CLIENT_ID])
     def test_refresh_token_with_client_consent_rotates(
         self,
-        test_client_with_user_service: TestClient,
+        test_client_with_identity_service: TestClient,
         clear_device_storage,
         client_id: str,
     ):
@@ -817,6 +818,7 @@ class TestRefreshTokenRotation:
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "groups": ["jarvis-registry-admin"],
@@ -830,7 +832,7 @@ class TestRefreshTokenRotation:
         test_consent_store.default_client_consent = False
         test_consent_store.grant_client_consent("user-id-123", client_id)
         try:
-            response = test_client_with_user_service.post(
+            response = test_client_with_identity_service.post(
                 f"{API_PREFIX}/oauth2/token",
                 data={
                     "grant_type": "refresh_token",
@@ -849,7 +851,7 @@ class TestRefreshTokenRotation:
     @pytest.mark.parametrize("client_id", ["mcp-client-user-gen", CLAUDE_DESKTOP_CLIENT_ID])
     def test_old_refresh_token_cannot_be_reused(
         self,
-        test_client_with_user_service: TestClient,
+        test_client_with_identity_service: TestClient,
         clear_device_storage: None,
         monkeypatch: pytest.MonkeyPatch,
         client_id: str,
@@ -863,6 +865,7 @@ class TestRefreshTokenRotation:
         current_time = int(time.time())
 
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "groups": ["jarvis-registry-admin"],
@@ -876,7 +879,7 @@ class TestRefreshTokenRotation:
         }
 
         # First use: should succeed
-        response1 = test_client_with_user_service.post(
+        response1 = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -888,7 +891,7 @@ class TestRefreshTokenRotation:
         assert response1.status_code == 200
 
         # Second use: should fail (token rotated)
-        response2 = test_client_with_user_service.post(
+        response2 = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -901,13 +904,14 @@ class TestRefreshTokenRotation:
         error_data = response2.json()
         assert error_data["error"] == "invalid_grant"
 
-    def test_refresh_token_rotation_chain(self, test_client_with_user_service: TestClient, clear_device_storage):
+    def test_refresh_token_rotation_chain(self, test_client_with_identity_service: TestClient, clear_device_storage):
         """Test that refresh tokens can be rotated multiple times in a chain."""
 
         client_id = "mcp-client-user-gen"
         current_time = int(time.time())
 
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "groups": ["jarvis-registry-admin"],
@@ -923,7 +927,7 @@ class TestRefreshTokenRotation:
         }
 
         # First rotation
-        response1 = test_client_with_user_service.post(
+        response1 = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={"grant_type": "refresh_token", "refresh_token": rt1, "client_id": client_id},
         )
@@ -934,7 +938,7 @@ class TestRefreshTokenRotation:
         assert rt2 in refresh_tokens_storage
 
         # Second rotation
-        response2 = test_client_with_user_service.post(
+        response2 = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={"grant_type": "refresh_token", "refresh_token": rt2, "client_id": client_id},
         )
@@ -945,7 +949,7 @@ class TestRefreshTokenRotation:
         assert rt3 in refresh_tokens_storage
 
         # Third rotation
-        response3 = test_client_with_user_service.post(
+        response3 = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={"grant_type": "refresh_token", "refresh_token": rt3, "client_id": client_id},
         )
@@ -955,7 +959,7 @@ class TestRefreshTokenRotation:
         assert rt3 not in refresh_tokens_storage
         assert rt4 in refresh_tokens_storage
 
-    def test_refresh_token_scope_preserved(self, test_client_with_user_service: TestClient, clear_device_storage):
+    def test_refresh_token_scope_preserved(self, test_client_with_identity_service: TestClient, clear_device_storage):
         """Test that scope is preserved when rotating refresh tokens."""
 
         client_id = "mcp-client-user-gen"
@@ -964,6 +968,7 @@ class TestRefreshTokenRotation:
         current_time = int(time.time())
 
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "groups": ["jarvis-registry-admin"],
@@ -977,7 +982,7 @@ class TestRefreshTokenRotation:
         }
 
         # Use refresh token
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -1004,12 +1009,13 @@ class TestRefreshTokenRotation:
 
     def test_refresh_token_scope_is_narrowed_by_current_ceiling(
         self,
-        test_client_with_user_service: TestClient,
+        test_client_with_identity_service: TestClient,
         clear_device_storage,
     ):
         """A tightened client ceiling applies immediately and remains narrowed across rotations."""
         client_id = "mcp-client-user-gen"
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "groups": ["jarvis-registry-admin"],
@@ -1022,7 +1028,7 @@ class TestRefreshTokenRotation:
             "expires_at": int(time.time()) + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
-        first_response = test_client_with_user_service.post(
+        first_response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={"grant_type": "refresh_token", "refresh_token": current_refresh_token, "client_id": client_id},
         )
@@ -1041,7 +1047,7 @@ class TestRefreshTokenRotation:
         )
         with patch.dict(client_categories._CLIENT_POLICIES, {ClientCategory.MCP_DCR: tightened_policy}):
             for _ in range(2):
-                response = test_client_with_user_service.post(
+                response = test_client_with_identity_service.post(
                     f"{API_PREFIX}/oauth2/token",
                     data={
                         "grant_type": "refresh_token",
@@ -1056,9 +1062,9 @@ class TestRefreshTokenRotation:
                 assert token_data["scope"] == ""
                 assert refresh_tokens_storage[current_refresh_token]["scope"] == ""
 
-    def test_refresh_token_invalid_token(self, test_client_with_user_service: TestClient, clear_device_storage):
+    def test_refresh_token_invalid_token(self, test_client_with_identity_service: TestClient, clear_device_storage):
         """Test that using an invalid refresh token returns error."""
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -1071,7 +1077,7 @@ class TestRefreshTokenRotation:
         error_data = response.json()
         assert error_data["error"] == "invalid_grant"
 
-    def test_refresh_token_expired(self, test_client_with_user_service: TestClient, clear_device_storage):
+    def test_refresh_token_expired(self, test_client_with_identity_service: TestClient, clear_device_storage):
         """Test that expired refresh token is rejected and removed."""
 
         client_id = "mcp-client-user-gen"
@@ -1081,13 +1087,13 @@ class TestRefreshTokenRotation:
         # Create expired refresh token
         refresh_tokens_storage[expired_refresh_token] = {
             "client_id": client_id,
-            "user_info": {"username": "test_user", "email": "test@example.com", "groups": []},
+            "user_info": {"user_id": "user-id-123", "username": "test_user", "email": "test@example.com", "groups": []},
             "scope": "mcp-proxy-ops",
             "expires_at": current_time - 1,  # Expired
         }
 
         # Try to use expired token
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -1103,7 +1109,9 @@ class TestRefreshTokenRotation:
         # Verify expired token was removed
         assert expired_refresh_token not in refresh_tokens_storage
 
-    def test_refresh_token_client_id_mismatch(self, test_client_with_user_service: TestClient, clear_device_storage):
+    def test_refresh_token_client_id_mismatch(
+        self, test_client_with_identity_service: TestClient, clear_device_storage
+    ):
         """Test that refresh token with mismatched client_id is rejected."""
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
@@ -1111,13 +1119,13 @@ class TestRefreshTokenRotation:
         # Create refresh token for client-1
         refresh_tokens_storage[old_refresh_token] = {
             "client_id": "client-1",
-            "user_info": {"username": "test_user", "email": "test@example.com", "groups": []},
+            "user_info": {"user_id": "user-id-123", "username": "test_user", "email": "test@example.com", "groups": []},
             "scope": "servers-read",
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
         # Try to use with client-2
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -1133,7 +1141,9 @@ class TestRefreshTokenRotation:
         # Verify token not removed (not expired, just wrong client)
         assert old_refresh_token in refresh_tokens_storage
 
-    def test_refresh_token_invalid_client_secret(self, test_client_with_user_service: TestClient, clear_device_storage):
+    def test_refresh_token_invalid_client_secret(
+        self, test_client_with_identity_service: TestClient, clear_device_storage
+    ):
         """Test client_secret_post clients must provide the registered secret for refresh_token grant."""
         client_id = "secret-client"
         old_refresh_token = secrets.token_urlsafe(32)
@@ -1149,12 +1159,12 @@ class TestRefreshTokenRotation:
         )
         refresh_tokens_storage[old_refresh_token] = {
             "client_id": client_id,
-            "user_info": {"username": "test_user", "email": "test@example.com", "groups": []},
+            "user_info": {"user_id": "user-id-123", "username": "test_user", "email": "test@example.com", "groups": []},
             "scope": "servers-read",
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
-        response = test_client_with_user_service.post(
+        response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -1176,7 +1186,7 @@ class TestScopingAndRotationIntegration:
 
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     def test_scoped_token_refresh_preserves_scope(
-        self, mock_map_groups, test_client_with_user_service: TestClient, clear_device_storage
+        self, mock_map_groups, test_client_with_identity_service: TestClient, clear_device_storage
     ):
         """Test that refreshing a scoped access token preserves the negotiated scope."""
         default_scopes = ["mcp-proxy-ops", "servers-read"]
@@ -1192,6 +1202,7 @@ class TestScopingAndRotationIntegration:
         current_time = int(time.time())
 
         user_info = {
+            "user_id": "user-id-123",
             "username": "test_user",
             "email": "test@example.com",
             "name": "Test User",
@@ -1214,7 +1225,7 @@ class TestScopingAndRotationIntegration:
         }
 
         # Exchange auth code for tokens
-        token_response = test_client_with_user_service.post(
+        token_response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "authorization_code",
@@ -1238,7 +1249,7 @@ class TestScopingAndRotationIntegration:
         assert refresh_token_1 is not None
 
         # Use refresh token to get new access token
-        refresh_response = test_client_with_user_service.post(
+        refresh_response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
@@ -1261,7 +1272,7 @@ class TestScopingAndRotationIntegration:
         assert refresh_token_2 != refresh_token_1
 
         # Verify old refresh token cannot be reused
-        reuse_response = test_client_with_user_service.post(
+        reuse_response = test_client_with_identity_service.post(
             f"{API_PREFIX}/oauth2/token",
             data={
                 "grant_type": "refresh_token",

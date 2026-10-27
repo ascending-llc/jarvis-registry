@@ -27,7 +27,7 @@ class SkillSyncOAuthService:
         self._token_service = token_service
         self._http_client = http_client
 
-    def create_authorization_url(
+    async def create_authorization_url(
         self,
         *,
         source: SkillSyncSource,
@@ -65,12 +65,12 @@ class SkillSyncOAuthService:
         )
         authorization_url = f"{_GITHUB_AUTHORIZE_URL}?{params}"
         metadata.authorization_url = authorization_url
-        self._flow_state_manager.create_flow(flow_id, str(source.id), user_id, code_verifier, metadata)
+        await self._flow_state_manager.create_flow(flow_id, str(source.id), user_id, code_verifier, metadata)
         return authorization_url
 
-    def resolve_source_id(self, state: str) -> str:
+    async def resolve_source_id(self, state: str) -> str:
         decoded = self._flow_state_manager.decode_state(state)
-        flow = self._flow_state_manager.get_flow(decoded["flow_id"])
+        flow = await self._flow_state_manager.get_flow(decoded["flow_id"])
         if flow is None or not secrets.compare_digest(flow.state, state):
             raise ValueError("OAuth state does not reference a known flow")
         return flow.server_id
@@ -84,7 +84,7 @@ class SkillSyncOAuthService:
         redirect_uri: str,
     ) -> str:
         decoded = self._flow_state_manager.decode_state(state)
-        flow = self._flow_state_manager.consume_flow(decoded["flow_id"], state)
+        flow = await self._flow_state_manager.consume_flow(decoded["flow_id"], state)
         if flow is None:
             raise ValueError("OAuth state is invalid or expired")
         response = await self._http_client.post(

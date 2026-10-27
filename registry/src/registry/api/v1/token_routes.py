@@ -56,6 +56,8 @@ async def generate_user_token(
 
         if not username:
             raise HTTPException(status_code=400, detail="Username is required in user context")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required in user context")
 
         available_scopes = get_user_token_scopes(user_groups)
         requested_scopes = (
@@ -74,6 +76,7 @@ async def generate_user_token(
 
         extra_claims = {
             "user_id": user_id,
+            "preferred_username": username,
             "groups": user_groups,
             "jti": str(uuid.uuid4()),
             "token_use": "access",
@@ -90,7 +93,7 @@ async def generate_user_token(
         )
         minted = mint_managed_agent_token_with_scope(
             settings.jwt_token_config,
-            subject=username,
+            subject=user_id,
             client_id=client_id,
             requested_scopes=final_scopes,
             expires_in_seconds=expires_in_seconds,
@@ -99,8 +102,8 @@ async def generate_user_token(
         )
 
         logger.info(
-            "Successfully generated token for user '%s' with expiry %sh (purpose=%s, client_id=%s)",
-            username,
+            "Successfully generated token for user ID '%s' with expiry %sh (purpose=%s, client_id=%s)",
+            user_id,
             expires_in_hours,
             token_purpose.value,
             client_id,
