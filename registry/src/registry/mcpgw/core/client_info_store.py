@@ -75,7 +75,16 @@ class ClientInfoStore:
         )
 
     def load(self, key: str) -> InitializeRequestParams | None:
-        raw = self._redis.get(key)
+        """Return the cached params, or ``None`` on a miss, a parse error, or a Redis error.
+
+        A Redis error is treated as a miss so the caller degrades to the plain-text URL and
+        ``UNRECOGNIZED`` branding instead of failing the tool call.
+        """
+        try:
+            raw = self._redis.get(key)
+        except RedisError:
+            logger.warning("Failed to read cached client-info at key %s; treating as a miss.", key, exc_info=True)
+            return None
         if raw is None:
             return None
         try:

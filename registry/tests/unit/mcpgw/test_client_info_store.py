@@ -37,6 +37,7 @@ class _FakeRedis:
         self.store: dict[str, str] = {}
         self.get_calls = 0
         self.raise_on_set = False
+        self.raise_on_get = False
 
     def set(self, key: str, value: str, ex: int | None = None) -> None:
         if self.raise_on_set:
@@ -45,6 +46,8 @@ class _FakeRedis:
 
     def get(self, key: str) -> str | None:
         self.get_calls += 1
+        if self.raise_on_get:
+            raise RedisError("boom")
         return self.store.get(key)
 
 
@@ -100,6 +103,13 @@ def test_store_load_returns_none_on_parse_error():
     redis.store["bad"] = "{not valid json"
     store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
     assert store.load("bad") is None
+
+
+def test_store_load_returns_none_on_redis_error():
+    redis = _FakeRedis()
+    redis.raise_on_get = True
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    assert store.load("k1") is None
 
 
 def _scope(method: str = "POST", user: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -268,5 +278,16 @@ def test_get_client_params_returns_none_on_miss():
 
     assert get_client_params(ctx) is None
     # A miss is memoized too: a second call does not hit Redis again.
+    assert get_client_params(ctx) is None
+    assert redis.get_calls == 1
+
+
+def test_get_client_params_returns_none_and_memoizes_on_redis_error():
+    redis = _FakeRedis()
+    redis.raise_on_get = True
+    ctx = _ctx(redis, {"user_id": USER_ID, "client_id": "mcp-client-abc"})
+
+    assert get_client_params(ctx) is None
+    # Degrades like a miss and is memoized, so the request's other readers don't retry the GET.
     assert get_client_params(ctx) is None
     assert redis.get_calls == 1
