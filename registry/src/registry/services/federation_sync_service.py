@@ -2319,6 +2319,7 @@ class FederationSyncService:
             ExtendedMCPServer,
             self.mcp_server_repo,
             current_server.id,
+            owner=self._lease_owner,
             runtime_identity=(federation_id_str, runtime_arn),
         )
 
@@ -2337,6 +2338,7 @@ class FederationSyncService:
             A2AAgent,
             self.a2a_agent_repo,
             current_agent.id,
+            owner=self._lease_owner,
             runtime_identity=(federation_id_str, runtime_arn),
         )
 

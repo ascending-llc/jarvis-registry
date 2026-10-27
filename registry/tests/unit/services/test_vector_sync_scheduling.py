@@ -14,6 +14,8 @@ from registry.services.vector_sync_helpers import VectorSyncPlan
 
 pytestmark = pytest.mark.asyncio
 
+_LEASE_OWNER = "registry-pod-1"
+
 
 class _CapturingTracker:
     """Records the coroutine instead of scheduling it, so the test can run it deterministically."""
@@ -35,11 +37,14 @@ def _server_service(tracker):
         oauth_service=Mock(),
         mcp_server_repo=Mock(),
         background_task_tracker=tracker,
+        lease_owner=_LEASE_OWNER,
     )
 
 
 def _agent_service(tracker):
-    return A2AAgentService(a2a_agent_repo=Mock(), azure_client_cache=Mock(), background_task_tracker=tracker)
+    return A2AAgentService(
+        a2a_agent_repo=Mock(), azure_client_cache=Mock(), background_task_tracker=tracker, lease_owner=_LEASE_OWNER
+    )
 
 
 @pytest.mark.parametrize("agent", [False, True])
@@ -55,6 +60,7 @@ async def test_scheduling_uses_tracked_shared_sync(agent):
         await tracker.coro
     assert sync.await_args.kwargs["plan"] is plan
     assert sync.await_args.args[2] == plan.doc.id
+    assert sync.await_args.kwargs["owner"] == _LEASE_OWNER  # per-entity lease is owned by this pod
 
 
 async def test_sync_failure_is_logged_without_failing_committed_request(caplog):

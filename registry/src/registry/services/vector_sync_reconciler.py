@@ -14,9 +14,15 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from registry.services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
-from registry.services.vector_sync_helpers import VectorSyncBusyError, sync_pending_vectors
+from registry.services.vector_sync_helpers import (
+    VectorModel,
+    VectorRepository,
+    VectorSyncBusyError,
+    sync_pending_vectors,
+)
 from registry.utils.concurrency import run_bounded
 from registry_pkgs.database.leased_job import Lease, LeasedJobRunner, LeasedRepository
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, LeaderLease
@@ -65,6 +71,8 @@ class VectorSyncReconciler:
         self._mcp_server_repo = mcp_server_repo
         self._a2a_agent_repo = a2a_agent_repo
         self._watcher = embedding_maintenance_watcher
+        # One owner for the leader lease and the per-entity leases it takes, so logs correlate to the pod.
+        self._owner = lease_owner or f"registry-{uuid4()}"
         self._repo: LeasedRepository[LeaderLease] = LeasedRepository(LEADER_LEASE)
         self._runner: LeasedJobRunner[LeaderLease] = LeasedJobRunner(
             name=_LEASE_NAME,
@@ -72,7 +80,7 @@ class VectorSyncReconciler:
             execute=self._execute,
             repository=self._repo,
             poll_interval=_POLL_INTERVAL,
-            owner=lease_owner,
+            owner=self._owner,
         )
 
     async def start(self) -> None:
@@ -111,16 +119,28 @@ class VectorSyncReconciler:
         mcp_synced, mcp_failed, mcp_full = await self._reconcile(ExtendedMCPServer, self._mcp_server_repo, now)
         a2a_synced, a2a_failed, a2a_full = await self._reconcile(A2AAgent, self._a2a_agent_repo, now)
         if mcp_synced or mcp_failed or a2a_synced or a2a_failed:
+            # Remaining = still due now (re-queued failures sit in the future and are not counted).
+            mcp_remaining = await self._count_due(ExtendedMCPServer, now)
+            a2a_remaining = await self._count_due(A2AAgent, now)
             logger.info(
-                "Vector-sync reconciler pass: servers synced=%d failed=%d, agents synced=%d failed=%d",
+                "Vector-sync reconciler pass: servers synced=%d failed=%d remaining=%d, "
+                "agents synced=%d failed=%d remaining=%d",
                 mcp_synced,
                 mcp_failed,
+                mcp_remaining,
                 a2a_synced,
                 a2a_failed,
+                a2a_remaining,
             )
         return mcp_full or a2a_full
 
-    async def _reconcile(self, model, repo, now: datetime) -> tuple[int, int, bool]:
+    @staticmethod
+    async def _count_due(model: type[VectorModel], now: datetime) -> int:
+        return await model.get_pymongo_collection().count_documents({"vectorSyncPendingAt": {"$lte": now - _GRACE}})
+
+    async def _reconcile(
+        self, model: type[VectorModel], repo: VectorRepository, now: datetime
+    ) -> tuple[int, int, bool]:
         """Re-sync up to one batch of ``model`` documents older than the grace window.
 
         Returns ``(synced, failed, batch_was_full)``. A future marker (set by a re-queue) is not
@@ -136,7 +156,9 @@ class VectorSyncReconciler:
         if not docs:
             return 0, 0, False
 
-        results = await run_bounded(docs, lambda d: sync_pending_vectors(model, repo, d.id), limit=_CONCURRENCY)
+        results = await run_bounded(
+            docs, lambda d: sync_pending_vectors(model, repo, d.id, owner=self._owner), limit=_CONCURRENCY
+        )
         synced = failed = 0
         for result in results:
             doc = result.item
@@ -156,7 +178,7 @@ class VectorSyncReconciler:
         return synced, failed, len(docs) == _BATCH
 
     @staticmethod
-    async def _requeue(model, doc, now: datetime) -> None:
+    async def _requeue(model: type[VectorModel], doc: VectorModel, now: datetime) -> None:
         """Push the marker forward by exponential backoff and bump the attempt counter.
 
         Compare-and-set on the loaded marker: a newer write (which already reset the counter and moved

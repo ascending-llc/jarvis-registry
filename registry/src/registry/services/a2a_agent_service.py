@@ -40,7 +40,7 @@ from ..core.config import settings
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
-from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, delete_entity_lease, sync_pending_vectors
+from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +85,14 @@ class A2AAgentService:
         azure_client_cache: AzureFoundryClientCache,
         embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
         background_task_tracker: BackgroundTaskTracker | None = None,
+        lease_owner: str = "registry-unowned",
     ):
         self._a2a_agent_repo = a2a_agent_repo
         self._jwt_config = jwt_config
         self._azure_client_cache = azure_client_cache
         self._embedding_maintenance_watcher = embedding_maintenance_watcher
         self._task_tracker = background_task_tracker
+        self._lease_owner = lease_owner
 
     @staticmethod
     def _path_conflict_message(input_path: Any, normalized_path: str) -> str:
@@ -154,7 +156,7 @@ class A2AAgentService:
 
         async def _sync_task() -> None:
             try:
-                await sync_pending_vectors(A2AAgent, self._a2a_agent_repo, agent.id, plan=plan)
+                await sync_pending_vectors(A2AAgent, self._a2a_agent_repo, agent.id, owner=self._lease_owner, plan=plan)
             except VectorSyncBusyError:
                 logger.info("Vector sync already running for %s; pending work remains queued", agent.id)
             except Exception:
@@ -820,9 +822,7 @@ class A2AAgentService:
             raise ValueError(f"Agent not found: {agent_id}")
 
         agent_name = agent.card.name
-        agent_object_id = agent.id
         await agent.delete(session=session)
-        await delete_entity_lease(A2AAgent, agent_object_id)
         logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
 
         self._schedule_delete(agent_id, agent_name)

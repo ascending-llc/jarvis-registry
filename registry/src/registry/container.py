@@ -303,6 +303,7 @@ class RegistryContainer:
             mcp_server_repo=self.mcp_server_repo,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
             background_task_tracker=self.background_task_tracker,
+            lease_owner=self.lease_owner,
         )
 
     @cached_property
@@ -313,6 +314,7 @@ class RegistryContainer:
             azure_client_cache=self.azure_foundry_client_cache,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
             background_task_tracker=self.background_task_tracker,
+            lease_owner=self.lease_owner,
         )
 
     @cached_property
