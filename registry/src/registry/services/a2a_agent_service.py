@@ -5,7 +5,6 @@ This service handles all A2A agent-related operations using MongoDB, Beanie ODM,
 and the official a2a-sdk for protocol compliance.
 """
 
-import asyncio
 import logging
 import re
 from datetime import UTC, datetime
@@ -36,6 +35,7 @@ from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetad
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.workflows.a2a_client import build_headers, is_azure_foundry_runtime
 
+from ..constants import VECTOR_DELETE_SKIPPED_FALLBACK, VECTOR_SYNC_SKIPPED_FALLBACK
 from ..core.config import settings
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
@@ -114,33 +114,41 @@ class A2AAgentService:
         agent.vectorSyncAttempts = 0
         return marker
 
-    def _spawn_vector_task(self, coro: Any, name: str) -> None:
+    def _spawn_vector_task(self, coro: Any, name: str, *, fallback: str = VECTOR_SYNC_SKIPPED_FALLBACK) -> None:
         """Spawn a vector task through the tracker; tolerate shutdown, and an unwired tracker in tests.
 
         After shutdown the spawn is refused — the Mongo write has already committed, so the request
-        must still succeed and the reconciler heals the marker that stays set.
+        must still succeed. ``fallback`` names what repairs the skipped work: the reconciler heals a
+        sync's marker that stays set, and the orphan sweep removes a skipped delete's vectors.
         """
         if self._task_tracker is None:
             coro.close()
-            logger.warning("No background task tracker wired for %s; leaving pending work for reconciliation", name)
+            logger.warning("No background task tracker wired for %s; %s", name, fallback)
             return
         try:
             self._task_tracker.spawn(coro, name=name)
         except TrackerShutdownError:
-            logger.info("Vector sync not scheduled (shutting down); the reconciler will heal it")
+            logger.info("Vector task %s not scheduled (shutting down); %s", name, fallback)
 
-    def _schedule_delete(self, agent_id: str, agent_name: str | None = None) -> None:
-        """Schedule removal of all Weaviate docs for an agent."""
+    def schedule_vector_delete(self, entity_id: str, name: str | None = None) -> None:
+        """Remove an agent's Weaviate docs, tracked, after its Mongo delete commits.
+
+        Called by the route only once the delete transaction has committed, so a rolled-back delete
+        removes no vectors. A lost, refused or failed delete leaves an orphan, which the orphan sweep
+        removes. Failures are logged at ``warning`` and never surfaced to the request.
+        """
         if self._a2a_agent_repo is None:
             return
 
-        async def _task():
+        async def _delete_task() -> None:
             try:
-                await self._a2a_agent_repo.delete_by_agent_id(agent_id, agent_name)
-            except Exception as e:
-                logger.error("Vector delete failed for agent %s: %s", agent_id, e, exc_info=True)
+                await self._a2a_agent_repo.delete_by_agent_id(entity_id, name)
+            except Exception:
+                logger.warning("Vector delete failed for agent %s", entity_id, exc_info=True)
 
-        asyncio.create_task(_task())
+        self._spawn_vector_task(
+            _delete_task(), f"vector-delete-agent-{entity_id}", fallback=VECTOR_DELETE_SKIPPED_FALLBACK
+        )
 
     def schedule_vector_sync(self, plan: VectorSyncPlan) -> None:
         """Run the immediate Weaviate sync for a committed write, tracked and marker-clearing.
@@ -804,9 +812,10 @@ class A2AAgentService:
         self,
         agent_id: str,
         session: AsyncClientSession | None = None,
-    ) -> None:
+    ) -> str:
         """
-        Delete an agent.
+        Delete an agent. Returns the agent name so the route can schedule the vector delete
+        after the transaction commits.
 
         Args:
             agent_id: Agent ID
@@ -822,10 +831,11 @@ class A2AAgentService:
             raise ValueError(f"Agent not found: {agent_id}")
 
         agent_name = agent.card.name
+        # The vector delete is scheduled by the route after the transaction commits, so a rolled-back
+        # delete (ACL or commit failure) removes no vectors. A lost delete leaves an orphan for the sweep.
         await agent.delete(session=session)
         logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
-
-        self._schedule_delete(agent_id, agent_name)
+        return agent_name
 
     async def toggle_agent_status(
         self,

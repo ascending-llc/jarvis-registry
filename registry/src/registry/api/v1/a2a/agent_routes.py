@@ -472,7 +472,7 @@ async def delete_agent(
                 )
 
                 # Delete agent
-                await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
+                agent_name = await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
 
                 # Delete all associated ACL permission records
                 deleted_count = await acl_service.delete_acl_entries_for_resource(
@@ -481,7 +481,11 @@ async def delete_agent(
                     session=mongo_session,
                 )
                 logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
-                return None  # 204 No Content
+
+        # Remove vectors only after the transaction has committed, so a rolled-back delete (an ACL
+        # or commit failure) leaves the vectors in place. A lost delete leaves an orphan for the sweep.
+        a2a_agent_service.schedule_vector_delete(agent_id, agent_name)
+        return None  # 204 No Content
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc

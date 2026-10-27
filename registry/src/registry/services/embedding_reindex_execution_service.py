@@ -20,7 +20,7 @@ from registry.core.config import Settings
 from registry.core.mcp_config import MCPClientConfig
 from registry.core.vector_backend import build_backend_config_from_model_source
 from registry.services.federation_job_service import FederationJobService
-from registry.services.vector_sync_helpers import sync_agent_vectors, sync_server_vectors
+from registry.services.vector_sync_helpers import delete_orphan_vectors, sync_agent_vectors, sync_server_vectors
 from registry.utils.concurrency import run_bounded
 from registry_pkgs.database.embedding_reindex_job_repository import embedding_reindex_repository
 from registry_pkgs.database.leased_job import Lease, LeaseLostError
@@ -334,13 +334,14 @@ class EmbeddingReindexExecutionService:
         swept_mcp_ids: set[str],
         swept_a2a_ids: set[str],
     ) -> None:
-        """Drop, from the new generation, entities that were swept but no longer exist in Mongo."""
-        mongo_mcp_ids = {str(d["_id"]) async for d in ExtendedMCPServer.get_pymongo_collection().find({}, {"_id": 1})}
-        mongo_a2a_ids = {str(d["_id"]) async for d in A2AAgent.get_pymongo_collection().find({}, {"_id": 1})}
-        for gone in swept_mcp_ids - mongo_mcp_ids:
-            await mcp_repo.delete_by_server_id(gone)
-        for gone in swept_a2a_ids - mongo_a2a_ids:
-            await a2a_repo.delete_by_agent_id(gone)
+        """Drop, from the new generation, entities that were swept but no longer exist in Mongo.
+
+        Strict: a failed delete raises, so the job is not committed with a generation that still holds
+        a removed entity's vectors.
+        """
+        await delete_orphan_vectors(
+            mcp_repo, a2a_repo, vector_mcp_ids=swept_mcp_ids, vector_a2a_ids=swept_a2a_ids, strict=True
+        )
 
     async def finish_exhausted_job(self, job: EmbeddingReindexJob, lease: Lease) -> None:
         """Finalize a job that has used up its retries: complete it if the switch already happened

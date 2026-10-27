@@ -163,4 +163,5 @@ exclude-signatures = [
     {signature = 'f2ee13877d6e001e05fa552981f8eea8ec35011b7f2ecce9ed2906da10781c3e', reason = 'KEYCLOAK_M2M_CLIENT_SECRET placeholder in auth docs is not a credential'},
     {signature = 'ebc796d30201a1afc1c32d8bb5c4bea1b88dac290d1c5342b2290081ef3c7557', reason = 'ENTRA_CLIENT_ID placeholder in auth docs is not a credential'},
     {signature = '94a8900d1f56c1520b87644c9b56ab106c2d37c376c55d83216e717602f6479f', reason = 'ENTRA_CLIENT_ID placeholder in Entra ID setup docs is not a credential'},
+    {signature = 'b2c59c694241a64b91ba066d5ef318138b22808ed3e6e58286d8e34a57f04cda', reason = 'orphan sweeper guard constants are code constants, not credentials'},
 ]

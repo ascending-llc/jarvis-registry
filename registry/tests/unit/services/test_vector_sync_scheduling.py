@@ -74,7 +74,7 @@ async def test_sync_failure_is_logged_without_failing_committed_request(caplog):
 
 async def test_missing_tracker_leaves_work_pending_without_untracked_task():
     service = _server_service(None)
-    with patch("registry.services.server_service.asyncio.create_task") as spawn:
+    with patch("asyncio.create_task") as spawn:
         service.schedule_vector_sync(VectorSyncPlan(doc=Mock(id="s"), marker=datetime.now(UTC), full_resync=True))
     spawn.assert_not_called()
 

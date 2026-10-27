@@ -26,14 +26,17 @@ from registry_pkgs.models.enums import RoleBits
 
 
 class _RecordingTxnCtx:
-    def __init__(self):
+    def __init__(self, commit_error: Exception | None = None):
         self.exit_exc_type: object = "unset"
+        self._commit_error = commit_error
 
     async def __aenter__(self):
         return None
 
     async def __aexit__(self, exc_type, exc, tb):
         self.exit_exc_type = exc_type
+        if exc_type is None and self._commit_error is not None:
+            raise self._commit_error  # the block succeeded but the commit itself failed
         return False  # do not suppress -> exception propagates out of the explicit transaction block
 
 
@@ -710,6 +713,58 @@ async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_contex
     acl_service.delete_acl_entries_for_resource.assert_awaited_once()
     # Transaction context manager sees the original exception before the route maps it to HTTPException.
     assert ctx.exit_exc_type is RuntimeError
+    # The block never committed, so no vector delete is scheduled.
+    a2a_agent_service.schedule_vector_delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_route_schedules_vector_delete_after_commit(sample_user_context):
+    """The route removes vectors only after the delete transaction commits, using the returned name."""
+    agent_id = str(PydanticObjectId())
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.delete_agent = AsyncMock(return_value="Agent X")
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    acl_service.delete_acl_entries_for_resource = AsyncMock(return_value=1)
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
+        _agent_route_mongo(mock_get_client)
+        result = await delete_agent(
+            agent_id=agent_id,
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            a2a_agent_service=a2a_agent_service,
+        )
+
+    assert result is None
+    a2a_agent_service.schedule_vector_delete.assert_called_once_with(agent_id, "Agent X")
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_route_does_not_schedule_when_commit_fails(sample_user_context):
+    """The block succeeds but the commit raises: the delete rolled back, so vectors stay in place."""
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.delete_agent = AsyncMock(return_value="Agent X")
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    acl_service.delete_acl_entries_for_resource = AsyncMock(return_value=1)
+
+    ctx = _RecordingTxnCtx(commit_error=RuntimeError("commit failed"))
+    fake_client = _FakeTxnClient(_FakeTxnSession(ctx))
+
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_agent(
+                agent_id=str(PydanticObjectId()),
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 500
+    # The commit was attempted (the block exited cleanly) and failed.
+    assert ctx.exit_exc_type is None
+    a2a_agent_service.schedule_vector_delete.assert_not_called()
 
 
 def test_convert_to_list_item_uses_config_enabled_without_status():
@@ -784,6 +839,8 @@ async def test_delete_agent_returns_503_during_reindex(sample_user_context):
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail["error"] == "reindex_in_progress"
+    # delete_agent raised, so the block never committed: no vector delete is scheduled.
+    a2a_agent_service.schedule_vector_delete.assert_not_called()
 
 
 @pytest.mark.asyncio

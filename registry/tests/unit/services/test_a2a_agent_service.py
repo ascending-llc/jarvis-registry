@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,6 +12,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
+from registry.services.background_task_tracker import TrackerShutdownError
 from registry_pkgs.core.exceptions import A2AAgentCardNotFoundException, EmbeddingReindexInProgressException
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, NoSupportedTransportError
 from registry_pkgs.testing.federation_metadata import (
@@ -442,6 +445,88 @@ async def test_delete_agent_passes_session_to_delete():
 
     fake_agent.delete.assert_awaited_once()
     assert fake_agent.delete.await_args.kwargs["session"] is _SENTINEL_SESSION
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_no_longer_deletes_vectors():
+    """delete_agent returns the name but schedules no vector delete; the route does that post-commit."""
+    repo = MagicMock()
+    repo.delete_by_agent_id = AsyncMock()
+    service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock())
+    fake_agent = MagicMock()
+    fake_agent.delete = AsyncMock()
+    fake_agent.card = SimpleNamespace(name="Test Agent")
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+        name = await service.delete_agent(agent_id=str(PydanticObjectId()))
+
+    assert name == "Test Agent"
+    repo.delete_by_agent_id.assert_not_awaited()
+
+
+class _RunningTracker:
+    """A tracker whose spawn runs the coroutine inline (and records the name)."""
+
+    def __init__(self):
+        self.names: list[str] = []
+        self.task = None
+
+    def spawn(self, coro, name):
+        self.names.append(name)
+        self.task = asyncio.ensure_future(coro)
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_goes_through_tracker():
+    repo = MagicMock()
+    repo.delete_by_agent_id = AsyncMock(return_value=1)
+    tracker = _RunningTracker()
+    service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock(), background_task_tracker=tracker)
+
+    service.schedule_vector_delete("agent-1", "Agent One")
+    await tracker.task
+
+    assert tracker.names == ["vector-delete-agent-agent-1"]
+    repo.delete_by_agent_id.assert_awaited_once_with("agent-1", "Agent One")
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_logs_warning_on_repo_failure(caplog):
+    repo = MagicMock()
+    repo.delete_by_agent_id = AsyncMock(side_effect=RuntimeError("weaviate down"))
+    tracker = _RunningTracker()
+    service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock(), background_task_tracker=tracker)
+
+    with caplog.at_level(logging.WARNING):
+        service.schedule_vector_delete("agent-1", "Agent One")
+        await tracker.task  # must not raise
+
+    assert any("Vector delete failed for agent agent-1" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_returns_when_tracker_refuses(caplog):
+    repo = MagicMock()
+    repo.delete_by_agent_id = AsyncMock()
+
+    def _refuse(coro, name):
+        coro.close()  # the real tracker closes the coro before refusing
+        raise TrackerShutdownError()
+
+    tracker = MagicMock()
+    tracker.spawn = _refuse
+    service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock(), background_task_tracker=tracker)
+
+    # Returns normally; the Mongo delete already committed, the sweep heals the orphan.
+    with caplog.at_level(logging.INFO, logger="registry.services.a2a_agent_service"):
+        service.schedule_vector_delete("agent-1", "Agent One")
+
+    # The log names the orphan sweep, not the reconciler (which never heals deletes).
+    assert "the orphan sweep will remove its vectors" in caplog.text
+    assert "reconciler" not in caplog.text
 
 
 @pytest.mark.asyncio

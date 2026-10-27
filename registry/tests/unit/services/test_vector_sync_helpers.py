@@ -9,6 +9,7 @@ from beanie import PydanticObjectId
 from registry.services.vector_sync_helpers import (
     VectorSyncPlan,
     clear_vector_sync_marker,
+    delete_orphan_vectors,
     is_failed_sync_result,
     sync_agent_vectors,
     sync_server_vectors,
@@ -30,6 +31,107 @@ def test_is_failed_sync_result_flags_any_failure(result):
 
 def test_is_failed_sync_result_accepts_all_zero_result():
     assert is_failed_sync_result({"indexed": 3, "failed": 0, "failed_tools": 0, "error": None}) is False
+
+
+def _mongo_ids_collection(ids):
+    """Fake pymongo collection whose find() yields ``{"_id": ...}`` as an async cursor."""
+
+    async def _cursor(*_args, **_kwargs):
+        for _id in ids:
+            yield {"_id": _id}
+
+    collection = Mock()
+    collection.find = Mock(side_effect=lambda *a, **k: _cursor())
+    # delete_orphan_vectors pins the read to primary via .with_options(...); it returns the collection.
+    collection.with_options = Mock(return_value=collection)
+    return collection
+
+
+def _patch_mongo_ids(mcp_ids, a2a_ids):
+    return (
+        patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=_mongo_ids_collection(mcp_ids)),
+        patch.object(A2AAgent, "get_pymongo_collection", return_value=_mongo_ids_collection(a2a_ids)),
+    )
+
+
+async def test_delete_orphan_vectors_deletes_only_ids_absent_from_mongo():
+    mcp_repo = Mock()
+    mcp_repo.delete_by_server_id = AsyncMock(return_value=1)
+    a2a_repo = Mock()
+    a2a_repo.delete_by_agent_id = AsyncMock(return_value=1)
+
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=["keep1", "keep2"], a2a_ids=["akeep"])
+    with mcp_patch, a2a_patch:
+        mcp_deleted, a2a_deleted = await delete_orphan_vectors(
+            mcp_repo,
+            a2a_repo,
+            vector_mcp_ids={"keep1", "keep2", "gone1", "gone2"},
+            vector_a2a_ids={"akeep", "agone"},
+        )
+
+    assert mcp_deleted == 2
+    assert a2a_deleted == 1
+    assert {c.args[0] for c in mcp_repo.delete_by_server_id.call_args_list} == {"gone1", "gone2"}
+    assert {c.args[0] for c in a2a_repo.delete_by_agent_id.call_args_list} == {"agone"}
+
+
+async def test_delete_orphan_vectors_one_failure_does_not_stop_others():
+    mcp_repo = Mock()
+    mcp_repo.delete_by_server_id = AsyncMock(side_effect=[RuntimeError("boom"), 1, 1])
+    a2a_repo = Mock()
+    a2a_repo.delete_by_agent_id = AsyncMock(return_value=1)
+
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[], a2a_ids=[])
+    with mcp_patch, a2a_patch:
+        mcp_deleted, _ = await delete_orphan_vectors(
+            mcp_repo,
+            a2a_repo,
+            vector_mcp_ids={"a", "b", "c"},
+            vector_a2a_ids=set(),
+        )
+
+    # All three attempted; one raised, two succeeded.
+    assert mcp_repo.delete_by_server_id.await_count == 3
+    assert mcp_deleted == 2
+
+
+async def test_delete_orphan_vectors_strict_raises_on_first_failure():
+    """Strict mode (the reindex caller) propagates a failed delete instead of logging past it."""
+    mcp_repo = Mock()
+    mcp_repo.delete_by_server_id = AsyncMock(side_effect=RuntimeError("boom"))
+    a2a_repo = Mock()
+    a2a_repo.delete_by_agent_id = AsyncMock(return_value=1)
+
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[], a2a_ids=[])
+    with mcp_patch, a2a_patch, pytest.raises(RuntimeError, match="boom"):
+        await delete_orphan_vectors(
+            mcp_repo,
+            a2a_repo,
+            vector_mcp_ids={"a"},
+            vector_a2a_ids={"x"},
+            strict=True,
+        )
+
+    a2a_repo.delete_by_agent_id.assert_not_awaited()
+
+
+async def test_delete_orphan_vectors_deletes_a_fully_orphaned_collection():
+    """No orphan-share cap: a lost federation cleanup can orphan most of a collection, and it is swept."""
+    mcp_repo = Mock()
+    mcp_repo.delete_by_server_id = AsyncMock(return_value=1)
+    a2a_repo = Mock()
+    a2a_repo.delete_by_agent_id = AsyncMock()
+
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[], a2a_ids=[])
+    with mcp_patch, a2a_patch:
+        mcp_deleted, _ = await delete_orphan_vectors(
+            mcp_repo,
+            a2a_repo,
+            vector_mcp_ids={f"s{i}" for i in range(50)},
+            vector_a2a_ids=set(),
+        )
+
+    assert mcp_deleted == 50
 
 
 async def test_sync_server_vectors_ok():
