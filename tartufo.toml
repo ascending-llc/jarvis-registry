@@ -16,6 +16,7 @@ exclude-entropy-patterns = [
     {path-pattern = '\\.env\\.example$', pattern = 'JWT_PRIVATE_KEY=.*', reason = '.env.example JWT private key placeholder is not a credential'},
     {path-pattern = '\\.env\\.example$', pattern = 'JWT_PUBLIC_KEY=.*', reason = '.env.example JWT public key placeholder is not a credential'},
     {path-pattern = '(registry-pkgs|registry)/tests/.*', pattern = '.*VCeDsk8ZHncYF1g234fKtc4lNipbBhu3.*', reason = "Atlassian MCP's public authorization-server tenant ID in captured discovery fixtures is not a credential"},
+    {path-pattern = 'docs/.*\.md$', pattern = '.*github\.com/ascending-llc/jarvis-registry/blob/[0-9a-f]{40}/.*', reason = 'commit SHAs in GitHub permalinks to this repository are not credentials'},
 ]
 
 exclude-signatures = [
@@ -147,8 +148,20 @@ exclude-signatures = [
     {signature = 'cc632ac2b2c1531fb61b5660cd9228ebce9c440c4b9551f6d17548f0ebe78af3', reason = 'docker-compose OTEL endpoint env-var defaults and dev profile diff is not a credential'},
     {signature = '042c4794e96f05be2a5a24f56fe13b2c2fb73ae65332f1552f8894651899c2da', reason = 'fake MongoDB credentials in create_mongo_client URL-building unit tests are not credentials'},
     {signature = '9775c81493dd8663f25171fe586cfa241f955ff688bf2eb10a7a055dc25f2125', reason = 'fake MongoDB credentials in create_mongo_client URL-building unit tests are not credentials'},
+    {signature = '78066d8b760cdb343da13d11a33c839d01c1a698403db467657fd9d63267a694', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = '57395e1c40f0ff1a227d665bd4d4633f6161ca785628e85c9e8a4b2bc4fd8907', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = 'a93152ccce2219a2698bc00311195a39e174ecb591a9fcda719a24d0d1c016c7', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = '69ceecd792bd8344b862f6a584af11827df9314b21d686fa50be875fb3b58db3', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = 'fa11765e29079d2dcdb8ea09bbb97a160ba41083ee3afdd135880ed808eee61f', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = '9dc17aee0f1238162c7695d6535914675bf3fb52b324349d5714c7e75e25b85c', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = '69937224536ad15ebc984d7fc9a78f0200a159c244cddb543df5386d499eacc4', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = 'ca4f7da5c2cc976422c65b232ee35009e20fa010fc0c9f9cb85b7b07f9770220', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
     {signature = 'e7ce705ab327fd06ea52dec32866d1c7dde7d86de2535b20826b5553e1594d18', reason = 'stateless gateway integration test uses synthetic MongoDB ObjectIds and mock fixtures, not credentials'},
     {signature = '07b8f38f951c28b4881898ff750da0c72ae494860f71b50c84fedcc827c4e4cd', reason = 'client-info store unit test uses synthetic MongoDB ObjectIds and mock fixtures, not credentials'},
     {signature = '199aac890574b3f7381e6d069afacdbbfc821efaad85fb0697d083b1c4988ff0', reason = 'stateless gateway e2e verification script uses a throwaway MongoDB ObjectId and locally-minted test tokens, not credentials'},
+    {signature = 'bddc7c264e820478f2c314c84e5faeb3e197aefe2ad43bda17a75078b0fb9f91', reason = 'synthetic numeric Google subject ID in OAuth callback integration tests is not a credential'},
+    {signature = 'f2ee13877d6e001e05fa552981f8eea8ec35011b7f2ecce9ed2906da10781c3e', reason = 'KEYCLOAK_M2M_CLIENT_SECRET placeholder in auth docs is not a credential'},
+    {signature = 'ebc796d30201a1afc1c32d8bb5c4bea1b88dac290d1c5342b2290081ef3c7557', reason = 'ENTRA_CLIENT_ID placeholder in auth docs is not a credential'},
+    {signature = '94a8900d1f56c1520b87644c9b56ab106c2d37c376c55d83216e717602f6479f', reason = 'ENTRA_CLIENT_ID placeholder in Entra ID setup docs is not a credential'},
     {signature = 'b2c59c694241a64b91ba066d5ef318138b22808ed3e6e58286d8e34a57f04cda', reason = 'orphan sweeper guard constants are code constants, not credentials'},
 ]

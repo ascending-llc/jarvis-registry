@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from bson import ObjectId
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
@@ -136,7 +137,7 @@ def create_test_jwt_token(
     role: str = "user",
     auth_method: str = "oauth2",
     provider: str = "keycloak",
-    user_id: str = None,
+    user_id: str | None = None,
 ) -> str:
     """
     Helper function to create JWT access tokens for testing.
@@ -147,7 +148,7 @@ def create_test_jwt_token(
         role: User role (default: "user")
         auth_method: Auth method (default: "oauth2")
         provider: Auth provider (default: "keycloak")
-        user_id: User ID (default: auto-generated from username)
+        user_id: User ID (default: a new MongoDB ObjectId string)
 
     Returns:
         JWT access token string
@@ -156,7 +157,7 @@ def create_test_jwt_token(
     from registry_pkgs.core.scopes import map_groups_to_scopes
 
     if user_id is None:
-        user_id = f"test-{username}-id"
+        user_id = str(ObjectId())
 
     scopes = map_groups_to_scopes(groups) or groups
 
@@ -196,7 +197,7 @@ def admin_session_cookie():
         role="admin",
         auth_method="traditional",
         provider="local",
-        user_id="test-admin-id",
+        user_id="507f1f77bcf86cd799439011",
     )
 
 
@@ -256,7 +257,7 @@ def user_session_cookie():
         role="user",
         auth_method="oauth2",
         provider="keycloak",
-        user_id="test-user-id",
+        user_id="507f1f77bcf86cd799439012",
     )
 
 

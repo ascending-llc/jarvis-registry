@@ -33,7 +33,6 @@ class AuthSettings(JarvisBaseSettings):
 
     # ==================== Entra ID Settings ====================
     # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
-    entra_token_kind: str = "id"  # "id" or "access"
     entra_enabled: str = "true"
 
     # ==================== Google Settings ====================

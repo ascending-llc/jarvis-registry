@@ -35,11 +35,12 @@ from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetad
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.workflows.a2a_client import build_headers, is_azure_foundry_runtime
 
+from ..constants import VECTOR_DELETE_SKIPPED_FALLBACK, VECTOR_SYNC_SKIPPED_FALLBACK
 from ..core.config import settings
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
-from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, delete_entity_lease, sync_pending_vectors
+from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +85,14 @@ class A2AAgentService:
         azure_client_cache: AzureFoundryClientCache,
         embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
         background_task_tracker: BackgroundTaskTracker | None = None,
+        lease_owner: str = "registry-unowned",
     ):
         self._a2a_agent_repo = a2a_agent_repo
         self._jwt_config = jwt_config
         self._azure_client_cache = azure_client_cache
         self._embedding_maintenance_watcher = embedding_maintenance_watcher
         self._task_tracker = background_task_tracker
+        self._lease_owner = lease_owner
 
     @staticmethod
     def _path_conflict_message(input_path: Any, normalized_path: str) -> str:
@@ -111,20 +114,21 @@ class A2AAgentService:
         agent.vectorSyncAttempts = 0
         return marker
 
-    def _spawn_vector_task(self, coro: Any, name: str) -> None:
+    def _spawn_vector_task(self, coro: Any, name: str, *, fallback: str = VECTOR_SYNC_SKIPPED_FALLBACK) -> None:
         """Spawn a vector task through the tracker; tolerate shutdown, and an unwired tracker in tests.
 
         After shutdown the spawn is refused — the Mongo write has already committed, so the request
-        must still succeed and the reconciler heals the marker that stays set.
+        must still succeed. ``fallback`` names what repairs the skipped work: the reconciler heals a
+        sync's marker that stays set, and the orphan sweep removes a skipped delete's vectors.
         """
         if self._task_tracker is None:
             coro.close()
-            logger.warning("No background task tracker wired for %s; leaving pending work for reconciliation", name)
+            logger.warning("No background task tracker wired for %s; %s", name, fallback)
             return
         try:
             self._task_tracker.spawn(coro, name=name)
         except TrackerShutdownError:
-            logger.info("Vector sync not scheduled (shutting down); the reconciler will heal it")
+            logger.info("Vector task %s not scheduled (shutting down); %s", name, fallback)
 
     def schedule_vector_delete(self, entity_id: str, name: str | None = None) -> None:
         """Remove an agent's Weaviate docs, tracked, after its Mongo delete commits.
@@ -142,7 +146,9 @@ class A2AAgentService:
             except Exception:
                 logger.warning("Vector delete failed for agent %s", entity_id, exc_info=True)
 
-        self._spawn_vector_task(_delete_task(), f"vector-delete-agent-{entity_id}")
+        self._spawn_vector_task(
+            _delete_task(), f"vector-delete-agent-{entity_id}", fallback=VECTOR_DELETE_SKIPPED_FALLBACK
+        )
 
     def schedule_vector_sync(self, plan: VectorSyncPlan) -> None:
         """Run the immediate Weaviate sync for a committed write, tracked and marker-clearing.
@@ -158,7 +164,7 @@ class A2AAgentService:
 
         async def _sync_task() -> None:
             try:
-                await sync_pending_vectors(A2AAgent, self._a2a_agent_repo, agent.id, plan=plan)
+                await sync_pending_vectors(A2AAgent, self._a2a_agent_repo, agent.id, owner=self._lease_owner, plan=plan)
             except VectorSyncBusyError:
                 logger.info("Vector sync already running for %s; pending work remains queued", agent.id)
             except Exception:
@@ -825,11 +831,9 @@ class A2AAgentService:
             raise ValueError(f"Agent not found: {agent_id}")
 
         agent_name = agent.card.name
-        agent_object_id = agent.id
         # The vector delete is scheduled by the route after the transaction commits, so a rolled-back
         # delete (ACL or commit failure) removes no vectors. A lost delete leaves an orphan for the sweep.
         await agent.delete(session=session)
-        await delete_entity_lease(A2AAgent, agent_object_id)
         logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
         return agent_name
 

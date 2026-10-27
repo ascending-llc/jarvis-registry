@@ -5,6 +5,8 @@ property regardless of collection size — unlike offset pagination, which caps 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from registry_pkgs.vector.backends.weaviate_store import WeaviateStore
 
 
@@ -12,7 +14,11 @@ def _store_with_collection(objects: list[object]) -> WeaviateStore:
     store = WeaviateStore(embedding=MagicMock(), config={"host": "localhost", "port": 8080})
     collection = MagicMock(name="collection")
     collection.iterator.return_value = iter(objects)
-    store.get_collection = MagicMock(return_value=collection)
+    client = MagicMock(name="client")
+    client.collections.exists.return_value = True
+    client.collections.get.return_value = collection
+    store._get_client = MagicMock(return_value=client)
+    store._client_mock = client
     store._collection = collection  # keep the mock reachable for assertions
     return store
 
@@ -39,3 +45,21 @@ def test_iterator_skips_none_values():
     store = _store_with_collection(objects)
 
     assert set(store.iter_property_values("server_id", "MCPServer")) == {"a", "b"}
+
+
+def test_iterator_yields_nothing_for_a_missing_collection():
+    """Collections are created lazily, so an MCP-only install has no A2A collection: nothing to sweep."""
+    store = _store_with_collection([_obj("a")])
+    store._client_mock.collections.exists.return_value = False
+
+    assert list(store.iter_property_values("agent_id", "A2AAgent")) == []
+    store._client_mock.collections.get.assert_not_called()
+
+
+def test_iterator_propagates_backend_errors_from_the_existence_check():
+    """A Weaviate outage fails the pass instead of looking like an empty collection."""
+    store = _store_with_collection([_obj("a")])
+    store._client_mock.collections.exists.side_effect = ConnectionError("weaviate down")
+
+    with pytest.raises(ConnectionError):
+        list(store.iter_property_values("server_id", "MCPServer"))

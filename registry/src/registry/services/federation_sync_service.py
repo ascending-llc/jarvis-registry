@@ -49,7 +49,7 @@ from registry_pkgs.models.federation_sync_job import (
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
-from .background_task_tracker import BackgroundTaskTracker
+from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
@@ -517,16 +517,13 @@ class FederationSyncService:
         last_sync = self._build_last_sync(job, apply_summary)
         self._complete_last_sync(last_sync, failed=sync_failed)
 
-        # Fence the terminal job write before touching its parent. A stale executor must not
-        # change federation state after losing its token. The reaper's stuck-parent pass repairs
-        # a parent if execution stops between these two writes.
+        # The terminal job write releases the lease, so it must be the last write: the heartbeat
+        # keeps running until this coroutine returns, and a renewal against a released lease raises
+        # LeaseLostError and cancels whatever write is still in flight. Prove ownership first so a
+        # stale executor does not touch the parent; the parent guards (lastSync.jobId plus an
+        # in-flight syncStatus) keep a write that races a reaper repair from overwriting it.
+        await federation_sync_lease_repository.assert_owned(lease)
         if sync_failed:
-            await self.federation_job_service.mark_failed(
-                job,
-                FederationJobPhase.FAILED,
-                message or "Federation sync failed",
-                lease,
-            )
             await self.federation_crud_service.mark_sync_failed(
                 federation,
                 message or "Federation sync failed",
@@ -534,12 +531,18 @@ class FederationSyncService:
                 stats=stats,
                 job_id=job.id,
             )
+            await self.federation_job_service.mark_failed(
+                job,
+                FederationJobPhase.FAILED,
+                message or "Federation sync failed",
+                lease,
+            )
             return
 
-        await self.federation_job_service.mark_success(job, lease, message=message)
         await self.federation_crud_service.mark_sync_success(
             federation, last_sync, stats, job_id=job.id, message=message
         )
+        await self.federation_job_service.mark_success(job, lease, message=message)
 
     async def preview_manual_sync(
         self,
@@ -808,11 +811,13 @@ class FederationSyncService:
     ) -> FederationSyncJob:
         """Create a leased manual-sync job and spawn it through the shared background task tracker.
 
-        The job is already inserted (leased) before the spawn, so if the tracker refuses it (shutdown
-        has begun) we fail the job here (fenced + released) and repair its federation, then re-raise
-        the tracker's ``RuntimeError`` for the route to map to 503.
+        The job is already inserted (leased) before the spawn, so if the spawn fails we fail the job
+        here (fenced + released) and repair its federation. A tracker refusal because shutdown has
+        begun is re-raised as ``FederationSyncShuttingDownError`` for the route to map to 503; any
+        other spawn error propagates unchanged.
         """
-        assert self._background_task_tracker is not None, "background_task_tracker is required for POST /sync"
+        if self._background_task_tracker is None:
+            raise RuntimeError("background_task_tracker is required for POST /sync")
         job, lease, author_id = await self.create_manual_sync_job(
             federation=federation,
             reason=reason,
@@ -836,20 +841,24 @@ class FederationSyncService:
 
         try:
             self._background_task_tracker.spawn(_job(), name=f"federation-sync-{job.id}")
-        except RuntimeError as exc:
+        except Exception as exc:
+            shutting_down = isinstance(exc, TrackerShutdownError)
+            reason = _INTERRUPTED_REASON if shutting_down else str(exc)
             matched = await federation_sync_lease_repository.transition(
                 lease,
                 {
                     "status": FederationJobStatus.FAILED.value,
                     "phase": FederationJobPhase.FAILED.value,
-                    "error": _INTERRUPTED_REASON,
+                    "error": reason,
                     "finishedAt": datetime.now(UTC),
                 },
                 release=True,
             )
             if matched:
-                await self._finalize_abandoned_job(federation.id, job, reason=_INTERRUPTED_REASON)
-            raise FederationSyncShuttingDownError(str(exc)) from exc
+                await self._finalize_abandoned_job(federation.id, job, reason=reason)
+            if shutting_down:
+                raise FederationSyncShuttingDownError(str(exc)) from exc
+            raise
         return job
 
     async def start_delete(
@@ -960,11 +969,12 @@ class FederationSyncService:
         scanned_delete_job_id: PydanticObjectId | None = None,
         scanned_updated_at: datetime | None = None,
         from_stuck_scan: bool = False,
-    ) -> None:
+    ) -> bool:
         """Repair the parent federation of a job that is already FAILED (or gone).
 
         The job itself is finalized by the caller (reaper, shutdown, or the stuck pass) — this only
         unwedges the federation, idempotently, guarded so a newer job's state is never clobbered.
+        Returns whether the federation was changed.
         """
         federation = await Federation.get(federation_id)
         if federation is None:
@@ -975,36 +985,66 @@ class FederationSyncService:
                 federation_id,
                 getattr(job_doc, "id", None),
             )
-            return
+            return False
 
         if _enum_value(federation.status) == FederationStatus.DELETING.value:
             owner_id = federation.deletingJobId
             if from_stuck_scan and owner_id != scanned_delete_job_id:
-                return
+                return False
             if job_doc is not None and _enum_value(job_doc.jobType) != FederationJobType.DELETE_SYNC.value:
-                return
+                return False
             if job_doc is not None and owner_id is not None and owner_id != job_doc.id:
-                return
+                return False
             # Legacy deletions have no owner marker. The guarded write also prevents an old
             # finalizer from restoring a newer deletion that installed a different owner ID.
-            await self.federation_crud_service.mark_delete_failed(federation, reason, expected_job_id=owner_id)
-            return
+            return await self.federation_crud_service.mark_delete_failed(federation, reason, expected_job_id=owner_id)
+
+        if _enum_value(federation.syncStatus) not in {
+            FederationSyncStatus.PENDING.value,
+            FederationSyncStatus.SYNCING.value,
+        }:
+            # The executor wrote the parent's terminal status before it stopped (the parent write
+            # precedes the terminal job write); nothing is wedged.
+            return False
 
         if job_doc is not None:
-            await self.federation_crud_service.mark_sync_failed(
+            return await self.federation_crud_service.mark_sync_failed(
                 federation,
                 reason,
                 last_sync=self._build_failed_last_sync(job_doc, reason),
                 job_id=job_doc.id,
             )
-        else:
-            # The scan may race another pod repairing this parent and admitting a new job.
-            await self.federation_crud_service.mark_sync_failed(
-                federation, reason, expected_updated_at=scanned_updated_at
+        # The scan may race another pod repairing this parent and admitting a new job.
+        return await self.federation_crud_service.mark_sync_failed(
+            federation, reason, expected_updated_at=scanned_updated_at
+        )
+
+    async def _repair_abandoned_parent(
+        self,
+        federation_id: PydanticObjectId,
+        job_doc: FederationSyncJob | None,
+        **kwargs: Any,
+    ) -> bool:
+        """Reaper wrapper around ``_finalize_abandoned_job`` that logs a failure instead of raising.
+
+        One parent whose repair raises must not end the tick: the remaining jobs and federations still
+        need their repair, and a federation that raises on every tick would otherwise block every
+        federation after it in the stuck scan.
+        """
+        try:
+            return await self._finalize_abandoned_job(federation_id, job_doc, **kwargs)
+        except Exception:
+            logger.exception(
+                "federation reaper: failed to repair federation %s (job=%s)",
+                federation_id,
+                getattr(job_doc, "id", None),
             )
+            return False
 
     async def reap_expired_federation_jobs(self) -> int:
-        """Finalize abandoned federation jobs and unwedge federations left behind. Returns the count.
+        """Finalize abandoned federation jobs and unwedge federations left behind.
+
+        Returns the number of jobs failed (passes 1 and 2) plus federations repaired (pass 3).
 
         Pass 1 — expired leases: ``reap_one`` each leased job whose ``leaseExpiresAt`` passed → FAILED,
         then repair its federation.
@@ -1029,7 +1069,7 @@ class FederationSyncService:
             )
             if job is None:
                 break
-            await self._finalize_abandoned_job(job.federationId, job, reason=_REAP_LEASE_EXPIRED)
+            await self._repair_abandoned_parent(job.federationId, job, reason=_REAP_LEASE_EXPIRED)
             reaped += 1
 
         collection = FederationSyncJob.get_pymongo_collection()
@@ -1055,7 +1095,7 @@ class FederationSyncService:
             if document is None:
                 break
             job = FederationSyncJob.model_validate(document)
-            await self._finalize_abandoned_job(job.federationId, job, reason=_REAP_LEGACY)
+            await self._repair_abandoned_parent(job.federationId, job, reason=_REAP_LEGACY)
             reaped += 1
 
         now = datetime.now(UTC)
@@ -1110,15 +1150,17 @@ class FederationSyncService:
                 # A terminal job may have just released its lease; allow its parent write to finish.
                 if recent_job is not None and recent_job.updatedAt > stuck_cutoff:
                     continue
-                await self._finalize_abandoned_job(
+                # Count only parents actually changed, so a federation the guards never let this
+                # pass repair is not reported as finalized on every tick.
+                if await self._repair_abandoned_parent(
                     federation_id,
                     recent_job,
                     reason=_REAP_STUCK,
                     scanned_delete_job_id=fed_doc.get("deletingJobId"),
                     scanned_updated_at=fed_doc["updatedAt"],
                     from_stuck_scan=True,
-                )
-                reaped += 1
+                ):
+                    reaped += 1
             if len(batch) < _STUCK_FEDERATION_BATCH_SIZE:
                 break
 
@@ -2277,6 +2319,7 @@ class FederationSyncService:
             ExtendedMCPServer,
             self.mcp_server_repo,
             current_server.id,
+            owner=self._lease_owner,
             runtime_identity=(federation_id_str, runtime_arn),
         )
 
@@ -2295,6 +2338,7 @@ class FederationSyncService:
             A2AAgent,
             self.a2a_agent_repo,
             current_agent.id,
+            owner=self._lease_owner,
             runtime_identity=(federation_id_str, runtime_arn),
         )
 

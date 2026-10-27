@@ -49,13 +49,15 @@ _AUTH_CONTEXT = {
 }
 
 
-def _make_server(*, enabled: bool = True, auth_mode: McpAuthMode = McpAuthMode.NONE):
+def _make_server(
+    *, enabled: bool = True, auth_mode: McpAuthMode = McpAuthMode.NONE, transport: str = "streamable-http"
+):
     return SimpleNamespace(
         id=PydanticObjectId(),
         mcp_auth_mode=auth_mode,
         path="/github",
         serverName="github",
-        config={"enabled": enabled, "type": "streamable-http", "url": "https://example.com/mcp"},
+        config={"enabled": enabled, "type": transport, "url": "https://example.com/mcp"},
     )
 
 
@@ -310,6 +312,32 @@ async def test_post_proxy_acl_denied_returns_jsonrpc_error(monkeypatch):
     assert "Access denied" in body["result"]["content"][0]["text"]
 
 
+@pytest.mark.parametrize("method", ["initialize", "tools/list"])
+async def test_post_proxy_acl_denied_returns_jsonrpc_error_for_handshake(monkeypatch, method):
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": method, "id": 1}),
+    )
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server()),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(denied=True),
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert "result" not in body
+    assert body["error"]["code"] == -32003
+    assert "Access denied" in body["error"]["message"]
+
+
 async def test_post_proxy_acl_allowed_continues(monkeypatch):
     monkeypatch.setattr(
         "registry.api.proxy_routes._parse_json_rpc_body",
@@ -355,8 +383,10 @@ async def test_post_proxy_rejects_non_string_method(monkeypatch):
 
     body = json.loads(resp.body)
     assert resp.status_code == 200
-    assert body["result"]["isError"] is True
-    assert "'method'" in body["result"]["content"][0]["text"]
+    # A malformed method is a protocol error, so it comes back as a JSON-RPC error, not a result.
+    assert "result" not in body
+    assert body["error"]["code"] == -32600
+    assert "'method'" in body["error"]["message"]
 
 
 async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeypatch):
@@ -426,9 +456,74 @@ async def test_post_proxy_without_server_consent_allows_handshake_methods(monkey
 
     body = json.loads(resp.body)
     assert resp.status_code == 200
-    assert "error" not in body
-    assert "disabled" in body["result"]["content"][0]["text"].lower()
+    # Handshake methods have a fixed result schema, so a refusal must be a JSON-RPC error — not an
+    # isError-shaped result, which the client would reject as an invalid initialize/tools-list result.
+    assert "result" not in body
+    assert body["error"]["code"] == -32003
+    assert "disabled" in body["error"]["message"].lower()
     consent_store.has_server_consent.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/list"])
+async def test_post_proxy_wrong_transport_returns_jsonrpc_error_for_handshake(monkeypatch, method):
+    """A non-streamable-http server reached via the direct proxy must refuse handshake methods with a
+    JSON-RPC error carrying an actionable message — not an isError result the client can't validate
+    as an initialize/tools-list result"""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": method, "id": 1}),
+    )
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(transport="sse")),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+        pending_store=_PendingConsentStore(),
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert "result" not in body
+    assert body["error"]["code"] == -32003
+    # The message names the configured transport and tells the user how to fix it.
+    assert "sse" in body["error"]["message"]
+    assert "streamable-http" in body["error"]["message"]
+
+
+async def test_post_proxy_wrong_transport_returns_iserror_result_for_tools_call(monkeypatch):
+    """The same refusal on tools/call stays an isError result so the agent reads it as tool output
+    (isError is a CallToolResult field, legal only for tools/call)."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": "tools/call", "id": 1}),
+    )
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(transport="sse")),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+        pending_store=_PendingConsentStore(),
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "sse" in body["result"]["content"][0]["text"]
 
 
 async def test_post_proxy_headless_agent_bypasses_server_consent(monkeypatch):
@@ -1013,7 +1108,12 @@ async def test_post_proxy_second_401_loop_guard(monkeypatch, method):
 
     assert resp.status_code == 200
     body = json.loads(resp.body)
-    assert body["result"]["isError"] is True
+    # tools/call carries the refusal as an isError result; handshake methods must get a JSON-RPC error.
+    if method == "tools/call":
+        assert body["result"]["isError"] is True
+    else:
+        assert "result" not in body
+        assert body["error"]["code"] == -32003
     assert message in json.dumps(body)
     assert len(downstream.sent_headers) == 2
 
@@ -1039,7 +1139,8 @@ async def test_post_proxy_second_401_changed_discovery_returns_login(monkeypatch
     assert settings.jarvis_realm in resp.headers["www-authenticate"]
 
 
-async def test_post_proxy_no_third_send(monkeypatch):
+@pytest.mark.parametrize("method", ["initialize", "tools/call"])
+async def test_post_proxy_no_third_send(monkeypatch, method):
     tokens = ["t1"]
     _token_header_builder(monkeypatch, tokens)
     oauth_service = Mock()
@@ -1051,12 +1152,55 @@ async def test_post_proxy_no_third_send(monkeypatch):
     oauth_service.recover_from_unauthorized = AsyncMock(side_effect=other_pod)
     downstream = _FakeDownstream(401, 401, 200)
 
-    resp = await _proxy(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service)
+    resp = await _proxy(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service, method)
 
     assert len(downstream.sent_headers) == 2
     body = json.loads(resp.body)
-    assert body["result"]["isError"] is True
+    if method == "tools/call":
+        assert body["result"]["isError"] is True
+    else:
+        assert "result" not in body
+        assert body["error"]["code"] == -32003
     assert "Authorization for github changed during this call; retry it." in json.dumps(body)
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/list", "tools/call"])
+async def test_forward_without_event_stream_accept_rejects_by_method(method):
+    """A client that can't accept text/event-stream is refused before any downstream send; handshake
+    methods get a JSON-RPC Invalid Request error, tools/call an isError result."""
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "path": f"/proxy/server/{VALID_OBJECT_ID}/github",
+            "query_string": b"",
+            "headers": [(b"accept", b"application/json")],
+        },
+        receive=_proxy_receive(),
+    )
+    downstream = _FakeDownstream()
+
+    resp = await proxy_routes._forward_to_downstream(
+        request_id=1,
+        request=request,
+        target_url="https://example.com/mcp",
+        proxy_client=downstream,
+        headers={},
+        mcp_method=method,
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert downstream.sent_headers == []
+    if method == "tools/call":
+        assert body["result"]["isError"] is True
+        assert "text/event-stream" in body["result"]["content"][0]["text"]
+    else:
+        assert "result" not in body
+        assert body["error"]["code"] == -32600
+        assert "text/event-stream" in body["error"]["message"]
 
 
 async def test_post_proxy_non_oauth_401_is_relayed(monkeypatch):

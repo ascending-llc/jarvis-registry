@@ -7,16 +7,30 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services.vector_sync_helpers import (
-    OrphanSweepGuardError,
     VectorSyncPlan,
     clear_vector_sync_marker,
     delete_orphan_vectors,
+    is_failed_sync_result,
     sync_agent_vectors,
     sync_server_vectors,
 )
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 
 pytestmark = pytest.mark.asyncio
+
+_OWNER = "registry-pod-1"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [{"failed_tools": 1}, {"failed": 1}, {"error": "patch failed", "failed": 0}],
+)
+def test_is_failed_sync_result_flags_any_failure(result):
+    assert is_failed_sync_result(result) is True
+
+
+def test_is_failed_sync_result_accepts_all_zero_result():
+    assert is_failed_sync_result({"indexed": 3, "failed": 0, "failed_tools": 0, "error": None}) is False
 
 
 def _mongo_ids_collection(ids):
@@ -81,56 +95,28 @@ async def test_delete_orphan_vectors_one_failure_does_not_stop_others():
     assert mcp_deleted == 2
 
 
-async def test_delete_orphan_vectors_guard_trips_and_deletes_nothing():
-    """Too large a share orphaned => raise and delete nothing from EITHER collection (bad Mongo read)."""
+async def test_delete_orphan_vectors_strict_raises_on_first_failure():
+    """Strict mode (the reindex caller) propagates a failed delete instead of logging past it."""
     mcp_repo = Mock()
-    mcp_repo.delete_by_server_id = AsyncMock()
+    mcp_repo.delete_by_server_id = AsyncMock(side_effect=RuntimeError("boom"))
     a2a_repo = Mock()
-    a2a_repo.delete_by_agent_id = AsyncMock()
+    a2a_repo.delete_by_agent_id = AsyncMock(return_value=1)
 
-    # 30 vectors, Mongo returns only 5 => 25/30 (>50%) look orphaned.
-    vector_mcp = {f"s{i}" for i in range(30)}
-    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[f"s{i}" for i in range(5)], a2a_ids=[])
-    with mcp_patch, a2a_patch, pytest.raises(OrphanSweepGuardError):
+    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[], a2a_ids=[])
+    with mcp_patch, a2a_patch, pytest.raises(RuntimeError, match="boom"):
         await delete_orphan_vectors(
             mcp_repo,
             a2a_repo,
-            vector_mcp_ids=vector_mcp,
-            vector_a2a_ids=set(),
-            max_orphan_fraction=0.5,
-            guard_min_total=20,
+            vector_mcp_ids={"a"},
+            vector_a2a_ids={"x"},
+            strict=True,
         )
 
-    # Guard checks both collections before deleting either, so nothing is removed.
-    mcp_repo.delete_by_server_id.assert_not_awaited()
     a2a_repo.delete_by_agent_id.assert_not_awaited()
 
 
-async def test_delete_orphan_vectors_guard_exempts_small_collection():
-    """Below guard_min_total the fraction is ignored, so a tiny set can't false-trip."""
-    mcp_repo = Mock()
-    mcp_repo.delete_by_server_id = AsyncMock(return_value=1)
-    a2a_repo = Mock()
-    a2a_repo.delete_by_agent_id = AsyncMock()
-
-    # 3 vectors, none in Mongo => 100% orphaned, but total < min_total => no trip.
-    mcp_patch, a2a_patch = _patch_mongo_ids(mcp_ids=[], a2a_ids=[])
-    with mcp_patch, a2a_patch:
-        mcp_deleted, _ = await delete_orphan_vectors(
-            mcp_repo,
-            a2a_repo,
-            vector_mcp_ids={"s1", "s2", "s3"},
-            vector_a2a_ids=set(),
-            max_orphan_fraction=0.5,
-            guard_min_total=20,
-        )
-
-    assert mcp_deleted == 3
-    assert mcp_repo.delete_by_server_id.await_count == 3
-
-
-async def test_delete_orphan_vectors_no_guard_when_fraction_unset():
-    """The reindex caller passes no fraction, so even a 100%-orphan diff deletes normally."""
+async def test_delete_orphan_vectors_deletes_a_fully_orphaned_collection():
+    """No orphan-share cap: a lost federation cleanup can orphan most of a collection, and it is swept."""
     mcp_repo = Mock()
     mcp_repo.delete_by_server_id = AsyncMock(return_value=1)
     a2a_repo = Mock()
@@ -155,7 +141,7 @@ async def test_sync_server_vectors_ok():
     repo.sync_to_vector_db.assert_awaited_once()
 
 
-@pytest.mark.parametrize("result", [None, {"failed_tools": ["t"]}])
+@pytest.mark.parametrize("result", [None, {"failed_tools": ["t"]}, {"failed": 1}, {"error": "boom"}])
 async def test_sync_server_vectors_raises_on_failure(result):
     repo = Mock()
     repo.sync_to_vector_db = AsyncMock(return_value=result)
@@ -163,7 +149,7 @@ async def test_sync_server_vectors_raises_on_failure(result):
         await sync_server_vectors(repo, Mock(), is_delete=True)
 
 
-@pytest.mark.parametrize("result", [None, {"failed": ["x"]}])
+@pytest.mark.parametrize("result", [None, {"failed": ["x"]}, {"failed_tools": 1}, {"error": "boom"}])
 async def test_sync_agent_vectors_raises_on_failure(result):
     repo = Mock()
     repo.sync_to_vector_db = AsyncMock(return_value=result)
@@ -182,18 +168,6 @@ async def test_clear_vector_sync_marker_compare_and_clears_by_value():
         {"_id": doc_id, "vectorSyncPendingAt": marker},
         {"$unset": {"vectorSyncPendingAt": "", "vectorSyncAttempts": ""}},
     )
-
-
-async def test_delete_entity_lease_removes_per_entity_lease_doc(monkeypatch):
-    from registry.services.vector_sync_helpers import delete_entity_lease
-    from registry_pkgs.models import LeaderLease
-
-    doc_id = PydanticObjectId()
-    collection = Mock(delete_one=AsyncMock())
-    monkeypatch.setattr(ExtendedMCPServer, "get_collection_name", lambda: "mcpservers")
-    monkeypatch.setattr(LeaderLease, "get_pymongo_collection", lambda: collection)
-    await delete_entity_lease(ExtendedMCPServer, doc_id)
-    collection.delete_one.assert_awaited_once_with({"_id": f"vector-entity:mcpservers:{doc_id}"})
 
 
 async def test_vector_sync_plan_is_frozen():
@@ -297,13 +271,13 @@ async def test_obsolete_plan_reads_latest_and_clears_under_lease_transaction(syn
     stale = state.doc.model_copy(deep=True)
     stale.serverName = "obsolete"
     plan = VectorSyncPlan(stale, state.doc.vectorSyncPendingAt - timedelta(seconds=1), False)
-    await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, plan=plan)
+    await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER, plan=plan)
     assert state.writes == ["latest"]
     assert state.doc.vectorSyncPendingAt is None
     assert state.lease_repo.transition_or_raise.await_args.kwargs["session"] is state.session
     assert state.collection.update_one.await_args.kwargs["session"] is state.session
     # Replaying a queued old plan after success must not recreate old vectors.
-    assert await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, plan=plan) is False
+    assert await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER, plan=plan) is False
     assert state.writes == ["latest"]
 
 
@@ -323,16 +297,16 @@ async def test_same_entity_contention_preserves_new_write(sync_state):
         return {"failed_tools": 0}
 
     state.repo.sync_to_vector_db.side_effect = slow
-    old = asyncio.create_task(sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id))
+    old = asyncio.create_task(sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER))
     await started.wait()
     state.doc.serverName = "newer"
     state.doc.vectorSyncPendingAt += timedelta(seconds=1)
     with pytest.raises(VectorSyncBusyError):
-        await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id)
+        await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER)
     finish.set()
     await old
     assert state.doc.vectorSyncPendingAt is not None
-    await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id)
+    await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER)
     assert state.writes == ["latest", "newer"]
     assert state.doc.vectorSyncPendingAt is None
 
@@ -354,7 +328,7 @@ async def test_late_write_after_takeover_or_cancel_requeues_after_io(sync_state,
         return {"failed_tools": 0}
 
     state.repo.sync_to_vector_db.side_effect = slow
-    task = asyncio.create_task(sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id))
+    task = asyncio.create_task(sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER))
     await started.wait()
     if cancel:
         task.cancel()
@@ -377,22 +351,35 @@ async def test_late_write_after_takeover_or_cancel_requeues_after_io(sync_state,
     [
         {"error": "write failed"},
         {"failed": 1, "metadata_updated": 1},
-        {"metadata_updated": 0},
+        {"failed_tools": 1, "indexed_tools": 1},
     ],
 )
-async def test_metadata_failure_or_missing_vectors_never_clears(sync_state, tools, result, monkeypatch):
+async def test_metadata_failure_never_clears(sync_state, tools, result):
     from registry.services.vector_sync_helpers import sync_pending_vectors
-    from registry_pkgs.vector.sync_result import VectorSyncResult
 
     state = sync_state
-    monkeypatch.setattr(ExtendedMCPServer, "to_documents", lambda self: [Mock()])
-    state.repo.update_entity_metadata = AsyncMock(return_value=VectorSyncResult(**result))
-    state.repo.update_tools_metadata = AsyncMock(return_value=VectorSyncResult(**result))
+    state.repo.sync_entity_metadata = AsyncMock(return_value=result)
+    state.repo.sync_tools_enabled = AsyncMock(return_value=result)
     marker = state.doc.vectorSyncPendingAt
     plan = VectorSyncPlan(state.doc, marker, False, ((("tool",), False),) if tools else ())
     with pytest.raises(RuntimeError):
-        await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, plan=plan)
+        await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER, plan=plan)
     assert state.doc.vectorSyncPendingAt == marker
+
+
+async def test_tool_deltas_sync_all_toggled_tools_with_reload(sync_state):
+    from registry.services.vector_sync_helpers import sync_pending_vectors
+
+    state = sync_state
+    state.repo.sync_tools_enabled = AsyncMock(return_value={"metadata_updated": 2})
+    marker = state.doc.vectorSyncPendingAt
+    plan = VectorSyncPlan(state.doc, marker, False, ((("write_file",), False), (("read_file",), True)))
+    assert await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER, plan=plan)
+    args = state.repo.sync_tools_enabled.await_args
+    assert args.args[1] == ["read_file", "write_file"]
+    assert (await args.kwargs["reload"]()).id == state.doc.id
+    assert ExtendedMCPServer.get.await_args == ((state.doc.id,), {"ignore_cache": True})
+    assert state.doc.vectorSyncPendingAt is None
 
 
 async def test_federation_repair_marks_before_delete_and_keeps_marker_on_failure(sync_state):
@@ -408,6 +395,26 @@ async def test_federation_repair_marks_before_delete_and_keeps_marker_on_failure
 
     state.repo.delete_by_runtime_identity = AsyncMock(side_effect=fail_delete)
     with pytest.raises(RuntimeError, match="delete failed"):
-        await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, runtime_identity=("fed", "arn"))
+        await sync_pending_vectors(
+            ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER, runtime_identity=("fed", "arn")
+        )
     assert state.doc.vectorSyncPendingAt is not None
     state.repo.sync_to_vector_db.assert_not_awaited()
+
+
+async def test_entity_lease_claims_with_pod_owner_and_ttl(sync_state):
+    """the per-entity lease is owned by the pod and carries a TTL on claim and on release."""
+    from datetime import timedelta
+
+    from registry.services import vector_sync_helpers as helpers
+    from registry.services.vector_sync_helpers import sync_pending_vectors
+
+    state = sync_state
+    before = datetime.now(UTC)
+    assert await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, owner=_OWNER)
+
+    claim = state.lease_repo.claim.await_args.kwargs
+    assert claim["owner"] == _OWNER
+    assert claim["claimable_filter"]["_id"] == f"vector-entity:mcpservers:{state.doc.id}"
+    assert claim["set_fields"]["expireAt"] >= before + timedelta(days=1)
+    assert helpers.release_leader.await_args.kwargs["expire_after"] == timedelta(days=1)

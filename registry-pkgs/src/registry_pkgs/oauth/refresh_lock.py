@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 REFRESH_LOCK_TTL_MS = 30_000
 REFRESH_LOCK_POLL_SECONDS = 0.2
 REFRESH_LOCK_WAIT_SECONDS = 15.0
-REFRESH_OPERATION_SECONDS = 60.0
 REFRESH_COMMAND_SECONDS = 2.0
 REFRESH_IN_PROGRESS_MESSAGE = "Token refresh already in progress; retry"
 _RELEASE_SCRIPT = """
@@ -112,25 +111,30 @@ async def refresh_lock(
     lease = RefreshLease(redis_client, refresh_lock_key(key_prefix, user_id, server_id), io_limit)
     heartbeat: asyncio.Task[None] | None = None
     try:
-        async with asyncio.timeout(REFRESH_LOCK_WAIT_SECONDS):
-            acquired = await lease.command(redis_client.set, lease.key, lease.owner, nx=True, px=REFRESH_LOCK_TTL_MS)
-            while not acquired:
-                await asyncio.sleep(REFRESH_LOCK_POLL_SECONDS)
-                if wait_for_result:
-                    if not await lease.command(redis_client.exists, lease.key):
-                        break
-                else:
-                    acquired = await lease.command(
-                        redis_client.set, lease.key, lease.owner, nx=True, px=REFRESH_LOCK_TTL_MS
-                    )
+        try:
+            async with asyncio.timeout(REFRESH_LOCK_WAIT_SECONDS):
+                acquired = await lease.command(
+                    redis_client.set, lease.key, lease.owner, nx=True, px=REFRESH_LOCK_TTL_MS
+                )
+                while not acquired:
+                    await asyncio.sleep(REFRESH_LOCK_POLL_SECONDS)
+                    if wait_for_result:
+                        if not await lease.command(redis_client.exists, lease.key):
+                            break
+                    else:
+                        acquired = await lease.command(
+                            redis_client.set, lease.key, lease.owner, nx=True, px=REFRESH_LOCK_TTL_MS
+                        )
+        except TimeoutError as exc:
+            raise OAuthCoordinationError(REFRESH_IN_PROGRESS_MESSAGE) from exc
         if not acquired:
             yield None
             return
         heartbeat = asyncio.create_task(lease.heartbeat())
-        async with asyncio.timeout(REFRESH_OPERATION_SECONDS):
-            yield lease
-    except TimeoutError as exc:
-        raise OAuthCoordinationError(REFRESH_IN_PROGRESS_MESSAGE) from exc
+        # No operation budget: cancelling an in-flight IdP refresh could discard a refresh
+        # token the IdP already rotated. The OAuth client's HTTP timeout bounds that call,
+        # the heartbeat keeps the lease meanwhile, and ensure_owned() guards the commit.
+        yield lease
     finally:
         if heartbeat is not None:
             heartbeat.cancel()

@@ -102,6 +102,30 @@ def _managed_card_agent(
     )
 
 
+@pytest.mark.asyncio
+async def test_unchanged_hash_syncs_all_agent_metadata_with_mongo_reload():
+    from registry.services.vector_sync_helpers import VectorSyncPlan, _write_vectors
+
+    repo = MagicMock(sync_entity_metadata=AsyncMock(return_value={"metadata_updated": 1}))
+    agent = _managed_card_agent(config=AgentConfig(title="Weather", type="jsonrpc", enabled=False))
+    agent.tags = ["ops"]
+    agent.federationMetadata = make_agentcore_a2a_metadata(runtime_version="7")
+    agent.vectorSyncPendingAt = datetime.now(UTC)
+
+    with patch.object(A2AAgent, "get", new_callable=AsyncMock) as reload:
+        await _write_vectors(repo, agent, VectorSyncPlan(agent, agent.vectorSyncPendingAt, False), None)
+
+        repo.sync_entity_metadata.assert_awaited_once()
+        args = repo.sync_entity_metadata.await_args
+        assert args.args == (agent, {"enabled": False, "tags": ["ops"], "runtimeVersion": "7"})
+        reload.assert_not_awaited()
+        assert await args.kwargs["reload"]() is reload.return_value
+        reload.assert_awaited_once_with(agent.id, ignore_cache=True)
+
+    repo.sync_to_vector_db.assert_not_called()
+    repo.update_entity_metadata.assert_not_called()
+
+
 def test_build_managed_agent_card_applies_all_transformations(monkeypatch: pytest.MonkeyPatch) -> None:
     # `registry_url` and `jwt_issuer` are deliberately set to different hosts here: `url` /
     # `additionalInterfaces[*].url` live on the registry backend (registry_url), while
@@ -414,17 +438,13 @@ async def test_delete_agent_passes_session_to_delete():
     fake_agent.delete = AsyncMock()
     fake_agent.card = SimpleNamespace(name="Test Agent")
 
-    with (
-        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
-        patch("registry.services.a2a_agent_service.delete_entity_lease", AsyncMock()) as drop_lease,
-    ):
+    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
         await service.delete_agent(agent_id=str(PydanticObjectId()), session=_SENTINEL_SESSION)
 
     fake_agent.delete.assert_awaited_once()
     assert fake_agent.delete.await_args.kwargs["session"] is _SENTINEL_SESSION
-    drop_lease.assert_awaited_once()  # orphan per-entity lease is cleaned up on delete
 
 
 @pytest.mark.asyncio
@@ -439,7 +459,6 @@ async def test_delete_agent_no_longer_deletes_vectors():
 
     with (
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
-        patch("registry.services.a2a_agent_service.delete_entity_lease", AsyncMock()),
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
         name = await service.delete_agent(agent_id=str(PydanticObjectId()))
@@ -489,7 +508,7 @@ async def test_schedule_vector_delete_logs_warning_on_repo_failure(caplog):
 
 
 @pytest.mark.asyncio
-async def test_schedule_vector_delete_returns_when_tracker_refuses():
+async def test_schedule_vector_delete_returns_when_tracker_refuses(caplog):
     repo = MagicMock()
     repo.delete_by_agent_id = AsyncMock()
 
@@ -502,7 +521,12 @@ async def test_schedule_vector_delete_returns_when_tracker_refuses():
     service = A2AAgentService(a2a_agent_repo=repo, azure_client_cache=MagicMock(), background_task_tracker=tracker)
 
     # Returns normally; the Mongo delete already committed, the sweep heals the orphan.
-    service.schedule_vector_delete("agent-1", "Agent One")
+    with caplog.at_level(logging.INFO, logger="registry.services.a2a_agent_service"):
+        service.schedule_vector_delete("agent-1", "Agent One")
+
+    # The log names the orphan sweep, not the reconciler (which never heals deletes).
+    assert "the orphan sweep will remove its vectors" in caplog.text
+    assert "reconciler" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1127,3 +1151,64 @@ async def test_update_agent_marks_pending_and_returns_plan():
     assert plan.doc is fake_agent
     assert plan.full_resync is False
     assert plan.marker == fake_agent.vectorSyncPendingAt
+
+
+def _record_marker_at_save(doc) -> list[tuple]:
+    """Make ``doc.save`` record the marker fields as they are at save time (i.e. what commits)."""
+    saved: list[tuple] = []
+
+    async def save(*args, **kwargs):
+        saved.append((doc.vectorSyncPendingAt, doc.vectorSyncAttempts))
+
+    doc.save = AsyncMock(side_effect=save)
+    return saved
+
+
+@pytest.mark.asyncio
+async def test_toggle_agent_persists_marker_in_same_save_and_resets_attempts():
+    service = _service()
+    fake_agent = MagicMock()
+    fake_agent.card = SimpleNamespace(name="Test Agent")
+    fake_agent.vectorSyncPendingAt = None
+    fake_agent.vectorSyncAttempts = 5
+    fake_agent.vectorContentHash = "hash"
+    saved = _record_marker_at_save(fake_agent)
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "schedule_vector_sync") as schedule,
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+        await service.toggle_agent_status(agent_id=str(PydanticObjectId()), enabled=False)
+
+    plan = schedule.call_args.args[0]
+    assert saved == [(plan.marker, 0)]
+    assert plan.full_resync is False  # disabling with unchanged content patches metadata only
+
+
+@pytest.mark.asyncio
+async def test_sync_wellknown_persists_marker_in_same_save_and_schedules_full_resync():
+    service = _service()
+    old_card = SimpleNamespace(version="1.0.0", description="old", skills=[], capabilities={}, name="Test Agent")
+    updated_card = SimpleNamespace(version="2.0.0", description="new", skills=[], capabilities={}, name="Test Agent")
+    fake_agent = MagicMock()
+    fake_agent.card = old_card
+    fake_agent.config = SimpleNamespace(url="https://agent.example.com")
+    fake_agent.wellKnown = SimpleNamespace(
+        enabled=True, lastSyncAt=None, lastSyncStatus=None, lastSyncVersion="1.0.0", syncError=None
+    )
+    fake_agent.vectorSyncPendingAt = None
+    fake_agent.vectorSyncAttempts = 5
+    saved = _record_marker_at_save(fake_agent)
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_resolve_agent_card_with_fallback", AsyncMock(return_value=updated_card)),
+        patch.object(service, "schedule_vector_sync") as schedule,
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+        await service.sync_wellknown(agent_id=str(PydanticObjectId()))
+
+    plan = schedule.call_args.args[0]
+    assert saved == [(plan.marker, 0)]
+    assert plan.full_resync is True

@@ -23,18 +23,23 @@ class AuthProvider(ABC):
 
     @abstractmethod
     async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
-        """Get user information from access token.
+        """Return verified identity information and abstract scope groups.
 
         Args:
             access_token: OAuth2 access token (required for Graph API calls)
-            id_token: Optional ID token (preferred for user identity extraction)
+            id_token: ID token required for provider identity verification
 
         Returns:
             Dictionary containing user information:
-                - username: User's username
-                - email: User's email
-                - groups: User's group memberships
-                - Additional provider-specific fields
+                - username: Display/login name; never an identity lookup key
+                - email: Normalized email, or None
+                - name: Display name
+                - id: Upstream identifier (Entra oid or Google sub)
+                - groups: Resolved abstract scope groups
+                - issuer: Verified identity issuer
+                - subject: Verified identity subject
+                - object_id: Entra oid, or None for Google
+                - email_trusted: Whether provider-specific email trust checks passed
 
         Raises:
             ValueError: If user info cannot be retrieved

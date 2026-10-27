@@ -10,6 +10,7 @@ OAuth discovery. The OAuth client's network calls (registration, token endpoint)
 import asyncio
 import copy
 import json
+import logging
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -35,7 +36,11 @@ from registry_pkgs.oauth.errors import (
     OAuthTokenEndpointError,
     RegistryOAuthStateConflictError,
 )
-from registry_pkgs.oauth.oauth_service import ENSURE_STATE_MAX_ATTEMPTS, MCPOAuthService
+from registry_pkgs.oauth.oauth_service import (
+    ENSURE_STATE_MAX_ATTEMPTS,
+    LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS,
+    MCPOAuthService,
+)
 from registry_pkgs.oauth.oauth_utils import get_default_redirect_uri
 from registry_pkgs.oauth.refresh_lock import refresh_lock
 from registry_pkgs.oauth.schemas import (
@@ -196,6 +201,9 @@ class FakeTokenService:
         if self.access.get(key) != snapshot["access"] or self.refresh.get(key) != snapshot["refresh"]:
             raise OAuthCoordinationError("OAuth credentials changed during refresh; retry")
         await self.store_oauth_tokens(key[0], service_name, tokens, metadata)
+        if not tokens.refresh_token:
+            # Like the real commit: a response without a refresh token deletes the stored one.
+            self.refresh.pop(key, None)
 
     async def store_oauth_tokens(
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
@@ -686,13 +694,110 @@ class TestLogin:
         assert h.register.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_redis_error_on_lock_does_not_store_login_tokens(self, h: Harness) -> None:
+    async def test_login_tokens_stored_without_refresh_lock(self, h: Harness) -> None:
         h.service._lock_redis_client = FakeRedis(fail_set=True)  # type: ignore[assignment]
 
-        success, _ = await self._start_and_complete(h)
+        success, error = await self._start_and_complete(h)
 
-        assert not success
-        assert (USER, "atlassian") not in h.tokens.access
+        assert success and error is None
+        assert h.tokens.access[(USER, "atlassian")].token == "login-access"
+
+    @pytest.mark.asyncio
+    async def test_login_commit_conflict_retries_with_fresh_snapshot(self, h: Harness) -> None:
+        commit = h.tokens.commit_oauth_tokens
+        calls = 0
+
+        async def concurrent_write_once(*args: Any) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                # A racing refresh committed between our snapshot and our commit.
+                h.tokens.put("atlassian", access="racing-refresh", refresh="racing-r")
+            await commit(*args)
+
+        h.tokens.commit_oauth_tokens = concurrent_write_once  # type: ignore[method-assign]
+        success, error = await self._start_and_complete(h)
+
+        assert success and error is None
+        assert calls == 2
+        assert h.tokens.access[(USER, "atlassian")].token == "login-access"
+        assert h.tokens.refresh[(USER, "atlassian")].token == "login-refresh"
+
+    @pytest.mark.asyncio
+    async def test_login_commit_fails_after_max_attempts(self, h: Harness) -> None:
+        h.tokens.commit_oauth_tokens = AsyncMock(  # type: ignore[method-assign]
+            side_effect=OAuthCoordinationError("OAuth credentials changed during refresh; retry")
+        )
+
+        success, error = await self._start_and_complete(h)
+
+        assert not success and error is not None and "changed" in error
+        assert h.tokens.commit_oauth_tokens.await_count == LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS
+
+
+# ----------------------------------------------------------------------
+# Stored-authorization status (no network)
+# ----------------------------------------------------------------------
+
+
+class TestHasUsableStoredAuthorization:
+    STATIC = {"client_id": "static-id", "client_secret": "s"}
+
+    @pytest.mark.parametrize(
+        "tokens,expected",
+        [
+            ({"refresh": {"clientId": "static-id", "issuer": None, "resource": None}}, True),
+            ({"access": {"clientId": "static-id", "issuer": "https://anything"}}, True),
+            ({"access": {"clientId": "other-id"}, "refresh": {"clientId": "other-id"}}, False),
+            ({}, False),
+        ],
+    )
+    def test_static_client_binds_on_client_id_only(self, h: Harness, tokens: dict, expected: bool) -> None:
+        assert h.service.has_usable_stored_authorization(h.server(oauth=self.STATIC), tokens) is expected
+
+    def test_dcr_without_state_is_not_authorized(self, h: Harness) -> None:
+        binding = {"clientId": "client-1", "issuer": ATLASSIAN_ISSUER, "resource": ATLASSIAN_URL}
+
+        assert h.service.has_usable_stored_authorization(h.server(), {"access": binding, "refresh": binding}) is False
+
+    @pytest.mark.asyncio
+    async def test_dcr_state_bound_to_another_url_is_not_authorized(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        binding = h.dcr_binding(state)
+
+        server = h.server(url="https://mcp.example.com/mcp")
+        assert h.service.has_usable_stored_authorization(server, {"access": binding, "refresh": binding}) is False
+
+    @pytest.mark.asyncio
+    async def test_dcr_access_binds_on_issuer_and_resource(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        reregistered = {**h.dcr_binding(state), "clientId": "previous-client"}
+        old_issuer = {**h.dcr_binding(state), "issuer": "https://auth.atlassian.com"}
+
+        assert h.service.has_usable_stored_authorization(h.server(), {"access": reregistered}) is True
+        assert h.service.has_usable_stored_authorization(h.server(), {"access": old_issuer}) is False
+
+    @pytest.mark.asyncio
+    async def test_dcr_refresh_only_requires_current_client(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        current = h.dcr_binding(state)
+        other_client = {**current, "clientId": "previous-client"}
+
+        assert h.service.has_usable_stored_authorization(h.server(), {"refresh": current}) is True
+        assert h.service.has_usable_stored_authorization(h.server(), {"refresh": other_client}) is False
+        # A mismatched access token falls through to the refresh token's binding.
+        mismatched_access = {**current, "resource": "https://elsewhere"}
+        tokens = {"access": mismatched_access, "refresh": current}
+        assert h.service.has_usable_stored_authorization(h.server(), tokens) is True
+
+    @pytest.mark.asyncio
+    async def test_dcr_refresh_without_registered_client_is_not_authorized(self, h: Harness) -> None:
+        state = await h.bound_dcr_state()
+        binding = h.dcr_binding(state)
+        assert state.client is not None
+        await h.service.invalidate_registry_oauth_client(h.server(), state.client.clientId)
+
+        assert h.service.has_usable_stored_authorization(h.server(), {"refresh": binding}) is False
 
 
 # ----------------------------------------------------------------------
@@ -946,6 +1051,30 @@ class TestRefresh:
 
         assert needs_connection and response["oauth_required"] is False
         h.refresh.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unexpected_refresh_failure_logs_cause(self, h: Harness, caplog: pytest.LogCaptureFixture) -> None:
+        h.tokens.put("atlassian", refresh="r1")
+        h.service._refresh_with_lock = AsyncMock(side_effect=RuntimeError("mongo down"))  # type: ignore[method-assign]
+
+        with pytest.raises(OAuthCoordinationError, match="unavailable") as exc_info:
+            await h.service.validate_and_refresh_tokens(USER, h.server())
+
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert record.exc_info is not None and record.exc_info[1] is exc_info.value.__cause__
+
+    @pytest.mark.asyncio
+    async def test_unexpected_reinitialize_refresh_failure_logs_cause(
+        self, h: Harness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        h.service._refresh_with_lock = AsyncMock(side_effect=RuntimeError("mongo down"))  # type: ignore[method-assign]
+
+        with pytest.raises(OAuthCoordinationError, match="unavailable") as exc_info:
+            await h.service._refresh_and_connect(USER, h.server())
+
+        [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert record.exc_info is not None and record.exc_info[1] is exc_info.value.__cause__
 
     def test_refresh_token_method_removed(self) -> None:
         assert not hasattr(MCPOAuthService, "refresh_token")

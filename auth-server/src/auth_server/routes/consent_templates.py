@@ -302,6 +302,14 @@ def render_device_scope_error_page() -> str:
     )
 
 
+def render_device_identity_error_page(message: str) -> str:
+    return _render_device_status_page(
+        title="Sign-in refused",
+        heading="We couldn't complete this sign-in",
+        message=f"{html.escape(message, quote=False)} You can close this window.",
+    )
+
+
 def render_device_server_error_page() -> str:
     return _render_device_status_page(
         title="Something went wrong",

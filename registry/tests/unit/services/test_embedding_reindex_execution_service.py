@@ -568,7 +568,8 @@ def test_drop_collection_propagates_real_failure():
 
 
 async def test_delete_removed_delegates_to_shared_helper(monkeypatch):
-    """`_delete_removed` forwards the swept id sets to the shared ``delete_orphan_vectors`` helper."""
+    """`_delete_removed` forwards the swept id sets to the shared helper in strict mode, so a failed
+    delete raises and the generation is not committed with a removed entity's vectors."""
     delegate = AsyncMock(return_value=(0, 0))
     monkeypatch.setattr(exec_module, "delete_orphan_vectors", delegate)
 
@@ -577,4 +578,6 @@ async def test_delete_removed_delegates_to_shared_helper(monkeypatch):
     a2a_repo = MagicMock()
     await service._delete_removed(mcp_repo, a2a_repo, {"s1", "s2"}, {"a1"})
 
-    delegate.assert_awaited_once_with(mcp_repo, a2a_repo, vector_mcp_ids={"s1", "s2"}, vector_a2a_ids={"a1"})
+    delegate.assert_awaited_once_with(
+        mcp_repo, a2a_repo, vector_mcp_ids={"s1", "s2"}, vector_a2a_ids={"a1"}, strict=True
+    )

@@ -237,36 +237,29 @@ async def test_managed_identity_credential_built_once_concurrent():
 
 
 @pytest.mark.asyncio
-async def test_unchanged_updatedat_propagates_without_rebuild():
-    """AC: bad secret + unchanged updatedAt -> original error propagates, no second credential."""
+async def test_throttled_auth_failure_rebuild_propagates_original_error():
+    """A second auth failure inside the throttle window reuses the state and surfaces the error."""
     federation_id = PydanticObjectId()
-    same = datetime.now(UTC)
-    csc_factory = MagicMock(side_effect=[_csc(fail=True), _csc(fail=True)])
+    fed_get = AsyncMock(return_value=_federation(_CS_CFG))
+    csc_factory = MagicMock(side_effect=lambda *a, **k: _csc(fail=True))
     cache = _cache()
 
-    with (
-        patch(_FED_GET, new=AsyncMock(return_value=_federation(_CS_CFG, updated_at=same))),
-        patch(_CSC, new=csc_factory),
-    ):
+    with patch(_FED_GET, new=fed_get), patch(_CSC, new=csc_factory):
+        with pytest.raises(ClientAuthenticationError):
+            await cache.get_access_token(federation_id)
         with pytest.raises(ClientAuthenticationError):
             await cache.get_access_token(federation_id)
 
-    assert csc_factory.call_count == 2  # no rebuild
+    assert fed_get.await_count == 2  # initial build + the first call's rebuild; the second is throttled
+    assert csc_factory.call_count == 3  # failure + post-rebuild retry, then one failure with no rebuild
     await cache.close()
 
 
 @pytest.mark.asyncio
-async def test_changed_updatedat_rebuilds_and_heals_rotated_secret():
-    """AC: worker with no invalidate() picks up a rotated clientSecret via updatedAt bump."""
+async def test_auth_failure_rebuild_heals_rotated_secret():
+    """A worker with no invalidate() picks up a rotated clientSecret via the reactive rebuild."""
     federation_id = PydanticObjectId()
-    old = datetime.now(UTC)
-    new = old + timedelta(seconds=5)
-    fed_get = AsyncMock(
-        side_effect=[
-            _federation(_CS_CFG, updated_at=old),
-            _federation({**_CS_CFG, "clientSecret": "rotated"}, updated_at=new),
-        ]
-    )
+    fed_get = AsyncMock(side_effect=[_federation(_CS_CFG), _federation({**_CS_CFG, "clientSecret": "rotated"})])
     csc_factory = MagicMock(side_effect=[_csc(fail=True), _csc("healed")])
     cache = _cache()
 
@@ -275,22 +268,15 @@ async def test_changed_updatedat_rebuilds_and_heals_rotated_secret():
 
     assert token.token == "healed"
     assert csc_factory.call_count == 2  # bounded: exactly one rebuild
-    assert fed_get.await_count == 2  # initial build + one refresh
+    assert fed_get.await_count == 2  # initial build + one rebuild
     await cache.close()
 
 
 @pytest.mark.asyncio
 async def test_rebuild_bounded_to_one_when_secret_still_bad():
-    """AC: even with updatedAt advanced, a still-bad new secret is not retried past one rebuild."""
+    """A rebuilt credential that still fails is not retried past one rebuild; the error surfaces."""
     federation_id = PydanticObjectId()
-    old = datetime.now(UTC)
-    new = old + timedelta(seconds=5)
-    fed_get = AsyncMock(
-        side_effect=[
-            _federation(_CS_CFG, updated_at=old),
-            _federation({**_CS_CFG, "clientSecret": "still-bad"}, updated_at=new),
-        ]
-    )
+    fed_get = AsyncMock(side_effect=[_federation(_CS_CFG), _federation({**_CS_CFG, "clientSecret": "still-bad"})])
     csc_factory = MagicMock(side_effect=[_csc(fail=True), _csc(fail=True)])
     cache = _cache()
 
@@ -570,8 +556,11 @@ async def test_auth_rebuild_throttle_does_not_block_known_config_change():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method,status,expected", [("GET", 401, 2), ("POST", 401, 1), ("GET", 403, 1)])
-async def test_auth_replay_is_bounded_and_safe(method, status, expected):
+@pytest.mark.parametrize(
+    "method,status,expected,rebuilds",
+    [("GET", 401, 2, 1), ("POST", 401, 1, 1), ("GET", 403, 1, 1), ("POST", 403, 1, 1), ("POST", 500, 1, 0)],
+)
+async def test_auth_replay_is_bounded_and_safe(method, status, expected, rebuilds):
     facade = MagicMock()
     facade.build_headers = AsyncMock(
         side_effect=[{"Authorization": "Bearer old", "Foundry-Features": "x"}, {"Authorization": "Bearer new"}]
@@ -587,6 +576,7 @@ async def test_auth_replay_is_bounded_and_safe(method, status, expected):
         response = await client.request(method, "https://example.test")
     assert response.status_code == status
     assert len(requests) == expected
+    assert facade.rebuild_after_auth_failure.await_count == rebuilds
     if expected == 2:
         assert requests[1]["authorization"] == "Bearer new"
         assert "foundry-features" not in requests[1]

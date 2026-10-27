@@ -4,6 +4,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
+from registry_pkgs.oauth.errors import OAuthCoordinationError
+
 from ....auth.dependencies import CurrentUser
 from ....deps import get_mcp_service, get_server_service, get_status_resolver
 from ....schemas.common_api_schemas import (
@@ -62,6 +64,10 @@ async def reinitialize_server(
 
     except HTTPException:
         raise
+    except OAuthCoordinationError as e:
+        # Transient (refresh in progress, Redis unavailable, write conflict): the client should retry.
+        logger.warning(f"[Reinitialize] Coordination failure for {server_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
     except Exception as e:
         logger.error(f"[Reinitialize] Unexpected error for {server_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")

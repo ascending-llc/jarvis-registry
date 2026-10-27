@@ -137,11 +137,12 @@ async def test_mark_delete_failed_restores_active_and_failed_sync_status(federat
     federation = _make_federation(status=FederationStatus.DELETING, sync_status=FederationSyncStatus.SYNCING)
 
     job_id = PydanticObjectId()
-    result = await service.mark_delete_failed(federation, "delete failed", expected_job_id=job_id)
+    applied = await service.mark_delete_failed(federation, "delete failed", expected_job_id=job_id)
 
-    assert result.status == FederationStatus.ACTIVE
-    assert result.syncStatus == FederationSyncStatus.FAILED
-    assert result.syncMessage == "delete failed"
+    assert applied is True
+    assert federation.status == FederationStatus.ACTIVE
+    assert federation.syncStatus == FederationSyncStatus.FAILED
+    assert federation.syncMessage == "delete failed"
     assert federation_collection.update_one.await_args.args[0]["deletingJobId"] == job_id
     federation.save.assert_not_awaited()
 
@@ -161,18 +162,37 @@ async def test_mark_sync_success_updates_stats_and_last_sync():
 
 
 @pytest.mark.asyncio
-async def test_mark_sync_failed_updates_last_sync_and_stats_when_provided():
+async def test_mark_sync_failed_updates_last_sync_and_stats_when_provided(federation_collection):
     service = FederationCrudService()
     federation = _make_federation(sync_status=FederationSyncStatus.SYNCING)
     last_sync = FederationLastSync(status=FederationSyncStatus.FAILED)
     stats = FederationStats(mcpServerCount=1, agentCount=2, toolCount=3, importedTotal=3)
 
-    result = await service.mark_sync_failed(federation, "one resource failed", last_sync=last_sync, stats=stats)
+    applied = await service.mark_sync_failed(federation, "one resource failed", last_sync=last_sync, stats=stats)
 
-    assert result.syncStatus == FederationSyncStatus.FAILED
-    assert result.syncMessage == "one resource failed"
-    assert result.lastSync == last_sync
-    assert result.stats == stats
+    assert applied is True
+    assert federation.syncStatus == FederationSyncStatus.FAILED
+    assert federation.syncMessage == "one resource failed"
+    assert federation.lastSync == last_sync
+    assert federation.stats == stats
+
+
+@pytest.mark.asyncio
+async def test_guarded_failure_writes_report_a_guard_miss(federation_collection):
+    service = FederationCrudService()
+    federation_collection.update_one.return_value = SimpleNamespace(matched_count=0, modified_count=0)
+
+    sync_applied = await service.mark_sync_failed(
+        _make_federation(sync_status=FederationSyncStatus.SYNCING), "failed", job_id=PydanticObjectId()
+    )
+    delete_applied = await service.mark_delete_failed(
+        _make_federation(status=FederationStatus.DELETING, sync_status=FederationSyncStatus.PENDING),
+        "failed",
+        expected_job_id=PydanticObjectId(),
+    )
+
+    assert sync_applied is False
+    assert delete_applied is False
 
 
 def test_normalize_provider_config_allows_empty_aws_config_for_create():

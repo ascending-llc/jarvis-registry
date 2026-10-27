@@ -257,7 +257,9 @@ class VectorStoreAdapter(ABC):
         Extended feature: Yield each object's value of a single property, cursor-based.
 
         Used to enumerate stored entity ids without the offset-pagination cap. Skips objects whose
-        value is None. Subclasses implement this with a database-specific cursor iterator.
+        value is None, and yields nothing for a collection that does not exist yet (collections are
+        created lazily). Backend failures propagate. Subclasses implement this with a database-specific
+        cursor iterator.
 
         Args:
             property_name: Property to read from every object
@@ -308,7 +310,13 @@ class VectorStoreAdapter(ABC):
 
     @abstractmethod
     def filter_by_metadata(
-        self, filters: Any, limit: int, collection_name: str | None = None, **kwargs
+        self,
+        filters: Any,
+        limit: int,
+        collection_name: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        **kwargs,
     ) -> list[Document]:
         """
         Extended feature: Filter documents by metadata only (no vector search)
@@ -319,6 +327,7 @@ class VectorStoreAdapter(ABC):
             filters: Filter object (auto-converted if dict)
             limit: Maximum number of results
             collection_name: Target collection
+            raise_on_error: Propagate query errors instead of returning an empty list
 
         Returns:
             List of matching LangChain Documents

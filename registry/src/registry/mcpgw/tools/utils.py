@@ -183,6 +183,10 @@ async def forward_notification(session: ServerSession, obj: dict, *, related_req
 
         return
 
+    # The notification models keep extra fields, so a leftover "jsonrpc" key would be passed twice when the SDK
+    # wraps the notification in a JSONRPCNotification. Every downstream SSE notification carries it.
+    obj = {key: value for key, value in obj.items() if key != "jsonrpc"}
+
     try:
         match obj["method"]:
             case NotificationMethod.CANCELLED:
@@ -215,7 +219,7 @@ async def forward_notification(session: ServerSession, obj: dict, *, related_req
     try:
         await session.send_notification(notification, related_request_id)
     except Exception:
-        logger.error(f"encountered error while scheduling notification-forwarding to client: {str}")
+        logger.exception("encountered error while scheduling notification-forwarding to client")
 
         return
 

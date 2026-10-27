@@ -238,52 +238,6 @@ class TestExtendedMCPServerStructure:
         assert ExtendedMCPServer.Settings.keep_nulls is False
         assert ExtendedMCPServer.Settings.use_state_management is True
 
-
-def _has_sparse_index(model, field: str) -> bool:
-    """True if ``model`` declares a sparse single-field index on ``field``."""
-    from pymongo import IndexModel
-
-    for index in model.Settings.indexes:
-        if isinstance(index, IndexModel):
-            doc = index.document
-            keys = list(doc["key"].keys())
-            if keys == [field] and doc.get("sparse"):
-                return True
-    return False
-
-
-@pytest.mark.parametrize("model", [ExtendedMCPServer, A2AAgent])
-class TestVectorSyncMarkerFields:
-    """both vector-synced models carry the pending marker and its sparse index."""
-
-    def test_marker_fields_default_unset(self, model):
-        assert model.model_fields["vectorSyncPendingAt"].annotation == (datetime | None)
-        assert model.model_fields["vectorSyncPendingAt"].default is None
-        assert model.model_fields["vectorSyncAttempts"].default == 0
-
-    def test_sparse_index_on_marker(self, model):
-        assert _has_sparse_index(model, "vectorSyncPendingAt")
-
-
-class TestLeaderLease:
-    """the singleton leader-lease document used by leader-leased loops."""
-
-    def test_string_id_and_collection(self):
-        from registry_pkgs.models import LeaderLease
-
-        assert LeaderLease.model_fields["id"].annotation is str
-        assert LeaderLease.Settings.name == "registry_leader_leases"
-
-    def test_claimable_filter_requires_free_and_due(self):
-        from registry_pkgs.models.leader_lease import leader_claimable_filter
-
-        now = datetime.now(UTC)
-        f = leader_claimable_filter("vector-sync-reconciler", now)
-        assert f["_id"] == "vector-sync-reconciler"
-        free, due = f["$and"]
-        assert {"leaseExpiresAt": {"$lte": now}} in free["$or"]
-        assert {"nextRunAt": {"$lte": now}} in due["$or"]
-
     def test_oauth_config_structure(self):
         """Test server with OAuth configuration in config object."""
         config_data = {
@@ -984,3 +938,59 @@ class TestUpdateTimestampsHook:
         await agent.update_timestamps()
         assert agent.updatedAt > old
         assert agent.createdAt is not None
+
+
+def _has_sparse_index(model, field: str) -> bool:
+    """True if ``model`` declares a sparse single-field index on ``field``."""
+    from pymongo import IndexModel
+
+    for index in model.Settings.indexes:
+        if isinstance(index, IndexModel):
+            doc = index.document
+            keys = list(doc["key"].keys())
+            if keys == [field] and doc.get("sparse"):
+                return True
+    return False
+
+
+@pytest.mark.parametrize("model", [ExtendedMCPServer, A2AAgent])
+class TestVectorSyncMarkerFields:
+    """both vector-synced models carry the pending marker and its sparse index."""
+
+    def test_marker_fields_default_unset(self, model):
+        assert model.model_fields["vectorSyncPendingAt"].annotation == (datetime | None)
+        assert model.model_fields["vectorSyncPendingAt"].default is None
+        assert model.model_fields["vectorSyncAttempts"].default == 0
+
+    def test_sparse_index_on_marker(self, model):
+        assert _has_sparse_index(model, "vectorSyncPendingAt")
+
+
+class TestLeaderLease:
+    """the singleton leader-lease document used by leader-leased loops."""
+
+    def test_string_id_and_collection(self):
+        from registry_pkgs.models import LeaderLease
+
+        assert LeaderLease.model_fields["id"].annotation is str
+        assert LeaderLease.Settings.name == "registry_leader_leases"
+
+    def test_claimable_filter_requires_free_and_due(self):
+        from registry_pkgs.models.leader_lease import leader_claimable_filter
+
+        now = datetime.now(UTC)
+        f = leader_claimable_filter("vector-sync-reconciler", now)
+        assert f["_id"] == "vector-sync-reconciler"
+        free, due = f["$and"]
+        assert {"leaseExpiresAt": {"$lte": now}} in free["$or"]
+        assert {"nextRunAt": {"$lte": now}} in due["$or"]
+
+    def test_ttl_index_on_expire_at(self):
+        """per-entity leases expire through a TTL on ``expireAt``; documents without it never do."""
+        from registry_pkgs.models import LeaderLease
+
+        ttl = [index.document for index in LeaderLease.Settings.indexes if "expireAt" in index.document["key"]]
+        assert len(ttl) == 1
+        assert dict(ttl[0]["key"]) == {"expireAt": 1}
+        assert ttl[0]["expireAfterSeconds"] == 0
+        assert LeaderLease.model_fields["expireAt"].default is None

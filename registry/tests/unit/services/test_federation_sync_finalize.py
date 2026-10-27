@@ -872,8 +872,56 @@ async def test_federation_runtime_cleanup_is_inside_shared_sync(federation_sync_
         patch("registry.services.federation_sync_service.sync_pending_vectors", AsyncMock()) as sync,
     ):
         await method(doc.id, "arn:runtime:1")
-        sync.assert_awaited_once_with(model, repo, doc.id, runtime_identity=(str(doc.id), "arn:runtime:1"))
+        sync.assert_awaited_once_with(
+            model,
+            repo,
+            doc.id,
+            owner=service._lease_owner,
+            runtime_identity=(str(doc.id), "arn:runtime:1"),
+        )
         repo.delete_by_runtime_identity.assert_not_awaited()
         sync.side_effect = RuntimeError("vector down")
         with pytest.raises(RuntimeError, match="vector down"):
             await method(doc.id, "arn:runtime:1")
+
+
+@pytest.mark.asyncio
+async def test_vector_step_isolates_per_item_failure_through_shared_sync(federation_sync_service):
+    """One runtime's failed rebuild doesn't stop the others. Each item runs through the shared
+    marker-clearing sync, which clears on success and leaves the marker on failure (covered in
+    test_vector_sync_helpers), so the failed item stays pending for the reconciler."""
+    from registry_pkgs.models import ExtendedMCPServer
+
+    service = federation_sync_service
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    arns = ["arn:mcp:1", "arn:mcp:2", "arn:mcp:3"]
+    docs = {arn: SimpleNamespace(id=PydanticObjectId()) for arn in arns}
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(updatedMcpServers=3),
+        changed_mcp_runtime_arns=set(arns),
+    )
+    service._current_mcp_runtime_arns = AsyncMock(return_value=[])
+    service._current_a2a_runtime_arns = AsyncMock(return_value=[])
+    service.mcp_server_repo.ensure_collection = AsyncMock()
+
+    async def find_one(query):
+        return docs[query["federationMetadata.runtimeArn"]]
+
+    async def sync(model, repo, doc_id, *, owner, runtime_identity):
+        if runtime_identity[1] == "arn:mcp:2":
+            raise RuntimeError("embedding provider down")
+        return True
+
+    with (
+        patch.object(ExtendedMCPServer, "find_one", AsyncMock(side_effect=find_one)),
+        patch("registry.services.federation_sync_service.sync_pending_vectors", AsyncMock(side_effect=sync)) as shared,
+    ):
+        outcome = await service._sync_vector_index_after_commit(
+            federation=federation, job=SimpleNamespace(id=PydanticObjectId()), mutation_result=mutation_result
+        )
+
+    assert outcome.failed_changed_mcp_runtime_arns == {"arn:mcp:2"}
+    synced = {call.args[2]: call.kwargs for call in shared.await_args_list}
+    assert set(synced) == {doc.id for doc in docs.values()}
+    assert all(kwargs["owner"] == service._lease_owner for kwargs in synced.values())
+    assert synced[docs["arn:mcp:2"].id]["runtime_identity"] == (str(federation.id), "arn:mcp:2")
