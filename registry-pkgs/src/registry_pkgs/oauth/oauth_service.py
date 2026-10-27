@@ -995,6 +995,8 @@ class MCPOAuthService:
         except OAuthCoordinationError:
             raise
         except Exception as e:
+            # Log the cause here: callers see only the coordination error's message.
+            logger.exception(f"[OAuth] Unexpected refresh failure for user={user_id}, server={mcp_server.serverName}")
             raise OAuthCoordinationError("OAuth refresh unavailable; retry") from e
 
     # ------------------------------------------------------------------
@@ -1184,6 +1186,8 @@ class MCPOAuthService:
         except OAuthCoordinationError:
             raise
         except Exception as e:
+            # Log the cause here: callers see only the coordination error's message.
+            logger.exception(f"[Reinitialize] Unexpected refresh failure for {server_name}({server_id})")
             raise OAuthCoordinationError("OAuth refresh unavailable; retry") from e
 
     async def _build_oauth_required_response(

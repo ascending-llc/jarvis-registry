@@ -10,6 +10,7 @@ OAuth discovery. The OAuth client's network calls (registration, token endpoint)
 import asyncio
 import copy
 import json
+import logging
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1050,6 +1051,30 @@ class TestRefresh:
 
         assert needs_connection and response["oauth_required"] is False
         h.refresh.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unexpected_refresh_failure_logs_cause(self, h: Harness, caplog: pytest.LogCaptureFixture) -> None:
+        h.tokens.put("atlassian", refresh="r1")
+        h.service._refresh_with_lock = AsyncMock(side_effect=RuntimeError("mongo down"))  # type: ignore[method-assign]
+
+        with pytest.raises(OAuthCoordinationError, match="unavailable") as exc_info:
+            await h.service.validate_and_refresh_tokens(USER, h.server())
+
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert record.exc_info is not None and record.exc_info[1] is exc_info.value.__cause__
+
+    @pytest.mark.asyncio
+    async def test_unexpected_reinitialize_refresh_failure_logs_cause(
+        self, h: Harness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        h.service._refresh_with_lock = AsyncMock(side_effect=RuntimeError("mongo down"))  # type: ignore[method-assign]
+
+        with pytest.raises(OAuthCoordinationError, match="unavailable") as exc_info:
+            await h.service._refresh_and_connect(USER, h.server())
+
+        [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert record.exc_info is not None and record.exc_info[1] is exc_info.value.__cause__
 
     def test_refresh_token_method_removed(self) -> None:
         assert not hasattr(MCPOAuthService, "refresh_token")
