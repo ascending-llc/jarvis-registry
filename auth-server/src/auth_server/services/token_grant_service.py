@@ -198,9 +198,14 @@ class TokenGrantService:
     ) -> DeviceTokenResponse | JSONResponse:
         auth_code_data = self._store.get_authcode(request.code)
         if not auth_code_data:
+            logger.warning(
+                "OAuth token request rejected: client_id=%s reason=authorization code not found or expired",
+                request.client_id,
+            )
             return _oauth_error("invalid_grant", "authorization code not found or expired")
 
         if auth_code_data["client_id"] != request.client_id:
+            logger.warning("OAuth token request rejected: client_id=%s reason=client_id mismatch", request.client_id)
             return _oauth_error("invalid_client", "client_id mismatch")
 
         client_error = self._validate_client(

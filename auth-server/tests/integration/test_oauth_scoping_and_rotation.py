@@ -213,6 +213,54 @@ class TestAccessTokenScoping:
         assert auth_code in authorization_codes_storage
         assert not refresh_tokens_storage
 
+    @pytest.mark.parametrize(
+        ("code_client_id", "store_code", "expected_error", "expected_reason"),
+        [
+            (CLAUDE_DESKTOP_CLIENT_ID, False, "invalid_grant", "authorization code not found or expired"),
+            ("mcp-client-other", True, "invalid_client", "client_id mismatch"),
+        ],
+        ids=["unknown-code", "client-id-mismatch"],
+    )
+    def test_desktop_code_lookup_rejections_log_reason_without_code(
+        self,
+        test_client_with_identity_service: TestClient,
+        clear_device_storage: None,
+        caplog: pytest.LogCaptureFixture,
+        code_client_id: str,
+        store_code: bool,
+        expected_error: str,
+        expected_reason: str,
+    ) -> None:
+        auth_code, _ = self._create_mock_callback_state(code_client_id, DESKTOP_REDIRECT_URI)
+        if not store_code:
+            del authorization_codes_storage[auth_code]
+
+        with caplog.at_level(logging.WARNING, logger="auth_server.services.token_grant_service"):
+            response = test_client_with_identity_service.post(
+                f"{API_PREFIX}/oauth2/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": auth_code,
+                    "redirect_uri": DESKTOP_REDIRECT_URI,
+                    "client_id": CLAUDE_DESKTOP_CLIENT_ID,
+                    "code_verifier": TEST_CODE_VERIFIER,
+                },
+            )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == expected_error
+        assert any(
+            record.name == "auth_server.services.token_grant_service"
+            and record.levelno == logging.WARNING
+            and CLAUDE_DESKTOP_CLIENT_ID in record.getMessage()
+            and expected_reason in record.getMessage()
+            for record in caplog.records
+        )
+        assert auth_code not in caplog.text
+        assert TEST_CODE_VERIFIER not in caplog.text
+        assert (auth_code in authorization_codes_storage) is store_code
+        assert not refresh_tokens_storage
+
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     def test_no_scope_requested_uses_default_user_scopes(
         self, mock_map_groups, test_client_with_identity_service: TestClient, clear_device_storage
