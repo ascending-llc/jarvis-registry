@@ -636,7 +636,7 @@ class ServerServiceV1:
         return server
 
     def _schedule_vector_sync(self, server: ExtendedMCPServer, old_hash: str | None) -> None:
-        """Schedule vector sync or metadata-only update based on content hash change."""
+        """Schedule a rebuild for changed content or a metadata sync with a document-count check."""
         if self.mcp_server_repo is None:
             return
         if server.vectorContentHash != old_hash:
@@ -650,14 +650,16 @@ class ServerServiceV1:
 
             asyncio.create_task(_sync_task())
         else:
-            server_id = str(server.id)
             metadata = server.mutable_metadata()
 
-            async def _metadata_task() -> None:
+            async def _metadata_task(s: ExtendedMCPServer = server) -> None:
                 try:
-                    await self.mcp_server_repo.update_entity_metadata("server_id", server_id, metadata)
+                    result = await self.mcp_server_repo.sync_entity_metadata(
+                        s, metadata, reload=lambda: ExtendedMCPServer.get(s.id)
+                    )
+                    logger.debug("Vector metadata update result for server %s: %s", s.id, result)
                 except Exception as e:
-                    logger.error("Vector metadata update failed for server %s: %s", server_id, e, exc_info=True)
+                    logger.error("Vector metadata update failed for server %s: %s", s.id, e, exc_info=True)
 
             asyncio.create_task(_metadata_task())
 
@@ -927,9 +929,9 @@ class ServerServiceV1:
         """Full-replace the server's disabled-tools list.
 
         Silently drops any submitted name that isn't a current tool (validated against the cached
-        config["toolFunctions"] snapshot, no live downstream call). Pushes tool_enabled metadata to
-        Weaviate only for tools whose status actually flipped — batched by new state, at most two
-        round-trips, not the server's entire tool set.
+        config["toolFunctions"] snapshot, no live downstream call). Looks up the tools whose status
+        flipped once, then patches tool_enabled in up to two groups or rebuilds the server's vectors
+        if the document count does not match.
         """
         # Guard before the Mongo write: the scheduled tool_enabled push would fail during a reindex
         # while Mongo already changed, so block it (503) until the reindex ends.
@@ -949,38 +951,32 @@ class ServerServiceV1:
         server.registryDisabledTools = sorted(new_disabled)
         await server.save()
 
-        self._schedule_tool_enabled_sync(str(server.id), new_disabled, previous_disabled)
+        self._schedule_tool_enabled_sync(server, new_disabled, previous_disabled)
         return server
 
     def _schedule_tool_enabled_sync(
         self,
-        server_id: str,
+        server: ExtendedMCPServer,
         new_disabled: set[str],
         previous_disabled: set[str],
     ) -> None:
-        """Schedule a background push of tool_enabled to Weaviate for tools whose status flipped,
-        batched by new state. Fire-and-forget, matching _schedule_vector_sync: MongoDB is
+        """Schedule a tool_enabled patch, or a rebuild if the flipped tools' doc count differs.
+
+        Fire-and-forget, matching _schedule_vector_sync: MongoDB is
         authoritative, so a failed or slow vector patch must not block or fail the caller's write.
         """
         if self.mcp_server_repo is None:
             return
-        newly_disabled = sorted(new_disabled - previous_disabled)
-        newly_enabled = sorted(previous_disabled - new_disabled)
+        tool_names = sorted(new_disabled ^ previous_disabled)
 
-        async def _sync_task() -> None:
-            # return_exceptions=True: both groups hit ensure_collection, so a Weaviate outage would raise
-            # in both — without this the second raise is an unretrieved-task warning. Errors are logged,
-            # not propagated: this task is already fire-and-forget, so there is no caller to propagate to.
-            results = await asyncio.gather(
-                self.mcp_server_repo.update_tools_metadata(server_id, newly_disabled, {"tool_enabled": False}),
-                self.mcp_server_repo.update_tools_metadata(server_id, newly_enabled, {"tool_enabled": True}),
-                return_exceptions=True,
-            )
-            for outcome in results:
-                if isinstance(outcome, Exception):
-                    logger.error(
-                        "tool_enabled metadata sync failed for server %s: %s", server_id, outcome, exc_info=outcome
-                    )
+        async def _sync_task(s: ExtendedMCPServer = server) -> None:
+            try:
+                result = await self.mcp_server_repo.sync_tools_enabled(
+                    s, tool_names, reload=lambda: ExtendedMCPServer.get(s.id)
+                )
+                logger.debug("tool_enabled metadata sync result for server %s: %s", s.id, result)
+            except Exception as e:
+                logger.error("tool_enabled metadata sync failed for server %s: %s", s.id, e, exc_info=True)
 
         asyncio.create_task(_sync_task())
 

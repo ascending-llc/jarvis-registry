@@ -2,6 +2,11 @@
 # See https://pre-commit.com for more information
 # Run `uv run poe hooks-install` to install hooks locally
 
+# Build Python hook environments with the project's interpreter (see .python-version)
+# instead of whatever Python pre-commit itself runs on.
+default_language_version:
+  python: python3.12
+
 repos:
   # Ruff - Fast Python linter and formatter (replaces black, isort, flake8)
   - repo: https://github.com/astral-sh/ruff-pre-commit

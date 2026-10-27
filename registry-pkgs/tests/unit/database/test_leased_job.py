@@ -307,16 +307,27 @@ async def test_run_with_lease_propagates_execution_error():
         await run_with_lease(repo, _lease(), _coro())
 
 
-async def test_run_with_lease_prioritizes_simultaneous_lease_loss(monkeypatch):
+async def test_run_with_lease_returns_completed_result_despite_simultaneous_lease_loss(monkeypatch):
     async def _lost(_repo, _lease):
-        raise LeaseLostError("expired")
+        raise LeaseLostError("released")
 
     async def _completed():
         return "done"
 
     monkeypatch.setattr("registry_pkgs.database.leased_job.keep_lease_alive", _lost)
+    assert await run_with_lease(_heartbeat_repo(AsyncMock()), _lease(), _completed()) == "done"
+
+
+async def test_run_with_lease_prioritizes_lease_loss_over_simultaneous_execution_error(monkeypatch):
+    async def _lost(_repo, _lease):
+        raise LeaseLostError("expired")
+
+    async def _failed():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("registry_pkgs.database.leased_job.keep_lease_alive", _lost)
     with pytest.raises(LeaseLostError, match="expired"):
-        await run_with_lease(_heartbeat_repo(AsyncMock()), _lease(), _completed())
+        await run_with_lease(_heartbeat_repo(AsyncMock()), _lease(), _failed())
 
 
 async def test_run_with_lease_runs_on_cancelled_before_cancelling_execution():

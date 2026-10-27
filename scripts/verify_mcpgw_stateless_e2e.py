@@ -76,12 +76,12 @@ class Report:
 
 
 def _mint(client_id: str, user_id: str, *, jti: str | None = None, scope: str = "mcp-proxy-ops") -> str:
-    extra: dict = {"user_id": user_id}
+    extra: dict = {"preferred_username": "as1914-verify"}
     if jti is not None:
         extra["jti"] = jti
     return mint_managed_agent_token(
         settings.jwt_token_config,
-        subject="as1914-verify",
+        subject=user_id,
         client_id=client_id,
         requested_scopes=scope,
         expires_in_seconds=600,

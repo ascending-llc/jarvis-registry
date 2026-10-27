@@ -87,6 +87,10 @@ class TestGoogleGetUserInfo:
             "name": "Test User",
             "id": "google-sub-123",
             "groups": ["eng", "all"],
+            "issuer": "https://accounts.google.com",
+            "subject": "google-sub-123",
+            "object_id": None,
+            "email_trusted": True,
         }
 
     @pytest.mark.asyncio
@@ -106,9 +110,10 @@ class TestGoogleGetUserInfo:
         mock_log.assert_called_once_with("google", exc)
 
     @pytest.mark.asyncio
-    async def test_rejects_unverified_email_before_group_lookup(self):
+    @pytest.mark.parametrize("verified", [False, None, "true", 1, 0])
+    async def test_rejects_unverified_email_before_group_lookup(self, verified: object) -> None:
         provider = _provider()
-        provider._verify_id_token = AsyncMock(return_value=_claims(email_verified=False))
+        provider._verify_id_token = AsyncMock(return_value=_claims(email_verified=verified))
 
         with pytest.raises(GoogleEmailNotVerifiedError):
             await provider.get_user_info("access-token", id_token="id-token")
@@ -157,6 +162,35 @@ class TestGoogleGetUserInfo:
         ):
             with pytest.raises(InvalidSignatureError):
                 await provider.get_user_info("access-token", id_token="id-token")
+
+    @pytest.mark.parametrize("issuer", ["https://accounts.google.com", "accounts.google.com"])
+    async def test_normalizes_verified_issuer_and_email(self, issuer: str) -> None:
+        provider = _provider()
+        provider._verify_id_token = AsyncMock(return_value=_claims(iss=issuer, email="  User@EXAMPLE.COM  "))
+        provider._cloud_identity_client.list_transitive_groups_for_member = AsyncMock(return_value=[])
+        info = await provider.get_user_info("access-token", id_token="id-token")
+        assert info["issuer"] == "https://accounts.google.com"
+        assert info["email"] == info["username"] == "user@example.com"
+        assert info["subject"] == "google-sub-123"
+        assert info["object_id"] is None
+        assert info["email_trusted"] is True
+        provider._cloud_identity_client.list_transitive_groups_for_member.assert_awaited_once_with("user@example.com")
+
+    @pytest.mark.parametrize("subject", [None, "", "  ", 123, True])
+    async def test_rejects_invalid_subject_before_group_lookup(self, subject: object) -> None:
+        provider = _provider()
+        provider._verify_id_token = AsyncMock(return_value=_claims(sub=subject))
+        with pytest.raises(ValueError, match="non-empty sub"):
+            await provider.get_user_info("access-token", id_token="id-token")
+        provider._cloud_identity_client.list_transitive_groups_for_member.assert_not_called()
+
+    @pytest.mark.parametrize("email", [None, "", "  ", 123])
+    async def test_rejects_missing_or_invalid_email_before_group_lookup(self, email: object) -> None:
+        provider = _provider()
+        provider._verify_id_token = AsyncMock(return_value=_claims(email=email))
+        with pytest.raises(GoogleEmailNotVerifiedError):
+            await provider.get_user_info("access-token", id_token="id-token")
+        provider._cloud_identity_client.list_transitive_groups_for_member.assert_not_called()
 
 
 @pytest.mark.unit

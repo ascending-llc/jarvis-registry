@@ -28,6 +28,7 @@ from ..utils.crypto_utils import (
     generate_access_token,
     generate_refresh_token,
     generate_token_pair,
+    identity_from_claims,
     verify_refresh_token,
 )
 from ..utils.csrf import compute_csrf_token
@@ -323,7 +324,7 @@ async def oauth2_callback(
 
                 user_claims = decode_jwt(access_token, settings.jwt_public_key, settings.jwt_issuer)
 
-                logger.info(f"OAuth2 callback exchanged code for JWT token: {user_claims.get('sub')}")
+                logger.info("OAuth2 callback exchanged code for JWT token for user ID %s", user_claims.get("sub"))
 
         except httpx.TimeoutException:
             logger.error("Timeout exchanging authorization code with auth server")
@@ -334,13 +335,16 @@ async def oauth2_callback(
             return _oauth2_login_error_response("oauth2_exchange_error", clear_oauth2_login_cookies=True)
 
         if not user_claims.get("user_id"):
-            logger.warning(f"User {user_claims.get('sub')} has no user_id - not found in MongoDB. Creating new user.")
-            user_obj = await user_service.create_user(user_claims)
-        else:
-            user_obj = await user_service.get_user_by_user_id(user_claims.get("user_id"))
+            logger.error("Auth-server token is missing user_id")
+            return _oauth2_login_error_response(
+                "User+not+found+in+registry",
+                clear_oauth2_login_cookies=True,
+            )
+
+        user_obj = await user_service.get_user_by_user_id(user_claims["user_id"])
 
         if not user_obj:
-            logger.error(f"Failed to find or create user for claims: {user_claims}")
+            logger.error("Auth-server user_id does not resolve to a Registry user")
             return _oauth2_login_error_response(
                 "User+not+found+in+registry",
                 clear_oauth2_login_cookies=True,
@@ -373,7 +377,7 @@ async def oauth2_callback(
         }
 
         # Generate JWT access and refresh tokens, honoring OAuth token timing
-        access_token, refresh_token = generate_token_pair(user_info=user_info)
+        access_token, refresh_token = generate_token_pair(**user_info)
 
         next_path = _sanitize_return_path(client_state.get("next"))
         resp = RedirectResponse(url=f"{settings.registry_client_url.rstrip('/')}{next_path}", status_code=302)
@@ -471,18 +475,19 @@ async def refresh_token(
             return response
 
         # Extract user info from refresh token claims
-        user_id = _get_required_string_claim(refresh_claims, "user_id")
-        username = _get_required_string_claim(refresh_claims, "sub")
+        identity = identity_from_claims(refresh_claims)
         auth_method = _get_required_string_claim(refresh_claims, "auth_method")
         provider = _get_required_string_claim(refresh_claims, "provider")
 
-        if not all([user_id, username, auth_method, provider]):
-            logger.warning("Refresh token missing required identity claims (user_id/sub/auth_method/provider)")
+        if identity is None or not auth_method or not provider:
+            logger.warning("Refresh token missing required identity claims (sub/auth_method/provider)")
             response = JSONResponse(
                 status_code=401, content={"detail": "Refresh token missing required identity claims"}
             )
             _delete_auth_cookies(response)
             return response
+
+        user_id, username = identity
 
         # Extract groups and scopes from refresh token
         groups = _get_string_list_claim(refresh_claims, "groups")
@@ -495,7 +500,7 @@ async def refresh_token(
             logger.info(f"Mapped refresh token groups {groups} to scopes: {scopes}")
 
         role = refresh_claims.get("role", "user")
-        email = refresh_claims.get("email", f"{username}@local")
+        email = refresh_claims.get("email", "")
 
         logger.info(f"Refresh token valid for user {username} ({auth_method}), generating new access token")
         logger.debug(f"User groups from refresh token: {groups}, scopes: {scopes}")
