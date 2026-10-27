@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from registry_pkgs.core.crypto_utils import decrypt_value
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
+from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    ModelSource,
+    OpenAIModelConfig,
+)
 from registry_pkgs.vector.config.config import (
     AzureOpenAIEmbeddingConfig,
     BedrockEmbeddingConfig,
     EmbeddingModelConfig,
+    OpenAIEmbeddingConfig,
     extract_azure_resource_name,
 )
 from registry_pkgs.vector.enum.enums import EmbeddingProvider
@@ -35,4 +42,14 @@ def embedding_config_from_model_source(model_source: ModelSource, *, encryption_
             resource_name=extract_azure_resource_name(config.endpoint),
             deployment_name=config.deploymentName,
         )
+    if isinstance(config, OpenAIModelConfig):
+        if not config.apiKeyEncrypted:
+            raise ValueError("OpenAI ModelSource used for embedding requires an API key")
+        return OpenAIEmbeddingConfig(
+            provider=EmbeddingProvider.OPENAI,
+            api_key=decrypt_value(config.apiKeyEncrypted, encryption_key=encryption_key),
+            model=config.modelId,
+        )
+    if isinstance(config, AnthropicModelConfig):
+        raise ValueError("Anthropic does not provide embedding models; choose a different provider")
     raise ValueError(f"Unsupported ModelSource provider config for embedding: {type(config).__name__}")
