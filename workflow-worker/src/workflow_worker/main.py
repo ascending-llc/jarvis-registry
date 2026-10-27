@@ -107,7 +107,7 @@ async def _wait_for_claim_capacity(
         await asyncio.gather(stop_waiter, return_exceptions=True)
 
 
-def _build_runner(
+async def _build_runner(
     directive_queue: DirectiveQueue,
     redis_client: Any,
     http_client: httpx.AsyncClient,
@@ -134,13 +134,13 @@ def _build_runner(
         directive_queue=directive_queue,
         a2a_httpx_client=http_client,
         headers_provider=headers_provider,
-        mcp_headers_provider=_build_mcp_headers_provider(redis_client),
+        mcp_headers_provider=await _build_mcp_headers_provider(redis_client),
         redis_client=redis_client,
         redis_key_prefix=settings.redis_key_prefix,
     )
 
 
-def _build_mcp_headers_provider(redis_client: Any) -> McpHeadersProvider:
+async def _build_mcp_headers_provider(redis_client: Any) -> McpHeadersProvider:
     """Build the non-interactive MCP OAuth headers provider for scheduled runs."""
     user_service = UserService()
     token_service = TokenService(user_service=user_service, encryption_key=settings.encryption_key)
@@ -148,6 +148,7 @@ def _build_mcp_headers_provider(redis_client: Any) -> McpHeadersProvider:
         redis_client=redis_client,
         redis_key_prefix=settings.redis_key_prefix,
     )
+    await flow_state_manager.initialize()
     oauth_service = MCPOAuthService(
         flow_manager=flow_state_manager,
         token_service_instance=token_service,
@@ -303,7 +304,7 @@ async def main() -> None:
     http_client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0))
     azure_client_cache = AzureFoundryClientCache(encryption_key=settings.encryption_key)
     azure_model_credential = AzureModelCredential()
-    runner = _build_runner(
+    runner = await _build_runner(
         directive_queue,
         redis_client,
         http_client,

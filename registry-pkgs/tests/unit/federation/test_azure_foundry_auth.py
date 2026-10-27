@@ -29,7 +29,7 @@ async def test_get_token_delegates_to_cache_with_scope():
     token = await facade.get_token(_SCOPE)
 
     assert token.token == "tokX"
-    cache.get_access_token.assert_awaited_once_with(fed, scope=_SCOPE)
+    cache.get_access_token.assert_awaited_once_with(fed, scope=_SCOPE, expected_config=None)
 
 
 @pytest.mark.asyncio
@@ -40,7 +40,7 @@ async def test_get_token_defaults_scope_when_omitted():
 
     await facade.get_token()
 
-    cache.get_access_token.assert_awaited_once_with(fed, scope=_SCOPE)
+    cache.get_access_token.assert_awaited_once_with(fed, scope=_SCOPE, expected_config=None)
 
 
 @pytest.mark.asyncio
@@ -52,7 +52,7 @@ async def test_get_token_ignores_extra_kwargs():
     # claims/tenant_id/enable_cae are accepted (protocol) but not forwarded.
     await facade.get_token(_SCOPE, claims="x", tenant_id="y", enable_cae=True)
 
-    cache.get_access_token.assert_awaited_once_with(fed, scope=_SCOPE)
+    cache.get_access_token.assert_awaited_once_with(fed, scope=_SCOPE, expected_config=None)
 
 
 @pytest.mark.asyncio
@@ -72,7 +72,7 @@ async def test_build_headers_delegates_to_cache():
 
     assert headers["Authorization"] == "Bearer h"
     assert headers["Foundry-Features"] == "HostedAgents=V1Preview"
-    cache.build_headers.assert_awaited_once_with(fed, extra={"X": "1"})
+    cache.build_headers.assert_awaited_once_with(fed, extra={"X": "1"}, expected_config=None)
 
 
 @pytest.mark.asyncio

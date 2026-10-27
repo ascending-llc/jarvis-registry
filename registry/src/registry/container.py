@@ -32,7 +32,6 @@ from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 
 from .auth.dependencies import effective_scopes_from_context
-from .auth.oauth.reconnection import OAuthReconnectionManager
 from .core.a2a_proxy import A2AProxyClientRegistry
 from .core.mcp_client import MCPClientService
 from .core.session_store import SessionStore
@@ -58,7 +57,6 @@ from .services.group_service import GroupService
 from .services.lease_reaper import LeaseReaper
 from .services.model_gateway_selection_service import ModelGatewaySelectionService
 from .services.model_source_crud_service import ModelSourceCrudService
-from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.search.base import VectorSearchService
@@ -205,6 +203,7 @@ class RegistryContainer:
             user_service=self.user_service,
             group_service=self.group_service,
             role_cache=self.role_cache,
+            reload_role_cache=load_role_cache,
         )
 
     @cached_property
@@ -282,28 +281,12 @@ class RegistryContainer:
         )
 
     @cached_property
-    def connection_service(self) -> MCPConnectionService:
-        return MCPConnectionService(server_service=self.server_service)
-
-    @cached_property
     def mcp_service(self) -> MCPService:
-        return MCPService(connection_service=self.connection_service, oauth_service=self.oauth_service)
-
-    @cached_property
-    def reconnection_manager(self) -> OAuthReconnectionManager:
-        return OAuthReconnectionManager(
-            mcp_service=self.mcp_service,
-            oauth_service=self.oauth_service,
-            flow_state_manager=self.flow_state_manager,
-            server_service=self.server_service,
-        )
+        return MCPService(oauth_service=self.oauth_service)
 
     @cached_property
     def status_resolver(self) -> ConnectionStatusResolver:
-        return ConnectionStatusResolver(
-            flow_state_manager=self.flow_state_manager,
-            reconnection_manager=self.reconnection_manager,
-        )
+        return ConnectionStatusResolver(flow_state_manager=self.flow_state_manager)
 
     @cached_property
     def server_service(self) -> ServerServiceV1:
@@ -607,10 +590,7 @@ class RegistryContainer:
         logger.info("Initializing health monitoring service...")
         await self.health_service.initialize()
 
-        logger.info("Initializing MCP connection service...")
-        await self.connection_service.initialize_app_connections()
-
-        logger.info("Initializing MCP service...")
+        logger.info("Initializing MCP service (OAuth flow state storage)...")
         await self.mcp_service.initialize()
 
         logger.info("Initializing federation service...")

@@ -479,7 +479,7 @@ async def initiate_skill_sync_oauth(
             required_permission="EDIT",
         )
         redirect_uri = _skill_sync_oauth_callback_url(request)
-        authorization_url = oauth_service.create_authorization_url(
+        authorization_url = await oauth_service.create_authorization_url(
             source=source,
             user_id=str(user_context["user_id"]),
             redirect_uri=redirect_uri,
@@ -510,7 +510,7 @@ async def skill_sync_oauth_callback(
     resolved_source_id: str | None = None
     if state:
         try:
-            resolved_source_id = oauth_service.resolve_source_id(state)
+            resolved_source_id = await oauth_service.resolve_source_id(state)
         except ValueError:
             resolved_source_id = None
 
