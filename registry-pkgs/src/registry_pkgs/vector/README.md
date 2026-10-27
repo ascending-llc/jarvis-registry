@@ -31,14 +31,43 @@ The service layer captures the hash before `.save()` and compares after to decid
 
 ```python
 old_hash = server.vectorContentHash
+marker = _mark_vector_sync_pending(server)   # pending marker commits with the change
 await server.save()                          # @before_event recomputes hash
-_schedule_vector_sync(server, old_hash)      # routes based on change
+schedule_vector_sync(VectorSyncPlan(doc=server, marker=marker, full_resync=server.vectorContentHash != old_hash))
 ```
+
+`schedule_vector_sync` runs `sync_pending_vectors` (`registry/services/vector_sync_helpers.py`)
+under a per-entity lease; the reconciler retries any entity whose marker is still set.
 
 **Hash changed** → `sync_to_vector_db(is_delete=True)` — full Weaviate rebuild.
 
-**Hash unchanged** → `update_entity_metadata(...)` — metadata-only patch (no re-embedding).
-Used for toggle enable/disable where only `config.enabled` changes.
+**Hash unchanged** → `sync_entity_metadata(...)` — compare the existing doc count with
+`len(entity.to_documents())`. Matching counts get a metadata-only patch without re-embedding;
+missing, partial or excess docs trigger a full rebuild of the entity. Enabling a server or agent
+via its toggle endpoint already forces a full rebuild.
+
+Per-tool enable/disable uses `sync_tools_enabled(...)`: one lookup and count check over all
+flipped tools, then up to two metadata patches, or one full server rebuild on a mismatch.
+Counts include document chunks, not just tools.
+
+Both paths use strict metadata lookups: a failed read propagates instead of being mistaken for
+zero docs and triggering embedding. The lookup is capped at 10,000 docs, so if the expected
+count reaches that limit, the sync warns and patches the returned docs without comparing counts. Zero expected and found docs is a no-op.
+
+Service-driven syncs of one entity are serialized by its per-entity lease. Overlapping rebuilds
+from other callers (scripts) still converge, because doc ids are deterministic per collection,
+entity and position, so a re-insert replaces docs instead of duplicating them.
+
+The new `sync_*` methods return an `error` if the adapter reports fewer successful metadata
+updates than the number of matched docs, while `metadata_updated` retains the successful count.
+A partial patch does not trigger a rebuild. The legacy `update_*` methods retain their existing
+result semantics.
+
+Services supply a MongoDB `reload` callback, called only before a mismatch-triggered rebuild.
+If the entity no longer exists or its content hash changed, the task skips rebuilding. Otherwise
+the rebuild uses the original task snapshot: before a transaction commits, reload may still see
+older metadata. The guard does not detect newer metadata with the same content hash or prevent
+a delete that commits after the check. Entities that are never saved again still require reindexing.
 
 > **Invariant**: `config.enabled` must NOT appear in `page_content` inside
 > `to_documents()`. If it does, toggle paths will incorrectly trigger full rebuilds.
@@ -65,7 +94,8 @@ repo = MCPServerRepository(db_client)
 
 #### `sync_to_vector_db(server, *, is_delete=True) -> dict`
 
-Full rebuild: delete existing docs then reinsert. Hash gate removed — caller decides when to call.
+Full rebuild: delete existing docs then reinsert. Called after content changes or a doc-count
+mismatch; the repository itself does not gate rebuilding on the content hash.
 
 ```python
 result = await repo.sync_to_vector_db(server, is_delete=True)
@@ -82,9 +112,31 @@ Remove all Weaviate docs for an MCP server (iterates over all `ServerEntityType`
 count = await repo.delete_by_server_id("507f1f77bcf86cd799439011", "github")
 ```
 
+#### `sync_entity_metadata(entity, metadata, *, reload=None) -> dict`
+
+Service-facing metadata sync with a doc-count check and full-rebuild fallback. Returns the
+same MCP result keys as `sync_to_vector_db`, whether it patches, rebuilds or skips. An incomplete
+metadata patch sets `error` and preserves the number of successful updates in `metadata_updated`.
+
+```python
+result = await repo.sync_entity_metadata(
+    server,
+    server.mutable_metadata(),
+    reload=lambda: ExtendedMCPServer.get(server.id),
+)
+```
+
+#### `sync_tools_enabled(server, tool_names, *, reload=None) -> dict`
+
+Service-facing sync for flipped tools. Counts matching tool docs from `server.to_documents()`,
+including chunks, and derives each tool's desired `tool_enabled` from `registryDisabledTools`.
+A count mismatch rebuilds the whole server once. Partial patches report an error and retain the
+total successful update count across both groups. An empty tool list makes no query.
+
 #### `update_entity_metadata(entity_id_field, entity_id, metadata) -> VectorSyncResult`
 
-Patch metadata fields on all matching docs without re-embedding. Used for enable/disable.
+Plain metadata patch for scripts such as `backfill_tool_enabled_property.py`. It updates only
+existing docs without checking their expected count or rebuilding. Missing docs are a no-op.
 
 ```python
 result = await repo.update_entity_metadata(
@@ -93,6 +145,11 @@ result = await repo.update_entity_metadata(
 )
 # result.metadata_updated == number of docs patched
 ```
+
+#### `update_tools_metadata(server_id, tool_names, metadata) -> VectorSyncResult`
+
+Plain metadata patch for scripts, restricted to the named tools. Like `update_entity_metadata`,
+it does not rebuild or check counts. An empty tool list makes no query.
 
 #### `delete_by_runtime_identity(federation_id, runtime_arn) -> int`
 
@@ -137,9 +194,11 @@ Remove all Weaviate docs for an A2A agent.
 count = await repo.delete_by_agent_id("507f1f77bcf86cd799439011", "deep-intel")
 ```
 
-#### `update_entity_metadata`, `delete_by_runtime_identity`, `has_runtime_identity`
+#### `sync_entity_metadata`, `update_entity_metadata`, `delete_by_runtime_identity`, `has_runtime_identity`
 
 Same semantics as MCPServerRepository — inherited from `BaseVectorSyncRepository`.
+`sync_entity_metadata` returns the A2A `indexed`/`failed` keys, matching its full rebuild;
+`update_entity_metadata` remains a plain patch returning `VectorSyncResult`.
 
 ---
 

@@ -16,13 +16,13 @@ class UserContextDict(TypedDict):
     `ctx.request_context.request.state.user`.
     """
 
-    # From the "user_id" field of the JWT claim.
+    # From the "sub" claim: the stable MongoDB user ID.
     user_id: str | None
 
     # From the "client_id" claim of the JWT.
     client_id: str
 
-    # From the "sub" field of the JWT claim.
+    # From "preferred_username", falling back to "sub" for downstream-AS tokens.
     username: str | None
 
     # From the "groups" field of the JWT claim.

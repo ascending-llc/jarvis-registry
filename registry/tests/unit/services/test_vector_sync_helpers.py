@@ -246,22 +246,35 @@ async def test_late_write_after_takeover_or_cancel_requeues_after_io(sync_state,
     [
         {"error": "write failed"},
         {"failed": 1, "metadata_updated": 1},
-        {"metadata_updated": 0},
+        {"failed_tools": 1, "indexed_tools": 1},
     ],
 )
-async def test_metadata_failure_or_missing_vectors_never_clears(sync_state, tools, result, monkeypatch):
+async def test_metadata_failure_never_clears(sync_state, tools, result):
     from registry.services.vector_sync_helpers import sync_pending_vectors
-    from registry_pkgs.vector.sync_result import VectorSyncResult
 
     state = sync_state
-    monkeypatch.setattr(ExtendedMCPServer, "to_documents", lambda self: [Mock()])
-    state.repo.update_entity_metadata = AsyncMock(return_value=VectorSyncResult(**result))
-    state.repo.update_tools_metadata = AsyncMock(return_value=VectorSyncResult(**result))
+    state.repo.sync_entity_metadata = AsyncMock(return_value=result)
+    state.repo.sync_tools_enabled = AsyncMock(return_value=result)
     marker = state.doc.vectorSyncPendingAt
     plan = VectorSyncPlan(state.doc, marker, False, ((("tool",), False),) if tools else ())
     with pytest.raises(RuntimeError):
         await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, plan=plan)
     assert state.doc.vectorSyncPendingAt == marker
+
+
+async def test_tool_deltas_sync_all_toggled_tools_with_reload(sync_state):
+    from registry.services.vector_sync_helpers import sync_pending_vectors
+
+    state = sync_state
+    state.repo.sync_tools_enabled = AsyncMock(return_value={"metadata_updated": 2})
+    marker = state.doc.vectorSyncPendingAt
+    plan = VectorSyncPlan(state.doc, marker, False, ((("write_file",), False), (("read_file",), True)))
+    assert await sync_pending_vectors(ExtendedMCPServer, state.repo, state.doc.id, plan=plan)
+    args = state.repo.sync_tools_enabled.await_args
+    assert args.args[1] == ["read_file", "write_file"]
+    assert (await args.kwargs["reload"]()).id == state.doc.id
+    assert ExtendedMCPServer.get.await_args == ((state.doc.id,), {"ignore_cache": True})
+    assert state.doc.vectorSyncPendingAt is None
 
 
 async def test_federation_repair_marks_before_delete_and_keeps_marker_on_failure(sync_state):

@@ -99,6 +99,30 @@ def _managed_card_agent(
     )
 
 
+@pytest.mark.asyncio
+async def test_unchanged_hash_syncs_all_agent_metadata_with_mongo_reload():
+    from registry.services.vector_sync_helpers import VectorSyncPlan, _write_vectors
+
+    repo = MagicMock(sync_entity_metadata=AsyncMock(return_value={"metadata_updated": 1}))
+    agent = _managed_card_agent(config=AgentConfig(title="Weather", type="jsonrpc", enabled=False))
+    agent.tags = ["ops"]
+    agent.federationMetadata = make_agentcore_a2a_metadata(runtime_version="7")
+    agent.vectorSyncPendingAt = datetime.now(UTC)
+
+    with patch.object(A2AAgent, "get", new_callable=AsyncMock) as reload:
+        await _write_vectors(repo, agent, VectorSyncPlan(agent, agent.vectorSyncPendingAt, False), None)
+
+        repo.sync_entity_metadata.assert_awaited_once()
+        args = repo.sync_entity_metadata.await_args
+        assert args.args == (agent, {"enabled": False, "tags": ["ops"], "runtimeVersion": "7"})
+        reload.assert_not_awaited()
+        assert await args.kwargs["reload"]() is reload.return_value
+        reload.assert_awaited_once_with(agent.id, ignore_cache=True)
+
+    repo.sync_to_vector_db.assert_not_called()
+    repo.update_entity_metadata.assert_not_called()
+
+
 def test_build_managed_agent_card_applies_all_transformations(monkeypatch: pytest.MonkeyPatch) -> None:
     # `registry_url` and `jwt_issuer` are deliberately set to different hosts here: `url` /
     # `additionalInterfaces[*].url` live on the registry backend (registry_url), while

@@ -10,6 +10,7 @@ import pytest
 from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
 from registry.services.server_service import ServerServiceV1
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 
 @pytest.mark.unit
@@ -22,8 +23,6 @@ class TestRefreshServerCapabilities:
     def mock_server(self):
         """Create a mock MCP server document."""
         from datetime import UTC, datetime
-
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         server = Mock(spec=ExtendedMCPServer)
         server.id = Mock()
@@ -370,7 +369,6 @@ class TestHealthCheckEndpointUrlConstruction:
     @pytest.fixture
     def mock_mcp_server(self):
         """Create a mock MCP server document."""
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         server = Mock(spec=ExtendedMCPServer)
         server.serverName = "test-server"
@@ -587,7 +585,7 @@ class TestUpdateDisabledTools:
 
     def _make_service(self):
         mock_repo = Mock()
-        mock_repo.update_tools_metadata = AsyncMock()
+        mock_repo.sync_tools_enabled = AsyncMock()
         service = ServerServiceV1(
             user_service=Mock(),
             token_service=Mock(),
@@ -598,8 +596,6 @@ class TestUpdateDisabledTools:
 
     def _make_server(self, disabled=None):
         from datetime import UTC, datetime
-
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         server = Mock(spec=ExtendedMCPServer)
         server.id = "srv-1"
@@ -685,8 +681,6 @@ class TestUpdateDisabledTools:
         """A capabilities refresh drops disabled names that no longer exist downstream."""
         from datetime import UTC, datetime
 
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-
         service, _ = self._make_service()
         server = Mock(spec=ExtendedMCPServer)
         server.id = "srv-1"
@@ -727,7 +721,6 @@ class TestOAuthReAuthRequired:
         )
 
     def _oauth_server(self) -> Mock:
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         server = Mock(spec=ExtendedMCPServer)
         server.id = "srv-1"
@@ -834,8 +827,6 @@ class TestRegistryOAuthLifecycleOnUpdate:
     def _make_server(self, config):
         from beanie import PydanticObjectId
 
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-
         return ExtendedMCPServer.model_construct(
             id=PydanticObjectId("65f000000000000000000001"),
             serverName="atlassian",
@@ -847,7 +838,6 @@ class TestRegistryOAuthLifecycleOnUpdate:
         )
 
     async def _update(self, server, data):
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         service = self._make_service()
         service.get_server_by_id = AsyncMock(return_value=server)

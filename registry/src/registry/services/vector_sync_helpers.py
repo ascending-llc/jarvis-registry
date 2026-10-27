@@ -14,6 +14,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from uuid import uuid4
 
 from beanie import Document, PydanticObjectId
@@ -30,7 +31,6 @@ from registry_pkgs.models.leader_lease import (
 )
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
-from registry_pkgs.vector.sync_result import VectorSyncResult
 
 
 async def sync_server_vectors(repo: MCPServerRepository, server: ExtendedMCPServer, *, is_delete: bool = False) -> None:
@@ -51,10 +51,11 @@ async def sync_agent_vectors(repo: A2AAgentRepository, agent: A2AAgent, *, is_de
         raise RuntimeError(result.get("error") if result else "vector sync returned no result")
 
 
-def require_metadata_success(result: VectorSyncResult) -> None:
-    """Metadata repositories return failures as data, including partial batch failures."""
-    if result.error or result.failed:
-        raise RuntimeError(result.error or f"{result.failed} metadata updates failed")
+def require_metadata_success(result: dict) -> None:
+    """Metadata syncs return failures as data, including partial batch failures and failed rebuilds."""
+    failed = result.get("failed") or result.get("failed_tools")
+    if result.get("error") or failed:
+        raise RuntimeError(result.get("error") or f"{failed} vector updates failed")
 
 
 async def clear_vector_sync_marker(
@@ -154,24 +155,14 @@ async def _write_vectors(
             await sync_agent_vectors(repo, doc, is_delete=True)
         return
 
+    # The repository methods patch metadata, or rebuild when the matching doc count drifts.
+    reload = partial(type(doc).get, doc.id, ignore_cache=True)
     if plan.tool_updates:
-        for names, enabled in plan.tool_updates:
-            if not names:
-                continue
-            result = await repo.update_tools_metadata(str(doc.id), list(names), {"tool_enabled": enabled})
-            require_metadata_success(result)
-            if not result.metadata_updated:
-                raise RuntimeError("Tool vectors are missing; a full rebuild is required")
+        names = sorted({name for group, _ in plan.tool_updates for name in group})
+        result = await repo.sync_tools_enabled(doc, names, reload=reload)
     else:
-        if isinstance(doc, ExtendedMCPServer):
-            result = await repo.update_entity_metadata("server_id", str(doc.id), doc.mutable_metadata())
-        else:
-            result = await repo.update_entity_metadata(
-                "agent_id", str(doc.id), {"enabled": doc.config.enabled if doc.config else False}
-            )
-        require_metadata_success(result)
-        if not result.metadata_updated and doc.to_documents():
-            raise RuntimeError("Entity vectors are missing; a full rebuild is required")
+        result = await repo.sync_entity_metadata(doc, doc.mutable_metadata(), reload=reload)
+    require_metadata_success(result)
 
 
 async def _execute(

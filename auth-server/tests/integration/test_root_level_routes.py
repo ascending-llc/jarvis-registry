@@ -53,7 +53,7 @@ class TestRootLevelRoutes:
         assert "issuer" in data
         assert "authorization_endpoint" in data
         assert "token_endpoint" in data
-        assert "userinfo_endpoint" in data
+        assert "userinfo_endpoint" not in data
         assert "jwks_uri" in data
 
     def test_jwks_at_root_level(self, test_client: TestClient):

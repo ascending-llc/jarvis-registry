@@ -30,6 +30,7 @@ _TOKEN_EXPIRY_SKEW_SECONDS = 300
 _STATE_MAX_AGE_SECONDS = 600
 _REBUILD_MIN_INTERVAL_SECONDS = 30
 _SAFE_REPLAY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_AUTH_FAILURE_STATUS_CODES = frozenset({401, 403})
 
 
 class AuthMode(StrEnum):
@@ -69,10 +70,13 @@ class AzureEntraAuth(httpx.Auth):
         headers = await self._auth_service.build_headers()
         self._apply_headers(request, headers)
         response = yield request
-        # No provider-specific evidence makes arbitrary POSTs or 403s safe to replay.
+        if response.status_code not in _AUTH_FAILURE_STATUS_CODES:
+            return
+        # Every auth failure heals the cached credential for later requests, but only
+        # a 401 on a safe method is replayed: nothing makes arbitrary POSTs or 403s safe to repeat.
+        await self._auth_service.rebuild_after_auth_failure()
         if response.status_code != 401 or request.method not in _SAFE_REPLAY_METHODS:
             return
-        await self._auth_service.rebuild_after_auth_failure()
         new_headers = await self._auth_service.build_headers()
         if new_headers == headers:
             return

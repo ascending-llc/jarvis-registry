@@ -1,7 +1,11 @@
 """Unit tests for crypto_utils module."""
 
 import time
+from typing import Any
 from unittest.mock import patch
+
+import pytest
+from bson import ObjectId
 
 from registry.core.config import settings
 from registry.utils.crypto_utils import (
@@ -11,6 +15,8 @@ from registry.utils.crypto_utils import (
     encrypt_value,
     generate_access_token,
     generate_refresh_token,
+    generate_token_pair,
+    identity_from_claims,
     verify_access_token,
     verify_refresh_token,
 )
@@ -20,6 +26,8 @@ from registry_pkgs.core.jwt_tokens import (
     TOKEN_CLASS_CRUD_SESSION,
     mint_managed_agent_token,
 )
+
+USER_ID = "507f1f77bcf86cd799439011"
 
 
 class TestWrapperDelegation:
@@ -49,7 +57,7 @@ class TestCrudSessionTokens:
     @staticmethod
     def _gen_access() -> str:
         return generate_access_token(
-            user_id="u1",
+            user_id=USER_ID,
             username="alice",
             email="alice@example.com",
             groups=["g1"],
@@ -63,7 +71,8 @@ class TestCrudSessionTokens:
         token = self._gen_access()
         claims = verify_access_token(token)
         assert claims is not None
-        assert claims["sub"] == "alice"
+        assert claims["sub"] == claims["user_id"] == USER_ID
+        assert claims["preferred_username"] == "alice"
         assert claims["aud"] == settings.jwt_audience_crud_services
         assert claims["client_id"] == settings.registry_app_name
         assert claims[TOKEN_CLASS_CLAIM] == TOKEN_CLASS_CRUD_SESSION
@@ -71,7 +80,7 @@ class TestCrudSessionTokens:
 
     def test_refresh_token_roundtrip(self):
         token = generate_refresh_token(
-            user_id="u1",
+            user_id=USER_ID,
             username="alice",
             auth_method="oauth2",
             provider="entra",
@@ -82,13 +91,15 @@ class TestCrudSessionTokens:
         )
         claims = verify_refresh_token(token)
         assert claims is not None
+        assert claims["sub"] == claims["user_id"] == USER_ID
+        assert claims["preferred_username"] == "alice"
         assert claims["token_type"] == "refresh_token"
         assert claims["client_id"] == settings.registry_app_name
 
     def test_refresh_token_session_started_at_defaults_to_now(self):
         before = int(time.time())
         token = generate_refresh_token(
-            user_id="u1",
+            user_id=USER_ID,
             username="alice",
             auth_method="oauth2",
             provider="entra",
@@ -106,7 +117,7 @@ class TestCrudSessionTokens:
     def test_refresh_token_session_started_at_carried_forward(self):
         fixed_ts = 1_700_000_000
         token = generate_refresh_token(
-            user_id="u1",
+            user_id=USER_ID,
             username="alice",
             auth_method="oauth2",
             provider="entra",
@@ -122,7 +133,7 @@ class TestCrudSessionTokens:
 
     def test_access_verifier_rejects_refresh_token(self):
         token = generate_refresh_token(
-            user_id="u1",
+            user_id=USER_ID,
             username="alice",
             auth_method="oauth2",
             provider="entra",
@@ -143,6 +154,58 @@ class TestCrudSessionTokens:
             expires_in_seconds=3600,
         )
         assert verify_access_token(managed) is None
+
+
+def test_token_pair_preserves_identity_and_oauth_timestamps() -> None:
+    issued_at = int(time.time()) - 60
+    expires_at = issued_at + 3600
+    access, refresh = generate_token_pair(
+        user_id=USER_ID,
+        username="alice",
+        email="alice@example.com",
+        groups=["g1"],
+        scopes="servers-read",
+        role="user",
+        auth_method="oauth2",
+        provider="entra",
+        idp_id="entra-object-id",
+        iat=issued_at,
+        exp=expires_at,
+    )
+
+    access_claims = verify_access_token(access)
+    refresh_claims = verify_refresh_token(refresh)
+    assert access_claims is not None
+    assert refresh_claims is not None
+    for claims in (access_claims, refresh_claims):
+        assert claims["sub"] == claims["user_id"] == USER_ID
+        assert claims["preferred_username"] == "alice"
+        assert claims["email"] == "alice@example.com"
+        assert claims["scope"] == "servers-read"
+    assert access_claims["iat"] == issued_at
+    assert access_claims["exp"] == expires_at
+    assert access_claims["idp_id"] == "entra-object-id"
+
+
+class TestIdentityFromClaims:
+    def test_subject_is_identity_and_username_is_display_only(self) -> None:
+        assert identity_from_claims(
+            {"sub": USER_ID, "user_id": "507f1f77bcf86cd799439012", "preferred_username": "alice@corp.com"}
+        ) == (USER_ID, "alice@corp.com")
+
+    def test_downstream_token_without_username(self) -> None:
+        assert identity_from_claims({"sub": USER_ID}) == (USER_ID, USER_ID)
+
+    @pytest.mark.parametrize("username", [None, "", 123, ["alice"]])
+    def test_invalid_display_name_falls_back_to_subject(self, username: Any) -> None:
+        assert identity_from_claims({"sub": USER_ID, "preferred_username": username}) == (USER_ID, USER_ID)
+
+    @pytest.mark.parametrize("subject", [None, "", "alice", "alice@corp.com", "z" * 24, 123, ObjectId(USER_ID)])
+    def test_rejects_invalid_subject_even_with_valid_custom_user_id(self, subject: Any) -> None:
+        assert identity_from_claims({"sub": subject, "user_id": USER_ID}) is None
+
+    def test_rejects_missing_subject(self) -> None:
+        assert identity_from_claims({"user_id": USER_ID}) is None
 
 
 class TestIsEncrypted:

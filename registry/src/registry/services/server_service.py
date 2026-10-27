@@ -969,9 +969,9 @@ class ServerServiceV1:
         """Full-replace the server's disabled-tools list.
 
         Silently drops any submitted name that isn't a current tool (validated against the cached
-        config["toolFunctions"] snapshot, no live downstream call). Pushes tool_enabled metadata to
-        Weaviate only for tools whose status actually flipped — batched by new state, at most two
-        round-trips, not the server's entire tool set.
+        config["toolFunctions"] snapshot, no live downstream call). Looks up the tools whose status
+        flipped once, then patches tool_enabled in up to two groups or rebuilds the server's vectors
+        if the document count does not match.
         """
         # Guard before the Mongo write: the scheduled tool_enabled push would fail during a reindex
         # while Mongo already changed, so block it (503) until the reindex ends.

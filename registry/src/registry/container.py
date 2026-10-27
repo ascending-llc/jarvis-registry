@@ -441,12 +441,7 @@ class RegistryContainer:
 
     @cached_property
     def mcp_proxy_client(self) -> httpx.AsyncClient:
-        """Shared httpx client for MCP proxy connection pooling.
-
-        Intentionally distinct from `mcpgw_proxy_client` despite identical settings: the two keep
-        separate connection pools so the stateless gateway's downstream traffic and skill-sync/GitHub
-        traffic can't starve each other. Don't merge them.
-        """
+        """Shared httpx client for the direct-proxy `/proxy/{server}` routes and skill-sync's GitHub/OAuth calls."""
         return httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, read=60.0),
             follow_redirects=True,
@@ -460,7 +455,8 @@ class RegistryContainer:
         In stateless mode the FastMCP lifespan is entered on every request, so this must live on the
         container (not be opened per-lifespan-entry) to keep keep-alive pooling across requests.
 
-        Deliberately separate from `mcp_proxy_client` (same settings) so the two pools stay isolated.
+        Deliberately separate from `mcp_proxy_client` despite identical settings, so the gateway's traffic
+        and the direct-proxy/skill-sync traffic keep isolated pools and can't starve each other.
         """
         return httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, read=60.0),
@@ -611,7 +607,6 @@ class RegistryContainer:
         logger.info("Initializing services via registry container...")
 
         logger.info("Loading ACL role cache...")
-        await self.flow_state_manager.initialize()
         loaded = await load_role_cache()
         self.role_cache.clear()
         self.role_cache.update(loaded)
@@ -628,7 +623,7 @@ class RegistryContainer:
         logger.info("Initializing health monitoring service...")
         await self.health_service.initialize()
 
-        logger.info("Initializing MCP service...")
+        logger.info("Initializing MCP service (OAuth flow state storage)...")
         await self.mcp_service.initialize()
 
         logger.info("Initializing federation service...")

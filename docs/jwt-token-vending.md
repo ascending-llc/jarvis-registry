@@ -286,7 +286,9 @@ jobs:
 payload = {
     "iss": "mcp-auth-server",
     "aud": "mcp-registry",
-    "sub": username,
+    "sub": user_id,
+    "user_id": user_id,
+    "preferred_username": username,
     "scope": " ".join(requested_scopes),
     "exp": current_time + (expires_in_hours * 3600),
     "iat": current_time,
