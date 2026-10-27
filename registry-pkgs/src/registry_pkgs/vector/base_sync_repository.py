@@ -97,6 +97,8 @@ class BaseVectorSyncRepository(Repository[T], ABC):
                     "Adapter does not support update_metadata; metadata-only update skipped for %s.",
                     filters,
                 )
+                result.failed = 1
+                result.error = "Adapter does not support metadata updates"
                 return result
 
             existing_docs = await asyncio.to_thread(self._find_docs, filters)

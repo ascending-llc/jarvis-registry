@@ -241,6 +241,17 @@ class A2AAgent(Document):
         description="SHA-256 of vectorized page_content; used to skip re-embedding when content is unchanged",
     )
 
+    vectorSyncPendingAt: datetime | None = Field(
+        default=None,
+        description="Set in the same write as a vector-relevant change; means Weaviate may not reflect this "
+        "agent yet. Cleared only by a successful sync, compare-and-clear on this exact value. The "
+        "reconciler heals agents whose marker is still set.",
+    )
+    vectorSyncAttempts: int = Field(
+        default=0,
+        description="Reconciler retry count for this pending marker; reset to 0 on every new vector-relevant write.",
+    )
+
     # ========== Settings ==========
     class Settings:
         name = "a2a_agents"
@@ -256,6 +267,7 @@ class A2AAgent(Document):
             [("registeredBy", 1)],
             IndexModel([("federationRefId", 1)]),
             IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
+            IndexModel([("vectorSyncPendingAt", 1)], sparse=True),
         ]
 
     # ========== Field Derivation ==========

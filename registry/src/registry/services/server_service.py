@@ -45,7 +45,9 @@ from ..utils.crypto_utils import encrypt_auth_fields
 from ..utils.mcp_headers import build_complete_headers_for_server
 from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title
+from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
+from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +323,8 @@ class ServerServiceV1:
         oauth_service: Any,
         mcp_server_repo: MCPServerRepository,
         embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
+        background_task_tracker: BackgroundTaskTracker | None = None,
+        lease_owner: str = "registry-unowned",
     ):
         """Initialize server service with search index manager."""
         self.mcp_server_repo = mcp_server_repo
@@ -328,6 +332,8 @@ class ServerServiceV1:
         self.token_service = token_service
         self.oauth_service = oauth_service
         self._embedding_maintenance_watcher = embedding_maintenance_watcher
+        self._task_tracker = background_task_tracker
+        self._lease_owner = lease_owner
         logger.info("ServerServiceV1 initialized with search index manager")
 
     async def list_servers(
@@ -635,33 +641,58 @@ class ServerServiceV1:
                 await server.delete(session=session)
         return server
 
-    def _schedule_vector_sync(self, server: ExtendedMCPServer, old_hash: str | None) -> None:
-        """Schedule a rebuild for changed content or a metadata sync with a document-count check."""
+    @staticmethod
+    def _mark_vector_sync_pending(server: ExtendedMCPServer) -> datetime:
+        """Stamp the pending marker so it commits atomically with the change, and reset the backoff.
+
+        Returns the marker value to carry in the :class:`VectorSyncPlan` for compare-and-clear. Callers
+        must set this *before* the ``save()``/``insert()`` that persists the change.
+        """
+        marker = datetime.now(UTC)
+        server.vectorSyncPendingAt = marker
+        server.vectorSyncAttempts = 0
+        return marker
+
+    def _spawn_vector_task(self, coro: Any, name: str) -> None:
+        """Spawn a vector task through the tracker; tolerate shutdown, and an unwired tracker in tests.
+
+        After shutdown the spawn is refused — the Mongo write has already committed, so the request
+        must still succeed and the reconciler heals the marker that stays set.
+        """
+        if self._task_tracker is None:
+            coro.close()
+            logger.warning("No background task tracker wired for %s; leaving pending work for reconciliation", name)
+            return
+        try:
+            self._task_tracker.spawn(coro, name=name)
+        except TrackerShutdownError:
+            logger.info("Vector sync not scheduled (shutting down); the reconciler will heal it")
+
+    def schedule_vector_sync(self, plan: VectorSyncPlan) -> None:
+        """Run the immediate Weaviate sync for a committed write, tracked and marker-clearing.
+
+        On success the pending marker is compare-and-cleared on its exact value; on failure (a raised
+        exception, including a failed result dict from the shared helper) it is logged at ``warning``
+        and left for the reconciler. Transactional writes call this only after the commit (see the
+        route layer); non-transactional writes call it from the service.
+        """
         if self.mcp_server_repo is None:
             return
-        if server.vectorContentHash != old_hash:
+        server = plan.doc
 
-            async def _sync_task(s: ExtendedMCPServer = server) -> None:
-                try:
-                    result = await self.mcp_server_repo.sync_to_vector_db(s, is_delete=True)
-                    logger.debug("Vector sync result for server %s: %s", s.id, result)
-                except Exception as e:
-                    logger.error("Vector sync failed for server %s: %s", s.id, e, exc_info=True)
+        async def _sync_task() -> None:
+            try:
+                await sync_pending_vectors(
+                    ExtendedMCPServer, self.mcp_server_repo, server.id, owner=self._lease_owner, plan=plan
+                )
+            except VectorSyncBusyError:
+                logger.info("Vector sync already running for %s; pending work remains queued", server.id)
+            except Exception:
+                logger.warning(
+                    "Vector sync failed for server %s; marker left for the reconciler", server.id, exc_info=True
+                )
 
-            asyncio.create_task(_sync_task())
-        else:
-            metadata = server.mutable_metadata()
-
-            async def _metadata_task(s: ExtendedMCPServer = server) -> None:
-                try:
-                    result = await self.mcp_server_repo.sync_entity_metadata(
-                        s, metadata, reload=lambda: ExtendedMCPServer.get(s.id)
-                    )
-                    logger.debug("Vector metadata update result for server %s: %s", s.id, result)
-                except Exception as e:
-                    logger.error("Vector metadata update failed for server %s: %s", s.id, e, exc_info=True)
-
-            asyncio.create_task(_metadata_task())
+        self._spawn_vector_task(_sync_task(), f"vector-sync-server-{server.id}")
 
     async def update_server(
         self,
@@ -669,7 +700,7 @@ class ServerServiceV1:
         data: ServerUpdateRequest,
         user_id: str | None = None,
         session: AsyncClientSession | None = None,
-    ) -> ExtendedMCPServer:
+    ) -> tuple[ExtendedMCPServer, VectorSyncPlan]:
         """
         Update a server.
 
@@ -679,7 +710,10 @@ class ServerServiceV1:
             user_id: Current user's ID (kept for compatibility but not used)
 
         Returns:
-            Updated server document
+            ``(updated server, vector-sync plan)``. The caller schedules the plan with
+            ``schedule_vector_sync`` **after** its transaction commits, so the immediate task never
+            lands before the marker it must clear (a pre-commit task would re-embed, and a rolled-back
+            update would leave uncleared vectors). The marker is already set in the same ``save()``.
 
         Raises:
             ValueError: If server not found
@@ -723,6 +757,8 @@ class ServerServiceV1:
         server.config = updated_config
 
         old_hash = server.vectorContentHash
+        had_pending_sync = server.vectorSyncPendingAt is not None
+        marker = self._mark_vector_sync_pending(server)
         await server.save(session=session)
 
         if updated_config.get("url") != previous_url or server.mcp_auth_mode is not McpAuthMode.OAUTH:
@@ -733,8 +769,11 @@ class ServerServiceV1:
             )
             server.registryOAuth = None
 
-        self._schedule_vector_sync(server, old_hash)
-        return server
+        # Hash is recomputed by the save hook, so compare post-save to pick the full-resync branch.
+        plan = VectorSyncPlan(
+            doc=server, marker=marker, full_resync=had_pending_sync or server.vectorContentHash != old_hash
+        )
+        return server, plan
 
     async def delete_server(
         self,
@@ -883,15 +922,19 @@ class ServerServiceV1:
                 raise ValueError("Failed to fetch tools from server. Server remains disabled.")
 
         old_hash = server.vectorContentHash
+        had_pending_sync = server.vectorSyncPendingAt is not None
+        marker = self._mark_vector_sync_pending(server)
         await server.save()
         logger.info(f"Toggled server {server.serverName} (ID: {server.id}) enabled to {enabled}")
 
-        # When enabling, always force a full sync — Weaviate may be empty even if the
-        # content hash hasn't changed (e.g. after a collection reset or a previous failed sync).
-        if enabled:
-            self._schedule_vector_sync(server, old_hash=None)
-        else:
-            self._schedule_vector_sync(server, old_hash)
+        # When enabling, always force a full sync — Weaviate may be empty even if the content hash
+        # hasn't changed (e.g. after a collection reset or a previous failed sync). Toggle is not in a
+        # route transaction, so schedule from here.
+        effective_old_hash = None if enabled else old_hash
+        plan = VectorSyncPlan(
+            doc=server, marker=marker, full_resync=had_pending_sync or server.vectorContentHash != effective_old_hash
+        )
+        self.schedule_vector_sync(plan)
         return server
 
     async def get_server_tools(
@@ -948,37 +991,40 @@ class ServerServiceV1:
         if new_disabled == previous_disabled:
             return server
 
+        had_pending_sync = server.vectorSyncPendingAt is not None
         server.registryDisabledTools = sorted(new_disabled)
+        marker = self._mark_vector_sync_pending(server)
         await server.save()
 
-        self._schedule_tool_enabled_sync(server, new_disabled, previous_disabled)
+        self._schedule_tool_enabled_sync(
+            VectorSyncPlan(doc=server, marker=marker, full_resync=had_pending_sync),
+            new_disabled,
+            previous_disabled,
+        )
         return server
 
     def _schedule_tool_enabled_sync(
         self,
-        server: ExtendedMCPServer,
+        plan: VectorSyncPlan,
         new_disabled: set[str],
         previous_disabled: set[str],
     ) -> None:
-        """Schedule a tool_enabled patch, or a rebuild if the flipped tools' doc count differs.
+        """Queue tool deltas through the same entity lease as all other vector writes.
 
-        Fire-and-forget, matching _schedule_vector_sync: MongoDB is
-        authoritative, so a failed or slow vector patch must not block or fail the caller's write.
+        Existing pending work promotes this plan to a full rebuild. If the marker changes before
+        execution, the coordinator also rebuilds instead of applying obsolete deltas.
         """
-        if self.mcp_server_repo is None:
-            return
-        tool_names = sorted(new_disabled ^ previous_disabled)
-
-        async def _sync_task(s: ExtendedMCPServer = server) -> None:
-            try:
-                result = await self.mcp_server_repo.sync_tools_enabled(
-                    s, tool_names, reload=lambda: ExtendedMCPServer.get(s.id)
-                )
-                logger.debug("tool_enabled metadata sync result for server %s: %s", s.id, result)
-            except Exception as e:
-                logger.error("tool_enabled metadata sync failed for server %s: %s", s.id, e, exc_info=True)
-
-        asyncio.create_task(_sync_task())
+        self.schedule_vector_sync(
+            VectorSyncPlan(
+                doc=plan.doc,
+                marker=plan.marker,
+                full_resync=plan.full_resync,
+                tool_updates=(
+                    (tuple(sorted(new_disabled - previous_disabled)), False),
+                    (tuple(sorted(previous_disabled - new_disabled)), True),
+                ),
+            )
+        )
 
     @track_tool_discovery
     async def retrieve_from_server(
@@ -1242,7 +1288,7 @@ class ServerServiceV1:
 
             # Drop disabled-tool names that no longer exist downstream. When this prunes anything,
             # the tool set itself changed, so page_content (hence vectorContentHash) changed too, and
-            # the _schedule_vector_sync call below already takes the full-rebuild branch.
+            # the vector-sync plan built below already takes the full-rebuild branch.
             known_tool_names = {td.get("mcpToolName", key) for key, td in tool_functions.items()}
             server.registryDisabledTools = [t for t in (server.registryDisabledTools or []) if t in known_tool_names]
 
@@ -1263,8 +1309,13 @@ class ServerServiceV1:
 
         server.config = config
         old_hash = server.vectorContentHash
+        had_pending_sync = server.vectorSyncPendingAt is not None
+        marker = self._mark_vector_sync_pending(server)
         await server.save()
-        self._schedule_vector_sync(server, old_hash)
+        plan = VectorSyncPlan(
+            doc=server, marker=marker, full_resync=had_pending_sync or server.vectorContentHash != old_hash
+        )
+        self.schedule_vector_sync(plan)
 
         # Return capabilities refresh result
         return {

@@ -186,8 +186,9 @@ async def test_get_agent_stats_uses_injected_service(sample_user_context):
 @pytest.mark.asyncio
 async def test_create_agent_uses_injected_services(sample_user_context):
     agent = _build_agent()
+    plan = MagicMock()
     a2a_agent_service = MagicMock()
-    a2a_agent_service.create_agent = AsyncMock(return_value=agent)
+    a2a_agent_service.create_agent = AsyncMock(return_value=(agent, plan))
 
     acl_service = MagicMock()
     acl_service.grant_permission = AsyncMock(return_value=MagicMock())
@@ -220,6 +221,8 @@ async def test_create_agent_uses_injected_services(sample_user_context):
         session=mock_session,
     )
     acl_service.grant_permission.assert_awaited_once()
+    # The returned plan is scheduled after the transaction block.
+    a2a_agent_service.schedule_vector_sync.assert_called_once_with(plan)
     call_args = acl_service.grant_permission.call_args
     assert call_args.kwargs["principal_type"] == PrincipalType.USER
     assert call_args.kwargs["resource_type"] == ResourceType.REMOTE_AGENT
@@ -550,7 +553,7 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     agent insert is rolled back rather than left orphaned."""
     agent = _build_agent()
     a2a_agent_service = MagicMock()
-    a2a_agent_service.create_agent = AsyncMock(return_value=agent)
+    a2a_agent_service.create_agent = AsyncMock(return_value=(agent, MagicMock()))
 
     acl_service = MagicMock()
     acl_service.grant_permission = AsyncMock(side_effect=RuntimeError("ACL write failed"))
@@ -580,6 +583,8 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     acl_service.grant_permission.assert_awaited_once()
     # Transaction context manager sees the original exception before the route maps it to HTTPException.
     assert ctx.exit_exc_type is RuntimeError
+    # A failure inside the transaction must leave the vector sync unscheduled (no stale write).
+    a2a_agent_service.schedule_vector_sync.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -804,3 +809,68 @@ async def test_update_agent_returns_503_during_reindex(sample_user_context):
     assert exc.status_code == 503
     assert exc.headers["Retry-After"] == "30"
     assert exc.detail["error"] == "reindex_in_progress"
+
+
+class _FailingCommitTxnCtx(_RecordingTxnCtx):
+    """A transaction whose commit fails after the body completed (e.g. a write conflict)."""
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await super().__aexit__(exc_type, exc, tb)
+        raise PyMongoError("commit failed")
+
+
+@pytest.mark.asyncio
+async def test_update_agent_route_schedules_vector_sync_after_commit(sample_user_context):
+    """The route schedules the returned plan's vector sync only once the transaction block has exited."""
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=15)
+    plan = MagicMock()
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.update_agent = AsyncMock(return_value=(_build_agent(), plan))
+
+    ctx = _RecordingTxnCtx()
+
+    def schedule(_plan):
+        assert ctx.exit_exc_type is None  # the transaction already committed cleanly
+
+    a2a_agent_service.schedule_vector_sync = MagicMock(side_effect=schedule)
+
+    with (
+        patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=_FakeTxnClient(_FakeTxnSession(ctx))),
+        patch("registry.api.v1.a2a.agent_routes.convert_to_detail", return_value="ok"),
+    ):
+        result = await update_agent(
+            agent_id=str(PydanticObjectId()),
+            data=AgentUpdateRequest(),
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            a2a_agent_service=a2a_agent_service,
+        )
+
+    assert result == "ok"
+    a2a_agent_service.schedule_vector_sync.assert_called_once_with(plan)
+
+
+@pytest.mark.asyncio
+async def test_update_agent_route_does_not_schedule_when_commit_fails(sample_user_context):
+    """A failed commit rolls the update back, so its vector sync must never be scheduled."""
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=15)
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.update_agent = AsyncMock(return_value=(_build_agent(), MagicMock()))
+
+    ctx = _FailingCommitTxnCtx()
+    with patch(
+        "registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=_FakeTxnClient(_FakeTxnSession(ctx))
+    ):
+        with pytest.raises(HTTPException):
+            await update_agent(
+                agent_id=str(PydanticObjectId()),
+                data=AgentUpdateRequest(),
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    a2a_agent_service.update_agent.assert_awaited_once()
+    a2a_agent_service.schedule_vector_sync.assert_not_called()

@@ -73,6 +73,7 @@ from .services.skill_sync_oauth_service import SkillSyncOAuthService
 from .services.skill_sync_service import SkillSyncService
 from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .services.skill_sync_token_service import SkillSyncTokenService
+from .services.vector_sync_reconciler import VectorSyncReconciler
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_run_launcher import WorkflowRunLauncher
 from .services.workflow_schedule_service import WorkflowScheduleService
@@ -301,6 +302,8 @@ class RegistryContainer:
             oauth_service=self.oauth_service,
             mcp_server_repo=self.mcp_server_repo,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            background_task_tracker=self.background_task_tracker,
+            lease_owner=self.lease_owner,
         )
 
     @cached_property
@@ -310,6 +313,8 @@ class RegistryContainer:
             jwt_config=self.settings.jwt_signing_config,
             azure_client_cache=self.azure_foundry_client_cache,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            background_task_tracker=self.background_task_tracker,
+            lease_owner=self.lease_owner,
         )
 
     @cached_property
@@ -554,6 +559,15 @@ class RegistryContainer:
         )
 
     @cached_property
+    def vector_sync_reconciler(self) -> VectorSyncReconciler:
+        return VectorSyncReconciler(
+            mcp_server_repo=self.mcp_server_repo,
+            a2a_agent_repo=self.a2a_agent_repo,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            lease_owner=self.lease_owner,
+        )
+
+    @cached_property
     def skill_sync_token_service(self) -> SkillSyncTokenService:
         return SkillSyncTokenService(self.mcp_proxy_client)
 
@@ -633,6 +647,9 @@ class RegistryContainer:
         logger.info("Starting embedding reindex job runner...")
         await self.embedding_reindex_job_runner.start()
 
+        logger.info("Starting vector sync reconciler...")
+        await self.vector_sync_reconciler.start()
+
         logger.info("Starting lease reaper...")
         await self.lease_reaper.start()
 
@@ -642,6 +659,7 @@ class RegistryContainer:
         await self.lease_reaper.shutdown()
         await self.skill_sync_job_runner.shutdown()
         await self.embedding_reindex_job_runner.shutdown()
+        await self.vector_sync_reconciler.shutdown()
         await self.embedding_maintenance_watcher.shutdown()
         # Cancel and finalize all tracked background runs (replaces the cluster-wide shutdown sweep).
         await self.background_task_tracker.shutdown()
