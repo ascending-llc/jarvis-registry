@@ -1177,6 +1177,9 @@ async def test_reload_merges_concurrent_misses_and_preserves_reference() -> None
 
 @pytest.mark.asyncio
 async def test_reload_failure_preserves_cache_and_is_throttled(monkeypatch) -> None:
+    # Exact float values so `now - last_attempt` hits the 60s boundary without rounding error.
+    now = 1000.0
+    monkeypatch.setattr("registry.services.access_control_service.time.monotonic", lambda: now)
     cache = {("old", 1): PydanticObjectId()}
     original = dict(cache)
     reload = AsyncMock(side_effect=RuntimeError("database unavailable"))
@@ -1187,9 +1190,7 @@ async def test_reload_failure_preserves_cache_and_is_throttled(monkeypatch) -> N
         await service._reload_on_miss(("new", 2))
     assert cache == original
     reload.assert_awaited_once()
-    monkeypatch.setattr(
-        "registry.services.access_control_service.time.monotonic", lambda: service._last_reload_attempt + 60
-    )
+    now = 1060.0
     reload.side_effect = None
     reload.return_value = {("new", 2): PydanticObjectId()}
     await service._reload_on_miss(("new", 2))
