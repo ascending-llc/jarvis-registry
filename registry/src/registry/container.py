@@ -34,8 +34,8 @@ from registry_pkgs.workflows.schedule_repository import WorkflowScheduleReposito
 from .auth.dependencies import effective_scopes_from_context
 from .core.a2a_proxy import A2AProxyClientRegistry
 from .core.mcp_client import MCPClientService
-from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
+from .mcpgw.core.client_info_store import ClientInfoStore
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.background_task_tracker import BackgroundTaskTracker
@@ -124,8 +124,13 @@ class RegistryContainer:
         return MCPClientService(redis_client=self.redis_client)
 
     @cached_property
-    def session_store(self) -> SessionStore:
-        return SessionStore()
+    def client_info_store(self) -> ClientInfoStore:
+        """Redis cache of MCP clients' `initialize` params, for the stateless gateway."""
+        return ClientInfoStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.redis_key_prefix,
+            jwt_config=self.settings.jwt_token_config,
+        )
 
     @cached_property
     def vector_service(self) -> VectorSearchService:
@@ -433,7 +438,23 @@ class RegistryContainer:
 
     @cached_property
     def mcp_proxy_client(self) -> httpx.AsyncClient:
-        """Shared httpx client for MCP proxy connection pooling."""
+        """Shared httpx client for the direct-proxy `/proxy/{server}` routes and skill-sync's GitHub/OAuth calls."""
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=60.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+
+    @cached_property
+    def mcpgw_proxy_client(self) -> httpx.AsyncClient:
+        """Long-lived httpx client for the stateless MCP gateway's downstream proxy calls.
+
+        In stateless mode the FastMCP lifespan is entered on every request, so this must live on the
+        container (not be opened per-lifespan-entry) to keep keep-alive pooling across requests.
+
+        Deliberately separate from `mcp_proxy_client` despite identical settings, so the gateway's traffic
+        and the direct-proxy/skill-sync traffic keep isolated pools and can't starve each other.
+        """
         return httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, read=60.0),
             follow_redirects=True,
@@ -626,6 +647,7 @@ class RegistryContainer:
         await self.background_task_tracker.shutdown()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
+        await self.mcpgw_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()
         await self.a2a_client_registry.close()
         self.azure_model_credential.close()

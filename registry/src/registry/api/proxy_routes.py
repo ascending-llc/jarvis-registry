@@ -381,7 +381,7 @@ async def _prepare_proxy_headers(
             server=server,
             auth_context=auth_context,
             additional_headers=headers,
-            state_metadata={"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": False},
+            state_metadata={"client_branding": ClientBranding.UNRECOGNIZED},
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
@@ -1310,7 +1310,7 @@ async def dynamic_mcp_get_proxy(
                 server=server,
                 auth_context=auth_context,
                 additional_headers=headers,
-                state_metadata={"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": False},
+                state_metadata={"client_branding": ClientBranding.UNRECOGNIZED},
                 redis_client=redis_client,
             )
         except UrlElicitationRequiredException as exc:

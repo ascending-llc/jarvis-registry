@@ -13,11 +13,6 @@ class StateMetadata(TypedDict):
     # we use browser deep-link to redirect user back to the AI app window from our OAuth callback page.
     client_branding: ClientBranding
 
-    # Whether we should send an `elicitation/complete` notification to the MCP client. If client connects to our
-    # MCP gateway at `/proxy/mcpgw/mcp`, yes. If client connects to a specific proxied downstream MCP
-    # via the dynamic catch-call route `/proxy/server/{full_path:path}`, no.
-    notify_elicitation_complete: bool
-
     # Unique UUID4 for the elicitation.
     elicitation_id: NotRequired[str]
 

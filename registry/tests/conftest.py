@@ -239,7 +239,6 @@ def test_client(mock_auth_middleware) -> TestClient:
         mcp_service=Mock(),
         status_resolver=Mock(),
         search_service=Mock(),
-        session_store=Mock(),
         health_service=Mock(),
     )
     client = TestClient(app)

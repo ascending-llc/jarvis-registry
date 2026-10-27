@@ -34,6 +34,10 @@ def _build_app() -> FastAPI:
     async def proxy_ep():  # pragma: no cover - body trivial
         return JSONResponse({"ok": "proxy"})
 
+    @app.get("/proxy/mcpgw/echo-user")
+    async def echo_user_ep(request: Request):
+        return JSONResponse({"jti": request.state.user.get("jti")})
+
     @app.get("/api/v1/skills")
     async def skills_ep():
         return JSONResponse({"ok": "skills"})
@@ -207,6 +211,24 @@ def test_downstream_subject_without_preferred_username_remains_usable(client: Te
 def test_proxy_accepts_managed_agent_bearer(client):
     resp = client.get("/proxy/mcpgw/mcp", headers={"Authorization": f"Bearer {_managed_agent_token()}"})
     assert resp.status_code == 200
+
+
+def test_managed_agent_jwt_puts_jti_in_user_context(client):
+    """The JWT (managed-agent) auth path must thread the token's jti into the user context so the
+    gateway can key its client-info cache per token for shared client ids."""
+    token = mint_managed_agent_token(
+        settings.jwt_token_config,
+        subject=USER_A,
+        client_id="mcp-client-abc",
+        requested_scopes="mcp-proxy-ops",
+        expires_in_seconds=3600,
+        extra_claims={"preferred_username": "alice", "jti": "jti-xyz"},
+    )
+
+    resp = client.get("/proxy/mcpgw/echo-user", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    assert resp.json()["jti"] == "jti-xyz"
 
 
 def test_proxy_rejects_crud_token_as_bearer(client):

@@ -37,6 +37,7 @@ from .utils import (
     _build_url_elicitation_result,
     _extract_authenticated_user_context,
     _get_state_metadata,
+    get_client_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ async def execute_agent_impl(
     ):
         nonce = secrets.token_urlsafe(32)
         elicitation_id = str(uuid.uuid4())
-        state_metadata = _get_state_metadata(ctx.session.client_params)
+        state_metadata = _get_state_metadata(get_client_params(ctx))
         lifespan.pending_consent_store.save(
             nonce,
             {

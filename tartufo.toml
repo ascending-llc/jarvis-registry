@@ -155,4 +155,11 @@ exclude-signatures = [
     {signature = '9dc17aee0f1238162c7695d6535914675bf3fb52b324349d5714c7e75e25b85c', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
     {signature = '69937224536ad15ebc984d7fc9a78f0200a159c244cddb543df5386d499eacc4', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
     {signature = 'ca4f7da5c2cc976422c65b232ee35009e20fa010fc0c9f9cb85b7b07f9770220', reason = 'synthetic MongoDB ObjectId in JWT identity tests is not a credential'},
+    {signature = 'e7ce705ab327fd06ea52dec32866d1c7dde7d86de2535b20826b5553e1594d18', reason = 'stateless gateway integration test uses synthetic MongoDB ObjectIds and mock fixtures, not credentials'},
+    {signature = '07b8f38f951c28b4881898ff750da0c72ae494860f71b50c84fedcc827c4e4cd', reason = 'client-info store unit test uses synthetic MongoDB ObjectIds and mock fixtures, not credentials'},
+    {signature = '199aac890574b3f7381e6d069afacdbbfc821efaad85fb0697d083b1c4988ff0', reason = 'stateless gateway e2e verification script uses a throwaway MongoDB ObjectId and locally-minted test tokens, not credentials'},
+    {signature = 'bddc7c264e820478f2c314c84e5faeb3e197aefe2ad43bda17a75078b0fb9f91', reason = 'synthetic numeric Google subject ID in OAuth callback integration tests is not a credential'},
+    {signature = 'f2ee13877d6e001e05fa552981f8eea8ec35011b7f2ecce9ed2906da10781c3e', reason = 'KEYCLOAK_M2M_CLIENT_SECRET placeholder in auth docs is not a credential'},
+    {signature = 'ebc796d30201a1afc1c32d8bb5c4bea1b88dac290d1c5342b2290081ef3c7557', reason = 'ENTRA_CLIENT_ID placeholder in auth docs is not a credential'},
+    {signature = '94a8900d1f56c1520b87644c9b56ab106c2d37c376c55d83216e717602f6479f', reason = 'ENTRA_CLIENT_ID placeholder in Entra ID setup docs is not a credential'},
 ]
