@@ -207,7 +207,7 @@ def _validate_known_client_for_redirect(
     if _is_registry_client(client_id):
         return None
 
-    client_metadata = store.get_client(client_id)
+    client_metadata = _resolve_client_metadata(client_id, store)
     if client_metadata is None:
         return _RedirectValidationError("invalid_client", "Unknown client_id")
 
@@ -348,7 +348,7 @@ def _finish_oauth2_callback(
         redirect_params["state"] = client_state
 
     redirect_url = f"{client_redirect_uri}?{urlencode(redirect_params)}"
-    logger.info("OAuth2 login successful, redirecting to %s...", redirect_url)
+    logger.info("OAuth2 login successful: client_id=%s", session_data["client_id"])
 
     response = RedirectResponse(url=redirect_url, status_code=302)
     response.delete_cookie(settings.oauth2_temp_session_cookie_name)
@@ -773,7 +773,21 @@ async def oauth2_login(
             params = {"error": "unsupported_response_type", "error_description": "only supports response_type=code"}
             return RedirectResponse(f"{error_url}?{urlencode(params)}", 302)
 
-        if redirect_uri is None or code_challenge is None or code_challenge_method is None:
+        missing_parameters = [
+            name
+            for name, value in (
+                ("redirect_uri", redirect_uri),
+                ("code_challenge", code_challenge),
+                ("code_challenge_method", code_challenge_method),
+            )
+            if value is None
+        ]
+        if missing_parameters:
+            logger.warning(
+                "OAuth authorization rejected: client_id=%s missing_parameters=%s",
+                client_id,
+                ", ".join(missing_parameters),
+            )
             params = {
                 "error": "invalid_request",
                 "error_description": "redirect_uri, code_challenge and code_challenge_method are all required",
@@ -782,6 +796,13 @@ async def oauth2_login(
 
         client_error = _validate_known_client_for_redirect(client_id, redirect_uri, store)
         if client_error is not None:
+            logger.warning(
+                "OAuth authorization rejected: client_id=%s error=%s reason=%s redirect_uri=%s",
+                client_id,
+                client_error.error,
+                client_error.error_description,
+                redirect_uri,
+            )
             if is_safe_unverified_redirect_target(redirect_uri, _trusted_error_redirect_uris()):
                 return _redirect_to_pending_consent(
                     {
@@ -799,6 +820,11 @@ async def oauth2_login(
             return oauth_error_response(client_error.error, client_error.error_description)
 
         if code_challenge_method != "S256":
+            logger.warning(
+                "OAuth authorization rejected: client_id=%s code_challenge_method=%s; must be S256",
+                client_id,
+                code_challenge_method,
+            )
             params = {
                 "error": "invalid_request",
                 "error_description": "code_challenge_method must be S256",

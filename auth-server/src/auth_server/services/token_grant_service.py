@@ -138,8 +138,18 @@ class TokenGrantService:
             self._token_config,
         )
         if not authorization.credentials_valid:
+            logger.warning(
+                "OAuth token request rejected: client_id=%s grant_type=%s error=invalid_client",
+                client_id,
+                grant_type,
+            )
             return _oauth_error("invalid_client", "invalid client credentials")
         if not authorization.grant_authorized:
+            logger.warning(
+                "OAuth token request rejected: client_id=%s grant_type=%s error=unauthorized_client",
+                client_id,
+                grant_type,
+            )
             return _oauth_error("unauthorized_client", f"client is not authorized for {grant_type}")
         return None
 
@@ -188,9 +198,14 @@ class TokenGrantService:
     ) -> DeviceTokenResponse | JSONResponse:
         auth_code_data = self._store.get_authcode(request.code)
         if not auth_code_data:
+            logger.warning(
+                "OAuth token request rejected: client_id=%s reason=authorization code not found or expired",
+                request.client_id,
+            )
             return _oauth_error("invalid_grant", "authorization code not found or expired")
 
         if auth_code_data["client_id"] != request.client_id:
+            logger.warning("OAuth token request rejected: client_id=%s reason=client_id mismatch", request.client_id)
             return _oauth_error("invalid_client", "client_id mismatch")
 
         client_error = self._validate_client(
@@ -201,6 +216,7 @@ class TokenGrantService:
         if client_error is not None:
             return client_error
         if auth_code_data["redirect_uri"] != request.redirect_uri:
+            logger.warning("OAuth token request rejected: client_id=%s reason=redirect_uri mismatch", request.client_id)
             return _oauth_error("invalid_grant", "redirect_uri mismatch")
 
         issued_at = int(time.time())
@@ -210,10 +226,22 @@ class TokenGrantService:
         code_challenge = auth_code_data.get("code_challenge")
         if code_challenge:
             if not request.code_verifier:
+                logger.warning(
+                    "OAuth token request rejected: client_id=%s reason=code_verifier required for PKCE",
+                    request.client_id,
+                )
                 return _oauth_error("invalid_request", "code_verifier required for PKCE")
             if auth_code_data.get("code_challenge_method", "S256") != "S256":
+                logger.warning(
+                    "OAuth token request rejected: client_id=%s reason=code_challenge_method must be S256",
+                    request.client_id,
+                )
                 return _oauth_error("invalid_request", "code_challenge_method must be S256")
             if create_s256_code_challenge(request.code_verifier) != code_challenge:
+                logger.warning(
+                    "OAuth token request rejected: client_id=%s reason=code_verifier validation failed",
+                    request.client_id,
+                )
                 return _oauth_error("invalid_grant", "code_verifier validation failed")
 
         auth_code_data = self._store.consume_authcode(request.code)

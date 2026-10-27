@@ -9,10 +9,12 @@ Note: All OAuth endpoints are served under /auth prefix when AUTH_SERVER_API_PRE
 """
 
 import html
+import logging
 import time
 from http.cookies import SimpleCookie
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -24,7 +26,9 @@ from auth_server.deps import get_auth_provider, get_identity_service, get_oauth2
 from auth_server.providers.factory import _create_entra_provider
 from auth_server.routes.consent_templates import render_device_server_error_page
 from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
+from auth_server.services.oauth_client_policy import CLAUDE_DESKTOP_REDIRECT_URI
 from auth_server.services.token_grant_service import TokenGrantService
+from registry_pkgs.core.client_categories import CLAUDE_DESKTOP_CLIENT_ID, REGISTRY_CLI_CLIENT_ID
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from tests.conftest import test_consent_store, test_pending_consent_store
@@ -80,6 +84,18 @@ def _cookies_from_response(response) -> SimpleCookie:
 
 def _configure_oauth2(test_client: TestClient) -> None:
     test_client.app.dependency_overrides[get_oauth2_config] = lambda: OAUTH2_CONFIG
+
+
+def _desktop_login_params() -> dict[str, str]:
+    return {
+        "client_id": CLAUDE_DESKTOP_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": CLAUDE_DESKTOP_REDIRECT_URI,
+        "code_challenge": "desktop-challenge",
+        "code_challenge_method": "S256",
+        "scope": "mcp-proxy-ops",
+        "state": "desktop-state",
+    }
 
 
 def _configure_identity_service(test_client: TestClient, user_id: str = "user-123") -> Mock:
@@ -484,6 +500,173 @@ def test_removed_providers_are_rejected_by_path_validation(test_client: TestClie
 
 @pytest.mark.integration
 @pytest.mark.oauth_flow
+class TestStaticPublicClientLogin:
+    @pytest.mark.parametrize("port", [47280, 51234])
+    def test_desktop_login_without_registered_clients_redirects_to_idp(
+        self, test_client: TestClient, clear_device_storage: None, port: int
+    ) -> None:
+        _configure_oauth2(test_client)
+        registered_clients.clear()
+        params = _desktop_login_params()
+        params["redirect_uri"] = f"http://127.0.0.1:{port}/callback"
+
+        response = test_client.get(f"{API_PREFIX}/oauth2/login/entra", params=params, follow_redirects=False)
+
+        assert response.status_code == 302
+        location = urlsplit(response.headers["location"])
+        assert location._replace(query="").geturl() == OAUTH2_CONFIG["providers"]["entra"]["auth_url"]
+        assert parse_qs(location.query)["client_id"] == ["entra-provider-client"]
+        assert registered_clients == {}
+
+    def test_desktop_consent_approval_keeps_callback_secrets_out_of_logs(
+        self, test_client: TestClient, clear_device_storage: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        registered_clients.clear()
+        nonce = "desktop-approval-nonce"
+        client_state = "private-desktop-client-state"
+        token_data = {"access_token": "private-idp-access-token", "id_token": "private-idp-id-token"}
+        test_pending_consent_store.save(
+            nonce,
+            {
+                "mapped_user": {"user_id": "user-123", "username": "test-user"},
+                "token_data": token_data,
+                "resolved_scopes": ["mcp-proxy-ops"],
+                "session_data": {
+                    "client_id": CLAUDE_DESKTOP_CLIENT_ID,
+                    "client_redirect_uri": CLAUDE_DESKTOP_REDIRECT_URI,
+                    "client_state": client_state,
+                    "code_challenge": "desktop-challenge",
+                    "code_challenge_method": "S256",
+                },
+            },
+        )
+        test_client.cookies.set(settings.oauth2_consent_nonce_cookie_name, nonce)
+
+        with caplog.at_level(logging.INFO, logger="auth_server.routes.oauth_flow"):
+            response = test_client.post(
+                f"{API_PREFIX}/oauth2/consent/approve", data={"nonce": nonce}, follow_redirects=False
+            )
+
+        assert response.status_code == 302
+        location = urlsplit(response.headers["location"])
+        assert location._replace(query="").geturl() == CLAUDE_DESKTOP_REDIRECT_URI
+        params = parse_qs(location.query)
+        code = params["code"][0]
+        assert code
+        assert authorization_codes_storage[code]["client_id"] == CLAUDE_DESKTOP_CLIENT_ID
+        assert params["state"] == [client_state]
+        assert code not in caplog.text
+        assert client_state not in caplog.text
+        assert all(token not in caplog.text for token in token_data.values())
+        assert any(
+            record.name == "auth_server.routes.oauth_flow"
+            and record.levelno == logging.INFO
+            and CLAUDE_DESKTOP_CLIENT_ID in record.getMessage()
+            for record in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        "client_id, redirect_uri",
+        [
+            (CLAUDE_DESKTOP_CLIENT_ID, "http://localhost:47280/callback"),
+            (CLAUDE_DESKTOP_CLIENT_ID, "http://127.0.0.1:47280/other"),
+            (REGISTRY_CLI_CLIENT_ID, CLAUDE_DESKTOP_REDIRECT_URI),
+        ],
+    )
+    def test_static_client_unregistered_redirect_is_rejected_and_logged_once(
+        self,
+        test_client: TestClient,
+        clear_device_storage: None,
+        caplog: pytest.LogCaptureFixture,
+        client_id: str,
+        redirect_uri: str,
+    ) -> None:
+        _configure_oauth2(test_client)
+        registered_clients.clear()
+        params = _desktop_login_params()
+        params.update(client_id=client_id, redirect_uri=redirect_uri)
+
+        with caplog.at_level(logging.WARNING, logger="auth_server.routes.oauth_flow"):
+            response = test_client.get(f"{API_PREFIX}/oauth2/login/entra", params=params, follow_redirects=False)
+
+        assert response.status_code == 302
+        location = urlsplit(response.headers["location"])
+        assert location.path == f"{API_PREFIX}/oauth2/redirect-error-consent"
+        nonce = parse_qs(location.query)["nonce"][0]
+        pending = test_pending_consent_store.peek(nonce)
+        assert pending is not None
+        assert pending["error"] == "invalid_request"
+        assert pending["error_description"] == "redirect_uri is not registered for this client"
+        assert pending["redirect_uri"] == redirect_uri
+        assert pending["client_state"] == "desktop-state"
+        assert len(caplog.messages) == 1
+        assert client_id in caplog.messages[0]
+        assert "invalid_request" in caplog.messages[0]
+        assert pending["error_description"] in caplog.messages[0]
+        assert redirect_uri in caplog.messages[0]
+
+    @pytest.mark.parametrize(
+        "missing_params",
+        [
+            ("redirect_uri",),
+            ("code_challenge",),
+            ("code_challenge_method",),
+            ("redirect_uri", "code_challenge", "code_challenge_method"),
+        ],
+    )
+    def test_login_missing_parameters_are_named_in_warning(
+        self,
+        test_client: TestClient,
+        caplog: pytest.LogCaptureFixture,
+        missing_params: tuple[str, ...],
+    ) -> None:
+        _configure_oauth2(test_client)
+        params = _desktop_login_params()
+        for name in missing_params:
+            del params[name]
+
+        with caplog.at_level(logging.WARNING, logger="auth_server.routes.oauth_flow"):
+            response = test_client.get(f"{API_PREFIX}/oauth2/login/entra", params=params, follow_redirects=False)
+
+        assert response.status_code == 302
+        assert parse_qs(urlsplit(response.headers["location"]).query)["error"] == ["invalid_request"]
+        assert len(caplog.messages) == 1
+        assert CLAUDE_DESKTOP_CLIENT_ID in caplog.messages[0]
+        assert all(name in caplog.messages[0] for name in missing_params)
+        assert "desktop-challenge" not in caplog.messages[0]
+
+    def test_login_unsupported_pkce_method_is_logged(
+        self, test_client: TestClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _configure_oauth2(test_client)
+        params = _desktop_login_params()
+        params["code_challenge_method"] = "plain"
+
+        with caplog.at_level(logging.WARNING, logger="auth_server.routes.oauth_flow"):
+            response = test_client.get(f"{API_PREFIX}/oauth2/login/entra", params=params, follow_redirects=False)
+
+        assert response.status_code == 302
+        error = parse_qs(urlsplit(response.headers["location"]).query)
+        assert error["error"] == ["invalid_request"]
+        assert error["error_description"] == ["code_challenge_method must be S256"]
+        assert len(caplog.messages) == 1
+        assert CLAUDE_DESKTOP_CLIENT_ID in caplog.messages[0]
+        assert "plain" in caplog.messages[0]
+
+    def test_desktop_device_authorization_is_rejected(
+        self, test_client: TestClient, clear_device_storage: None
+    ) -> None:
+        registered_clients.clear()
+
+        response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": CLAUDE_DESKTOP_CLIENT_ID})
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "unauthorized_client"
+        assert device_codes_storage == {}
+
+
+@pytest.mark.integration
+@pytest.mark.oauth_flow
 class TestLoginRedirectErrorConsent:
     def test_client_without_authorization_code_uses_consent_detour(
         self,
@@ -831,6 +1014,7 @@ class TestDeviceFlowRoutes:
         self,
         test_client: TestClient,
         clear_device_storage,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         authorization_codes_storage["cli-auth-code"] = {
             "client_id": "jarvis-registry-cli",
@@ -853,6 +1037,11 @@ class TestDeviceFlowRoutes:
         assert response.status_code == 400
         assert response.json()["error"] == "unauthorized_client"
         assert "cli-auth-code" in authorization_codes_storage
+        assert any(
+            "jarvis-registry-cli" in message and "authorization_code" in message and "unauthorized_client" in message
+            for message in caplog.messages
+        )
+        assert "cli-auth-code" not in caplog.text
 
     def test_device_verify_entry_without_user_code_renders_entry_form(self, test_client: TestClient):
         response = test_client.get(f"{API_PREFIX}/oauth2/device/verify")
@@ -1087,7 +1276,9 @@ class TestDeviceFlowRoutes:
         assert response.json()["error"] == "invalid_grant"
         assert data["device_code"] in device_codes_storage
 
-    def test_device_token_rejects_invalid_client_secret(self, test_client: TestClient, clear_device_storage):
+    def test_device_token_rejects_invalid_client_secret(
+        self, test_client: TestClient, clear_device_storage: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """A client_secret_post-registered device client must present its registered secret."""
         test_oauth_state_store.save_client(
             "mcp-client-confidential",
@@ -1115,6 +1306,12 @@ class TestDeviceFlowRoutes:
         assert response.status_code == 400
         assert response.json()["error"] == "invalid_client"
         assert data["device_code"] in device_codes_storage
+        assert any(
+            "mcp-client-confidential" in message and DEVICE_CODE_GRANT_TYPE in message and "invalid_client" in message
+            for message in caplog.messages
+        )
+        assert "wrong-secret" not in caplog.text
+        assert "correct-secret" not in caplog.text
 
     @patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope")
     def test_device_token_accepts_valid_client_secret(
