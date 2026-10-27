@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
+from bson import ObjectId
 from dotenv import load_dotenv
 from redis import Redis
 
@@ -183,7 +184,9 @@ def main() -> int:
 
     url = args.registry_url.rstrip("/") + _GATEWAY_PATH
     run = uuid.uuid4().hex[:8]
-    user_id = "507f1f77bcf86cd799439011"  # a valid, throwaway ObjectId; need not exist as a user
+    # A fresh ObjectId per run isolates this run's keys, so cleanup never deletes keys of a concurrent run or
+    # of an earlier --keep run. It need not exist as a user.
+    user_id = str(ObjectId())
     dcr_client = f"{MCP_CLIENT_ID_PREFIX}verify-{run}"
     shared_client = settings.headless_agent_client_id  # shared id -> jti-keyed
     jti = f"as1914-{run}"
