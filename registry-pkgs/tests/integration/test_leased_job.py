@@ -392,3 +392,47 @@ async def test_leader_lease_takeover_and_interval(leader_db):
     # Once due, it is claimable again.
     future = datetime.now(UTC) + timedelta(seconds=61)
     assert await repo.claim(owner="pod-b", claimable_filter=leader_claimable_filter(name, future)) is not None
+
+
+async def test_leader_lease_taken_over_after_expiry(leader_db):
+    """a leader that stops heartbeating loses the lease once it expires; its late writes are fenced."""
+    from registry_pkgs.database.leased_job import LeaseLostError
+    from registry_pkgs.models.leader_lease import LEADER_LEASE, ensure_leader_document, leader_claimable_filter
+
+    name = "vector-sync-reconciler"
+    repo = LeasedRepository(LEADER_LEASE)
+    await ensure_leader_document(name)
+    _doc, lease_a = await repo.claim(owner="pod-a", claimable_filter=leader_claimable_filter(name, datetime.now(UTC)))
+
+    # Still held: the other pod can't claim before expiry.
+    assert await repo.claim(owner="pod-b", claimable_filter=leader_claimable_filter(name, datetime.now(UTC))) is None
+
+    after_expiry = datetime.now(UTC) + LEADER_LEASE.duration + timedelta(seconds=1)
+    claimed = await repo.claim(owner="pod-b", claimable_filter=leader_claimable_filter(name, after_expiry))
+    assert claimed is not None
+    doc, _lease_b = claimed
+    assert doc.leaseOwner == "pod-b"
+    with pytest.raises(LeaseLostError):
+        await repo.assert_owned(lease_a)
+
+
+async def test_release_with_expire_after_sets_ttl_only_when_asked(leader_db):
+    """per-entity leases get a TTL ``expireAt`` on release; singleton loop leases never do."""
+    from registry_pkgs.models.leader_lease import (
+        LEADER_LEASE,
+        LeaderLease,
+        ensure_leader_document,
+        leader_claimable_filter,
+        release_leader,
+    )
+
+    repo = LeasedRepository(LEADER_LEASE)
+    for name, expire_after in (("vector-sync-reconciler", None), ("vector-entity:mcpservers:x", timedelta(days=1))):
+        await ensure_leader_document(name)
+        _doc, lease = await repo.claim(owner="pod-a", claimable_filter=leader_claimable_filter(name, datetime.now(UTC)))
+        await release_leader(repo, lease, interval=timedelta(0), expire_after=expire_after)
+
+    raw = LeaderLease.get_pymongo_collection()
+    assert "expireAt" not in await raw.find_one({"_id": "vector-sync-reconciler"})
+    entity = await raw.find_one({"_id": "vector-entity:mcpservers:x"})
+    assert entity["expireAt"] > datetime.now(UTC) + timedelta(hours=23)
