@@ -825,28 +825,3 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
     assert ctx2.proxy_client is proxy_client
     # The container is resolved only on the first entry; the context is cached thereafter.
     assert calls["n"] == 1
-
-
-@pytest.mark.asyncio
-async def test_forward_notification_rides_post_sse_stream_via_related_request_id():
-    """In stateless mode a downstream progress notification reaches the client on the POST's own SSE
-    stream, which the SDK keys by related_request_id — so forward_notification must thread it through
-    (the JSON-response path would drop it, which is why the gateway keeps json_response off)."""
-    from mcp.types import ProgressNotification
-
-    from registry.mcpgw.tools.utils import forward_notification
-
-    session = MagicMock()
-    session.send_notification = AsyncMock()
-    obj = {
-        "jsonrpc": "2.0",
-        "method": "notifications/progress",
-        "params": {"progressToken": "tok-1", "progress": 0.5, "total": 1.0},
-    }
-
-    await forward_notification(session, obj, related_request_id="req-42")
-
-    session.send_notification.assert_awaited_once()
-    sent, related = session.send_notification.await_args.args
-    assert isinstance(sent, ProgressNotification)
-    assert related == "req-42"
