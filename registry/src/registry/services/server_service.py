@@ -196,7 +196,7 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
         config["oauth"] = convert_dict_keys_to_snake(config["oauth"])
     elif data.apiKey is not None:
         # When only apiKey is provided, store it
-        config["apiKey"] = data.apiKey
+        config["apiKey"] = convert_dict_keys_to_snake(data.apiKey)
 
     # Always set enabled to False during registration (regardless of frontend input)
     config["enabled"] = False
@@ -257,6 +257,10 @@ def _update_config_from_request(
 
             # Only save if not None and not empty
             if apikey_update:
+                # Normalize incoming camelCase keys to snake_case before merging/storing,
+                # so a merge overwrites the stored snake_case keys instead of leaving a
+                # mixed record the invocation path cannot read.
+                apikey_update = convert_dict_keys_to_snake(apikey_update)
                 if isinstance(existing_apikey, dict) and isinstance(apikey_update, dict):
                     existing_apikey.update(apikey_update)
                     config["apiKey"] = existing_apikey

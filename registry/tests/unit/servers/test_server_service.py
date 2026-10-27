@@ -327,6 +327,58 @@ class TestConfigBuilders:
         assert updated["title"] == "Test Server"
         assert updated["url"] == "https://test.example.com"
 
+    def test_build_config_converts_apikey_to_snake_case(self):
+        """Create stores apiKey sub-fields in snake_case, with no camelCase keys left."""
+        from registry.schemas.server_api_schemas import ServerCreateRequest
+        from registry.services.server_service import _build_config_from_request
+
+        data = ServerCreateRequest(
+            title="Test Server",
+            path="/test",
+            apiKey={
+                "source": "admin",
+                "authorizationType": "custom",
+                "customHeader": "Authorization",
+                "key": "ApiKey x",
+            },
+        )
+
+        config = _build_config_from_request(data, server_name="Test Server")
+
+        assert config["apiKey"] == {
+            "source": "admin",
+            "authorization_type": "custom",
+            "custom_header": "Authorization",
+            "key": "ApiKey x",
+        }
+        assert "authorizationType" not in config["apiKey"]
+        assert "customHeader" not in config["apiKey"]
+
+    def test_update_apikey_converts_camel_case_before_merge(self):
+        """Update converts incoming camelCase before merging, overwriting stale snake_case keys."""
+        from registry.schemas.server_api_schemas import ServerUpdateRequest
+        from registry.services.server_service import _update_config_from_request
+
+        # Stored record is snake_case with an encrypted key and no key in the incoming update.
+        existing_config = {
+            "apiKey": {"source": "admin", "authorization_type": "bearer", "key": "enc-key"},
+        }
+
+        data = ServerUpdateRequest(
+            apiKey={"source": "admin", "authorizationType": "custom", "customHeader": "Authorization"}
+        )
+
+        updated = _update_config_from_request(existing_config, data, server_name="Test Server")
+
+        assert updated["apiKey"] == {
+            "source": "admin",
+            "authorization_type": "custom",
+            "custom_header": "Authorization",
+            "key": "enc-key",
+        }
+        assert "authorizationType" not in updated["apiKey"]
+        assert "customHeader" not in updated["apiKey"]
+
     def test_update_oauth_merge_preserves_existing_fields(self):
         """Test updating OAuth config merges with existing OAuth fields."""
         from registry.schemas.server_api_schemas import ServerUpdateRequest
