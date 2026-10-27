@@ -906,3 +906,91 @@ async def test_toggle_enable_marks_pending_and_forces_full_resync():
     assert plan.doc is server
     assert plan.full_resync is True
     assert plan.marker == server.vectorSyncPendingAt
+
+
+def _record_marker_at_save(doc) -> list[tuple]:
+    """Make ``doc.save`` record the marker fields as they are at save time (i.e. what commits)."""
+    saved: list[tuple] = []
+
+    async def save(*args, **kwargs):
+        saved.append((doc.vectorSyncPendingAt, doc.vectorSyncAttempts))
+
+    doc.save = AsyncMock(side_effect=save)
+    return saved
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+async def test_update_server_persists_marker_in_same_save_and_resets_attempts():
+    """update_server stamps the marker before its save (so it commits with the change), resets the
+    backoff counter, and returns a plan carrying that exact marker."""
+    from types import SimpleNamespace
+
+    from beanie import PydanticObjectId
+
+    service = ServerServiceV1(
+        user_service=Mock(),
+        token_service=Mock(),
+        oauth_service=Mock(),
+        mcp_server_repo=Mock(),
+        embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: False),
+    )
+    server = ExtendedMCPServer.model_construct(
+        id=PydanticObjectId(),
+        serverName="srv",
+        path="/srv",
+        tags=[],
+        config={"url": "https://mcp.example.com/mcp"},
+        vectorContentHash=None,
+        vectorSyncPendingAt=None,
+        vectorSyncAttempts=5,
+        numTools=0,
+    )
+    service.get_server_by_id = AsyncMock(return_value=server)
+    collection = Mock(update_one=AsyncMock())
+    with (
+        patch.object(ExtendedMCPServer, "save", autospec=True) as save,
+        patch.object(ExtendedMCPServer, "get_pymongo_collection", Mock(return_value=collection)),
+    ):
+        saved: list[tuple] = []
+        save.side_effect = lambda doc, **kwargs: saved.append((doc.vectorSyncPendingAt, doc.vectorSyncAttempts))
+        _server, plan = await service.update_server(server_id=str(server.id), data=ServerUpdateRequest(title="New"))
+
+    assert saved == [(plan.marker, 0)]
+    assert plan.doc is server
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+async def test_refresh_capabilities_persists_marker_in_same_save_and_resets_attempts():
+    service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=Mock())
+    server = Mock(spec=ExtendedMCPServer)
+    server.id = "srv-1"
+    server.serverName = "test-server"
+    server.config = {}
+    server.registryDisabledTools = []
+    server.lastError = None
+    server.errorMessage = None
+    server.lastConnected = None
+    server.updatedAt = datetime.now(UTC)
+    server.vectorSyncPendingAt = None
+    server.vectorSyncAttempts = 5
+    server.vectorContentHash = "old-hash"
+    server.numTools = 0
+    saved = _record_marker_at_save(server)
+
+    with (
+        patch.object(service, "get_server_by_id", return_value=server),
+        patch.object(
+            service,
+            "retrieve_tools_and_capabilities_from_server",
+            return_value=([{"name": "tool1"}], [], [], {}, None),
+        ),
+        patch.object(service, "schedule_vector_sync") as schedule,
+    ):
+        await service.refresh_server_capabilities(server_id="srv-1", user_id="user-1")
+
+    plan = schedule.call_args.args[0]
+    assert saved == [(plan.marker, 0)]
