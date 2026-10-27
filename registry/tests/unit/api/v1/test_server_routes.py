@@ -598,7 +598,7 @@ async def test_delete_server_route_does_not_schedule_when_acl_cleanup_fails(samp
 
     with patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client:
         _mock_mongo_transaction(mock_get_client)
-        with pytest.raises((HTTPException, RuntimeError)):
+        with pytest.raises(HTTPException) as excinfo:
             await delete_server(
                 server_id=str(PydanticObjectId()),
                 user_context=sample_user_context,
@@ -606,6 +606,34 @@ async def test_delete_server_route_does_not_schedule_when_acl_cleanup_fails(samp
                 server_service=mock_server_service,
             )
 
+    assert excinfo.value.status_code == 500
+    mock_server_service.schedule_vector_delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_server_route_does_not_schedule_when_commit_fails(sample_user_context):
+    """The block succeeds but the commit raises: the delete rolled back, so vectors stay in place."""
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    mock_acl_service.delete_acl_entries_for_resource = AsyncMock(return_value=1)
+    mock_server_service = MagicMock()
+    mock_server_service.delete_server = AsyncMock(return_value="srv-x")
+
+    with patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client:
+        _mock_mongo_transaction(mock_get_client)
+        txn = mock_get_client.return_value.start_session.return_value.__aenter__.return_value
+        txn.start_transaction.return_value.__aexit__.side_effect = RuntimeError("commit failed")
+        with pytest.raises(HTTPException) as excinfo:
+            await delete_server(
+                server_id=str(PydanticObjectId()),
+                user_context=sample_user_context,
+                acl_service=mock_acl_service,
+                server_service=mock_server_service,
+            )
+
+    assert excinfo.value.status_code == 500
+    # Every statement in the block ran; only the commit failed.
+    mock_acl_service.delete_acl_entries_for_resource.assert_awaited_once()
     mock_server_service.schedule_vector_delete.assert_not_called()
 
 
