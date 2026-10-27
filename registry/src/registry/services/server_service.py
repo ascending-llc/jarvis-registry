@@ -257,10 +257,8 @@ def _update_config_from_request(
 
             # Only save if not None and not empty
             if apikey_update:
-                # Normalize incoming camelCase keys to snake_case before merging/storing,
-                # so a merge overwrites the stored snake_case keys instead of leaving a
-                # mixed record the invocation path cannot read.
                 apikey_update = convert_dict_keys_to_snake(apikey_update)
+                existing_apikey = convert_dict_keys_to_snake(existing_apikey)
                 if isinstance(existing_apikey, dict) and isinstance(apikey_update, dict):
                     existing_apikey.update(apikey_update)
                     config["apiKey"] = existing_apikey

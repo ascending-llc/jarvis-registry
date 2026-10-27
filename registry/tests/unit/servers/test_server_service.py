@@ -379,6 +379,30 @@ class TestConfigBuilders:
         assert "authorizationType" not in updated["apiKey"]
         assert "customHeader" not in updated["apiKey"]
 
+    def test_update_apikey_drops_legacy_camelcase_from_stored_record(self):
+        """A legacy camelCase stored record leaves no camelCase leftover after update."""
+        from registry.schemas.server_api_schemas import ServerUpdateRequest
+        from registry.services.server_service import _update_config_from_request
+
+        # Stored record is still in legacy camelCase (never migrated).
+        existing_config = {
+            "apiKey": {"source": "admin", "authorizationType": "bearer", "key": "enc-key"},
+        }
+
+        data = ServerUpdateRequest(apiKey={"authorizationType": "custom", "customHeader": "Authorization"})
+
+        updated = _update_config_from_request(existing_config, data, server_name="Test Server")
+
+        assert updated["apiKey"] == {
+            "source": "admin",
+            "authorization_type": "custom",
+            "custom_header": "Authorization",
+            "key": "enc-key",
+        }
+        # No camelCase key survives the merge.
+        assert "authorizationType" not in updated["apiKey"]
+        assert "customHeader" not in updated["apiKey"]
+
     def test_update_oauth_merge_preserves_existing_fields(self):
         """Test updating OAuth config merges with existing OAuth fields."""
         from registry.schemas.server_api_schemas import ServerUpdateRequest
