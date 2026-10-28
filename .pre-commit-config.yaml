@@ -79,10 +79,10 @@ repos:
         verbose: true
 
   # Prevent credentials from getting into the code base.
-  - repo: https://github.com/godaddy/tartufo
-    rev: "v6.0.0"
+  - repo: https://github.com/satoseino/gelato
+    rev: "v0.1.0"
     hooks:
-      - id: tartufo
+      - id: gelato
 
 # CI configuration
 ci:

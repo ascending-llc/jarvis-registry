@@ -97,7 +97,7 @@ Frontend (from `frontend/`): `npm start` (Vite dev server), `npm run build`, `np
 ### Before committing
 - Run `uv run poe fix`, then the touched workspace's tests (see § Testing).
 - When a change removes or renames a symbol, `git grep` for remaining references.
-- Pre-commit hooks run ruff, bandit and tartufo on `git commit`. Handle bandit false positives with `# nosec` and a justification.
+- Pre-commit hooks run ruff, bandit and gelato (secret scanning, configured in `tartufo.toml`) on `git commit`. Handle bandit false positives with `# nosec` and a justification.
 
 ---
 
