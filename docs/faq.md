@@ -18,13 +18,13 @@ Most MCP frameworks focus on protocol implementation. Jarvis Registry adds the e
 
 The **MCP Gateway** is the authenticated entry point for AI copilots (Cursor, Claude Desktop, GitHub Copilot) to reach your MCP servers. The **A2A Agent Gateway** is the entry point for autonomous agents communicating over JSON-RPC 2.0 or HTTP+JSON — both share the same control plane, identity governance, and ACL enforcement.
 
-→ Details: [Gateway & Proxy](FEATURES.md#1-gateway-proxy) · [A2A Agent Workflow](FEATURES.md#5-a2a-agent-workflow-orchestration)
+→ Details: [MCP Gateway](FEATURES.md#2-mcp-gateway) · [A2A Agent Workflow](FEATURES.md#5-a2a-agent-workflow-orchestration)
 
 ### What is A2A Agent Orchestration?
 
 A2A Agent Orchestration is Jarvis Registry's model for coordinating autonomous agents. An **orchestrator agent** decomposes work and delegates to **worker agents**, each registered in the registry with their own skills, ACL policies, and transport configuration. The gateway enforces permissions on every agent-to-agent call.
 
-→ See: [A2A Agent Workflow Orchestration](FEATURES.md#5-a2a-agent-workflow-orchestration) · [A2A Agent Registry](features/a2a-registry.md)
+→ See: [A2A Agent Workflow Orchestration](FEATURES.md#5-a2a-agent-workflow-orchestration) · [A2A Agent Registry](features/a2a-gateway-registry.md)
 
 ---
 
@@ -52,19 +52,19 @@ Keycloak (open-source), Amazon Cognito, and Microsoft Entra ID (formerly Azure A
 
 ### How does the ACL engine work?
 
-Jarvis Registry uses a two-layer authorization model: **scopes** control which API endpoints are accessible, and **ACLs** enforce fine-grained per-resource permissions (VIEW, EDIT, DELETE) down to the individual MCP tool level.
+Jarvis Registry uses a two-layer authorization model: role capabilities and **scopes** control Registry operations, while **ACLs** grant access to particular resources, such as MCP servers and agents. Both checks must pass. The [disabled-tool list](design/mcp-tool-enablement-api.md) applies server-wide to normal discovery and execution; it is not a per-user tool ACL, and the transparent proxy does not enforce that list. Permissions inside a connected business system remain a separate check.
 
-→ Full design: [RBAC & Scope System](design/scopes.md) · [Identity & Access Management](FEATURES.md#3-identity-access-management)
+→ Full design: [RBAC & Scope System](design/scopes.md) · [Identity & Access Management](FEATURES.md#6-identity-access-management)
 
 ### Which AI copilots can connect?
 
 Any MCP-compatible client: Cursor, Claude Desktop, GitHub Copilot, VS Code, Windsurf, and others.
 
-→ See: [AI Copilot Integration](FEATURES.md#1-gateway-proxy)
+→ See: [AI Copilot Integration](features/registry-endpoint.md)
 
 ### Which tools can receive skills from the Skill Gateway?
 
-The AI Skills CLI documents skill synchronization for Claude Code, Codex, and GitHub Copilot. Skill delivery is distinct from connecting an MCP-compatible client to the MCP Gateway.
+Supported skill consumers include Claude Code, Codex, GitHub Copilot, and Cursor. The AI Skills CLI documents its delivery workflow and directory modes separately. Skill delivery is distinct from connecting an MCP-compatible client to the MCP Gateway.
 
 → See: [Skill Gateway](features/skill-gateway.md) · [AI Skills CLI](features/ai-skills-cli.md)
 
@@ -84,13 +84,13 @@ No. Dynamic tool discovery searches registered MCP tool metadata to find relevan
 
 Jarvis Registry provides semantic search over MCP server and A2A agent metadata (skills, descriptions, tags) so agents and copilots can find the right tool at runtime.
 
-→ See: [Skill & Context-Based Discovery](FEATURES.md#4-skill-context-based-discovery)
+→ See: [Skill & Context-Based Discovery](dynamic-tool-discovery.md)
 
 ### What observability features are available?
 
-Full request logging, OpenTelemetry distributed tracing, and Prometheus metrics — compatible with Grafana, Datadog, and any standard observability stack.
+Jarvis provides operational logging, OpenTelemetry instrumentation and Prometheus metrics. Check the emitted fields, request route, exporter configuration and retention against your audit requirements; a dashboard alone does not establish a complete record of every tool call or access decision.
 
-→ See: [Observability with OpenTelemetry](FEATURES.md#6-observability-with-opentelemetry)
+→ See: [Observability with OpenTelemetry](FEATURES.md#7-observability-with-opentelemetry)
 
 ---
 
@@ -98,11 +98,11 @@ Full request logging, OpenTelemetry distributed tracing, and Prometheus metrics 
 
 ### How do I register an MCP server?
 
-→ See: [MCP Server Registry](features/mcp-registry.md)
+→ See: [MCP Server Registry](features/mcp-gateway-registry.md)
 
 ### How do I register an A2A agent?
 
-→ See: [A2A Agent Registry](features/a2a-registry.md) · [A2A Agent Management](a2a-agent-management.md)
+→ See: [A2A Agent Registry](features/a2a-gateway-registry.md) · [A2A Agent Management](a2a-agent-management.md)
 
 ---
 
@@ -118,7 +118,7 @@ The main files are `.env` (runtime config, copy from `.env.example`), `oauth2_pr
 
 No configuration files needed. ACLs are managed directly from the registry UI via the **Share** dialog on each MCP server or A2A agent. You can search for users or groups by name or email, assign roles (Owner, Editor, Viewer), and toggle public access — all from the interface.
 
-→ See: [Identity & Access Management](FEATURES.md#3-identity-access-management) · [RBAC & Scope System Design](design/scopes.md)
+→ See: [Identity & Access Management](FEATURES.md#6-identity-access-management) · [RBAC & Scope System Design](design/scopes.md)
 
 ---
 

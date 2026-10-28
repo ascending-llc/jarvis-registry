@@ -2,6 +2,8 @@
 
 Use this walkthrough to check how a private GitHub skill moves into Jarvis Registry, reaches an authorized developer, receives an update, and is removed from the CLI's managed directory after access is revoked.
 
+This exercise uses the documented GitHub integration and CLI modes as concrete test paths. Skill Gateway also supports other Git providers, including GitLab, and consumers including Cursor. Those product capabilities do not change the GitHub-specific fields or CLI mode names used below.
+
 Registry controls future access to its copy of a skill. A successful CLI sync reconciles the developer's managed local copy. An access change does not remotely erase downloaded files, independent copies, or material already loaded into an AI client.
 
 The steps below are acceptance checks to run in your configured test environment. They do not assert that a particular deployment or AI client has already passed. For product background, see [Skill Gateway](../features/skill-gateway.md) and [AI Skills CLI](../features/ai-skills-cli.md). For installation and authentication, use the CLI's [setup guide](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/setup.md) and [getting started guide](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/getting-started.md).
@@ -18,7 +20,7 @@ Use a nonproduction Registry, an approved private GitHub test repository, and th
 
 Both developers need the applicable `skills-read` scope so you can distinguish a resource access decision from a missing API permission. Use their own logins and separate browser profiles. For CLI tests, use a disposable environment or isolated test OS account for each developer; changing a project path does not isolate cached credentials.
 
-Record the Registry and CLI versions used for the exercise. Choose the client modes you intend to support: `claude`, `codex`, or `copilot`. Start with one mode, then repeat the delivery and removal checks for each additional mode.
+Record the Registry and CLI versions used for the exercise. Choose the CLI mode you intend to test: `claude`, `codex`, or `copilot`. Start with one mode, then repeat the delivery and removal checks for each additional mode. Record any additional consumer, such as Cursor, and its skill-loading setup separately from the chosen CLI mode.
 
 Keep these boundaries separate when interpreting results:
 

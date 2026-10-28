@@ -64,7 +64,7 @@ The Skill Gateway is the private control plane for organization-curated AI skill
 
 - **Organization Skill Management**: Create and edit skills in the Registry UI or API, organize them with categories and tags, track versions, attach supporting text or binary files, and enable or disable skills as their availability changes
 - **Skill Access & Governance**: Keep skills private by default and use resource-level ACL permissions to control who can view, edit, delete, or share each skill; access is filtered for the authenticated user before content is delivered
-- **Git Provider Sync**: Import skills one-way from GitHub into the Registry — discover `SKILL.md` files, safely extract an immutable repository snapshot, apply valid changes atomically, and report errors per skill; the [AI Skills CLI](features/ai-skills-cli.md) then delivers accessible approved skills to Claude Code, Codex, and GitHub Copilot
+- **Git Provider Sync**: Import skills one-way from Git providers including GitHub and GitLab into the Registry. The [Skill Gateway guide](features/skill-gateway.md) describes the documented GitHub import pipeline and provider-specific API example. Supported skill consumers include Claude Code, Codex, GitHub Copilot, and Cursor; see [AI Skills CLI](features/ai-skills-cli.md) for the CLI delivery workflow and modes.
 - **Private Developer Distribution**: Deliver approved Registry skills consistently to personal or project environments through the [AI Skills CLI](features/ai-skills-cli.md), with the [Skill Gateway](features/skill-gateway.md) serving as the authoring and governance source of truth
 
 ---
@@ -93,19 +93,19 @@ A governance enforcement layer that sits above your IdP — not a replacement fo
 **Access control:**
 
 - **Role-Based Access Control (RBAC)**: Assign permissions by role, group, or service principal — for both human users and agents acting as callers
-- **Fine-Grained ACL**: Enforce access policies down to the individual MCP tool or A2A agent capability — not just the server or agent boundary
+- **Resource ACLs**: Grant access to individual MCP servers and A2A agents alongside the caller's role capabilities. The [tool-enablement list](design/mcp-tool-enablement-api.md) disables tools server-wide for normal discovery and execution; it is not a per-user tool ACL, and the transparent proxy does not enforce that list. Downstream systems retain their own data and operation permissions.
 - **Zero-Trust Posture**: Every request — from copilot or agent — is authenticated and authorized before reaching a backend tool or target agent; learn more about [AI governance frameworks](https://exploreagentic.ai/ai-governance/) that inform this design
 
 ---
 
 ## 7. Observability with OpenTelemetry
 
-Full visibility into every request, tool call, and agent interaction — from copilot to tool response, and from orchestrator to worker agent.
+Operational visibility for requests, tool calls and agent interactions through configured logs, metrics and traces. Review the available signals for the request routes your deployment uses.
 
-- **OpenTelemetry Integration**: Distributed tracing across the full request path for both MCP tool calls and A2A agent invocations
+- **OpenTelemetry Integration**: Distributed tracing for instrumented operations; verify the emitted MCP and A2A spans against the request path you need to investigate
 - **Prometheus Metrics**: Request rates, latency, error rates, and token usage exposed as standard metrics per server, per agent, and per transport
 - **Third-Party Compatible**: Works with Grafana, Jaeger, Datadog, AWS X-Ray, Azure Monitor, and any OTEL-compatible backend
-- **Audit Logging**: Immutable record of every tool invocation and agent call with user or agent identity, timestamp, transport used, and outcome
+- **Audit Evidence**: Check available caller identity, timestamp, transport and outcome fields against the [observability guide](features/observability.md). Set exporter access and retention to meet the required audit scope; completeness and immutable storage need deployment evidence.
 
 ---
 
