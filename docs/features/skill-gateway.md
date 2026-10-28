@@ -57,4 +57,5 @@ The AI Skills CLI documents skill synchronization for Claude Code, Codex, and Gi
 - [AI Skills CLI](ai-skills-cli.md) - distribute Registry skills to local developer tools
 - [RBAC & Scopes](../design/scopes.md) - understand identity scopes and access control
 - [Security Control Design](../design/security-design.md) - see how authentication and ACLs compose
-- [GitHub source sync API](../api-reference.md) - review the Registry API surface
+- [GitHub source sync API](../design/skill-sync-source-api.md) - configure repository import and inspect sync jobs
+- [Private skill lifecycle walkthrough](../walkthroughs/private-skill-lifecycle.md) - verify import, updates, and access removal

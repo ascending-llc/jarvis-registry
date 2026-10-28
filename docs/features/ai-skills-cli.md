@@ -13,10 +13,12 @@ Every integration follows the same three steps:
 ```sh
 jarvis-registry configure
 jarvis-registry auth login
-jarvis-registry skills sync --mode <claude|codex|copilot>
+jarvis-registry skills sync --mode claude
 ```
 
-The CLI stores credentials in the operating system keyring, authenticates against the Registry, and syncs only the skills available to the signed-in user.
+This example selects Claude Code. Use `--mode codex` or `--mode copilot` for the other supported integrations.
+
+The CLI authenticates against the Registry and syncs only the skills available to the signed-in user. Browser sign-in normally stores credentials in the operating system keyring. On Linux without a usable keyring, it falls back to a plaintext `~/.jarvis-registry/credentials.json` file with mode `0600` and a first-use warning. The explicit `local.credentials.file_only: true` option also uses that file; it is not encrypted. Review the [credential-storage options](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/getting-started.md) for the machine running the CLI.
 
 ## Supported Integrations
 
@@ -28,9 +30,9 @@ Skills can be synchronized for personal use across projects or for a specific pr
 
 ## Governed Delivery
 
-Sync is access-aware and repeatable: the CLI delivers newly accessible skills, updates changed content, and reconciles managed skills when access changes. This gives developers a consistent local experience while the Registry remains the source of truth for approved content.
+Sync is access-aware and repeatable: after a successful sync, the CLI delivers newly accessible skills, updates changed content, and removes managed local skills the user can no longer access. Revoking Registry access does not instantly recall files already copied to a developer's machine, and the CLI cannot remove independent copies outside its managed paths.
 
-The CLI also protects local content from unintended collisions and supports repeatable execution, including scheduled sync workflows. See the [CLI getting started guide](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/getting-started.md) for integration-specific behavior.
+Local cleanup depends on the integration and scope. Personal-scoped Codex and Copilot sync leave skill-name collisions untouched by default; choosing an interactive replacement or override can remove the conflicting directory's contents. Those replacement options do not apply to Claude or project scope. Project-scoped Codex and Copilot sync treat their managed directories as CLI-owned and remove entries not in the current managed set. Review the [CLI getting started guide](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/getting-started.md) before scheduling sync or using replacement options.
 
 ## Learn More
 
@@ -41,3 +43,4 @@ The CLI also protects local content from unintended collisions and supports repe
 ## Next Steps
 
 - [Skill Gateway](skill-gateway.md) - author, import, govern, and share the skills delivered by the CLI
+- [Private skill lifecycle walkthrough](../walkthroughs/private-skill-lifecycle.md) - verify import, updates, and access removal
