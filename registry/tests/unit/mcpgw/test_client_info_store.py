@@ -209,6 +209,39 @@ async def test_middleware_skips_capture_for_unauthenticated_request():
 
 
 @pytest.mark.asyncio
+async def test_middleware_does_not_dispatch_request_after_disconnect():
+    redis = _FakeRedis()
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    middleware = ClientInfoCaptureMiddleware(None, lambda: store)  # type: ignore[arg-type]
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "synthetic", "arguments": {}},
+        }
+    ).encode()
+    messages = [
+        {"type": "http.request", "body": body, "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+    inner_called = False
+
+    async def receive() -> dict:
+        return messages.pop(0)
+
+    async def inner_app(scope, receive, send) -> None:
+        nonlocal inner_called
+        inner_called = True
+
+    middleware._app = inner_app  # type: ignore[assignment]
+    await middleware(_scope(user={"user_id": USER_ID, "client_id": "mcp-client-abc"}), receive, lambda msg: None)
+
+    assert inner_called is False
+    assert redis.store == {}
+
+
+@pytest.mark.asyncio
 async def test_middleware_passes_malformed_body_through_without_raising():
     """A non-JSON body (that still trips the cheap 'initialize' pre-filter) must pass through
     untouched — a parse error here must never break the request, the gateway's top risk."""
