@@ -116,6 +116,9 @@ class ClientInfoCaptureMiddleware:
             return
 
         body = await _read_body(receive)
+        if body is None:
+            return
+
         try:
             self._maybe_capture(scope, body)
         except Exception:
@@ -156,11 +159,15 @@ class ClientInfoCaptureMiddleware:
             logger.warning("Failed to persist client-info to Redis; proceeding.", exc_info=True)
 
 
-async def _read_body(receive: Receive) -> bytes:
+async def _read_body(receive: Receive) -> bytes | None:
     chunks: list[bytes] = []
     more_body = True
     while more_body:
         message = await receive()
+        if message["type"] != "http.request":
+            # A disconnect before the final body chunk means the request is incomplete. Do not
+            # replay a valid-looking prefix to the MCP app as a complete request.
+            return None
         chunks.append(message.get("body", b""))
         more_body = message.get("more_body", False)
     return b"".join(chunks)
