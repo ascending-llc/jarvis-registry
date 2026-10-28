@@ -18,7 +18,7 @@ from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows import a2a_client, executor_resolver, model_resolution
 from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows.helpers import build_prompt
-from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
+from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS, POOL_KEY_PREFIX
 
 
 def _jwt_config(**overrides) -> JwtSigningConfig:
@@ -208,6 +208,45 @@ class TestExecutorResolver:
         assert callable(registry["n1"])
         # The MCP executor received the per-node override model, not the default.
         assert captured["llm"].id == "bedrock/override-model"
+
+    @pytest.mark.asyncio
+    async def test_pool_node_override_threads_resolved_model_into_selector_llm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An A2A-pool node's model_source_id must become the pool's selector_llm, not the default."""
+        captured: dict[str, object] = {}
+
+        def fake_make_pool(*, node_name, pool_keys, selector_llm, **kwargs):
+            captured["selector_llm"] = selector_llm
+            return "pool-executor"
+
+        monkeypatch.setattr(executor_resolver, "make_a2a_pool_executor", fake_make_pool)
+        override = ModelSource.model_construct(
+            id=PydanticObjectId("0" * 24),
+            mode=ModelSourceMode.CHAT,
+            deletedAt=None,
+            providerConfig=AwsBedrockModelConfig(
+                awsRegion="us-east-1", modelIdOrArn="override-model", baseModelId="override-model"
+            ),
+        )
+        monkeypatch.setattr(model_resolution.ModelSource, "get", AsyncMock(return_value=override))
+
+        pool_node = WorkflowNode(
+            id="p1", name="pool", a2a_pool=["agent-a", "agent-b"], model_source_id="0" * 24, step_objective="run"
+        )
+        registry = await executor_resolver.build_executor_registry(
+            [],
+            default_model=SimpleNamespace(id="DEFAULT"),
+            auth_context=None,
+            jwt_config=_jwt_config(),
+            encryption_key=b"key",
+            azure_ad_token_provider=None,
+            pool_nodes=[pool_node],
+        )
+
+        # The pool selector LLM is the per-node override, not the default model.
+        assert set(registry) == {f"{POOL_KEY_PREFIX}p1"}
+        assert captured["selector_llm"].id == "bedrock/override-model"
 
     @pytest.mark.asyncio
     async def test_resolve_executor_prefers_active_mcp_server(self, monkeypatch: pytest.MonkeyPatch):

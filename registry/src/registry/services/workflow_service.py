@@ -167,6 +167,8 @@ class WorkflowService:
             logger.warning(msg)
             raise HTTPException(status_code=400, detail=msg)
 
+        self._warn_ignored_model_overrides(nodes, direct_agent_paths=set(agent_ids))
+
         if pool_paths:
             pool_agents = await A2AAgent.find(
                 {"path": {"$in": sorted(pool_paths)}, "config.enabled": True},
@@ -181,6 +183,23 @@ class WorkflowService:
                 raise HTTPException(status_code=400, detail=msg)
 
         return ExecutorRefResolution(mcp_server_ids=mcp_server_ids, agent_ids=agent_ids)
+
+    @staticmethod
+    def _warn_ignored_model_overrides(nodes: list[WorkflowNode], direct_agent_paths: set[str]) -> None:
+        """Warn about a model override on a direct A2A step node, where it is ignored at runtime.
+
+        A direct A2A agent runs its own model server-side, so the registry builds no LLM for it.
+        The override is kept as-is; the warning makes the no-op traceable.
+        """
+        for node in flatten_workflow_nodes(nodes):
+            if node.model_source_id and node.executor_key and node.executor_key.lstrip("/") in direct_agent_paths:
+                logger.warning(
+                    "Node %r sets modelSourceId=%s but its executor %r is a direct A2A agent, which runs no "
+                    "registry-side LLM; the model selection is ignored.",
+                    node.name,
+                    node.model_source_id,
+                    node.executor_key,
+                )
 
     @staticmethod
     async def _validate_model_source_refs(
