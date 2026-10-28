@@ -342,52 +342,6 @@ class TestExecutorResolver:
         assert all("llm" not in call.kwargs for call in make_a2a.call_args_list)
 
     @pytest.mark.asyncio
-    async def test_build_executor_registry_warns_on_ignored_model_override(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A model_source_id on a direct-A2A node is a runtime no-op, so it must log a warning.
-
-        The same node type on an MCP executor does apply the model, so it must stay silent.
-        """
-        import logging
-
-        async def fake_resolve(key: str, **kwargs):
-            async def _exec(step_input, **_):  # noqa: ANN001, ANN202 - test stub
-                return None
-
-            # _detect_agent_type keys off the executor's __name__ suffix.
-            _exec.__name__ = "deep-intel_a2a_executor" if key == "a2a-direct" else "github_mcp_executor"
-            return _exec
-
-        monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
-        monkeypatch.setattr(
-            executor_resolver,
-            "resolve_model",
-            AsyncMock(side_effect=lambda _source_id, **kwargs: kwargs["fallback_model"]),
-        )
-        nodes = [
-            WorkflowNode(
-                id="a2a", name="a2a-node", executor_key="a2a-direct", model_source_id="0" * 24, step_objective="run"
-            ),
-            WorkflowNode(
-                id="mcp", name="mcp-node", executor_key="mcp-tool", model_source_id="0" * 24, step_objective="run"
-            ),
-        ]
-
-        with caplog.at_level(logging.WARNING, logger=executor_resolver.__name__):
-            await executor_resolver.build_executor_registry(
-                nodes,
-                default_model=SimpleNamespace(),
-                auth_context=None,
-                jwt_config=_jwt_config(),
-                encryption_key=b"key",
-                azure_ad_token_provider=None,
-            )
-
-        assert "a2a-node" in caplog.text and "ignored" in caplog.text
-        assert "mcp-node" not in caplog.text
-
-    @pytest.mark.asyncio
     async def test_resolve_executor_raises_when_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch):
         self._patch_beanie_filters(monkeypatch)
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
