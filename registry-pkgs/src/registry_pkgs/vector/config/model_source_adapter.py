@@ -49,6 +49,7 @@ def embedding_config_from_model_source(model_source: ModelSource, *, encryption_
             provider=EmbeddingProvider.OPENAI,
             api_key=decrypt_value(config.apiKeyEncrypted, encryption_key=encryption_key),
             model=config.modelId,
+            base_url=config.baseUrl,
         )
     if isinstance(config, AnthropicModelConfig):
         raise ValueError("Anthropic does not provide embedding models; choose a different provider")

@@ -144,12 +144,18 @@ const ModelDetailView: React.FC<ModelDetailViewProps> = ({
                 <DetailField label='Base model ID' value={config.baseModelId} />
                 <DetailField label='Model ID or inference profile ARN' value={config.modelIdOrArn} />
               </>
-            ) : (
+            ) : config.providerType === 'azure_openai' ? (
               <>
                 <DetailField label='Endpoint' value={config.endpoint} />
                 <DetailField label='Deployment name' value={config.deploymentName} />
                 <DetailField label='Base model ID' value={config.baseModelId} />
                 <DetailField label='API version' value={config.apiVersion} />
+                <DetailField label='API key' value={config.hasApiKey ? 'Configured' : 'Not configured'} />
+              </>
+            ) : (
+              <>
+                <DetailField label='Model ID' value={config.modelId} />
+                <DetailField label='Base URL' value={config.baseUrl || 'Default'} />
                 <DetailField label='API key' value={config.hasApiKey ? 'Configured' : 'Not configured'} />
               </>
             )}

@@ -81,7 +81,13 @@ def test_azure_model_source_without_api_key_raises():
 
 def test_openai_model_source_decrypts_key(monkeypatch):
     monkeypatch.setattr(model_source_adapter, "decrypt_value", lambda *_a, **_kw: "sk-plain")
-    source = _source(OpenAIModelConfig(modelId="text-embedding-3-large", baseUrl=None, apiKeyEncrypted="iv:ciphertext"))
+    source = _source(
+        OpenAIModelConfig(
+            modelId="text-embedding-3-large",
+            baseUrl="https://proxy.example.com/v1",
+            apiKeyEncrypted="iv:ciphertext",
+        )
+    )
 
     config = model_source_adapter.embedding_config_from_model_source(source, encryption_key=b"key")
 
@@ -89,6 +95,7 @@ def test_openai_model_source_decrypts_key(monkeypatch):
     assert config.provider == EmbeddingProvider.OPENAI
     assert config.api_key == "sk-plain"
     assert config.model == "text-embedding-3-large"
+    assert config.base_url == "https://proxy.example.com/v1"
 
 
 def test_anthropic_model_source_for_embedding_raises():

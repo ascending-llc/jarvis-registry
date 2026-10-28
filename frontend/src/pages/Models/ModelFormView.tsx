@@ -261,7 +261,7 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
   };
 
   const handleSubmit = () => {
-    const nextErrors = validateForm(form, hasStoredApiKey);
+    const nextErrors = validateForm(form, storedKeyApplies);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length === 0) onSubmit(form);
   };
@@ -270,6 +270,8 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
     value: provider.value,
     label: `${provider.label} — ${provider.auth}`,
   }));
+  // The stored key belongs to the original provider; switching provider re-requires a key.
+  const storedKeyApplies = hasStoredApiKey && form.providerType === initialForm.providerType;
   const providerSupported = isBackendSupportedProvider(form.providerType);
   const pageTitle = editing
     ? initialForm.displayName
@@ -424,7 +426,7 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
                   <ProviderFields
                     form={form}
                     errors={errors}
-                    hasStoredApiKey={hasStoredApiKey}
+                    hasStoredApiKey={storedKeyApplies}
                     updateField={updateField}
                   />
                 </section>

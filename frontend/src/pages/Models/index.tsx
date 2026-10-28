@@ -389,7 +389,8 @@ const ModelsPage: React.FC = () => {
           defaultModel={activeModel}
           selection={modelSelection}
           hasStoredApiKey={
-            activeModel?.providerConfig.providerType === 'azure_openai' && activeModel.providerConfig.hasApiKey
+            activeModel?.providerConfig.providerType !== 'aws_bedrock' &&
+            (activeModel?.providerConfig.hasApiKey ?? false)
           }
           onCancel={navigateToList}
           onDelete={() => setDeleteDialogOpen(true)}

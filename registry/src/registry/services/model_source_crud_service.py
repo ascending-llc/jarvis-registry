@@ -221,12 +221,8 @@ class ModelSourceCrudService:
             source.providerConfig = self._preserve_existing_secret(new_config, source.providerConfig)
             self._require_first_party_key(source.providerConfig)
         # Reject an invalid (provider, mode) combo the update would leave behind — e.g. switching an
-        # Anthropic source to embedding mode. Validate the effective pair; a ModelSource always has
-        # both fields.
-        effective_config = getattr(source, "providerConfig", None)
-        effective_mode = getattr(source, "mode", None)
-        if effective_config is not None and effective_mode is not None:
-            self._validate_config_for_mode(effective_config, effective_mode)
+        # Anthropic source to embedding mode, or switching mode on an Anthropic source.
+        self._validate_config_for_mode(source.providerConfig, source.mode)
         source.updatedBy = updated_by
         await source.save()
         return source
