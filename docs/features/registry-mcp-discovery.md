@@ -2,7 +2,7 @@
 
 Jarvis Registry exposes tools for discovering MCP operations and A2A agents. Before reporting that a requested external capability is unavailable, an assistant should try the relevant discovery tool when permitted. Ordinary writing, explanation, calculation, and text editing do not require discovery. Discovery does not authorize an action: user restrictions, permissions, and execution approvals still apply.
 
-The gateway sends compact instructions in the MCP initialization response. The `gateway_capabilities` prompt returns the same text when a client requests it. Registering that prompt does not make clients load it automatically, and clients can handle server instructions differently. The compact text has an application budget of 1,000 UTF-8 bytes, with the capability-refusal rule on the first line within 250 characters; this is not an MCP protocol limit.
+The gateway sends compact instructions in the MCP initialization response. Detailed recovery guidance is returned in tool results when a search finds no matches, a server ID is stale, or a tool is disabled. The compact initialization text has an application budget of 1,000 UTF-8 bytes, with the capability-refusal rule on the first line within 250 characters. Tool descriptions are limited to 2,048 characters after removing docstring indentation. These are application budgets for client compatibility, not MCP protocol limits.
 
 ## Choose the discovery tool
 
@@ -11,7 +11,7 @@ The gateway sends compact instructions in the MCP initialization response. The `
 - When either could fit, query both and compare their descriptions. Their relevance scores come from different searches and are not comparable.
 - When the request needs both data retrieval and delegation, retrieve the requested real data first, then pass that output to the agent.
 
-Start with concise keywords and `top_n=3`. Match the returned descriptions to the user's intent; do not impose a numeric relevance threshold. If several plausible operations or providers remain, ask the user for the missing choice.
+Start with concise keywords, not the user's full sentence, and `top_n=3`. Match the returned descriptions to the user's intent; do not impose a numeric relevance threshold. If several plausible operations or providers remain, ask the user for the missing choice. For matches from different providers, retry with the chosen provider's name in the query.
 
 ## Discover and execute an operation
 
@@ -92,6 +92,7 @@ Use an exact identifier from a matching result; never guess one. Avoid repeated 
 For execution failures, read the actual error:
 
 - A stale or missing server/agent ID requires rediscovery before another execution attempt. Never repeat a known stale ID.
+- A disabled tool must not be retried. Choose another matching discovered candidate or report that the tool is unavailable.
 - An authentication or consent failure requires surfacing the supplied authorization instructions and waiting for the user to complete them. Do not repeatedly rediscover or execute to bypass authorization.
 - A transient invocation failure may permit a retry or another matching discovered candidate, within the user's authorization. Do not replay actions with uncertain side effects blindly.
 

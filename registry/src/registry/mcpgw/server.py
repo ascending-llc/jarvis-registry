@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -99,34 +100,10 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
 
 
 def create_gateway_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> FastMCP[McpAppContext]:
-    """Create the FastMCP app and register all prompts/tools in one place."""
+    """Create the FastMCP app and register its tools."""
     mcp = create_mcp_app(container_provider=container_provider)
-    register_prompts(mcp)
     register_tools(mcp)
     return mcp
-
-
-# ============================================================================
-# MCP Prompts - Guide AI Assistant Behavior (Claude, ChatGPT, etc.)
-# ============================================================================
-
-
-def register_prompts(mcp: FastMCP) -> None:
-    """
-    Register prompts for the MCP application.
-
-    Args:
-        mcp: FastMCP application instance
-    """
-
-    @mcp.prompt()
-    def gateway_capabilities():
-        """📚 Overview of MCP Gateway capabilities and available services.
-
-        Use this prompt to understand what services and tools are available through the gateway.
-        Clients may retrieve this prompt explicitly; registration does not load it automatically.
-        """
-        return _SYSTEM_INSTRUCTIONS
 
 
 # ============================================================================
@@ -141,14 +118,6 @@ def register_tools(mcp: FastMCP) -> None:
     Args:
         mcp: FastMCP application instance
     """
-    # Register entity discovery tools
-    for tool_name, tool_func in search.get_tools():
-        mcp.tool(name=tool_name)(tool_func)
-
-    # Register A2A agent invocation tool
-    for tool_name, tool_func in agent.get_tools():
-        mcp.tool(name=tool_name)(tool_func)
-
-    # Register registry API tools
-    for tool_name, tool_func in server.get_tools():
-        mcp.tool(name=tool_name)(tool_func)
+    for module in (search, agent, server):
+        for tool_name, tool_func in module.get_tools():
+            mcp.tool(name=tool_name, description=inspect.cleandoc(tool_func.__doc__ or ""))(tool_func)

@@ -4,6 +4,7 @@ from typing import Annotated, Any
 
 from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
+from mcp.types import CallToolResult, TextContent
 from pydantic import Field
 
 from registry_pkgs.core.exceptions import InternalServerException
@@ -49,6 +50,24 @@ async def _run_search(
         raise InternalServerException("entity discovery failed")
 
 
+def _empty_discovery_result(other_tool: str) -> CallToolResult:
+    return CallToolResult(
+        isError=False,
+        structuredContent={"result": []},
+        content=[
+            TextContent(
+                type="text",
+                text=(
+                    "No matching capability found. Refine the query with synonyms or a broader term, "
+                    "or survey with query='' and top_n=20. "
+                    f"If the capability type is unclear, also try {other_tool}. "
+                    "Report no match only after these fallbacks."
+                ),
+            )
+        ],
+    )
+
+
 # ============================================================================
 # Tool Factory
 # ============================================================================
@@ -64,7 +83,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 min_length=0,
                 max_length=512,
                 description=(
-                    "Concise keywords describing the atomic operation you need "
+                    "Concise keywords, not the user's full sentence, describing the atomic operation you need "
                     "(e.g. 'github list issues', 'send slack message', 'search web'). "
                     "Pass '' with top_n=20 to survey up to 20 accessible MCP capabilities."
                 ),
@@ -84,7 +103,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 ),
             ),
         ] = Field(default_factory=lambda: [MCPEntityType.TOOL.value]),
-    ) -> list[dict[str, Any]]:
+    ) -> Annotated[CallToolResult, list[dict[str, Any]]]:
         """Discover MCP tools, resources, and prompts for a requested capability.
 
         Before claiming a needed external operation is unavailable, search here when permitted.
@@ -96,24 +115,26 @@ def get_tools() -> list[tuple[str, Callable]]:
         Each result contains:
         - entity_type: 'tool' | 'resource' | 'prompt'
         - relevance_score: ranking signal only — verify the description, not the score
-        - description: full embedded context — server name + server description + entity name
-          + parameter list + tags. This is the primary signal; read it to confirm a match.
+        - description: server name/description, entity name, parameters and tags; the primary matching signal
         - server_id: required for all execution calls; server_name: display and search context
-        - tool_name    (entity_type='tool')     → execute_tool(tool_name, server_id, arguments)
-        - input_schema (entity_type='tool')     → use this dict to construct correct arguments;
-                                                  may be None if the server omitted it
+        - tool_name (entity_type='tool') → execute_tool(tool_name, server_id, arguments)
+        - input_schema (entity_type='tool'): use it to construct arguments; may be None if omitted
         - resource_uri (entity_type='resource') → read_resource(server_id, resource_uri)
-        - prompt_name  (entity_type='prompt')   → execute_prompt(server_id, prompt_name, arguments)
+        - prompt_name (entity_type='prompt') → execute_prompt(server_id, prompt_name, arguments)
 
         Evaluating results: read each result's description to confirm it matches the
         user's intent. If the top result fits, execute it. If multiple results plausibly
-        fit, ask the user to clarify. If none fit, refine the query or call with
+        fit, ask the user to clarify. For matches from different providers, ask which provider
+        the user wants, then retry with that provider's name in the query.
+        If none fit, refine the query or call with
         query='' top_n=20 to survey up to 20 accessible capabilities — then group by server_name
         and retry with that server name in the query to get exact identifiers.
         If it is unclear whether the task needs a tool or an agent, also use discover_agents.
         Scores from the two discovery tools are not comparable; judge descriptions instead
         of applying numeric thresholds. Avoid repeating identical searches."""
-        return await _run_search(ctx, query, top_n, "hybrid", type_list, "mcp")
+        # Annotated metadata preserves the list output schema while allowing a guided empty result.
+        results = await _run_search(ctx, query, top_n, "hybrid", type_list, "mcp")
+        return results if results else _empty_discovery_result("discover_agents")
 
     async def discover_agents(
         ctx: Context[ServerSession, McpAppContext],
@@ -123,7 +144,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 min_length=0,
                 max_length=512,
                 description=(
-                    "Concise keywords describing the complex task or domain you want to delegate "
+                    "Concise keywords, not the user's full sentence, describing the task or domain to delegate "
                     "(e.g. 'deep intel analysis', 'customer support', 'code review'). "
                     "Pass '' with top_n=20 to survey up to 20 accessible A2A agents."
                 ),
@@ -143,7 +164,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 ),
             ),
         ] = Field(default_factory=lambda: [A2AEntityType.AGENT.value]),
-    ) -> list[dict[str, Any]]:
+    ) -> Annotated[CallToolResult, list[dict[str, Any]]]:
         """Discover A2A agents or their skills for tasks that benefit from delegation.
 
         Before claiming a needed delegated capability is unavailable, search here when permitted.
@@ -165,8 +186,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         - skill_name (entity_type='skill'): the specific skill to target
 
         Execution:
-        - call execute_agent(agent_id=<agent_id>, message=<payload>) — see execute_agent's
-          inputSchema for the message structure (parts array with typed content).
+        Call execute_agent(agent_id=<agent_id>, message=<payload>); its inputSchema defines
+        the message structure (parts array with typed content).
         - If entity_type='skill', target the specific skill via the message payload.
 
         Evaluating results: read each result's description to confirm the agent's
@@ -177,7 +198,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         If it is unclear whether the task needs an agent or a tool, also use discover_servers.
         Scores from the two discovery tools are not comparable; judge descriptions instead.
         Avoid repeating identical searches."""
-        return await _run_search(ctx, query, top_n, "hybrid", type_list, "a2a")
+        results = await _run_search(ctx, query, top_n, "hybrid", type_list, "a2a")
+        return results if results else _empty_discovery_result("discover_servers")
 
     return [
         ("discover_servers", discover_servers),

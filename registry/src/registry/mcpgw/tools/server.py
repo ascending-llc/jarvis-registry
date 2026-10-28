@@ -77,6 +77,11 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 _DOWNSTREAM_FAILURE_MESSAGE = "Error calling downstream MCP server."
+_STALE_SERVER_ID_MESSAGE = (
+    "There is no server with the given server_id; the ID is stale or wrong. "
+    "Run discover_servers with the same query. Use the new result's tool_name, resource_uri "
+    "or prompt_name together with its server_id. Never reuse this server_id."
+)
 
 
 def _get_server_service(ctx: Context[ServerSession, McpAppContext]):
@@ -414,7 +419,7 @@ async def execute_tool_impl(
                 # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
                 metrics_ctx.set_error_type("server_not_found")
                 return CallToolResult(
-                    content=[TextContent(type="text", text="There is no server with the given server_id.")],
+                    content=[TextContent(type="text", text=_STALE_SERVER_ID_MESSAGE)],
                     isError=True,
                 )
 
@@ -464,7 +469,11 @@ async def execute_tool_impl(
                     content=[
                         TextContent(
                             type="text",
-                            text=f"Tool {tool_name!r} is currently disabled on server {server_id!r}.",
+                            text=(
+                                f"Tool {tool_name!r} is currently disabled on server {server_id!r}. "
+                                "Do not retry this tool. Choose another matching discovered candidate "
+                                "or tell the user it is unavailable."
+                            ),
                         )
                     ],
                     isError=True,
@@ -642,7 +651,7 @@ async def read_resource_impl(
                 # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
                 metrics_ctx.set_error_type("server_not_found")
                 return CallToolResult(
-                    content=[TextContent(type="text", text="There is no server with the given server_id.")],
+                    content=[TextContent(type="text", text=_STALE_SERVER_ID_MESSAGE)],
                     isError=True,
                 )
 
@@ -727,7 +736,7 @@ async def execute_prompt_impl(
                 # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
                 metrics_ctx.set_error_type("server_not_found")
                 return CallToolResult(
-                    content=[TextContent(type="text", text="There is no server with the given server_id.")],
+                    content=[TextContent(type="text", text=_STALE_SERVER_ID_MESSAGE)],
                     isError=True,
                 )
 
@@ -841,32 +850,15 @@ def get_tools() -> list[tuple[str, Callable]]:
             ),
         ],
     ) -> CallToolResult:
-        """
-        🚀 AUTO-USE: Execute one downstream MCP tool returned by discover_servers.
-        Use this only with a discovery result whose `entity_type` is `tool`.
+        """Execute one downstream MCP tool returned by discover_servers.
+        Use only a result with entity_type='tool', pairing its exact tool_name and server_id.
 
-        IMPORTANT:
-        - Discovery already resolved the canonical downstream tool name.
-        - `tool_name` is the exact value to send in downstream MCP `tools/call.params.name`.
-        - Do not translate from wrapper names, display names, `mcpToolName`, `mcp_tool_name`,
-          or any camelCase/snake_case variant.
-        - Do not perform a second lookup to resolve the tool name.
+        Discovery already resolved the canonical downstream name for tools/call.params.name.
+        Do not translate wrapper/display names, mcpToolName, mcp_tool_name, or casing variants.
+        Do not perform a second lookup to resolve the tool name. Follow the discovered input schema.
 
-        Mapping:
-          discovery result:
-            {
-              "entity_type": "tool",
-              "tool_name": "tavily_search",
-              "server_id": "abc123"
-            }
-
-          execution:
-            execute_tool(
-                tool_name="tavily_search",
-                server_id="abc123",
-                arguments={...},
-            )
-        """
+        Example: discovery returns tool_name='tavily_search' and server_id='abc123'.
+        execute_tool(tool_name="tavily_search", server_id="abc123", arguments={"query": "AI trends"})"""
         return await execute_tool_impl(
             ctx,
             tool_name,
@@ -895,58 +887,17 @@ def get_tools() -> list[tuple[str, Callable]]:
             ),
         ],
     ) -> CallToolResult:
-        """
-        📄 Read URI-addressable data or cached content from a registered MCP server.
+        """Read URI-addressable data or cached content from a registered MCP server.
+        Call after discover_servers returns entity_type='resource'; pair resource_uri with server_id from that same result.
 
-        **What are resources?**
-        Resources are URI-addressable data sources exposed by MCP servers:
-        cached results, file-like content, API snapshots, configuration data, etc.
-        Use resources when you need to READ data rather than EXECUTE an action.
+        Resources expose cached results, file-like content, API snapshots, or configuration data.
+        Use this to read content rather than execute an action.
+        Use the discovered URI verbatim, except to fill all {variable} placeholders in URI templates.
 
-        **When to call:**
-        Call after discover_servers returns a result with entity_type == "resource".
-        Use result["resource_uri"] and result["server_id"] directly — no transformation needed.
+        Example: discovery returns resource_uri='tavily://search-results/{query}' and server_id='abc123'.
+        read_resource(server_id="abc123", resource_uri="tavily://search-results/AI+trends")
 
-        **Parameter mapping — from discovery result to read_resource:**
-
-          Discovery result:
-            {
-              "resource_uri": "tavily://search-results/{query}",  ← resource_uri parameter (fill template vars)
-              "server_id":    "abc123",                           ← server_id parameter
-              "resource_name": "search-results",
-            }
-
-          Read call (after filling template variables):
-            read_resource(
-                server_id="abc123",
-                resource_uri="tavily://search-results/AI+news",
-            )
-
-        **Examples:**
-
-        Example 1 — cached search results:
-          # discover_servers(query="cached web results", type_list=["resource"])
-          # → {"resource_uri": "tavily://search-results/{query}", "server_id": "abc123", ...}
-          read_resource(
-              server_id="abc123",
-              resource_uri="tavily://search-results/AI+trends",
-          )
-
-        Example 2 — GitHub repository data:
-          # discover_servers(query="github repository", type_list=["resource"])
-          # → {"resource_uri": "github://repo/{owner}/{repo}", "server_id": "def456", ...}
-          read_resource(
-              server_id="def456",
-              resource_uri="github://repo/myorg/myproject",
-          )
-
-        **Hard constraints:**
-        - server_id must come from the SAME discovery result as resource_uri.
-        - If resource_uri is a URI template, substitute all `{variable}` placeholders before calling.
-
-        **Return value:**
-        Resource contents — text, JSON, binary, or structured data depending on the resource type.
-        """
+        Returns resource contents: text, JSON, binary, or structured data depending on the resource type."""
         return await read_resource_impl(
             ctx.request_context.request.state.user,  # type: ignore[union-attr]
             server_id,
@@ -986,69 +937,18 @@ def get_tools() -> list[tuple[str, Callable]]:
             ),
         ] = None,
     ) -> CallToolResult:
-        """
-        💬 Execute a reusable prompt template from a registered MCP server.
+        """Execute a reusable prompt template from a registered MCP server.
+        Call after discover_servers returns entity_type='prompt'; pair its exact prompt_name with server_id from the same result.
 
-        **What are prompts?**
-        Prompts are pre-configured, parameterized templates that standardize complex workflows.
-        They return structured messages (role + content pairs) ready to be forwarded to an LLM.
-        Use prompts when you need expert guidance, a standardized workflow, or a multi-turn template.
+        Prompts provide expert guidance, standardized workflows, or multi-turn templates.
+        The discovery result's description lists required and optional arguments.
+        Pass all required arguments and any relevant optional ones; omit arguments if none are needed.
+        Never invent or rename prompt_name.
 
-        **When to call:**
-        Call after discover_servers returns a result with entity_type == "prompt".
-        Use result["prompt_name"] and result["server_id"] directly — no transformation needed.
+        Example: discovery returns prompt_name='code_reviewer', server_id='abc123', and requires language.
+        execute_prompt(server_id="abc123", prompt_name="code_reviewer", arguments={"language": "python"})
 
-        **Parameter mapping — from discovery result to execute_prompt:**
-
-          Discovery result:
-            {
-              "prompt_name": "code_reviewer",      ← prompt_name parameter
-              "server_id":   "abc123",             ← server_id parameter
-              "content":     "... Required: language (programming language) | Optional: focus (review focus area) ..."
-            }                                         ↑ read this to build arguments
-
-          Execute call:
-            execute_prompt(
-                server_id="abc123",
-                prompt_name="code_reviewer",         ← verbatim from result["prompt_name"]
-                arguments={"language": "python"},    ← constructed from content
-            )
-
-        **How to construct arguments:**
-        The `description` field of the discovery result lists required and optional arguments:
-          "Required: topic (research topic) | Optional: depth (detail level, default: overview)"
-        Pass all required arguments; include optional ones when the user specifies them.
-
-        **Examples:**
-
-        Example 1 — code review:
-          # discover_servers(query="code review template", type_list=["prompt"])
-          # → {"prompt_name": "code_reviewer", "server_id": "abc123",
-          #    "description": "... Required: language (programming language) | Optional: focus (review area) ..."}
-          execute_prompt(
-              server_id="abc123",
-              prompt_name="code_reviewer",
-              arguments={"language": "python", "focus": "security"},
-          )
-
-        Example 2 — research assistant:
-          # discover_servers(query="research assistant", type_list=["prompt"])
-          # → {"prompt_name": "research_assistant", "server_id": "def456",
-          #    "description": "... Required: topic (research topic) | Optional: depth (detail level) ..."}
-          execute_prompt(
-              server_id="def456",
-              prompt_name="research_assistant",
-              arguments={"topic": "Quantum Computing", "depth": "advanced"},
-          )
-
-        **Hard constraints:**
-        - prompt_name must be the exact `prompt_name` field from the discovery result — do not invent or rename it.
-        - server_id must come from the SAME discovery result as prompt_name.
-
-        **Return value:**
-        A list of messages (role + content pairs) ready for LLM consumption.
-        Forward the messages into your context or present them to the user.
-        """
+        Returns prompt messages ready for LLM consumption. Incorporate them into your context or present them to the user."""
         return await execute_prompt_impl(
             ctx.request_context.request.state.user,  # type: ignore[union-attr]
             server_id,

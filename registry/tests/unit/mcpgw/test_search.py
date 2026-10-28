@@ -1,8 +1,9 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, TextContent
 
 from registry.mcpgw.tools.search import _run_search
 from registry_pkgs.core.exceptions import InternalServerException
@@ -98,12 +99,50 @@ async def test_discover_tool_reports_generic_error_for_other_failures(tool_name:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["discover_servers", "discover_agents"])
-async def test_discover_tool_empty_results_are_not_errors(tool_name: str) -> None:
+@pytest.mark.parametrize(
+    ("tool_name", "other_tool"),
+    [("discover_servers", "discover_agents"), ("discover_agents", "discover_servers")],
+)
+async def test_discover_tool_empty_results_are_not_errors(tool_name: str, other_tool: str) -> None:
     search_entities = AsyncMock(return_value={"results": []})
 
     result = await _call_tool_e2e(tool_name, search_entities)
 
     assert result.isError is False
     assert result.structuredContent == {"result": []}
+    assert len(result.content) == 1
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    for guidance in (
+        "No matching",
+        "synonyms",
+        "broader term",
+        "query=''",
+        "top_n=20",
+        other_tool,
+        "after these fallbacks",
+    ):
+        assert guidance in content.text
+    search_entities.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "entity"),
+    [
+        ("discover_servers", {"entity_type": "tool", "tool_name": "list_issues", "server_id": "server-1"}),
+        ("discover_agents", {"entity_type": "agent", "agent_id": "agent-1", "description": "Analyze issues"}),
+    ],
+)
+async def test_discover_tool_preserves_nonempty_structured_results(tool_name: str, entity: dict[str, str]) -> None:
+    search_entities = AsyncMock(return_value={"results": [entity]})
+
+    result = await _call_tool_e2e(tool_name, search_entities)
+
+    assert result.isError is False
+    assert result.structuredContent == {"result": [entity]}
+    assert len(result.content) == 1
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert json.loads(content.text) == entity
     search_entities.assert_awaited_once()
