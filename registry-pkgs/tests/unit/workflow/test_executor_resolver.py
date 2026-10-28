@@ -18,7 +18,7 @@ from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows import a2a_client, executor_resolver, model_resolution
 from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows.helpers import build_prompt
-from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
+from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS, POOL_KEY_PREFIX
 
 
 def _jwt_config(**overrides) -> JwtSigningConfig:
@@ -245,7 +245,7 @@ class TestExecutorResolver:
         )
 
         # The pool selector LLM is the per-node override, not the default model.
-        assert any(callable(v) or isinstance(v, str) for v in registry.values())
+        assert set(registry) == {f"{POOL_KEY_PREFIX}p1"}
         assert captured["selector_llm"].id == "bedrock/override-model"
 
     @pytest.mark.asyncio
