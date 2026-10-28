@@ -2,11 +2,6 @@
 # See https://pre-commit.com for more information
 # Run `uv run poe hooks-install` to install hooks locally
 
-# Build Python hook environments with the project's interpreter (see .python-version)
-# instead of whatever Python pre-commit itself runs on.
-default_language_version:
-  python: python3.12
-
 repos:
   # Ruff - Fast Python linter and formatter (replaces black, isort, flake8)
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -79,13 +74,7 @@ repos:
         verbose: true
 
   # Prevent credentials from getting into the code base.
-  - repo: https://github.com/godaddy/tartufo
-    rev: "v6.0.0"
+  - repo: https://github.com/satoseino/gelato
+    rev: "v0.1.0"
     hooks:
-      - id: tartufo
-
-# CI configuration
-ci:
-  autofix_commit_msg: "style: auto-fix by pre-commit hooks"
-  autofix_prs: true
-  autoupdate_commit_msg: "chore: update pre-commit hooks"
+      - id: gelato
