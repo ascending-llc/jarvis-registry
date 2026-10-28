@@ -502,13 +502,16 @@ async def update_server(
                     session=mongo_session,
                 )
 
-                server = await server_service.update_server(
+                server, vector_plan = await server_service.update_server(
                     server_id=server_id,
                     data=data,
                     user_id=user_id,
                     session=mongo_session,
                 )
 
+        # Schedule the vector sync only after the transaction has committed, so the immediate task
+        # never lands before the marker it must clear and a rolled-back update leaves no stale vectors.
+        server_service.schedule_vector_sync(vector_plan)
         return convert_to_detail(server, acl_permission=permissions)
 
     except EmbeddingReindexInProgressException as exc:
@@ -564,7 +567,7 @@ async def delete_server(
                     session=mongo_session,
                 )
 
-                await server_service.delete_server(
+                server_name = await server_service.delete_server(
                     server_id=server_id,
                     user_id=None,
                     session=mongo_session,
@@ -576,7 +579,11 @@ async def delete_server(
                     session=mongo_session,
                 )
                 logger.info(f"Removed {deleted_count} ACL permissions for server Id {server_id}")
-                return None  # 204 No Content
+
+        # Remove vectors only after the transaction has committed, so a rolled-back delete (an ACL
+        # or commit failure) leaves the vectors in place. A lost delete leaves an orphan for the sweep.
+        server_service.schedule_vector_delete(server_id, server_name)
+        return None  # 204 No Content
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc

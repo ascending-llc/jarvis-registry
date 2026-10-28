@@ -136,6 +136,8 @@ def skill_sync_route_context():
     token_service.delete_source_tokens = AsyncMock()
     token_service.is_connected = AsyncMock(return_value=False)
     oauth_service = MagicMock()
+    oauth_service.create_authorization_url = AsyncMock()
+    oauth_service.resolve_source_id = AsyncMock()
     oauth_service.create_authorization_url.return_value = "https://github.com/login/oauth/authorize?state=test"
     oauth_service.resolve_source_id.return_value = str(source.id)
     acl_service = MagicMock()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import logging
+from typing import ClassVar
 
 from ...models import A2AAgent
 from ...models.federation_metadata import extract_runtime_version
@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
     """Vector sync repository for A2A agents."""
+
+    ENTITY_ID_PROPERTY: ClassVar[str] = "agent_id"
 
     FILTERABLE_PROPERTIES = {
         "agent_id": "text",
@@ -32,7 +34,7 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
         *,
         is_delete: bool = True,
     ) -> dict:
-        """Full rebuild for an A2A agent — caller must ensure content actually changed.
+        """Rebuild an A2A agent's docs after content changes or detected index drift.
 
         Args:
             agent: Agent instance with current MongoDB state.
@@ -50,18 +52,9 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
             await self.ensure_collection()
 
             if is_delete and self._collection_has_property("agent_id"):
-                try:
-                    result.deleted = await asyncio.wait_for(
-                        self.adelete_by_filter({"agent_id": agent_id}),
-                        timeout=10.0,
-                    )
-                    if result.deleted:
-                        logger.debug("Deleted %d old docs for agent_id=%s", result.deleted, agent_id)
-                except TimeoutError:
-                    logger.warning(
-                        "adelete_by_filter timed out for agent_id=%s — skipping delete, proceeding with insert",
-                        agent_id,
-                    )
+                # Do not cancel a thread-backed delete and then insert: the late delete could
+                # erase the replacement. Transport timeouts propagate as a failed sync below.
+                result.deleted = await self.adelete_by_filter({"agent_id": agent_id})
 
             docs = agent.to_documents()
             expected = len(docs) if docs else 0

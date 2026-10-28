@@ -1,412 +1,427 @@
-"""
-Vector DB Sync Script for MCP Gateway Registry
+"""Vector DB sync + verification for MCP Gateway Registry.
 
-Synchronizes MCP servers and/or A2A agents from MongoDB to the vector database for semantic search.
-Each entity is fully rebuilt (delete existing docs + reinsert), so the script is safe to re-run
-and will correct any stale or missing data.
+SYNC (default) rebuilds MCP servers and/or A2A agents from MongoDB into the vector DB; each entity is
+deleted + reinserted, so it is safe to re-run and corrects stale/missing data.
 
-Reads connection settings from .env at the project root.
+VERIFY (--verify) probes a RUNNING registry:
+  durable — stamp a "stuck" pending marker and watch the live leader-leased reconciler heal it
+            (re-embed + clear); checks the leader-lease wiring and (with --check-grace) the grace
+            window + backoff-eligibility. Observes only; writes nothing to Weaviate itself.
+  crud    — drive the real repos and assert Weaviate create/read/update/delete + metadata patches.
+            Runs on existing entities and restores them.
+  orphan  — confirm the live app started the orphan sweeper (leader lease, hourly nextRunAt), then
+            inject a synthetic orphan (vectors for a server_id with no Mongo entity), run one real
+            sweep pass, and assert the orphan is deleted while a real server's vectors survive.
+
+Reads settings from .env.
 
 Usage:
-    uv run python scripts/vector_sync.py --target <mcp|a2a|all> [options]
-
-Required:
-    --target mcp|a2a|all  Which entities to sync (required)
-
-Options:
-    --clean         Delete the target collection(s) before syncing
-    --batch-size N  Entities to process per MongoDB page (default: 100)
-
-Examples:
-    uv run python scripts/vector_sync.py --target mcp
-    uv run python scripts/vector_sync.py --target a2a --clean
-    uv run python scripts/vector_sync.py --target all --batch-size 50
+    uv run python scripts/vector_sync.py --target mcp|a2a|all
+    uv run python scripts/vector_sync.py --verify durable [--check-grace]
+    uv run python scripts/vector_sync.py --verify crud
+    uv run python scripts/vector_sync.py --verify orphan
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import os
 import sys
-import traceback
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+
+import httpx
+from beanie import PydanticObjectId
 
 from registry.container import RegistryContainer
 from registry.core.config import Settings
+from registry.core.vector_backend import resolve_vector_backend_config
+from registry.services.vector_orphan_sweeper import VectorOrphanSweeper
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.vector.adapters.factory import VectorStoreFactory
 from registry_pkgs.vector.client import create_database_client
 
-VALID_TARGETS = {"mcp", "a2a", "all"}
+# Mirror the reconciler's windows (vector_sync_reconciler.py) without importing app internals.
+_LEASE_NAME = "vector-sync-reconciler"
+_GRACE_SECONDS = 60
+_POLL_SECONDS = 30
 
 
-class SyncStats:
-    """Statistics tracker for one entity type."""
-
-    def __init__(self, label: str):
-        self.label = label
-        self.total = 0
-        self.synced = 0
-        self.failed = 0
-        self.entities_processed: list[dict[str, Any]] = []
-        self.errors: list[str] = []
-
-    def record(self, name: str, path: str, indexed: int, failed: bool) -> None:
-        self.entities_processed.append({"name": name, "path": path, "indexed": indexed, "failed": failed})
-
-    def add_error(self, error: str) -> None:
-        self.errors.append(error)
-
-    def print_summary(self) -> None:
-        label = self.label.upper()
-        print(f"\n{'=' * 80}")
-        print(f"SYNC SUMMARY — {label}")
-        print(f"{'=' * 80}")
-        print(f"Total:             {self.total}")
-        print(f"Successfully synced: {self.synced} ✓")
-        print(f"Failed:            {self.failed} ✗")
-
-        if self.entities_processed:
-            print(f"\n{'-' * 80}")
-            print("PER-ENTITY BREAKDOWN:")
-            print(f"{'-' * 80}")
-            for e in self.entities_processed:
-                status = "✓" if not e["failed"] else "✗"
-                note = f"indexed={e['indexed']}" if e["indexed"] > 0 else "no content"
-                print(f"  {status} {e['name']:<35} ({e['path']:<25}) {note}")
-
-        if self.errors:
-            print(f"\n{'-' * 80}")
-            print(f"ERRORS ({len(self.errors)}):")
-            print(f"{'-' * 80}")
-            for err in self.errors:
-                print(f"  ✗ {err}")
-
-        print(f"{'=' * 80}")
-        if self.failed == 0 and self.total > 0:
-            print(f"✓ {label} SUCCESS: all {self.total} entities synced.")
-        elif self.synced > 0:
-            pct = self.synced / self.total * 100
-            print(f"⚠ {label} PARTIAL: {self.synced}/{self.total} synced ({pct:.1f}%)")
-        elif self.total == 0:
-            print(f"○ {label}: nothing found in MongoDB.")
-        else:
-            print(f"✗ {label} FAILED: no entities were synced.")
-        print(f"{'=' * 80}\n")
+def _ok(name: str, passed: bool, detail: str = "") -> bool:
+    print(f"  {'✓' if passed else '✗'} {name}" + (f"  — {detail}" if detail else ""))
+    return passed
 
 
-def parse_args() -> tuple[str, bool, int]:
-    target = None
-    clean_mode = "--clean" in sys.argv
-    batch_size = 100
+def _default_weaviate_url() -> str:
+    return (
+        os.getenv("WEAVIATE_URL")
+        or f"http://{os.getenv('WEAVIATE_HOST', '127.0.0.1')}:{os.getenv('WEAVIATE_PORT', '8099')}"
+    )
 
-    i = 0
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg == "--target":
-            if i + 1 >= len(sys.argv):
-                print("Error: --target requires a value (mcp, a2a, or all)")
-                sys.exit(1)
-            target = sys.argv[i + 1].lower()
-            if target not in VALID_TARGETS:
-                print(f"Error: --target must be one of: {', '.join(sorted(VALID_TARGETS))}")
-                sys.exit(1)
-            i += 2
-            continue
-        if arg == "--batch-size":
-            if i + 1 >= len(sys.argv):
-                print("Error: --batch-size requires a value")
-                sys.exit(1)
+
+class Weaviate:
+    """Tiny GraphQL reader for one entity's chunks in the active generation collection."""
+
+    def __init__(self, url: str, api_key: str, generation: str) -> None:
+        self._url = url.rstrip("/")
+        self._gen = generation
+        self._headers = {"Content-Type": "application/json"}
+        if api_key:
+            self._headers["Authorization"] = f"Bearer {api_key}"
+
+    def docs(self, base: str, id_field: str, id_val: str, fields: str) -> list[dict]:
+        cls = f"{base}_{self._gen}"
+        query = (
+            f'{{Get{{{cls}(where:{{path:["{id_field}"],operator:Equal,valueText:"{id_val}"}})'
+            f"{{{fields} _additional{{lastUpdateTimeUnix}}}}}}}}"
+        )
+        resp = httpx.post(f"{self._url}/v1/graphql", headers=self._headers, json={"query": query}, timeout=20)
+        resp.raise_for_status()
+        payload = resp.json()
+        if payload.get("errors"):
+            raise RuntimeError(payload["errors"])
+        return (((payload.get("data") or {}).get("Get") or {}).get(cls)) or []
+
+    def count(self, base: str, id_field: str, id_val: str) -> int:
+        return len(self.docs(base, id_field, id_val, id_field))
+
+    def clock(self, base: str, id_field: str, id_val: str) -> int:
+        rows = self.docs(base, id_field, id_val, id_field)
+        return max((int(r["_additional"]["lastUpdateTimeUnix"]) for r in rows if r.get("_additional")), default=0)
+
+
+async def _open_write_gate(container: RegistryContainer) -> bool:
+    """Start the maintenance watcher and wait for the write gate to open (closed during a reindex)."""
+    watcher = container.embedding_maintenance_watcher
+    await watcher.start()
+    for _ in range(50):  # ~5s
+        if not watcher.is_active():
+            return True
+        await asyncio.sleep(0.1)
+    return False
+
+
+async def _active_generation(db) -> str | None:
+    async for doc in db["model_gateway_selection"].find():
+        if gen := doc.get("embeddingCollectionGeneration"):
+            return str(gen)
+    return None
+
+
+# --- sync -----------------------------------------------------------------------------
+
+# (model, repo attr, name getter, result's "failed" key) per target.
+_TARGETS = {
+    "mcp": (ExtendedMCPServer, "mcp_server_repo", lambda e: e.serverName, "failed_tools"),
+    "a2a": (A2AAgent, "a2a_agent_repo", lambda e: e.card.name, "failed"),
+}
+
+
+async def _sync(container: RegistryContainer, targets: list[str]) -> int:
+    failures = 0
+    for name in targets:
+        model, repo_attr, label, fail_key = _TARGETS[name]
+        repo = getattr(container, repo_attr)
+        ok = bad = 0
+        print(f"\n== Syncing {name} ==")
+        async for entity in model.find_all():
             try:
-                batch_size = int(sys.argv[i + 1])
-                if batch_size < 1:
-                    print("Error: --batch-size must be at least 1")
-                    sys.exit(1)
-            except ValueError:
-                print(f"Error: invalid --batch-size value: {sys.argv[i + 1]}")
-                sys.exit(1)
-            i += 2
-            continue
-        i += 1
-
-    if target is None:
-        print("Error: --target is required. Choose one of: mcp, a2a, all")
-        print(f"\nUsage: uv run python {sys.argv[0]} --target <mcp|a2a|all> [--clean] [--batch-size N]")
-        sys.exit(1)
-
-    return target, clean_mode, batch_size
+                res = await repo.sync_to_vector_db(entity, is_delete=True)
+                if not res or res.get(fail_key) or res.get("error"):
+                    bad += 1
+                    print(f"  ✗ {label(entity)}: {res}")
+                else:
+                    ok += 1
+                    print(f"  ✓ {label(entity)} (indexed={res.get('indexed_tools', res.get('indexed', 0))})")
+            except Exception as exc:  # noqa: BLE001 — report and continue the batch
+                bad += 1
+                print(f"  ✗ {label(entity)}: {exc}")
+        print(f"  {name}: synced={ok} failed={bad}")
+        failures += bad
+    return 1 if failures else 0
 
 
-async def clean_collection(repo: Any, collection_name: str, label: str) -> None:
-    print(f"Cleaning {label} collection ({collection_name})...")
-    try:
-        await repo.reset_collection()
-        print("  ✓ Collection dropped and recreated\n")
-    except Exception as e:
-        print(f"  ✗ Error cleaning {label}: {e}")
-        traceback.print_exc()
+# --- verify: durable (observe the live reconciler) ------------------------------------
 
 
-async def _sync_one_server(server: Any, stats: SyncStats, repo: Any) -> None:
-    name = server.serverName
-    path = server.path or ""
-    server_id = str(server.id)
+async def _verify_durable(db, wv_url: str, wv_key: str, *, check_grace: bool, timeout: int) -> bool:
+    print("\n== VERIFY durable (reconciler) ==")
+    servers = db["mcpservers"]
 
-    print(f"  Syncing: {name} ({path}) [id={server_id}]")
-    try:
-        result = await repo.sync_to_vector_db(server, is_delete=True)
-        _record_result(stats, name, path, result, indexed_key="indexed_tools", failed_key="failed_tools")
-    except Exception as e:
-        _record_exception(stats, name, path, e)
+    lease = await db["registry_leader_leases"].find_one({"_id": _LEASE_NAME})
+    if not _ok("leader-lease document exists", lease is not None, _LEASE_NAME):
+        return False
+    results = [_ok("lease is active", lease.get("status") == "active")]
+    before_next = lease.get("nextRunAt")
+    results.append(_ok("lease has nextRunAt", before_next is not None, str(before_next)))
 
+    server = await servers.find_one({"config.enabled": True}, {"serverName": 1}) or await servers.find_one(
+        {}, {"serverName": 1}
+    )
+    if server is None:
+        return _ok("a server exists to test the reconciler", False)
+    sid = server["_id"]
+    orig = await servers.find_one({"_id": sid}, {"vectorSyncPendingAt": 1, "vectorSyncAttempts": 1}) or {}
 
-async def sync_all_servers(
-    server_service: Any,
-    mcp_server_repo: Any,
-    batch_size: int,
-) -> SyncStats:
-    stats = SyncStats("MCP Servers")
-    _print_batch_header("MCP Servers", batch_size)
+    gen = await _active_generation(db)
+    wv = Weaviate(wv_url, wv_key, gen) if gen else None
+    base = ExtendedMCPServer.COLLECTION_NAME
+    before_clock = wv.clock(base, "server_id", str(sid)) if wv else 0
 
-    try:
-        _, total = await server_service.list_servers(page=1, per_page=1)
-        print(f"Found {total} MCP servers in MongoDB\n")
+    stuck = datetime.now(UTC) - timedelta(seconds=_GRACE_SECONDS + 60)
+    await servers.update_one({"_id": sid}, {"$set": {"vectorSyncPendingAt": stuck, "vectorSyncAttempts": 0}})
+    stored = (await servers.find_one({"_id": sid}, {"vectorSyncPendingAt": 1}))["vectorSyncPendingAt"]
+    print(f"  stamped stuck marker on {server.get('serverName', sid)} ({sid})")
 
-        if total == 0:
-            return stats
+    cleared = acted = False
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(3)
+        cur = await servers.find_one({"_id": sid}, {"vectorSyncPendingAt": 1, "vectorSyncAttempts": 1}) or {}
+        pending, attempts = cur.get("vectorSyncPendingAt"), cur.get("vectorSyncAttempts")
+        if pending is None:
+            acted = cleared = True
+            break
+        if pending != stored or (attempts or 0) > 0:
+            acted = True
+            break
+    results.append(_ok("live reconciler healed the stuck marker", acted, "cleared" if cleared else "re-queued"))
 
-        total_pages = (total + batch_size - 1) // batch_size
-        processed = 0
+    if wv and cleared:
+        results.append(
+            _ok("chunks present in Weaviate after heal (real landing)", wv.count(base, "server_id", str(sid)) >= 1)
+        )
+        results.append(
+            _ok(
+                "Weaviate write clock advanced (really re-embedded)",
+                wv.clock(base, "server_id", str(sid)) > before_clock,
+            )
+        )
 
-        for page in range(1, total_pages + 1):
-            _print_batch_progress(page, total_pages, processed, min(processed + batch_size, total))
-            servers, _ = await server_service.list_servers(page=page, per_page=batch_size)
-            if not servers:
-                break
-            for server in servers:
-                processed += 1
-                stats.total = processed
-                print(f"\n[{processed}/{total}]", end=" ")
-                await _sync_one_server(server, stats, mcp_server_repo)
-            print(f"\nBatch {page} done — {processed}/{total} ({processed / total * 100:.1f}%)")
+    after_next = (await db["registry_leader_leases"].find_one({"_id": _LEASE_NAME}) or {}).get("nextRunAt")
+    results.append(
+        _ok(
+            "nextRunAt advanced (loop is scheduling passes)",
+            bool(before_next and after_next and after_next > before_next) or acted,
+        )
+    )
 
-    except Exception as e:
-        print(f"\n✗ Fatal error during MCP sync: {e}")
-        traceback.print_exc()
-        stats.add_error(f"Fatal: {e}")
+    if check_grace:
+        wait = _POLL_SECONDS + 8
+        for label, pend, attempts in (
+            ("fresh (within grace)", datetime.now(UTC) - timedelta(seconds=10), 0),
+            ("future (backed-off)", datetime.now(UTC) + timedelta(minutes=30), 5),
+        ):
+            await servers.update_one(
+                {"_id": sid}, {"$set": {"vectorSyncPendingAt": pend, "vectorSyncAttempts": attempts}}
+            )
+            kept = (await servers.find_one({"_id": sid}, {"vectorSyncPendingAt": 1}))["vectorSyncPendingAt"]
+            print(f"  waiting {wait}s to confirm a {label} marker is skipped...")
+            await asyncio.sleep(wait)
+            still = (await servers.find_one({"_id": sid}, {"vectorSyncPendingAt": 1}) or {}).get("vectorSyncPendingAt")
+            results.append(_ok(f"{label} marker not acted on", still == kept))
 
-    return stats
-
-
-async def _sync_one_agent(agent: Any, stats: SyncStats, repo: Any) -> None:
-    name = agent.card.name
-    path = agent.path or ""
-    agent_id = str(agent.id)
-
-    print(f"  Syncing: {name} ({path}) [id={agent_id}]")
-    try:
-        result = await repo.sync_to_vector_db(agent, is_delete=True)
-        _record_result(stats, name, path, result, indexed_key="indexed", failed_key="failed")
-    except Exception as e:
-        _record_exception(stats, name, path, e)
-
-
-async def sync_all_agents(
-    a2a_agent_service: Any,
-    a2a_agent_repo: Any,
-    batch_size: int,
-) -> SyncStats:
-    stats = SyncStats("A2A Agents")
-    _print_batch_header("A2A Agents", batch_size)
-
-    try:
-        _, total = await a2a_agent_service.list_agents(page=1, per_page=1)
-        print(f"Found {total} A2A agents in MongoDB\n")
-
-        if total == 0:
-            return stats
-
-        total_pages = (total + batch_size - 1) // batch_size
-        processed = 0
-
-        for page in range(1, total_pages + 1):
-            _print_batch_progress(page, total_pages, processed, min(processed + batch_size, total))
-            agents, _ = await a2a_agent_service.list_agents(page=page, per_page=batch_size)
-            if not agents:
-                break
-            for agent in agents:
-                processed += 1
-                stats.total = processed
-                print(f"\n[{processed}/{total}]", end=" ")
-                await _sync_one_agent(agent, stats, a2a_agent_repo)
-            print(f"\nBatch {page} done — {processed}/{total} ({processed / total * 100:.1f}%)")
-
-    except Exception as e:
-        print(f"\n✗ Fatal error during A2A sync: {e}")
-        traceback.print_exc()
-        stats.add_error(f"Fatal: {e}")
-
-    return stats
-
-
-def _record_result(
-    stats: SyncStats,
-    name: str,
-    path: str,
-    result: dict,
-    indexed_key: str,
-    failed_key: str,
-) -> None:
-    indexed = result.get(indexed_key, 0)
-    failed = result.get(failed_key, 0)
-    error = result.get("error")
-
-    if error or failed:
-        msg = f"{name}: {failed_key}={failed} error={error}"
-        print(f"    ✗ {msg}")
-        stats.add_error(msg)
-        stats.failed += 1
-        stats.record(name, path, 0, failed=True)
-    elif indexed == 0:
-        print("    ○ no content to index")
-        stats.synced += 1
-        stats.record(name, path, 0, failed=False)
+    # Restore the marker to its original state.
+    if orig.get("vectorSyncPendingAt") is None:
+        await servers.update_one({"_id": sid}, {"$unset": {"vectorSyncPendingAt": "", "vectorSyncAttempts": ""}})
     else:
-        print(f"    ✓ indexed {indexed} doc(s)")
-        stats.synced += 1
-        stats.record(name, path, indexed, failed=False)
+        await servers.update_one(
+            {"_id": sid},
+            {
+                "$set": {
+                    "vectorSyncPendingAt": orig["vectorSyncPendingAt"],
+                    "vectorSyncAttempts": orig.get("vectorSyncAttempts", 0),
+                }
+            },
+        )
+    return all(results)
 
 
-def _record_exception(stats: SyncStats, name: str, path: str, exc: Exception) -> None:
-    msg = f"{name}: unexpected error — {exc}"
-    print(f"    ✗ {msg}")
-    stats.add_error(msg)
-    stats.failed += 1
-    stats.record(name, path, 0, failed=True)
+# --- verify: crud (drive the real repos) ----------------------------------------------
 
 
-def _print_batch_header(label: str, batch_size: int) -> None:
-    print(f"\n{'=' * 80}")
-    print(f"MONGODB → VECTOR DB SYNC  ({label})")
-    print(f"{'=' * 80}")
-    print(f"Started:    {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    print(f"Batch size: {batch_size}")
-    print(f"{'=' * 80}")
+async def _verify_crud(container: RegistryContainer, db_client, wv_url: str, wv_key: str) -> bool:
+    print("\n== VERIFY crud (Weaviate C/R/U/D + metadata) ==")
+    wv = Weaviate(wv_url, wv_key, db_client.collection_generation)
+    mcp_repo, a2a_repo = container.mcp_server_repo, container.a2a_agent_repo
+    mcp_base, a2a_base = ExtendedMCPServer.COLLECTION_NAME, A2AAgent.COLLECTION_NAME
+
+    server = await ExtendedMCPServer.find_one({"config.enabled": True}) or await ExtendedMCPServer.find_one({})
+    agent = await A2AAgent.find_one({})
+    if server is None or agent is None:
+        return _ok("an enabled server and an agent exist", False)
+    sid, aid = str(server.id), str(agent.id)
+    results = []
+
+    base_n = wv.count(mcp_base, "server_id", sid)
+    base_clk = wv.clock(mcp_base, "server_id", sid)
+    results.append(_ok("server chunks present (R)", base_n >= 1, f"{base_n}"))
+
+    res = await mcp_repo.sync_to_vector_db(server, is_delete=True)
+    results.append(
+        _ok(
+            "re-embed success, same count (U, idempotent)",
+            bool(res) and not res.get("failed_tools") and wv.count(mcp_base, "server_id", sid) == base_n,
+        )
+    )
+    results.append(_ok("write clock advanced (really re-written)", wv.clock(mcp_base, "server_id", sid) > base_clk))
+
+    await mcp_repo.update_entity_metadata("server_id", sid, {"enabled": False})
+    rows = wv.docs(mcp_base, "server_id", sid, "enabled")
+    results.append(
+        _ok(
+            "metadata patch flips enabled in place, count unchanged",
+            bool(rows) and all(r.get("enabled") is False for r in rows) and len(rows) == base_n,
+        )
+    )
+    await mcp_repo.update_entity_metadata("server_id", sid, {"enabled": True})
+
+    tools = sorted({r["tool_name"] for r in wv.docs(mcp_base, "server_id", sid, "tool_name") if r.get("tool_name")})
+    if tools:
+        await mcp_repo.update_tools_metadata(sid, [tools[0]], {"tool_enabled": False})
+        after = wv.docs(mcp_base, "server_id", sid, "tool_name tool_enabled")
+        off = all(r.get("tool_enabled") is False for r in after if r.get("tool_name") == tools[0])
+        on = all(r.get("tool_enabled") is not False for r in after if r.get("tool_name") != tools[0])
+        results.append(_ok("per-tool patch flips one tool only", off and on, tools[0]))
+        await mcp_repo.update_tools_metadata(sid, [tools[0]], {"tool_enabled": True})
+
+    removed = await mcp_repo.delete_by_server_id(sid, server.serverName)
+    results.append(
+        _ok("delete removes all chunks (D)", wv.count(mcp_base, "server_id", sid) == 0, f"removed={removed}")
+    )
+    results.append(_ok("delete of absent entity is a no-op", (await mcp_repo.delete_by_server_id(sid)) == 0))
+    await mcp_repo.sync_to_vector_db(server, is_delete=False)
+    results.append(_ok("re-create restores chunks (C)", wv.count(mcp_base, "server_id", sid) == base_n))
+
+    a_n = wv.count(a2a_base, "agent_id", aid)
+    results.append(_ok("agent chunks present (R, second repo)", a_n >= 1, f"{a_n}"))
+    await a2a_repo.delete_by_agent_id(aid, agent.card.name)
+    results.append(_ok("agent delete removes all chunks (D)", wv.count(a2a_base, "agent_id", aid) == 0))
+    await a2a_repo.sync_to_vector_db(agent, is_delete=False)
+    results.append(_ok("agent re-create restores chunks (C)", wv.count(a2a_base, "agent_id", aid) == a_n))
+    return all(results)
 
 
-def _print_batch_progress(page: int, total_pages: int, processed: int, end: int) -> None:
-    print(f"\n{'─' * 60}")
-    print(f"Batch {page}/{total_pages}  (entities {processed + 1}–{end})")
-    print(f"{'─' * 60}")
+async def _verify_orphan(db, container: RegistryContainer, db_client, wv_url: str, wv_key: str) -> bool:
+    print("\n== VERIFY orphan (sweep deletes vectors with no Mongo entity) ==")
+    results = []
+
+    # 1. Liveness: the deployed image started the sweeper (ensure_leader_document) and scheduled it.
+    lease = await db["registry_leader_leases"].find_one({"_id": "vector-orphan-sweep"})
+    results.append(_ok("orphan-sweep leader-lease exists", lease is not None, "vector-orphan-sweep"))
+    if lease is not None:
+        results.append(
+            _ok(
+                "lease active with an hourly nextRunAt",
+                lease.get("status") == "active" and lease.get("nextRunAt") is not None,
+                str(lease.get("nextRunAt")),
+            )
+        )
+
+    wv = Weaviate(wv_url, wv_key, db_client.collection_generation)
+    mcp_repo = container.mcp_server_repo
+    base = ExtendedMCPServer.COLLECTION_NAME
+
+    # A real server is the control: its vectors must survive the sweep (it exists in Mongo).
+    real = await ExtendedMCPServer.find_one({"config.enabled": True}) or await ExtendedMCPServer.find_one({})
+    if real is None:
+        return _ok("a real server exists as the sweep control", False)
+    rid = str(real.id)
+    real_before = wv.count(base, "server_id", rid)
+    results.append(_ok("control server chunks present", real_before >= 1, f"{real_before}"))
+
+    # 2. Inject an orphan: write vectors for a brand-new id that was never saved to Mongo.
+    orphan = ExtendedMCPServer.model_construct(
+        id=PydanticObjectId(),
+        serverName=f"orphan-verify-{PydanticObjectId()}",
+        config=real.config,
+        author=real.author,
+        path=f"/orphan-verify-{PydanticObjectId()}",
+        registryDisabledTools=[],
+    )
+    oid = str(orphan.id)
+    try:
+        await mcp_repo.sync_to_vector_db(orphan, is_delete=False)
+        results.append(_ok("orphan vectors injected (no Mongo entity)", wv.count(base, "server_id", oid) >= 1, oid))
+
+        # 3. Run one real sweep pass in-process (the same logic the live hourly loop runs).
+        sweeper = VectorOrphanSweeper(
+            mcp_server_repo=container.mcp_server_repo,
+            a2a_agent_repo=container.a2a_agent_repo,
+            embedding_maintenance_watcher=container.embedding_maintenance_watcher,
+        )
+        interval = await sweeper._run_pass()
+        results.append(_ok("sweep pass ran at the hourly interval", interval == timedelta(hours=1), str(interval)))
+        results.append(_ok("orphan vectors deleted by the sweep", wv.count(base, "server_id", oid) == 0))
+        results.append(
+            _ok("control server's vectors survive the sweep", wv.count(base, "server_id", rid) == real_before)
+        )
+    finally:
+        # Best-effort cleanup if the sweep did not remove it (e.g. an assertion failed earlier).
+        if wv.count(base, "server_id", oid) > 0:
+            await mcp_repo.delete_by_server_id(oid, "orphan-verify-cleanup")
+    return all(results)
 
 
 async def run() -> int:
-    target, clean_mode, batch_size = parse_args()
+    parser = argparse.ArgumentParser(description="Vector DB sync + verification.")
+    parser.add_argument("--target", choices=["mcp", "a2a", "all"], help="entities to sync (required unless --verify)")
+    parser.add_argument("--verify", choices=["durable", "crud", "orphan"], help="run verification instead of sync")
+    parser.add_argument("--weaviate-url", default=_default_weaviate_url())
+    parser.add_argument("--weaviate-api-key", default=os.getenv("WEAVIATE_API_KEY", ""))
+    parser.add_argument("--timeout", type=int, default=180, help="durable: seconds to wait for a heal")
+    parser.add_argument("--check-grace", action="store_true", help="durable: also check grace + backoff")
+    args = parser.parse_args()
+    if not args.verify and not args.target:
+        parser.error("one of --target or --verify is required")
 
     env_path = Path(".env")
-    if env_path.exists():
-        settings = Settings(_env_file=str(env_path))
-    else:
-        print(f"No .env at {env_path.resolve()} — loading config from environment variables.")
-        settings = Settings()
+    settings = Settings(_env_file=str(env_path)) if env_path.exists() else Settings()
 
-    db_client = None
-    redis_client = None
-    container = None
-
+    db_client = redis_client = container = None
     try:
         await init_mongodb(settings.mongo_config)
-        print("✓ MongoDB connected")
+        db = ExtendedMCPServer.get_pymongo_collection().database
 
-        redis_client = create_redis_client(settings.redis_config)
-        print("✓ Redis connected")
+        # durable is a pure Mongo+Weaviate probe of the running registry. sync and crud write here, so
+        # they need the container (which wires the write gate) with the gate open.
+        if args.verify != "durable":
+            redis_client = create_redis_client(settings.redis_config)
+            config = await resolve_vector_backend_config(settings)
+            await asyncio.to_thread(VectorStoreFactory._create_embedding(config).embed_query, "preflight")
+            db_client = create_database_client(config)
+            container = RegistryContainer(settings=settings, db_client=db_client, redis_client=redis_client)
+            if not await _open_write_gate(container):
+                print("✗ Aborting: an embedding-model reindex is in progress.")
+                return 1
 
-        db_client = create_database_client(settings.vector_backend_config)
-        print(f"✓ Vector DB connected  (store={settings.vector_store_type}, provider={settings.embedding_provider})\n")
-
-        container = RegistryContainer(
-            settings=settings,
-            db_client=db_client,
-            redis_client=redis_client,
-        )
-
-        sync_mcp = target in {"mcp", "all"}
-        sync_a2a = target in {"a2a", "all"}
-
-        print(f"Target:     {target}")
-        print(f"Mode:       {'CLEAN + SYNC' if clean_mode else 'SYNC (full rebuild per entity)'}")
-        print(f"Batch size: {batch_size}\n")
-
-        if clean_mode:
-            if sync_mcp:
-                await clean_collection(
-                    container.mcp_server_repo,
-                    ExtendedMCPServer.COLLECTION_NAME,
-                    "MCP Servers",
-                )
-            if sync_a2a:
-                await clean_collection(
-                    container.a2a_agent_repo,
-                    A2AAgent.COLLECTION_NAME,
-                    "A2A Agents",
-                )
-
-        all_failed = 0
-
-        if sync_mcp:
-            mcp_stats = await sync_all_servers(
-                server_service=container.server_service,
-                mcp_server_repo=container.mcp_server_repo,
-                batch_size=batch_size,
+        if args.verify == "durable":
+            passed = await _verify_durable(
+                db, args.weaviate_url, args.weaviate_api_key, check_grace=args.check_grace, timeout=args.timeout
             )
-            mcp_stats.print_summary()
-            all_failed += mcp_stats.failed
+        elif args.verify == "crud":
+            passed = await _verify_crud(container, db_client, args.weaviate_url, args.weaviate_api_key)
+        elif args.verify == "orphan":
+            passed = await _verify_orphan(db, container, db_client, args.weaviate_url, args.weaviate_api_key)
+        else:
+            targets = ["mcp", "a2a"] if args.target == "all" else [args.target]
+            return await _sync(container, targets)
 
-        if sync_a2a:
-            a2a_stats = await sync_all_agents(
-                a2a_agent_service=container.a2a_agent_service,
-                a2a_agent_repo=container.a2a_agent_repo,
-                batch_size=batch_size,
-            )
-            a2a_stats.print_summary()
-            all_failed += a2a_stats.failed
-
-        return 1 if all_failed > 0 else 0
-
-    except Exception as e:
-        print(f"\n✗ Fatal Error: {e}")
-        traceback.print_exc()
-        return 1
-
+        print(f"\n{'✓ PASS' if passed else '✗ FAIL'}")
+        return 0 if passed else 1
     finally:
         if container is not None:
-            try:
-                await container.shutdown()
-            except Exception:
-                traceback.print_exc()
+            await container.shutdown()
         if redis_client is not None:
-            try:
-                close_redis_client(redis_client)
-            except Exception:
-                traceback.print_exc()
+            close_redis_client(redis_client)
         if db_client is not None:
-            try:
-                db_client.close()
-            except Exception:
-                traceback.print_exc()
-        try:
-            await close_mongodb()
-        except Exception:
-            traceback.print_exc()
-        print("Connections closed.")
-
-
-def cli() -> None:
-    sys.exit(asyncio.run(run()))
+            db_client.close()
+        await close_mongodb()
 
 
 if __name__ == "__main__":
-    cli()
+    sys.exit(asyncio.run(run()))

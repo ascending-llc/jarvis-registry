@@ -116,6 +116,9 @@ nav:
     - Workflow Orchestration: features/workflow-orchestration.md
     - Registry Endpoint: features/registry-endpoint.md
     - Observability: features/observability.md
+  - Walkthroughs:
+    - Test MCP Access with Two Users: walkthroughs/mcp-access-control.md
+    - Private Skill Import, Updates & Access Removal: walkthroughs/private-skill-lifecycle.md
   - Architecture & Design:
     - Security Control Design: design/security-design.md
     - RBAC & Scopes: design/scopes.md

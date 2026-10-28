@@ -14,7 +14,6 @@ from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClie
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import (
     AwsAgentCoreProviderConfig,
-    AzureAiFoundryProviderConfig,
     Federation,
 )
 
@@ -152,8 +151,8 @@ class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
         *,
         author_id: PydanticObjectId,
     ) -> dict[str, list[Any]]:
-        provider_config = AzureAiFoundryProviderConfig(**dict(federation.providerConfig or {}))
-        auth = await self._azure_client_cache.get_auth_service(federation.id)
+        provider_config = await self._azure_client_cache.force_rebuild(federation.id)
+        auth = await self._azure_client_cache.get_auth_service(federation.id, expected_config=provider_config)
         agents, skipped_runtimes = await self.discovery_client.discover_a2a_agents(
             provider_config=provider_config,
             auth=auth,

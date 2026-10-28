@@ -137,16 +137,15 @@ def _wire(
     # Catch-up delete diff: projection over current Mongo ids. Default: same set the sweep saw.
     srv_ids = mongo_server_ids if mongo_server_ids is not None else [str(s.id) for s in servers]
     agt_ids = mongo_agent_ids if mongo_agent_ids is not None else [str(a.id) for a in agents]
-    monkeypatch.setattr(
-        exec_module.ExtendedMCPServer,
-        "get_pymongo_collection",
-        lambda: SimpleNamespace(find=lambda *a, **k: _AsyncIter([{"_id": i} for i in srv_ids])),
-    )
-    monkeypatch.setattr(
-        exec_module.A2AAgent,
-        "get_pymongo_collection",
-        lambda: SimpleNamespace(find=lambda *a, **k: _AsyncIter([{"_id": i} for i in agt_ids])),
-    )
+
+    def _ids_collection(ids):
+        # delete_orphan_vectors pins the read to primary via .with_options(...); return the collection.
+        coll = SimpleNamespace(find=lambda *a, **k: _AsyncIter([{"_id": i} for i in ids]))
+        coll.with_options = lambda **k: coll
+        return coll
+
+    monkeypatch.setattr(exec_module.ExtendedMCPServer, "get_pymongo_collection", lambda: _ids_collection(srv_ids))
+    monkeypatch.setattr(exec_module.A2AAgent, "get_pymongo_collection", lambda: _ids_collection(agt_ids))
     monkeypatch.setattr(exec_module, "_drop_collection", MagicMock())
 
     commit = AsyncMock(return_value=(selection if commit_result == "__ok__" else commit_result))
@@ -154,9 +153,9 @@ def _wire(
 
     monkeypatch.setattr(exec_module.MongoDB, "get_client", lambda: SimpleNamespace(start_session=_FakeSession))
     # Every job write runs through the real LeasedRepository, whose update_one we mock here; default to
-    # "we own the lease" (modified_count 1). The per-batch lease check reads the job via find_one;
+    # "we own the lease" (matched_count 1). The per-batch lease check reads the job via find_one;
     # default to "still owned" (truthy doc).
-    transition = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    transition = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     lease_probe = AsyncMock(return_value={"_id": "held"})
     monkeypatch.setattr(
         exec_module.EmbeddingReindexJob,
@@ -289,7 +288,7 @@ async def test_commit_aborts_and_raises_when_lease_lost(monkeypatch):
     servers = [SimpleNamespace(id="s1")]
     mcp_sync = AsyncMock(return_value={"indexed_tools": 1, "failed_tools": 0, "error": None})
     w = _wire(monkeypatch, servers=servers, agents=[], mcp_sync=mcp_sync, a2a_sync=AsyncMock(), current_generation=None)
-    w.transition.return_value = SimpleNamespace(modified_count=0)  # no longer our lease
+    w.transition.return_value = SimpleNamespace(matched_count=0, modified_count=0)  # no longer our lease
 
     with pytest.raises(EmbeddingReindexLeaseLostError):
         await _service(w.db_client).run_claimed_job(_job(previous_generation=None), lease=_lease())
@@ -523,7 +522,7 @@ async def test_await_pre_gate_writers_fails_reindex_on_federation_drain_timeout(
     job = _job()
     job.startedAt = started
     fed = SimpleNamespace(has_active_jobs=AsyncMock(return_value=True))
-    transition = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+    transition = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     monkeypatch.setattr(
         exec_module.EmbeddingReindexJob,
         "get_pymongo_collection",
@@ -566,3 +565,19 @@ def test_drop_collection_propagates_real_failure():
     adapter = SimpleNamespace(collection_exists=lambda name: True, drop_collection=_boom)
     with pytest.raises(RuntimeError, match="weaviate refused"):
         exec_module._drop_collection(SimpleNamespace(write_adapter=adapter), "MCP_Servers_gen")
+
+
+async def test_delete_removed_delegates_to_shared_helper(monkeypatch):
+    """`_delete_removed` forwards the swept id sets to the shared helper in strict mode, so a failed
+    delete raises and the generation is not committed with a removed entity's vectors."""
+    delegate = AsyncMock(return_value=(0, 0))
+    monkeypatch.setattr(exec_module, "delete_orphan_vectors", delegate)
+
+    service = _service(SimpleNamespace(adapter=object(), write_adapter=object(), close=MagicMock()))
+    mcp_repo = MagicMock()
+    a2a_repo = MagicMock()
+    await service._delete_removed(mcp_repo, a2a_repo, {"s1", "s2"}, {"a1"})
+
+    delegate.assert_awaited_once_with(
+        mcp_repo, a2a_repo, vector_mcp_ids={"s1", "s2"}, vector_a2a_ids={"a1"}, strict=True
+    )

@@ -9,6 +9,7 @@ import json
 import logging
 import secrets
 import time
+import traceback
 from typing import Any, NamedTuple, cast
 from urllib.parse import urlencode, urlparse
 
@@ -43,6 +44,12 @@ from registry_pkgs.core.redirect_uri import (
     redirect_uri_matches,
 )
 from registry_pkgs.core.scopes import get_scope_description, map_groups_to_scopes
+from registry_pkgs.oauth.identity import (
+    IdentityConflictError,
+    IdentityService,
+    UntrustedEmailError,
+    VerifiedIdentity,
+)
 
 from ..core.config import settings
 from ..core.types import AllowedProvider, AuthProviderConfig, EntraConfig, OAuth2Config
@@ -51,12 +58,12 @@ from ..deps import (
     get_auth_provider,
     get_client_registration_service,
     get_consent_store,
+    get_identity_service,
     get_oauth2_config,
     get_oauth_state_store,
     get_pending_consent_store,
     get_signer,
     get_token_grant_service,
-    get_user_service,
 )
 from ..models.client_registration import ClientRegistrationRequest, ClientRegistrationResponse
 from ..models.device_flow import DeviceCodeResponse, DeviceTokenResponse
@@ -70,7 +77,6 @@ from ..services.oauth_client_policy import (
     resolve_client_metadata as _resolve_client_metadata,
 )
 from ..services.token_grant_service import TokenGrantService, validate_token_grant_request
-from ..services.user_service import UserService
 from .consent_templates import (
     render_consent_error_page,
     render_consent_page,
@@ -78,6 +84,7 @@ from .consent_templates import (
     render_device_code_confirm_page,
     render_device_code_entry_page,
     render_device_denied_page,
+    render_device_identity_error_page,
     render_device_link_error_page,
     render_device_scope_error_page,
     render_device_server_error_page,
@@ -94,6 +101,13 @@ router = APIRouter()
 JWT_TOKEN_CONFIG = settings.jwt_token_config
 
 _REDIRECT_ERROR_CONSENT_FLOW_TYPE = "redirect_error"
+IDENTITY_CONFLICT_MESSAGE = (
+    "We couldn't sign you in because this account conflicts with an existing account. "
+    "Please contact your administrator."
+)
+UNTRUSTED_EMAIL_MESSAGE = (
+    "We couldn't verify your email address with your organization. Please contact your administrator."
+)
 
 
 class NoScopesResolvedError(Exception):
@@ -109,6 +123,11 @@ class NoScopesResolvedError(Exception):
 class _RedirectValidationError(NamedTuple):
     error: str
     error_description: str
+
+
+def _traceback_frames(exc: BaseException) -> str:
+    """Return the stack frames of ``exc`` without its message, which may embed user data."""
+    return "".join(traceback.format_tb(exc.__traceback__)).rstrip()
 
 
 def _trusted_error_redirect_uris() -> frozenset[str]:
@@ -188,7 +207,7 @@ def _validate_known_client_for_redirect(
     if _is_registry_client(client_id):
         return None
 
-    client_metadata = store.get_client(client_id)
+    client_metadata = _resolve_client_metadata(client_id, store)
     if client_metadata is None:
         return _RedirectValidationError("invalid_client", "Unknown client_id")
 
@@ -329,7 +348,7 @@ def _finish_oauth2_callback(
         redirect_params["state"] = client_state
 
     redirect_url = f"{client_redirect_uri}?{urlencode(redirect_params)}"
-    logger.info("OAuth2 login successful, redirecting to %s...", redirect_url)
+    logger.info("OAuth2 login successful: client_id=%s", session_data["client_id"])
 
     response = RedirectResponse(url=redirect_url, status_code=302)
     response.delete_cookie(settings.oauth2_temp_session_cookie_name)
@@ -754,7 +773,21 @@ async def oauth2_login(
             params = {"error": "unsupported_response_type", "error_description": "only supports response_type=code"}
             return RedirectResponse(f"{error_url}?{urlencode(params)}", 302)
 
-        if redirect_uri is None or code_challenge is None or code_challenge_method is None:
+        missing_parameters = [
+            name
+            for name, value in (
+                ("redirect_uri", redirect_uri),
+                ("code_challenge", code_challenge),
+                ("code_challenge_method", code_challenge_method),
+            )
+            if value is None
+        ]
+        if missing_parameters:
+            logger.warning(
+                "OAuth authorization rejected: client_id=%s missing_parameters=%s",
+                client_id,
+                ", ".join(missing_parameters),
+            )
             params = {
                 "error": "invalid_request",
                 "error_description": "redirect_uri, code_challenge and code_challenge_method are all required",
@@ -763,6 +796,13 @@ async def oauth2_login(
 
         client_error = _validate_known_client_for_redirect(client_id, redirect_uri, store)
         if client_error is not None:
+            logger.warning(
+                "OAuth authorization rejected: client_id=%s error=%s reason=%s redirect_uri=%s",
+                client_id,
+                client_error.error,
+                client_error.error_description,
+                redirect_uri,
+            )
             if is_safe_unverified_redirect_target(redirect_uri, _trusted_error_redirect_uris()):
                 return _redirect_to_pending_consent(
                     {
@@ -780,6 +820,11 @@ async def oauth2_login(
             return oauth_error_response(client_error.error, client_error.error_description)
 
         if code_challenge_method != "S256":
+            logger.warning(
+                "OAuth authorization rejected: client_id=%s code_challenge_method=%s; must be S256",
+                client_id,
+                code_challenge_method,
+            )
             params = {
                 "error": "invalid_request",
                 "error_description": "code_challenge_method must be S256",
@@ -1040,7 +1085,7 @@ async def oauth2_callback(
     error: str | None = None,
     oauth2_temp_session: str | None = Cookie(None, alias=settings.oauth2_temp_session_cookie_name),
     oauth2_config: OAuth2Config = Depends(get_oauth2_config),
-    user_service: UserService = Depends(get_user_service),
+    identity_service: IdentityService = Depends(get_identity_service),
     signer: URLSafeTimedSerializer = Depends(get_signer),
     auth_provider: AuthProvider = Depends(get_auth_provider),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
@@ -1102,6 +1147,10 @@ async def oauth2_callback(
                 "name": user_info.get("name"),
                 "idp_id": user_info.get("id"),
                 "groups": user_info.get("groups", []),
+                "issuer": user_info["issuer"],
+                "subject": user_info["subject"],
+                "object_id": user_info.get("object_id"),
+                "email_trusted": user_info["email_trusted"],
             }
         except (
             InvalidSignatureError,
@@ -1113,30 +1162,36 @@ async def oauth2_callback(
         ):
             # Login-gate rejections must not fall through to the generic userInfo path.
             raise
-        except Exception:
-            logger.exception("Falling back to userInfo on token parsing error")
+        except Exception as exc:
+            if provider != "google":
+                raise
+            logger.warning("OAuth userInfo fallback provider=%s error_type=%s", provider, type(exc).__name__)
 
             user_info = await get_user_info(token_data["access_token"], provider_config)
 
+            subject = user_info.get("sub")
+            if not isinstance(subject, str) or not subject.strip():
+                raise ValueError("Google userInfo requires a non-empty sub")
+            email = user_info.get("email")
+            # Re-check the same login gate as GoogleProvider before accepting userinfo.
+            if user_info.get("email_verified") is not True or not isinstance(email, str) or not email.strip():
+                raise GoogleEmailNotVerifiedError("Google userInfo requires a verified email")
+            email = email.strip().lower()
             mapped_user = map_user_info(user_info, provider_config)
+            allowed_hd = provider_config.get("allowed_hd")
+            if allowed_hd and user_info.get("hd") != allowed_hd:
+                raise GoogleDomainNotAllowedError(
+                    f"Domain '{user_info.get('hd')}' is not the allowed domain '{allowed_hd}'"
+                )
 
-            if provider == "google":
-                # The generic userinfo path never enforces the login gate that
-                # GoogleProvider.get_user_info applies, so re-check it here on the raw
-                # userinfo JSON (email_verified / hd) before minting a session.
-                if user_info.get("email_verified") is not True:
-                    raise GoogleEmailNotVerifiedError(f"Email not verified for {mapped_user.get('email')}")
-                allowed_hd = provider_config.get("allowed_hd")
-                if allowed_hd and user_info.get("hd") != allowed_hd:
-                    raise GoogleDomainNotAllowedError(
-                        f"Domain '{user_info.get('hd')}' is not the allowed domain '{allowed_hd}'"
-                    )
-
-        # Resolve user_id from MongoDB and add to mapped_user
-        user_id = await user_service.resolve_user_id(mapped_user)
-        if user_id:
-            mapped_user["user_id"] = user_id
-            logger.debug(f"Added user_id {user_id} to mapped_user")
+            mapped_user.update(
+                issuer="https://accounts.google.com",
+                subject=subject,
+                object_id=None,
+                email=email,
+                username=email,
+                email_trusted=True,
+            )
 
         mapped_user["provider"] = provider
 
@@ -1191,12 +1246,37 @@ async def oauth2_callback(
             # Client did not request specific scopes, use default user scopes
             resolved_scopes = default_user_scopes
             logger.info(f"No scope requested, using default user scopes: {resolved_scopes}")
-            if not resolved_scopes and not is_device_flow:
+            if not resolved_scopes:
+                if is_device_flow:
+                    if isinstance(device_code, str):
+                        _finish_device_failure(
+                            device_code,
+                            "scope_denied",
+                            store,
+                            error_description="No permissions are currently assigned to this account",
+                        )
+                    response = HTMLResponse(render_device_scope_error_page(), status_code=400)
+                    response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+                    return response
                 logger.warning(
                     f"Login blocked: user {mapped_user['username']} resolved zero scopes "
                     f"(provider={provider}, groups={user_groups})"
                 )
                 raise NoScopesResolvedError
+
+        identity = VerifiedIdentity(
+            provider=provider,
+            issuer=mapped_user["issuer"],
+            subject=mapped_user["subject"],
+            object_id=mapped_user.get("object_id"),
+            email=mapped_user.get("email"),
+            email_trusted=mapped_user["email_trusted"],
+            display_name=mapped_user.get("name"),
+            preferred_username=mapped_user.get("username"),
+        )
+        user = await identity_service.resolve_or_provision(identity)
+        user_id = str(user.id)
+        mapped_user["user_id"] = user_id
 
         if is_device_flow:
             if not isinstance(device_code, str) or device_data is None:
@@ -1204,12 +1284,7 @@ async def oauth2_callback(
                 response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                 return response
             client_id = device_data["client_id"]
-            user_id = mapped_user.get("user_id")
-            if (
-                user_id
-                and not _is_registry_client(client_id)
-                and not consent_store.has_client_consent(user_id, client_id)
-            ):
+            if not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
                 return _redirect_to_pending_consent(
                     {
                         "flow_type": "device",
@@ -1228,8 +1303,7 @@ async def oauth2_callback(
             return response
 
         client_id = session_data["client_id"]
-        user_id = mapped_user.get("user_id")
-        if user_id and not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
+        if not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
             return _redirect_to_pending_consent(
                 {
                     "token_data": token_data,
@@ -1244,6 +1318,14 @@ async def oauth2_callback(
 
         return _finish_oauth2_callback(token_data, mapped_user, session_data, resolved_scopes, store)
 
+    except (IdentityConflictError, UntrustedEmailError) as exc:
+        message = IDENTITY_CONFLICT_MESSAGE if isinstance(exc, IdentityConflictError) else UNTRUSTED_EMAIL_MESSAGE
+        if is_device_flow and isinstance(device_code, str):
+            _finish_device_failure(device_code, "failed", store, error_description=message)
+            response = HTMLResponse(render_device_identity_error_page(message), status_code=400)
+            response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+            return response
+        return _redirect_to_login_error(message)
     except GoogleEmailNotVerifiedError:
         logger.warning(f"Google login rejected: email not verified (provider={provider})")
         return _redirect_to_login_error(
@@ -1257,8 +1339,13 @@ async def oauth2_callback(
             "You've signed in successfully, but no permissions are currently assigned to your "
             "account yet. Contact your administrator to be added to a group."
         )
-    except Exception:
-        logger.exception(f"Error in OAuth2 callback for {provider}")
+    except Exception as exc:
+        logger.error(
+            "OAuth callback failed provider=%s error_type=%s\n%s",
+            provider,
+            type(exc).__name__,
+            _traceback_frames(exc),
+        )
 
         if is_device_flow and isinstance(device_code, str):
             try:
@@ -1268,8 +1355,13 @@ async def oauth2_callback(
                     store,
                     error_description="Unexpected error during sign-in",
                 )
-            except Exception:
-                logger.exception("Failed to mark device_code as failed after callback error")
+            except Exception as failure:
+                logger.error(
+                    "Device failure update failed provider=%s error_type=%s\n%s",
+                    provider,
+                    type(failure).__name__,
+                    _traceback_frames(failure),
+                )
             response = HTMLResponse(render_device_server_error_page(), status_code=500)
             response.delete_cookie(settings.oauth2_temp_session_cookie_name)
             return response

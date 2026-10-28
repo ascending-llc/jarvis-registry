@@ -32,12 +32,17 @@ from .oauth_client_policy import (
     is_registry_client,
     resolve_authorized_client_metadata,
 )
-from .user_service import UserService
 
 logger = logging.getLogger(__name__)
 
 ACCESS_USE = "access"
 BEARER_TYPE = "Bearer"
+SIGN_IN_AGAIN = "Please sign in again."
+
+
+def _stored_user_id(user_info: dict[str, Any]) -> str | None:
+    user_id = user_info.get("user_id")
+    return user_id if isinstance(user_id, str) and user_id.strip() else None
 
 
 def _oauth_error(error: str, description: str, status_code: int = 400) -> JSONResponse:
@@ -104,11 +109,9 @@ class TokenGrantService:
 
     def __init__(
         self,
-        user_service: UserService,
         store: OAuthStateStoreProtocol,
         consent_store: ConsentStore,
     ) -> None:
-        self._user_service = user_service
         self._store = store
         self._consent_store = consent_store
         self._token_config = settings.jwt_token_config
@@ -135,8 +138,18 @@ class TokenGrantService:
             self._token_config,
         )
         if not authorization.credentials_valid:
+            logger.warning(
+                "OAuth token request rejected: client_id=%s grant_type=%s error=invalid_client",
+                client_id,
+                grant_type,
+            )
             return _oauth_error("invalid_client", "invalid client credentials")
         if not authorization.grant_authorized:
+            logger.warning(
+                "OAuth token request rejected: client_id=%s grant_type=%s error=unauthorized_client",
+                client_id,
+                grant_type,
+            )
             return _oauth_error("unauthorized_client", f"client is not authorized for {grant_type}")
         return None
 
@@ -145,7 +158,7 @@ class TokenGrantService:
         *,
         client_id: str,
         user_info: dict[str, Any],
-        user_id: str | None,
+        user_id: str,
         requested_scopes: str | list[str],
         issued_at: int,
         refresh_token: str,
@@ -153,6 +166,8 @@ class TokenGrantService:
     ) -> DeviceTokenResponse:
         extra_claims = {
             "user_id": user_id,
+            "preferred_username": user_info["username"],
+            "email": user_info.get("email"),
             "groups": user_info.get("groups", []),
             "token_use": ACCESS_USE,
             "auth_provider": user_info.get("provider", settings.auth_provider),
@@ -162,7 +177,7 @@ class TokenGrantService:
 
         minted = mint_managed_agent_token_with_scope(
             self._token_config,
-            subject=user_info["username"],
+            subject=user_id,
             client_id=client_id,
             requested_scopes=requested_scopes,
             expires_in_seconds=settings.oauth_access_token_expiry_seconds,
@@ -183,12 +198,14 @@ class TokenGrantService:
     ) -> DeviceTokenResponse | JSONResponse:
         auth_code_data = self._store.get_authcode(request.code)
         if not auth_code_data:
+            logger.warning(
+                "OAuth token request rejected: client_id=%s reason=authorization code not found or expired",
+                request.client_id,
+            )
             return _oauth_error("invalid_grant", "authorization code not found or expired")
 
-        user_id = await self._user_service.resolve_user_id(auth_code_data["user_info"])
-        logger.info("user_id: %s", user_id)
-
         if auth_code_data["client_id"] != request.client_id:
+            logger.warning("OAuth token request rejected: client_id=%s reason=client_id mismatch", request.client_id)
             return _oauth_error("invalid_client", "client_id mismatch")
 
         client_error = self._validate_client(
@@ -199,6 +216,7 @@ class TokenGrantService:
         if client_error is not None:
             return client_error
         if auth_code_data["redirect_uri"] != request.redirect_uri:
+            logger.warning("OAuth token request rejected: client_id=%s reason=redirect_uri mismatch", request.client_id)
             return _oauth_error("invalid_grant", "redirect_uri mismatch")
 
         issued_at = int(time.time())
@@ -208,10 +226,22 @@ class TokenGrantService:
         code_challenge = auth_code_data.get("code_challenge")
         if code_challenge:
             if not request.code_verifier:
+                logger.warning(
+                    "OAuth token request rejected: client_id=%s reason=code_verifier required for PKCE",
+                    request.client_id,
+                )
                 return _oauth_error("invalid_request", "code_verifier required for PKCE")
             if auth_code_data.get("code_challenge_method", "S256") != "S256":
+                logger.warning(
+                    "OAuth token request rejected: client_id=%s reason=code_challenge_method must be S256",
+                    request.client_id,
+                )
                 return _oauth_error("invalid_request", "code_challenge_method must be S256")
             if create_s256_code_challenge(request.code_verifier) != code_challenge:
+                logger.warning(
+                    "OAuth token request rejected: client_id=%s reason=code_verifier validation failed",
+                    request.client_id,
+                )
                 return _oauth_error("invalid_grant", "code_verifier validation failed")
 
         auth_code_data = self._store.consume_authcode(request.code)
@@ -219,6 +249,9 @@ class TokenGrantService:
             return _oauth_error("invalid_grant", "authorization code already used")
 
         user_info = auth_code_data["user_info"]
+        user_id = _stored_user_id(user_info)
+        if user_id is None:
+            return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
         resolved_scopes = auth_code_data.get("resolved_scope")
         if resolved_scopes is None:
             logger.info("No resolved_scope in auth code, computing from groups (backward compatibility)")
@@ -283,7 +316,9 @@ class TokenGrantService:
         if not isinstance(user_info, dict) or resolved_scopes is None:
             return _oauth_error("server_error", "approved device code is missing user context", 500)
 
-        user_id = await self._user_service.resolve_user_id(user_info)
+        user_id = _stored_user_id(user_info)
+        if user_id is None:
+            return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
         refresh_token = secrets.token_urlsafe(32)
         response = self._mint_response(
             client_id=request.client_id,
@@ -309,11 +344,6 @@ class TokenGrantService:
         if not refresh_data:
             return _oauth_error("invalid_grant", "refresh token invalid or expired")
 
-        user_info = refresh_data["user_info"]
-        stored_user_id = user_info.get("user_id")
-        user_id = str(stored_user_id) if stored_user_id else await self._user_service.resolve_user_id(user_info)
-        logger.info("user_id: %s", user_id)
-
         if refresh_data.get("client_id") != request.client_id:
             return _oauth_error("invalid_client", "client_id mismatch")
 
@@ -321,10 +351,12 @@ class TokenGrantService:
         if client_error is not None:
             return client_error
 
-        if (
-            user_id
-            and not is_registry_client(request.client_id)
-            and not self._consent_store.has_client_consent(user_id, request.client_id)
+        user_info = refresh_data["user_info"]
+        user_id = _stored_user_id(user_info)
+        if user_id is None:
+            return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
+        if not is_registry_client(request.client_id) and not self._consent_store.has_client_consent(
+            user_id, request.client_id
         ):
             return _oauth_error("invalid_grant", "User consent is required. Restart the authorization flow.")
 
@@ -348,5 +380,5 @@ class TokenGrantService:
         if rotated is None:
             return _oauth_error("invalid_grant", "refresh token already used")
 
-        logger.info("Rotated refresh token for user: %s", user_info["username"])
+        logger.info("Rotated refresh token for user_id=%s", user_id)
         return response

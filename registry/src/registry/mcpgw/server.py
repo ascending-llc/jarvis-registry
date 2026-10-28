@@ -5,13 +5,11 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from httpx import AsyncClient, Limits, Timeout
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic_settings.exceptions import IncompleteFieldDefinitionWarning
 
 from ..core.config import settings
-from .core.event_store import InMemoryEventStore
 from .core.types import McpAppContext
 from .tools import agent, search, server
 
@@ -36,21 +34,21 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
         Configured FastMCP application instance
     """
 
+    # Stateless FastMCP enters the lifespan on every request, so it must not open or close per-request
+    # resources: the proxy client lives on the container, and the assembled context is cached here and
+    # yielded unchanged on every entry.
+    cached_context: McpAppContext | None = None
+
     @asynccontextmanager
     async def mcp_lifespan(server: FastMCP) -> AsyncIterator[McpAppContext]:
-        """Manage MCP application lifecycle with type-safe context."""
-
-        container = container_provider()
-        if container is None:
-            raise RuntimeError("Registry container is not initialized")
-
-        async with AsyncClient(
-            timeout=Timeout(30.0, read=60.0),
-            follow_redirects=True,
-            limits=Limits(max_connections=100, max_keepalive_connections=20),
-        ) as proxy_client:
-            yield McpAppContext(
-                proxy_client=proxy_client,
+        """Assemble the MCP app context once from container references and yield it on every entry."""
+        nonlocal cached_context
+        if cached_context is None:
+            container = container_provider()
+            if container is None:
+                raise RuntimeError("Registry container is not initialized")
+            cached_context = McpAppContext(
+                proxy_client=container.mcpgw_proxy_client,
                 a2a_client_registry=container.a2a_client_registry,
                 server_service=container.server_service,
                 mcp_server_repo=container.mcp_server_repo,
@@ -58,13 +56,14 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 search_service=container.search_service,
                 mcp_client_service=container.mcp_client_service,
                 oauth_service=container.oauth_service,
-                session_store=container.session_store,
+                client_info_store=container.client_info_store,
                 redis_client=container.redis_client,
                 jwt_signing_config=settings.jwt_signing_config,
                 acl_service=container.acl_service,
                 consent_store=container.consent_store,
                 pending_consent_store=container.pending_consent_store,
             )
+        yield cached_context
 
     # Configure transport security settings from environment variables
     transport_security_settings = TransportSecuritySettings(
@@ -88,7 +87,10 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
         mcp = FastMCP(
             "JarvisRegistry",
             lifespan=mcp_lifespan,
-            event_store=InMemoryEventStore(max_events_per_stream=50, max_streams=500),
+            # Stateless so any pod can serve any request (no process-local session affinity). Leave
+            # json_response at its False default: downstream progress/log/list-changed notifications are
+            # forwarded on the POST's own SSE stream via related_request_id, which the JSON path drops.
+            stateless_http=True,
             instructions=_SYSTEM_INSTRUCTIONS,
             transport_security=transport_security_settings,
         )

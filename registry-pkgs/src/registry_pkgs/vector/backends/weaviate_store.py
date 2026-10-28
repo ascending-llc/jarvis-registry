@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 import weaviate.classes.config as wvc
@@ -328,6 +329,26 @@ class WeaviateStore(VectorStoreAdapter):
             return client.collections.get(collection_name)
         raise Exception(f"Failed to get collection: {collection_name}")
 
+    def iter_property_values(self, property_name: str, collection_name: str | None = None) -> Iterator[str]:
+        """Yield each object's ``property_name`` value using the cursor iterator (skips None).
+
+        ``collection.iterator`` is cursor-based in weaviate-client 4.x, so it is not bounded by the
+        ``QUERY_MAXIMUM_RESULTS`` offset cap that offset pagination hits on large collections.
+
+        Collections are created lazily on first write, so a missing collection yields nothing (an
+        MCP-only install has no A2A collection). The existence check calls the client directly rather
+        than ``collection_exists``, which swallows backend errors; those propagate instead.
+        """
+        collection_name = collection_name or self._default_collection
+        client = self._get_client()
+        if not client.collections.exists(collection_name):
+            return
+        collection = client.collections.get(collection_name)
+        for obj in collection.iterator(include_vector=False, return_properties=[property_name]):
+            value = obj.properties.get(property_name)
+            if value is not None:
+                yield value
+
     def get_by_id(self, doc_id: str, collection_name: str | None = None) -> Document | None:
         """
         Get document by ID using Weaviate client.
@@ -449,9 +470,15 @@ class WeaviateStore(VectorStoreAdapter):
             return False
 
     def filter_by_metadata(
-        self, filters: Any, limit: int = 100, collection_name: str | None = None, **kwargs
+        self,
+        filters: Any,
+        limit: int = 100,
+        collection_name: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        **kwargs,
     ) -> list[Document]:
-        """Implement Weaviate metadata filtering (filters already normalized)."""
+        """Filter metadata, optionally propagating query errors for consistency checks."""
         collection = self.get_collection(collection_name)
         normalized_filters = self.normalize_filters(filters)
         try:
@@ -460,6 +487,8 @@ class WeaviateStore(VectorStoreAdapter):
             return docs
         except Exception as e:
             logger.error(f"Filter by metadata failed: {e}")
+            if raise_on_error:
+                raise
             return []
 
     def bm25_search(

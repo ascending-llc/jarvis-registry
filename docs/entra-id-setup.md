@@ -63,55 +63,55 @@ Add the following environment variables to your Jarvis Registry deployment:
 # Microsoft Entra ID Configuration
 ENTRA_CLIENT_ID=your-application-client-id
 ENTRA_CLIENT_SECRET=your-client-secret-value
-ENTRA_TENANT_ID=your-tenant-id-or-common
+ENTRA_TENANT_ID=your-tenant-id
 ```
 
-### Optional Configuration Variables
+### Required identity claims and shared application
+
+Chat and Registry must use the **same Entra app registration (`client_id`) within each environment**.
+Entra's `sub` is pairwise per application. Both products store it in `users.openidId`, so different
+client IDs would produce different subjects for the same person. Register both applications' callback
+URLs on that app registration.
+
+Before deployment, configure **Token configuration → Add optional claim → ID → `xms_edov`** on the
+shared app registration. Ensure the ID token also contains the `email` claim (request the `email`
+scope and configure the optional email claim as needed). Inspect claims locally without pasting or
+logging the token. `xms_edov` must be the boolean `true`, not a string.
+
+The auth server always verifies the ID token and requires `iss`, `sub` and `oid`. It reads the standard
+`email` claim, never substitutes a UPN, and trusts that email for linking or provisioning only when
+`xms_edov` is true. Without a trusted email, an existing stable-identity match can still sign in;
+a first-time user without such a match is refused. Group membership must also grant a nonempty scope
+before any user record is created.
+
+Access tokens are used for Microsoft Graph group membership checks, not as identity tokens. A missing
+or invalid ID token fails login; there is no Graph identity fallback.
+
+See [Microsoft's optional claims reference](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference)
+and [identity conflict resolution](runbooks/identity-conflict-resolution.md).
+
+### Optional display configuration
 
 ```bash
-# Token Configuration
-# Determines which token to use for extracting user information
-# - 'id': Extract user info from ID token (default, recommended)
-# - 'access': Extract user info from access token
-# If token extraction fails, the system will automatically fallback to Graph API
-ENTRA_TOKEN_KIND=id
-
 ENTRA_GRAPH_URL=https://graph.microsoft.com
-
-# Custom Claim Mappings (defaults are shown)
 ENTRA_USERNAME_CLAIM=preferred_username
-ENTRA_GROUPS_CLAIM=groups
-ENTRA_EMAIL_CLAIM=upn
 ENTRA_NAME_CLAIM=name
 ```
 
-### Token Kind Configuration
+The username is display information and is never used to match database users. Configure the four
+scope-group Object IDs described in the [scope-group runbook](runbooks/entra-scope-groups.md); changing
+display claim mappings does not change authorization group bindings.
 
+### Deployment order
 
-The `ENTRA_TOKEN_KIND` variable determines how user information is extracted:
+Configure the required optional claims and verify the shared client ID before deployment. Deploy the
+auth-server and Registry changes together. Remove the legacy email-source and token-selection
+settings from environment configuration at deployment time, not while the old code is still serving
+logins. Redis login or refresh records without `user_id` are rejected with `invalid_grant` and require
+a fresh login; do not clear all Redis state.
 
-**Screenshot:**
-![Azure Token Kind](img/entra-token-kind.png)
-
-- **`id` (default, recommended)**: Extracts user info from ID token
-  - Fast: Local JWT decoding, no network calls
-  - Standard: OpenID Connect standard approach
-  - Contains standard user claims: username, email, name, groups
-
-- **`access`**: Extracts user info from access token
-  - Used when ID token is not available
-  - May not contain all user claims
-
-- **Automatic fallback**: If token extraction fails, the system automatically falls back to Microsoft Graph API
-
-**Example Configuration:**
-```bash
-# Use ID token for user info (recommended - fast, standard OIDC)
-ENTRA_TOKEN_KIND=id
-
-# Use access token for user info (alternative)
-ENTRA_TOKEN_KIND=access
-```
+Existing OpenID users without an issuer are matched and repaired during login. The manual DEMO/PROD
+cleanup scripts are not a prerequisite for customer deployments. Shared user indexes are unchanged.
 
 ## Step 5: Test the Setup
 
@@ -136,7 +136,7 @@ To retrieve user group memberships from Azure AD, ensure the following permissio
    - Or `Directory.Read.All` - Read directory data (includes groups)
 3. Click **Grant admin consent** (requires admin privileges)
 
-**Note**: Without these permissions, the `groups` field in user info will be empty, but authentication will still work.
+**Note**: A failed group lookup produces empty scope groups. Both browser and device logins are refused when no scopes resolve, and no user is provisioned.
 
 ### Custom Scopes
 Modify the `scopes` configuration in `oauth2_providers.yml` to include additional Microsoft Graph permissions as needed.
@@ -162,10 +162,11 @@ Modify the `scopes` configuration in `oauth2_providers.yml` to include additiona
    - Ensure app registration is in the correct cloud environment
    - Verify OAuth endpoints match your cloud environment
 
-5. **Token Kind Configuration**
-   - If using `ENTRA_TOKEN_KIND=id` but ID token is not available, system will fallback to access token
-   - If using `ENTRA_TOKEN_KIND=access`, ensure access token contains user claims
-   - Check logs to see which token extraction method was used
+5. **Untrusted email or identity conflict**
+   - Confirm the ID token contains `email` and boolean `xms_edov: true` for first-time sign-ins.
+   - Confirm Chat and Registry use the same Entra client ID.
+   - Use the [identity conflict runbook](runbooks/identity-conflict-resolution.md) to diagnose refusals.
+   - Do not replace stored subject or issuer fields to force an account match.
 
 ### Logs and Debugging
 

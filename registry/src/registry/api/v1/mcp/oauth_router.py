@@ -9,7 +9,6 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from bson import ObjectId
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from mcp.server.session import ServerSession
 from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
@@ -28,6 +27,7 @@ from registry_pkgs.core.redirect_uri import (
     redirect_uri_matches,
     validate_registration_redirect_uri,
 )
+from registry_pkgs.oauth.errors import OAuthCoordinationError
 from registry_pkgs.oauth.flow_state_manager import FlowStateManager
 from registry_pkgs.oauth.schemas import (
     MCPClientContext,
@@ -39,20 +39,16 @@ from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.types import ClientBranding
 
 from ....auth.dependencies import CurrentUser
-from ....auth.oauth.reconnection import OAuthReconnectionManager
 from ....constants import DownstreamOAuthConstants
 from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
-from ....core.session_store import SessionStore
 from ....deps import (
     get_consent_store,
     get_mcp_service,
     get_oauth_state_store,
     get_pending_consent_store,
-    get_reconnection_manager,
     get_redis_client,
     get_server_service,
-    get_session_store,
     get_token_service,
 )
 from ....schemas.common_api_schemas import (
@@ -61,7 +57,6 @@ from ....schemas.common_api_schemas import (
     OAuthOperationResponse,
     OAuthTokensResponse,
 )
-from ....schemas.enums import ConnectionState
 from ....services.oauth.downstream_device_service import (
     DeviceAuthorizationError,
     create_device_authorization,
@@ -157,7 +152,7 @@ async def discover_oauth_metadata(
         logger.error(f"[OAuth Discovery] Failed to discover OAuth metadata: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to discover OAuth metadata: {str(e)}",
+            detail="Internal server error",
         )
 
 
@@ -202,75 +197,24 @@ async def initiate_oauth_flow(
         raise
     except Exception as e:
         logger.error(f"Failed to initialize OAuth flow: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to initialize OAuth flow: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
-async def _reconnect_after_oauth(
-    mcp_service: MCPService,
-    reconnection_manager: OAuthReconnectionManager,
-    flow: OAuthFlow | None,
-    server_path: str,
-) -> None:
-    """Best-effort: mark the user's connection CONNECTED and clear reconnection attempts.
+def _client_branding_from_meta(meta: dict[str, Any] | None) -> ClientBranding | None:
+    """Return the client branding carried in a flow's ``meta`` bag, used to deep-link the user back to
+    their AI app after an out-of-band OAuth/consent step.
 
-    Failures here never block the callback redirect — the tokens are already saved.
-    """
-    if not (flow and flow.user_id):
-        return
-    user_id, server_id = flow.user_id, flow.server_id
-    try:
-        await mcp_service.connection_service.create_user_connection(
-            user_id=user_id,
-            server_id=server_id,
-            initial_state=ConnectionState.CONNECTED,
-            details={"oauth_completed": True, "flow_id": flow.flow_id, "created_at": time.time()},
-        )
-        logger.info(f"[MCP OAuth] Reconnected {server_path} (server_id: {server_id}) for user {user_id}")
-        try:
-            reconnection_manager.clear_reconnection(user_id, server_id)
-        except Exception as e:
-            logger.error(f"[MCP OAuth] Could not clear reconnection (manager not initialized): {e}")
-    except Exception as e:
-        logger.error(f"[MCP OAuth] Failed to reconnect {server_path} after OAuth, but tokens are saved: {e}")
+    ``meta`` is the ``{elicitation_id, client_branding, ...}`` bag carried by whichever flow raised the
+    URL mode elicitation (OAuth-expired flow state's ``meta``, or the server-consent flow's
+    pending-consent payload). Returns None when ``meta`` is falsy or lacks ``elicitation_id``.
 
-
-async def _notify_elicitation_complete(
-    meta: dict[str, Any] | None,
-    session_store: SessionStore,
-) -> ClientBranding | None:
-    """Best-effort ``elicitation/complete`` notification for mcpgw-initiated flows.
-
-    ``meta`` is the ``{elicitation_id, client_branding, notify_elicitation_complete}`` bag carried
-    by whichever flow raised the URL mode elicitation (OAuth-expired flow state's ``meta``, or the
-    server-consent flow's pending-consent payload) — shared so both callers get identical
-    notify/deep-link behavior instead of duplicating it.
-
-    Returns the client branding carried in ``meta`` (used to deep-link the user back to their AI
-    app), or None. Never raises.
+    The stateless gateway holds no live session, so no ``elicitation/complete`` notification is sent;
+    the client retries the tool call by hand after authorizing. A pre-deploy ``meta`` that still carries
+    the dropped notification-flag key is accepted and ignored.
     """
     if not meta or "elicitation_id" not in meta:
         return None
-
-    client_branding: ClientBranding | None = meta.get("client_branding")
-    try:
-        elicitation_id = meta["elicitation_id"]
-        if not meta["notify_elicitation_complete"]:
-            # Client connected via the dynamic catch-all route; no live session to notify.
-            logger.info("MCP client connected via dynamic catch-all route. Not sending elicitation/complete.")
-            return client_branding
-
-        session: ServerSession | None = session_store.pop(elicitation_id)
-        if session is None:
-            logger.warning(f"could not find session object for elicitation_id {elicitation_id}")
-            return client_branding
-
-        await session.send_elicit_complete(elicitation_id)
-        logger.info(f"scheduled elicitation/complete notification for elicitation_id {elicitation_id}")
-    except Exception:
-        logger.exception("failed to send elicitation/complete notification to client.")
-    return client_branding
+    return meta.get("client_branding")
 
 
 def _build_downstream_client_redirect(
@@ -317,7 +261,7 @@ def _is_verified_pending_callback_flow(
     return isinstance(flow.state, str) and secrets.compare_digest(flow.state, state)
 
 
-def _relay_callback_error(
+async def _relay_callback_error(
     request: Request,
     server_path: str,
     page_error_msg: str,
@@ -329,16 +273,16 @@ def _relay_callback_error(
     callback_state: str,
 ) -> RedirectResponse:
     """Persist a verified Layer-A failure or atomically relay a verified Layer-B failure."""
-    flow = flow_manager.get_flow(flow_id)
+    flow = await flow_manager.get_flow(flow_id)
     if not _is_verified_pending_callback_flow(flow, callback_state, flow_manager):
         return _redirect_to_page(request, server_path, error_msg=page_error_msg)
 
     ctx = flow.metadata.mcp_client_context if flow.metadata else None
     if ctx is None:
-        flow_manager.fail_flow(flow_id, page_error_msg)
+        await flow_manager.fail_flow(flow_id, page_error_msg)
         return _redirect_to_page(request, server_path, error_msg=page_error_msg)
 
-    consumed_flow = flow_manager.consume_flow(flow_id, callback_state)
+    consumed_flow = await flow_manager.consume_flow(flow_id, callback_state)
     consumed_ctx = _get_verified_mcp_client_context(consumed_flow, callback_state, flow_manager)
     if consumed_ctx is None:
         return _redirect_to_page(request, server_path, error_msg=page_error_msg)
@@ -389,8 +333,6 @@ async def oauth_callback(
     state: str | None = Query(None, description="State parameter (format: flow_id##security_token)"),
     error: str | None = Query(None, description="OAuth error message"),
     mcp_service: MCPService = Depends(get_mcp_service),
-    reconnection_manager: OAuthReconnectionManager = Depends(get_reconnection_manager),
-    session_store: SessionStore = Depends(get_session_store),
     redis_client: Redis = Depends(get_redis_client),
     store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
 ) -> RedirectResponse:
@@ -422,7 +364,7 @@ async def oauth_callback(
 
         if error:
             logger.error(f"[MCP OAuth] OAuth error received from provider: {error}")
-            return _relay_callback_error(
+            return await _relay_callback_error(
                 request,
                 server_path,
                 error,
@@ -434,7 +376,7 @@ async def oauth_callback(
             )
         if not code or not isinstance(code, str):
             logger.error("[MCP OAuth] Missing or invalid authorization code")
-            return _relay_callback_error(
+            return await _relay_callback_error(
                 request,
                 server_path,
                 "missing_code",
@@ -445,7 +387,7 @@ async def oauth_callback(
                 callback_state=state,
             )
 
-        flow = flow_manager.get_flow(flow_id)
+        flow = await flow_manager.get_flow(flow_id)
         if flow and flow.status == OAuthFlowStatus.COMPLETED:
             logger.warning(f"[MCP OAuth] Flow already completed, preventing duplicate token exchange: {flow_id}")
             _mark_completed_device_flow_approved(flow, store)
@@ -456,7 +398,7 @@ async def oauth_callback(
         )
         if not success:
             logger.error(f"[MCP OAuth] Failed to complete OAuth flow: {error_msg}")
-            return _relay_callback_error(
+            return await _relay_callback_error(
                 request,
                 server_path,
                 error_msg or "unknown_error",
@@ -468,11 +410,10 @@ async def oauth_callback(
             )
         logger.info(f"[MCP OAuth] OAuth flow completed successfully for {server_path}")
 
-        flow = flow_manager.get_flow(flow_id)
+        flow = await flow_manager.get_flow(flow_id)
 
         # 5. Reconnect/notification are best effort; device-state finalization is required.
-        await _reconnect_after_oauth(mcp_service, reconnection_manager, flow, server_path)
-        client_branding = await _notify_elicitation_complete(state_dict.get("meta"), session_store)
+        client_branding = _client_branding_from_meta(state_dict.get("meta"))
 
         _mark_completed_device_flow_approved(flow, store)
 
@@ -525,7 +466,7 @@ async def get_oauth_tokens(
         raise
     except Exception as e:
         logger.error(f"Failed to get OAuth tokens: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get tokens: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 @router.get(
@@ -559,9 +500,7 @@ async def get_oauth_status(
         raise
     except Exception as e:
         logger.error(f"Failed to check OAuth flow status: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to check flow status: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 @router.post("/oauth/cancel/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
@@ -596,18 +535,6 @@ async def cancel_oauth_flow(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg or "Failed to cancel OAuth flow"
             )
 
-        # 2. Update user connection state to DISCONNECTED
-        try:
-            await mcp_service.connection_service.update_connection_state(
-                user_id=user_id,
-                server_id=server_id,
-                state=ConnectionState.DISCONNECTED,
-                details={"oauth_cancelled": True, "cancelled_at": time.time(), "reason": "User cancelled OAuth flow"},
-            )
-            logger.info(f"[OAuth Cancel] Updated connection state to DISCONNECTED for {server_id}")
-        except Exception as e:
-            logger.warning(f"[OAuth Cancel] Failed to update connection state: {e}")
-
         return OAuthOperationResponse(
             success=True,
             message=f"OAuth flow for {mcp_server.serverName} cancelled successfully",
@@ -620,9 +547,7 @@ async def cancel_oauth_flow(
         raise
     except Exception as e:
         logger.error(f"Failed to cancel OAuth flow: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to cancel flow: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 @router.post("/oauth/refresh/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
@@ -631,7 +556,6 @@ async def refresh_oauth_tokens(
     current_user: CurrentUser,
     mcp_service: MCPService = Depends(get_mcp_service),
     server_service: ServerServiceV1 = Depends(get_server_service),
-    reconnection_manager: OAuthReconnectionManager = Depends(get_reconnection_manager),
 ) -> OAuthOperationResponse:
     """
     Refresh OAuth tokens
@@ -658,38 +582,6 @@ async def refresh_oauth_tokens(
 
         logger.info(f"[OAuth Refresh] Successfully refreshed tokens for {server_id}")
 
-        # 2. Update user connection state to CONNECTED
-        try:
-            # Check if user connection exists, if not create it
-            connection = await mcp_service.connection_service.get_connection(user_id, server_id)
-            if connection:
-                # Update existing connection
-                await mcp_service.connection_service.update_connection_state(
-                    user_id=user_id,
-                    server_id=server_id,
-                    state=ConnectionState.CONNECTED,
-                    details={"oauth_refreshed": True, "refreshed_at": time.time()},
-                )
-                logger.info(f"[OAuth Refresh] Updated connection state to CONNECTED for {server_id}")
-            else:
-                # Create new connection if it doesn't exist
-                await mcp_service.connection_service.create_user_connection(
-                    user_id=user_id,
-                    server_id=server_id,
-                    initial_state=ConnectionState.CONNECTED,
-                    details={"oauth_refreshed": True, "created_at": time.time(), "refreshed_at": time.time()},
-                )
-                logger.info(f"[OAuth Refresh] Created new connection with CONNECTED state for {server_id}")
-        except Exception as e:
-            logger.warning(f"[OAuth Refresh] Failed to update connection state: {e}")
-
-        # 3. Clear any reconnection attempts
-        try:
-            reconnection_manager.clear_reconnection(user_id, server_id)
-            logger.debug(f"[OAuth Refresh] Cleared reconnection attempts for {server_id}")
-        except Exception as e:
-            logger.warning(f"[OAuth Refresh] Could not clear reconnection (manager not initialized): {e}")
-
         return OAuthOperationResponse(
             success=True,
             message=f"Tokens refreshed successfully for {mcp_server.serverName}",
@@ -700,11 +592,13 @@ async def refresh_oauth_tokens(
     except HTTPException:
         # Re-raise HTTP exceptions with their original status code
         raise
+    except OAuthCoordinationError as e:
+        # Transient (refresh in progress, Redis unavailable, write conflict): the client should retry.
+        logger.warning(f"[OAuth Refresh] Coordination failure for {server_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Failed to refresh OAuth tokens: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to refresh tokens: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 @router.delete("/oauth/token/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
@@ -724,9 +618,6 @@ async def delete_oauth_tokens(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
     user_id = str(current_user.get("user_id"))
     try:
-        disconnected = await mcp_service.connection_service.disconnect_user_connection(user_id, server_id)
-        if disconnected:
-            logger.info(f"[Delete OAuth Tokens] Disconnected {server_id} for user {user_id}")
         results = await token_service.delete_oauth_tokens(user_id, server.serverName)
         logger.info(f"[Delete OAuth Tokens] Deleted OAuth tokens for {server_id}, results: {results}")
         message = "successfully" if results else "failed"
@@ -738,9 +629,7 @@ async def delete_oauth_tokens(
         )
     except HTTPException as e:
         logger.error(f"Failed to delete OAuth tokens: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete tokens: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 def _append_query_params(url: str, **params: str) -> str:

@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum, auto
@@ -6,16 +8,20 @@ from typing import Any
 
 from beanie import PydanticObjectId
 from pydantic import ValidationError
+from pymongo import ReturnDocument
 from pymongo.asynchronous.client_session import AsyncClientSession
 
+from registry_pkgs.database.leased_job import Lease, LeaseLostError, run_with_lease
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, RegistryAccessRole, ResourceType
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.enums import (
     FederationJobPhase,
+    FederationJobStatus,
     FederationJobType,
     FederationProviderType,
+    FederationStatus,
     FederationSyncStatus,
     FederationTriggerType,
 )
@@ -43,19 +49,41 @@ from registry_pkgs.models.federation_sync_job import (
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
+from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
     AzureAiFoundrySyncHandler,
     BaseFederationSyncHandler,
 )
-from .federation_crud_service import FederationCrudService
-from .federation_job_service import FederationJobService
+from .federation_crud_service import FEDERATION_CONCURRENT_CHANGE_MSG, FederationCrudService
+from .federation_job_service import (
+    _ACTIVE_STATUSES,
+    _LEGACY_JOB_LIVE_WINDOW,
+    FEDERATION_SYNC_LEASE,
+    FederationJobService,
+    _live_active_filter,
+    federation_sync_lease_repository,
+)
+from .vector_sync_helpers import sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
 ACL_INHERITANCE_BATCH_SIZE = 500
 _STALE_PROTECTED_SKIP_REASONS = frozenset({"agent_fetch_failed", "detail_fetch_failed", "tag_fetch_failed"})
+
+# Written to a job's error (and used to repair its federation) when a running job is interrupted by a
+# registry shutdown.
+_INTERRUPTED_REASON = "Interrupted by registry shutdown; run the sync again"
+_REAP_LEASE_EXPIRED = "Executor lost: lease expired"
+_REAP_LEGACY = "Executor lost: job predates job leasing"
+_REAP_STUCK = "Executor lost: federation left mid-sync with no live job"
+
+# A federation whose sync status is still in flight this long after its last write, with no live job,
+# is a repair candidate. The most recent terminal job must also be this old: a long sync can leave
+# the parent untouched for hours, then release its lease just before writing its final parent status.
+_STUCK_FEDERATION_AGE = FEDERATION_SYNC_LEASE.duration
+_STUCK_FEDERATION_BATCH_SIZE = 100
 
 
 def _enum_value(value):
@@ -216,6 +244,7 @@ async def run_federation_sync_background(
     federation: Federation,
     job: FederationSyncJob,
     author_id: PydanticObjectId,
+    lease: Lease,
     embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
 ) -> None:
     """Run a federation sync after the triggering response has been sent.
@@ -228,15 +257,18 @@ async def run_federation_sync_background(
     """
     if embedding_maintenance_watcher is not None and embedding_maintenance_watcher.is_active():
         error = "Skipped: embedding reindex in progress, will retry on next sync"
+        await federation_sync_lease_repository.assert_owned(lease)
         await federation_sync_service.federation_crud_service.mark_sync_failed(
             federation,
             error,
             last_sync=federation_sync_service._build_failed_last_sync(job, error),
+            job_id=job.id,
         )
         await federation_sync_service.federation_job_service.mark_failed(
             job,
             FederationJobPhase.FAILED,
             error,
+            lease,
         )
         logger.info(
             "Federation sync skipped (embedding reindex in progress): federation_id=%s job_id=%s",
@@ -244,18 +276,16 @@ async def run_federation_sync_background(
             job.id,
         )
         return
-    try:
-        await federation_sync_service.run_sync(
-            federation=federation,
-            job=job,
-            author_id=author_id,
-        )
-    except Exception:
-        logger.exception(
-            "Federation sync background task failed: federation_id=%s job_id=%s",
-            federation.id,
-            job.id,
-        )
+    await federation_sync_service.run_sync(
+        federation=federation,
+        job=job,
+        author_id=author_id,
+        lease=lease,
+    )
+
+
+class FederationSyncShuttingDownError(RuntimeError):
+    """The task tracker rejected a sync because registry shutdown has begun."""
 
 
 class FederationSyncService:
@@ -269,6 +299,8 @@ class FederationSyncService:
         user_service,
         azure_client_cache: AzureFoundryClientCache,
         embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
+        lease_owner: str = "registry-unowned",
+        background_task_tracker: BackgroundTaskTracker | None = None,
     ):
         self.federation_crud_service = federation_crud_service
         self.federation_job_service = federation_job_service
@@ -277,6 +309,8 @@ class FederationSyncService:
         self.acl_service = acl_service
         self.user_service = user_service
         self._embedding_maintenance_watcher = embedding_maintenance_watcher
+        self._lease_owner = lease_owner
+        self._background_task_tracker = background_task_tracker
 
         self.sync_handlers: dict[FederationProviderType, BaseFederationSyncHandler] = {
             FederationProviderType.AWS_AGENTCORE: AwsAgentCoreSyncHandler(),
@@ -370,6 +404,7 @@ class FederationSyncService:
         federation: Federation,
         job: FederationSyncJob,
         author_id: PydanticObjectId,
+        lease: Lease,
     ) -> FederationSyncJob:
         """
         Sync execution follows a fixed flow:
@@ -400,13 +435,14 @@ class FederationSyncService:
                         federation=federation,
                         job=job,
                         discovered=discovered,
+                        lease=lease,
                         session=mongo_session,
                     )
 
             mutation_result = await self._apply_sync_plan(sync_plan)
 
-            await self.federation_job_service.update_apply_summary(job, mutation_result.summary)
-            await self.federation_job_service.mark_syncing(job, FederationJobPhase.SYNCING_VECTORS)
+            await self.federation_job_service.update_apply_summary(job, mutation_result.summary, lease)
+            await self.federation_job_service.mark_syncing(job, FederationJobPhase.SYNCING_VECTORS, lease)
 
             try:
                 vector_sync_outcome = await self._sync_vector_index_after_commit(
@@ -425,17 +461,26 @@ class FederationSyncService:
                     failed_changed_a2a_runtime_arns=set(mutation_result.changed_a2a_runtime_arns),
                     error_messages=[f"vector sync failed after Mongo commit:{federation.id}:{exc}"],
                 )
-            await self._finalize_sync_status(federation, job, mutation_result, vector_sync_outcome)
+            await self._finalize_sync_status(federation, job, mutation_result, vector_sync_outcome, lease)
             return job
 
+        except LeaseLostError:
+            raise
         except Exception as exc:
             logger.exception("Failed to run federation sync")
-            await self.federation_crud_service.mark_sync_failed(
-                federation,
-                str(exc),
-                last_sync=self._build_failed_last_sync(job, str(exc)),
-            )
-            await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc))
+            # Finalize best-effort; if any of these raise, the original exception still propagates and
+            # execute_leased_federation_job fence-finalizes the still-leased job.
+            try:
+                await federation_sync_lease_repository.assert_owned(lease)
+                await self.federation_crud_service.mark_sync_failed(
+                    federation,
+                    str(exc),
+                    last_sync=self._build_failed_last_sync(job, str(exc)),
+                    job_id=job.id,
+                )
+                await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc), lease)
+            except Exception:
+                logger.exception("Failed to finalize failed federation sync; executor will fence-finalize")
             raise
 
     async def _finalize_sync_status(
@@ -444,6 +489,7 @@ class FederationSyncService:
         job: FederationSyncJob,
         mutation_result: FederationSyncMutationResult,
         vector_sync_outcome: VectorSyncOutcome,
+        lease: Lease,
     ) -> None:
         """
         Determine the final federation/job status after both the Mongo commit
@@ -471,22 +517,32 @@ class FederationSyncService:
         last_sync = self._build_last_sync(job, apply_summary)
         self._complete_last_sync(last_sync, failed=sync_failed)
 
+        # The terminal job write releases the lease, so it must be the last write: the heartbeat
+        # keeps running until this coroutine returns, and a renewal against a released lease raises
+        # LeaseLostError and cancels whatever write is still in flight. Prove ownership first so a
+        # stale executor does not touch the parent; the parent guards (lastSync.jobId plus an
+        # in-flight syncStatus) keep a write that races a reaper repair from overwriting it.
+        await federation_sync_lease_repository.assert_owned(lease)
         if sync_failed:
             await self.federation_crud_service.mark_sync_failed(
                 federation,
                 message or "Federation sync failed",
                 last_sync=last_sync,
                 stats=stats,
+                job_id=job.id,
             )
             await self.federation_job_service.mark_failed(
                 job,
                 FederationJobPhase.FAILED,
                 message or "Federation sync failed",
+                lease,
             )
             return
 
-        await self.federation_crud_service.mark_sync_success(federation, last_sync, stats, message=message)
-        await self.federation_job_service.mark_success(job, message=message)
+        await self.federation_crud_service.mark_sync_success(
+            federation, last_sync, stats, job_id=job.id, message=message
+        )
+        await self.federation_job_service.mark_success(job, lease, message=message)
 
     async def preview_manual_sync(
         self,
@@ -567,7 +623,7 @@ class FederationSyncService:
 
         async with MongoDB.get_client().start_session() as mongo_session:
             async with await mongo_session.start_transaction():
-                federation, job = await self.update_federation_and_create_resync_job(
+                federation, job, lease = await self.update_federation_and_create_resync_job(
                     federation=federation,
                     display_name=display_name,
                     description=description,
@@ -576,10 +632,11 @@ class FederationSyncService:
                     updated_by=updated_by,
                     session=mongo_session,
                 )
-        await self.run_sync(
-            federation=federation,
+        await self.execute_leased_federation_job(
+            lease=lease,
             job=job,
-            author_id=author_id,
+            coro=self.run_sync(federation=federation, job=job, author_id=author_id, lease=lease),
+            interrupted_reason=_INTERRUPTED_REASON,
         )
         return federation, job
 
@@ -589,6 +646,7 @@ class FederationSyncService:
         federation: Federation,
         job: FederationSyncJob,
         discovered: dict[str, list[Any]],
+        lease: Lease,
         session: AsyncClientSession,
     ) -> FederationSyncPlan:
         """Run bookkeeping updates and build the sync plan inside a Mongo transaction.
@@ -601,9 +659,10 @@ class FederationSyncService:
         discovered_mcp = discovered.get("mcp_servers", [])
         discovered_a2a = discovered.get("a2a_agents", [])
 
-        await self.federation_job_service.mark_syncing(job, FederationJobPhase.DISCOVERING, session=session)
+        await self.federation_job_service.mark_syncing(job, FederationJobPhase.DISCOVERING, lease, session=session)
         await self.federation_crud_service.mark_syncing(
             federation,
+            job_id=job.id,
             last_sync=self._build_syncing_last_sync(job),
             session=session,
         )
@@ -611,9 +670,10 @@ class FederationSyncService:
             job,
             discovered_mcp_servers=len(discovered_mcp),
             discovered_agents=len(discovered_a2a),
+            lease=lease,
             session=session,
         )
-        await self.federation_job_service.mark_syncing(job, FederationJobPhase.APPLYING, session=session)
+        await self.federation_job_service.mark_syncing(job, FederationJobPhase.APPLYING, lease, session=session)
         sync_plan = await self._build_sync_plan(
             federation=federation,
             discovered_mcp=discovered_mcp,
@@ -633,8 +693,8 @@ class FederationSyncService:
         normalized_provider_config: dict[str, Any],
         updated_by: str | None,
         session: AsyncClientSession,
-    ) -> tuple[Federation, FederationSyncJob]:
-        """Persist the new federation definition and its pending resync job together."""
+    ) -> tuple[Federation, FederationSyncJob, Lease]:
+        """Persist the new federation definition and its pending resync job (born leased) together."""
         federation = await self.federation_crud_service.update_federation(
             federation=federation,
             display_name=display_name,
@@ -644,7 +704,7 @@ class FederationSyncService:
             updated_by=updated_by,
             session=session,
         )
-        job = await self.federation_job_service.create_job(
+        job, lease = await self.federation_job_service.create_job(
             federation_id=federation.id,
             job_type=FederationJobType.CONFIG_RESYNC,
             trigger_type=FederationTriggerType.API,
@@ -653,6 +713,7 @@ class FederationSyncService:
                 "providerType": _enum_value(federation.providerType),
                 "providerConfig": federation.providerConfig,
             },
+            lease_owner=self._lease_owner,
             session=session,
         )
         await self.federation_crud_service.mark_sync_pending(
@@ -660,7 +721,7 @@ class FederationSyncService:
             last_sync=self._build_pending_last_sync(job),
             session=session,
         )
-        return federation, job
+        return federation, job, lease
 
     async def create_sync_job_and_mark_pending(
         self,
@@ -671,14 +732,15 @@ class FederationSyncService:
         triggered_by: str | None,
         request_snapshot: dict[str, Any],
         session: AsyncClientSession,
-    ) -> FederationSyncJob:
-        """Create the sync job and move the federation into pending in one transaction."""
-        job = await self.federation_job_service.create_job(
+    ) -> tuple[FederationSyncJob, Lease]:
+        """Create the sync job (born leased) and move the federation into pending in one transaction."""
+        job, lease = await self.federation_job_service.create_job(
             federation_id=federation.id,
             job_type=job_type,
             trigger_type=trigger_type,
             triggered_by=triggered_by,
             request_snapshot=request_snapshot,
+            lease_owner=self._lease_owner,
             session=session,
         )
         await self.federation_crud_service.mark_sync_pending(
@@ -686,7 +748,7 @@ class FederationSyncService:
             last_sync=self._build_pending_last_sync(job),
             session=session,
         )
-        return job
+        return job, lease
 
     async def create_manual_sync_job(
         self,
@@ -694,8 +756,8 @@ class FederationSyncService:
         federation: Federation,
         reason: str | None,
         triggered_by: str | None,
-    ) -> tuple[FederationSyncJob, PydanticObjectId]:
-        """Create a pending manual-sync job without running the sync inline."""
+    ) -> tuple[FederationSyncJob, Lease, PydanticObjectId]:
+        """Create a pending manual-sync job (born leased) without running the sync inline."""
         author_id = await self._resolve_author_id(triggered_by)
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
@@ -703,7 +765,7 @@ class FederationSyncService:
 
         async with MongoDB.get_client().start_session() as mongo_session:
             async with await mongo_session.start_transaction():
-                job = await self.create_sync_job_and_mark_pending(
+                job, lease = await self.create_sync_job_and_mark_pending(
                     federation=federation,
                     job_type=FederationJobType.FULL_SYNC,
                     trigger_type=FederationTriggerType.MANUAL,
@@ -715,7 +777,7 @@ class FederationSyncService:
                     },
                     session=mongo_session,
                 )
-        return job, author_id
+        return job, lease, author_id
 
     async def start_manual_sync(
         self,
@@ -727,16 +789,76 @@ class FederationSyncService:
         """Run a manual sync inline for compatibility with non-HTTP callers."""
         # Block (503) before creating the job so a reindex leaves no stuck sync job behind.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
-        job, author_id = await self.create_manual_sync_job(
+        job, lease, author_id = await self.create_manual_sync_job(
             federation=federation,
             reason=reason,
             triggered_by=triggered_by,
         )
-        await self.run_sync(
-            federation=federation,
+        await self.execute_leased_federation_job(
+            lease=lease,
             job=job,
-            author_id=author_id,
+            coro=self.run_sync(federation=federation, job=job, author_id=author_id, lease=lease),
+            interrupted_reason=_INTERRUPTED_REASON,
         )
+        return job
+
+    async def start_manual_sync_background(
+        self,
+        *,
+        federation: Federation,
+        reason: str | None,
+        triggered_by: str | None,
+    ) -> FederationSyncJob:
+        """Create a leased manual-sync job and spawn it through the shared background task tracker.
+
+        The job is already inserted (leased) before the spawn, so if the spawn fails we fail the job
+        here (fenced + released) and repair its federation. A tracker refusal because shutdown has
+        begun is re-raised as ``FederationSyncShuttingDownError`` for the route to map to 503; any
+        other spawn error propagates unchanged.
+        """
+        if self._background_task_tracker is None:
+            raise RuntimeError("background_task_tracker is required for POST /sync")
+        job, lease, author_id = await self.create_manual_sync_job(
+            federation=federation,
+            reason=reason,
+            triggered_by=triggered_by,
+        )
+
+        async def _job() -> None:
+            await self.execute_leased_federation_job(
+                lease=lease,
+                job=job,
+                coro=run_federation_sync_background(
+                    federation_sync_service=self,
+                    federation=federation,
+                    job=job,
+                    author_id=author_id,
+                    lease=lease,
+                    embedding_maintenance_watcher=self._embedding_maintenance_watcher,
+                ),
+                interrupted_reason=_INTERRUPTED_REASON,
+            )
+
+        try:
+            self._background_task_tracker.spawn(_job(), name=f"federation-sync-{job.id}")
+        except Exception as exc:
+            shutting_down = isinstance(exc, TrackerShutdownError)
+            reason = _INTERRUPTED_REASON if shutting_down else str(exc)
+            matched = await federation_sync_lease_repository.transition(
+                lease,
+                {
+                    "status": FederationJobStatus.FAILED.value,
+                    "phase": FederationJobPhase.FAILED.value,
+                    "error": reason,
+                    "finishedAt": datetime.now(UTC),
+                },
+                release=True,
+            )
+            if matched:
+                await self._finalize_abandoned_job(federation.id, job, reason=reason)
+            if shutting_down:
+                raise FederationSyncShuttingDownError(str(exc)) from exc
+            raise
         return job
 
     async def start_delete(
@@ -754,8 +876,7 @@ class FederationSyncService:
 
         async with MongoDB.get_client().start_session() as mongo_session:
             async with await mongo_session.start_transaction():
-                await self.federation_crud_service.mark_deleting(federation, session=mongo_session)
-                job = await self.federation_job_service.create_job(
+                job, lease = await self.federation_job_service.create_job(
                     federation_id=federation.id,
                     job_type=FederationJobType.DELETE_SYNC,
                     trigger_type=FederationTriggerType.MANUAL,
@@ -764,10 +885,286 @@ class FederationSyncService:
                         "providerType": _enum_value(federation.providerType),
                         "providerConfig": federation.providerConfig,
                     },
+                    lease_owner=self._lease_owner,
                     session=mongo_session,
                 )
-        await self.run_delete(federation=federation, job=job)
+                await self.federation_crud_service.mark_deleting(federation, job_id=job.id, session=mongo_session)
+        await self.execute_leased_federation_job(
+            lease=lease,
+            job=job,
+            coro=self.run_delete(federation=federation, job=job, lease=lease),
+            interrupted_reason=_INTERRUPTED_REASON,
+        )
         return job
+
+    async def execute_leased_federation_job[T](
+        self,
+        *,
+        lease: Lease,
+        job: FederationSyncJob,
+        coro: Awaitable[T],
+        interrupted_reason: str,
+    ) -> T:
+        """Run a federation job coroutine under the lease heartbeat, finalizing it on shutdown or escape.
+
+        * ``LeaseLostError`` (heartbeat self-fenced out): log and re-raise; the new owner finalizes.
+        * Cancellation (graceful-shutdown): ``on_cancelled`` writes the job FAILED + releases while the
+          execution still runs; once the execution has stopped, if that write matched, repair the
+          federation (after the execution stopped so the sync can't overwrite the repair). Re-raise.
+        * Any other escaped exception (e.g. mark_sync_failed raising before mark_failed): the same
+          fenced FAILED transition, then repair the federation if it matched, then re-raise the
+          original. The fence makes this a no-op when the sync already finalized the job.
+        """
+        cancel_write_matched = False
+
+        async def on_cancelled() -> None:
+            nonlocal cancel_write_matched
+            cancel_write_matched = await federation_sync_lease_repository.transition(
+                lease,
+                {
+                    "status": FederationJobStatus.FAILED.value,
+                    "phase": FederationJobPhase.FAILED.value,
+                    "error": interrupted_reason,
+                    "finishedAt": datetime.now(UTC),
+                },
+                release=True,
+            )
+
+        try:
+            return await run_with_lease(federation_sync_lease_repository, lease, coro, on_cancelled=on_cancelled)
+        except LeaseLostError:
+            logger.warning("federation job %s lost its lease; another owner will finalize", lease.doc_id)
+            raise
+        except asyncio.CancelledError:
+            if cancel_write_matched:
+                try:
+                    await self._finalize_abandoned_job(job.federationId, job, reason=interrupted_reason)
+                except Exception:
+                    logger.exception("federation job %s shutdown finalization failed", lease.doc_id)
+            raise
+        except Exception as exc:
+            try:
+                matched = await federation_sync_lease_repository.transition(
+                    lease,
+                    {
+                        "status": FederationJobStatus.FAILED.value,
+                        "phase": FederationJobPhase.FAILED.value,
+                        "error": str(exc),
+                        "finishedAt": datetime.now(UTC),
+                    },
+                    release=True,
+                )
+                if matched:
+                    await self._finalize_abandoned_job(job.federationId, job, reason=str(exc))
+            except Exception:
+                logger.exception("federation job %s failure finalization failed", lease.doc_id)
+            raise
+
+    async def _finalize_abandoned_job(
+        self,
+        federation_id: PydanticObjectId,
+        job_doc: FederationSyncJob | None,
+        *,
+        reason: str,
+        scanned_delete_job_id: PydanticObjectId | None = None,
+        scanned_updated_at: datetime | None = None,
+        from_stuck_scan: bool = False,
+    ) -> bool:
+        """Repair the parent federation of a job that is already FAILED (or gone).
+
+        The job itself is finalized by the caller (reaper, shutdown, or the stuck pass) — this only
+        unwedges the federation, idempotently, guarded so a newer job's state is never clobbered.
+        Returns whether the federation was changed.
+        """
+        federation = await Federation.get(federation_id)
+        if federation is None:
+            # The DELETE transaction committed (children/ACLs gone) but the job was abandoned after;
+            # the federation is already hard-deleted. AS-1916 sweeps any leftover vectors.
+            logger.warning(
+                "abandoned job: federation %s already deleted; vectors may remain (job=%s)",
+                federation_id,
+                getattr(job_doc, "id", None),
+            )
+            return False
+
+        if _enum_value(federation.status) == FederationStatus.DELETING.value:
+            owner_id = federation.deletingJobId
+            if from_stuck_scan and owner_id != scanned_delete_job_id:
+                return False
+            if job_doc is not None and _enum_value(job_doc.jobType) != FederationJobType.DELETE_SYNC.value:
+                return False
+            if job_doc is not None and owner_id is not None and owner_id != job_doc.id:
+                return False
+            # Legacy deletions have no owner marker. The guarded write also prevents an old
+            # finalizer from restoring a newer deletion that installed a different owner ID.
+            return await self.federation_crud_service.mark_delete_failed(federation, reason, expected_job_id=owner_id)
+
+        if _enum_value(federation.syncStatus) not in {
+            FederationSyncStatus.PENDING.value,
+            FederationSyncStatus.SYNCING.value,
+        }:
+            # The executor wrote the parent's terminal status before it stopped (the parent write
+            # precedes the terminal job write); nothing is wedged.
+            return False
+
+        if job_doc is not None:
+            return await self.federation_crud_service.mark_sync_failed(
+                federation,
+                reason,
+                last_sync=self._build_failed_last_sync(job_doc, reason),
+                job_id=job_doc.id,
+            )
+        # The scan may race another pod repairing this parent and admitting a new job.
+        return await self.federation_crud_service.mark_sync_failed(
+            federation, reason, expected_updated_at=scanned_updated_at
+        )
+
+    async def _repair_abandoned_parent(
+        self,
+        federation_id: PydanticObjectId,
+        job_doc: FederationSyncJob | None,
+        **kwargs: Any,
+    ) -> bool:
+        """Reaper wrapper around ``_finalize_abandoned_job`` that logs a failure instead of raising.
+
+        One parent whose repair raises must not end the tick: the remaining jobs and federations still
+        need their repair, and a federation that raises on every tick would otherwise block every
+        federation after it in the stuck scan.
+        """
+        try:
+            return await self._finalize_abandoned_job(federation_id, job_doc, **kwargs)
+        except Exception:
+            logger.exception(
+                "federation reaper: failed to repair federation %s (job=%s)",
+                federation_id,
+                getattr(job_doc, "id", None),
+            )
+            return False
+
+    async def reap_expired_federation_jobs(self) -> int:
+        """Finalize abandoned federation jobs and unwedge federations left behind.
+
+        Returns the number of jobs failed (passes 1 and 2) plus federations repaired (pass 3).
+
+        Pass 1 — expired leases: ``reap_one`` each leased job whose ``leaseExpiresAt`` passed → FAILED,
+        then repair its federation.
+        Pass 2 — legacy jobs with no lease fields (pre-leasing), older than the legacy window → FAILED,
+        then repair.
+        Pass 3 — stuck federations: passes 1/2 repair the federation only once; if that repair was
+        lost, nothing selects the job again and the federation can never sync. Find federations still
+        PENDING/SYNCING (or DELETING) with no live job, older than one lease duration, and repair each
+        with its most recent job (or none). The guards keep this idempotent.
+        """
+        reaped = 0
+
+        while True:
+            job = await federation_sync_lease_repository.reap_one(
+                extra_filter={},
+                set_fields={
+                    "status": FederationJobStatus.FAILED.value,
+                    "phase": FederationJobPhase.FAILED.value,
+                    "error": _REAP_LEASE_EXPIRED,
+                    "finishedAt": datetime.now(UTC),
+                },
+            )
+            if job is None:
+                break
+            await self._repair_abandoned_parent(job.federationId, job, reason=_REAP_LEASE_EXPIRED)
+            reaped += 1
+
+        collection = FederationSyncJob.get_pymongo_collection()
+        while True:
+            now = datetime.now(UTC)
+            document = await collection.find_one_and_update(
+                {
+                    "status": {"$in": _ACTIVE_STATUSES},
+                    "leaseToken": {"$exists": False},
+                    "updatedAt": {"$lte": now - _LEGACY_JOB_LIVE_WINDOW},
+                },
+                {
+                    "$set": {
+                        "status": FederationJobStatus.FAILED.value,
+                        "phase": FederationJobPhase.FAILED.value,
+                        "error": _REAP_LEGACY,
+                        "finishedAt": now,
+                        "updatedAt": now,
+                    }
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+            if document is None:
+                break
+            job = FederationSyncJob.model_validate(document)
+            await self._repair_abandoned_parent(job.federationId, job, reason=_REAP_LEGACY)
+            reaped += 1
+
+        now = datetime.now(UTC)
+        stuck_cutoff = now - _STUCK_FEDERATION_AGE
+        federation_collection = Federation.get_pymongo_collection()
+        job_collection = FederationSyncJob.get_pymongo_collection()
+        last_id: PydanticObjectId | None = None
+        while True:
+            query: dict[str, Any] = {
+                "$or": [
+                    {"syncStatus": {"$in": [FederationSyncStatus.PENDING.value, FederationSyncStatus.SYNCING.value]}},
+                    {"status": FederationStatus.DELETING.value},
+                ],
+                "updatedAt": {"$lte": stuck_cutoff},
+            }
+            if last_id is not None:
+                query["_id"] = {"$gt": last_id}
+            batch = (
+                await federation_collection.find(query, projection={"_id": 1, "deletingJobId": 1, "updatedAt": 1})
+                .sort([("_id", 1)])
+                .to_list(length=_STUCK_FEDERATION_BATCH_SIZE)
+            )
+            if not batch:
+                break
+            last_id = batch[-1]["_id"]
+            federation_ids = [doc["_id"] for doc in batch]
+            live_ids = set(
+                await job_collection.distinct(
+                    "federationId", {"federationId": {"$in": federation_ids}, **_live_active_filter(now)}
+                )
+            )
+            orphan_ids = [federation_id for federation_id in federation_ids if federation_id not in live_ids]
+            if orphan_ids:
+                recent_cursor = await job_collection.aggregate(
+                    [
+                        {"$match": {"federationId": {"$in": orphan_ids}}},
+                        {"$sort": {"federationId": 1, "createdAt": -1}},
+                        {"$group": {"_id": "$federationId", "job": {"$first": "$$ROOT"}}},
+                    ]
+                )
+                recent_documents = await recent_cursor.to_list(length=None)
+            else:
+                recent_documents = []
+            recent_by_federation = {
+                doc["_id"]: FederationSyncJob.model_validate(doc["job"]) for doc in recent_documents
+            }
+            for fed_doc in batch:
+                federation_id = fed_doc["_id"]
+                if federation_id in live_ids:
+                    continue
+                recent_job = recent_by_federation.get(federation_id)
+                # A terminal job may have just released its lease; allow its parent write to finish.
+                if recent_job is not None and recent_job.updatedAt > stuck_cutoff:
+                    continue
+                # Count only parents actually changed, so a federation the guards never let this
+                # pass repair is not reported as finalized on every tick.
+                if await self._repair_abandoned_parent(
+                    federation_id,
+                    recent_job,
+                    reason=_REAP_STUCK,
+                    scanned_delete_job_id=fed_doc.get("deletingJobId"),
+                    scanned_updated_at=fed_doc["updatedAt"],
+                    from_stuck_scan=True,
+                ):
+                    reaped += 1
+            if len(batch) < _STUCK_FEDERATION_BATCH_SIZE:
+                break
+
+        return reaped
 
     async def _build_sync_plan(
         self,
@@ -1332,6 +1729,10 @@ class FederationSyncService:
 
         async def _create_one(item: _CreateItem) -> None:
             item.document.federationRefId = sync_plan.federation_id
+            # Mark pending in the same insert; the post-commit vector step clears it on success, and
+            # an item whose vector rebuild fails keeps the marker for the reconciler to heal.
+            item.document.vectorSyncPendingAt = datetime.now(UTC)
+            item.document.vectorSyncAttempts = 0
             await item.document.insert()
 
         outcomes = await run_bounded(
@@ -1383,6 +1784,9 @@ class FederationSyncService:
                 self._copy_mcp_update_fields(item.existing, item.discovered)
             else:
                 self._copy_a2a_update_fields(item.existing, item.discovered)
+            # Mark pending in the same save; the post-commit vector step clears it on success.
+            item.existing.vectorSyncPendingAt = datetime.now(UTC)
+            item.existing.vectorSyncAttempts = 0
             await item.existing.save()
 
         outcomes = await run_bounded(
@@ -1819,11 +2223,13 @@ class FederationSyncService:
         self,
         federation: Federation,
         job: FederationSyncJob,
+        lease: Lease,
     ) -> FederationSyncJob:
         # Guard before any write: a delete mid-reindex leaves orphan vectors the sweep won't clean up.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
-        await self.federation_job_service.mark_syncing(job, FederationJobPhase.APPLYING)
+        await self.federation_job_service.mark_syncing(job, FederationJobPhase.APPLYING, lease)
 
+        committed = False
         try:
             federation_id_str = str(federation.id)
             async with MongoDB.get_client().start_session() as mongo_session:
@@ -1833,21 +2239,29 @@ class FederationSyncService:
                         current_job_id=job.id,
                         session=mongo_session,
                     )
+            committed = True
 
-            vector_errors = await self._delete_vectors_for_federation(federation_id_str, mcp_arns, a2a_arns)
+            # Post-commit: the federation (and children/ACLs) are gone. Vector cleanup failures are
+            # recorded on the job, never on the federation — it must stay deleted, not be resurrected.
+            try:
+                vector_errors = await self._delete_vectors_for_federation(federation_id_str, mcp_arns, a2a_arns)
+            except Exception as exc:
+                logger.exception("Federation vector cleanup failed after delete commit: %s", federation.id)
+                vector_errors = [f"vector cleanup failed after delete commit:{federation.id}:{exc}"]
             if vector_errors:
                 job.applySummary.errorMessages.extend(vector_errors)
 
-            await self.federation_job_service.mark_success(job)
+            await self.federation_job_service.mark_success(job, lease)
             return job
+        except LeaseLostError:
+            raise
         except Exception as exc:
-            # Federation doc may already be gone if the transaction committed but vector
-            # cleanup failed; attempt to record the failure and swallow any secondary error.
-            try:
-                await self.federation_crud_service.mark_delete_failed(federation, str(exc))
-            except Exception as e:
-                logger.exception("Could not record delete failure on federation %s e: %s", federation.id, str(e))
-            await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc))
+            if not committed:
+                # Pre-commit failure: nothing was deleted, so restore the federation (guarded, no
+                # upsert) and fail the job.
+                await federation_sync_lease_repository.assert_owned(lease)
+                await self.federation_crud_service.mark_delete_failed(federation, str(exc), expected_job_id=job.id)
+            await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc), lease)
             raise
 
     async def _build_federation_stats(
@@ -1892,7 +2306,6 @@ class FederationSyncService:
         federation_id_str = str(federation_id)
         # Delete and rebuild one MCP runtime at a time. runtimeArn identifies the
         # concrete remote resource; federation_id prevents cross-federation deletes.
-        await self.mcp_server_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
         current_server = await ExtendedMCPServer.find_one(
             {
                 "federationRefId": federation_id,
@@ -1900,17 +2313,18 @@ class FederationSyncService:
             }
         )
         if current_server is None:
+            await self.mcp_server_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
             return
-
-        result = await self.mcp_server_repo.sync_to_vector_db(current_server, is_delete=False)
-        if not result or result.get("failed_tools"):
-            detail = result.get("error") if result else None
-            suffix = f":{detail}" if detail else ""
-            raise RuntimeError(f"mcp sync failed for {current_server.serverName}{suffix}")
+        await sync_pending_vectors(
+            ExtendedMCPServer,
+            self.mcp_server_repo,
+            current_server.id,
+            owner=self._lease_owner,
+            runtime_identity=(federation_id_str, runtime_arn),
+        )
 
     async def _sync_a2a_vectors_for_runtime(self, federation_id, runtime_arn: str) -> None:
         federation_id_str = str(federation_id)
-        await self.a2a_agent_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
         current_agent = await A2AAgent.find_one(
             {
                 "federationRefId": federation_id,
@@ -1918,13 +2332,15 @@ class FederationSyncService:
             }
         )
         if current_agent is None:
+            await self.a2a_agent_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
             return
-
-        result = await self.a2a_agent_repo.sync_to_vector_db(current_agent, is_delete=False)
-        if not result or result.get("failed"):
-            detail = result.get("error") if result else None
-            suffix = f":{detail}" if detail else ""
-            raise RuntimeError(f"a2a sync failed for {current_agent.card.name}{suffix}")
+        await sync_pending_vectors(
+            A2AAgent,
+            self.a2a_agent_repo,
+            current_agent.id,
+            owner=self._lease_owner,
+            runtime_identity=(federation_id_str, runtime_arn),
+        )
 
     async def _current_mcp_runtime_arns(self, federation_id) -> list[str]:
         current_servers = await ExtendedMCPServer.find({"federationRefId": federation_id}).to_list()
@@ -2117,7 +2533,16 @@ class FederationSyncService:
             resource_id=federation.id,
             session=session,
         )
-        await federation.delete(session=session)
+        result = await Federation.get_pymongo_collection().delete_one(
+            {
+                "_id": federation.id,
+                "status": FederationStatus.DELETING.value,
+                "deletingJobId": current_job_id,
+            },
+            session=session,
+        )
+        if result.deleted_count != 1:
+            raise ValueError(FEDERATION_CONCURRENT_CHANGE_MSG)
         return mcp_runtime_arns, a2a_runtime_arns
 
     @staticmethod

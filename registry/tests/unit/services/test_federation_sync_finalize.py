@@ -4,11 +4,12 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from beanie import PydanticObjectId
 
+from registry.services.federation_job_service import federation_sync_lease_repository
 from registry.services.federation_sync_service import (
     FederationSyncMutationResult,
     FederationSyncService,
@@ -23,12 +24,19 @@ from registry_pkgs.models.enums import (
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 from tests.unit.services.federation_sync_test_helpers import (
     _DEFAULT_USER_OBJECT_ID,
+    _TEST_LEASE,
     _FakeQuery,
     _make_federation,
     _patch_mongo_session,
 )
 
 pytestmark = pytest.mark.usefixtures("default_empty_access_roles")
+
+
+@pytest.fixture(autouse=True)
+def mock_lease_ownership(monkeypatch):
+    """Finalization tests stub Mongo; the lease fence is covered in lifecycle tests."""
+    monkeypatch.setattr(federation_sync_lease_repository, "assert_owned", AsyncMock())
 
 
 @pytest.mark.asyncio
@@ -63,7 +71,9 @@ async def test_finalize_marks_success_with_error_message_when_some_resources_imp
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
 
-    await federation_sync_service._finalize_sync_status(federation, job, mutation_result, vector_outcome)
+    await federation_sync_service._finalize_sync_status(
+        federation, job, mutation_result, vector_outcome, lease=_TEST_LEASE
+    )
 
     federation_sync_service.federation_crud_service.mark_sync_success.assert_awaited_once()
     call_kwargs = federation_sync_service.federation_crud_service.mark_sync_success.await_args
@@ -109,7 +119,9 @@ async def test_finalize_combines_apply_and_vector_errors_into_summary(
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
 
-    await federation_sync_service._finalize_sync_status(federation, job, mutation_result, vector_outcome)
+    await federation_sync_service._finalize_sync_status(
+        federation, job, mutation_result, vector_outcome, lease=_TEST_LEASE
+    )
 
     assert mutation_result.summary.errors == 2
     assert mutation_result.summary.errorMessages == [apply_error, vector_error]
@@ -139,7 +151,7 @@ async def test_run_sync_remains_active_and_rejects_second_sync_during_vector_tai
     vector_started = asyncio.Event()
     release_vector = asyncio.Event()
 
-    async def _mark_syncing(current_job, phase):
+    async def _mark_syncing(current_job, phase, lease):
         current_job.status = FederationJobStatus.SYNCING
         current_job.phase = phase
         return current_job
@@ -167,9 +179,7 @@ async def test_run_sync_remains_active_and_rejects_second_sync_during_vector_tai
 
     sync_task = asyncio.create_task(
         federation_sync_service.run_sync(
-            federation=federation,
-            job=job,
-            author_id=_DEFAULT_USER_OBJECT_ID,
+            federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
         )
     )
     await asyncio.wait_for(vector_started.wait(), timeout=1)
@@ -206,7 +216,9 @@ async def test_run_sync_updates_last_sync_when_discovery_fails(federation_sync_s
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
 
     with pytest.raises(RuntimeError, match="discovery failed"):
-        await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
+        await federation_sync_service.run_sync(
+            federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
+        )
 
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
     failed_last_sync = federation_sync_service.federation_crud_service.mark_sync_failed.await_args.kwargs["last_sync"]
@@ -414,6 +426,7 @@ async def test_bookkeeping_transaction_returns_plan_with_enrichment_errors(
             ],
         },
         session=session,
+        lease=_TEST_LEASE,
     )
 
     assert result == plan
@@ -526,7 +539,9 @@ async def test_finalize_marks_failed_when_nothing_imported(
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
 
-    await federation_sync_service._finalize_sync_status(federation, job, mutation_result, vector_outcome)
+    await federation_sync_service._finalize_sync_status(
+        federation, job, mutation_result, vector_outcome, lease=_TEST_LEASE
+    )
 
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
     federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
@@ -556,7 +571,9 @@ async def test_finalize_marks_success_when_zero_discovered(
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
 
-    await federation_sync_service._finalize_sync_status(federation, job, mutation_result, vector_outcome)
+    await federation_sync_service._finalize_sync_status(
+        federation, job, mutation_result, vector_outcome, lease=_TEST_LEASE
+    )
 
     federation_sync_service.federation_crud_service.mark_sync_success.assert_awaited_once()
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
@@ -748,7 +765,9 @@ async def test_finalize_partial_success(
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
 
-    await federation_sync_service._finalize_sync_status(federation, job, mutation_result, vector_outcome)
+    await federation_sync_service._finalize_sync_status(
+        federation, job, mutation_result, vector_outcome, lease=_TEST_LEASE
+    )
 
     federation_sync_service.federation_crud_service.mark_sync_success.assert_awaited_once()
     federation_sync_service.federation_job_service.mark_success.assert_awaited_once()
@@ -794,7 +813,9 @@ async def test_finalize_total_failure(
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
 
-    await federation_sync_service._finalize_sync_status(federation, job, mutation_result, vector_outcome)
+    await federation_sync_service._finalize_sync_status(
+        federation, job, mutation_result, vector_outcome, lease=_TEST_LEASE
+    )
 
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
     federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
@@ -833,3 +854,74 @@ async def test_delete_failure_does_not_affect_imported_total(
 
     assert stats.importedTotal == 2
     assert stats.unimportedTotal == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", [False, True])
+async def test_federation_runtime_cleanup_is_inside_shared_sync(federation_sync_service, agent):
+    from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+
+    model = A2AAgent if agent else ExtendedMCPServer
+    doc = SimpleNamespace(id=PydanticObjectId())
+    service = federation_sync_service
+    repo = service.a2a_agent_repo if agent else service.mcp_server_repo
+    repo.delete_by_runtime_identity = AsyncMock()
+    method = service._sync_a2a_vectors_for_runtime if agent else service._sync_mcp_vectors_for_runtime
+    with (
+        patch.object(model, "find_one", AsyncMock(return_value=doc)),
+        patch("registry.services.federation_sync_service.sync_pending_vectors", AsyncMock()) as sync,
+    ):
+        await method(doc.id, "arn:runtime:1")
+        sync.assert_awaited_once_with(
+            model,
+            repo,
+            doc.id,
+            owner=service._lease_owner,
+            runtime_identity=(str(doc.id), "arn:runtime:1"),
+        )
+        repo.delete_by_runtime_identity.assert_not_awaited()
+        sync.side_effect = RuntimeError("vector down")
+        with pytest.raises(RuntimeError, match="vector down"):
+            await method(doc.id, "arn:runtime:1")
+
+
+@pytest.mark.asyncio
+async def test_vector_step_isolates_per_item_failure_through_shared_sync(federation_sync_service):
+    """One runtime's failed rebuild doesn't stop the others. Each item runs through the shared
+    marker-clearing sync, which clears on success and leaves the marker on failure (covered in
+    test_vector_sync_helpers), so the failed item stays pending for the reconciler."""
+    from registry_pkgs.models import ExtendedMCPServer
+
+    service = federation_sync_service
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    arns = ["arn:mcp:1", "arn:mcp:2", "arn:mcp:3"]
+    docs = {arn: SimpleNamespace(id=PydanticObjectId()) for arn in arns}
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(updatedMcpServers=3),
+        changed_mcp_runtime_arns=set(arns),
+    )
+    service._current_mcp_runtime_arns = AsyncMock(return_value=[])
+    service._current_a2a_runtime_arns = AsyncMock(return_value=[])
+    service.mcp_server_repo.ensure_collection = AsyncMock()
+
+    async def find_one(query):
+        return docs[query["federationMetadata.runtimeArn"]]
+
+    async def sync(model, repo, doc_id, *, owner, runtime_identity):
+        if runtime_identity[1] == "arn:mcp:2":
+            raise RuntimeError("embedding provider down")
+        return True
+
+    with (
+        patch.object(ExtendedMCPServer, "find_one", AsyncMock(side_effect=find_one)),
+        patch("registry.services.federation_sync_service.sync_pending_vectors", AsyncMock(side_effect=sync)) as shared,
+    ):
+        outcome = await service._sync_vector_index_after_commit(
+            federation=federation, job=SimpleNamespace(id=PydanticObjectId()), mutation_result=mutation_result
+        )
+
+    assert outcome.failed_changed_mcp_runtime_arns == {"arn:mcp:2"}
+    synced = {call.args[2]: call.kwargs for call in shared.await_args_list}
+    assert set(synced) == {doc.id for doc in docs.values()}
+    assert all(kwargs["owner"] == service._lease_owner for kwargs in synced.values())
+    assert synced[docs["arn:mcp:2"].id]["runtime_identity"] == (str(federation.id), "arn:mcp:2")

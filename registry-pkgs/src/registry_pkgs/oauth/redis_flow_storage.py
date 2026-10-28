@@ -3,7 +3,9 @@ import logging
 import time
 
 from redis import Redis
+from redis.exceptions import RedisError
 
+from .errors import OAuthFlowStorageError
 from .schemas import MCPOAuthFlowMetadata, OAuthFlow, OAuthFlowStatus, OAuthTokens
 
 logger = logging.getLogger(__name__)
@@ -27,7 +29,7 @@ class RedisFlowStorage:
 
     DEFAULT_TTL = 600  # 10 minutes
 
-    def __init__(self, redis_client: Redis, *, redis_key_prefix: str):
+    def __init__(self, redis_client: Redis, *, redis_key_prefix: str) -> None:
         """
         Initialize storage with Redis client
 
@@ -59,7 +61,7 @@ class RedisFlowStorage:
         return OAuthFlow(
             flow_id=data["flow_id"],
             server_id=data["server_id"],
-            server_name=metadata.server_name,
+            server_name=metadata.server_name if metadata else "",
             user_id=data["user_id"],
             code_verifier=data["code_verifier"],
             state=data["state"],
@@ -93,7 +95,7 @@ class RedisFlowStorage:
 
             # Serialize complex objects as JSON
             if flow.tokens:
-                data["tokens_json"] = json.dumps(flow.tokens.dict())
+                data["tokens_json"] = json.dumps(flow.tokens.model_dump())
             else:
                 data["tokens_json"] = ""
 
@@ -110,9 +112,8 @@ class RedisFlowStorage:
             logger.debug(f"Saved flow to Redis: {flow.flow_id}")
             return True
 
-        except Exception as e:
-            logger.error(f"Failed to save flow to Redis: {e}", exc_info=True)
-            return False
+        except (RedisError, ValueError, TypeError, KeyError) as e:
+            raise OAuthFlowStorageError("OAuth flow storage unavailable") from e
 
     def get_flow(self, flow_id: str) -> OAuthFlow | None:
         """
@@ -127,9 +128,8 @@ class RedisFlowStorage:
 
             return self._deserialize_flow(data)
 
-        except Exception as e:
-            logger.error(f"Failed to get flow from Redis: {e}", exc_info=True)
-            return None
+        except (RedisError, ValueError, TypeError, KeyError) as e:
+            raise OAuthFlowStorageError("OAuth flow storage unavailable") from e
 
     def consume_flow(self, flow_id: str, expected_state: str) -> OAuthFlow | None:
         """Atomically retrieve and delete the matching pending OAuth flow from Redis."""
@@ -146,9 +146,8 @@ class RedisFlowStorage:
                 return None
             data = dict(zip(raw_data[::2], raw_data[1::2], strict=True))
             return self._deserialize_flow(data)
-        except Exception as e:
-            logger.error(f"Failed to consume flow from Redis: {e}", exc_info=True)
-            return None
+        except (RedisError, ValueError, TypeError, KeyError) as e:
+            raise OAuthFlowStorageError("OAuth flow storage unavailable") from e
 
     def delete_flow(self, flow_id: str) -> bool:
         """
@@ -158,29 +157,28 @@ class RedisFlowStorage:
             key = self._make_key(flow_id)
             result = self.redis.delete(key)
             return result > 0
-        except Exception as e:
-            logger.error(f"Failed to delete flow from Redis: {e}")
-            return False
+        except (RedisError, ValueError, TypeError, KeyError) as e:
+            raise OAuthFlowStorageError("OAuth flow storage unavailable") from e
+
+    def get_flows(self, flow_ids: list[str]) -> dict[str, OAuthFlow | OAuthFlowStorageError | None]:
+        pipe = self.redis.pipeline(transaction=False)
+        for flow_id in flow_ids:
+            pipe.hgetall(self._make_key(flow_id))
+        try:
+            rows = pipe.execute()
+        except RedisError as exc:
+            raise OAuthFlowStorageError("OAuth flow storage unavailable") from exc
+        result: dict[str, OAuthFlow | OAuthFlowStorageError | None] = {}
+        for flow_id, row in zip(flow_ids, rows, strict=True):
+            try:
+                result[flow_id] = self._deserialize_flow(row) if row else None
+            except (ValueError, TypeError, KeyError):
+                result[flow_id] = OAuthFlowStorageError("Invalid OAuth flow record")
+        return result
 
     def find_flows(self, user_id: str, server_id: str) -> list[OAuthFlow]:
-        """
-        Find flows by user_id and server_id
-        """
-        try:
-            pattern = f"{self.key_prefix}*"
-            flows = []
-
-            # Scan all flow keys
-            for key in self.redis.scan_iter(match=pattern, count=100):
-                flow = self.get_flow(key.decode() if isinstance(key, bytes) else key.replace(self.key_prefix, ""))
-                if flow and flow.user_id == user_id and flow.server_id == server_id:
-                    flows.append(flow)
-
-            return flows
-
-        except Exception as e:
-            logger.error(f"Failed to find flows in Redis: {e}")
-            return []
+        flow = self.get_flow(f"{user_id}:{server_id}")
+        return [flow] if flow else []
 
     def cleanup_expired(self, ttl: int = DEFAULT_TTL) -> int:
         """
@@ -205,6 +203,5 @@ class RedisFlowStorage:
 
             return cleaned
 
-        except Exception as e:
-            logger.error(f"Failed to cleanup expired flows: {e}")
-            return 0
+        except (RedisError, ValueError, TypeError, KeyError) as e:
+            raise OAuthFlowStorageError("OAuth flow storage unavailable") from e

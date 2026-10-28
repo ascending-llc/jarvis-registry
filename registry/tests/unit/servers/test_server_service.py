@@ -2,14 +2,18 @@
 Unit tests for server service.
 """
 
-import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+import asyncio as _asyncio
+import logging as _logging
+from datetime import UTC, datetime
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 
 from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
+from registry.services.background_task_tracker import TrackerShutdownError as _TrackerShutdownError
 from registry.services.server_service import ServerServiceV1
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 
 @pytest.mark.unit
@@ -23,8 +27,6 @@ class TestRefreshServerCapabilities:
         """Create a mock MCP server document."""
         from datetime import UTC, datetime
 
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-
         server = Mock(spec=ExtendedMCPServer)
         server.id = Mock()
         server.serverName = "test-server"
@@ -33,6 +35,7 @@ class TestRefreshServerCapabilities:
         server.errorMessage = None
         server.lastConnected = None
         server.updatedAt = datetime.now(UTC)
+        server.vectorSyncPendingAt = None
         server.vectorContentHash = "old-hash"
         server.numTools = 0
         server.registryDisabledTools = []
@@ -77,8 +80,8 @@ class TestRefreshServerCapabilities:
                 "retrieve_tools_and_capabilities_from_server",
                 return_value=(mock_tools, mock_resources, mock_prompts, mock_capabilities, None),
             ):
-                # Mock _schedule_vector_sync
-                with patch.object(server_service, "_schedule_vector_sync"):
+                # Prevent the real vector sync (scheduled post-commit)
+                with patch.object(server_service, "schedule_vector_sync"):
                     result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
 
                     # 验证返回结果
@@ -115,8 +118,8 @@ class TestRefreshServerCapabilities:
                 "retrieve_tools_and_capabilities_from_server",
                 return_value=(None, None, None, None, error_message),
             ):
-                # Mock _schedule_vector_sync
-                with patch.object(server_service, "_schedule_vector_sync"):
+                # Prevent the real vector sync (scheduled post-commit)
+                with patch.object(server_service, "schedule_vector_sync"):
                     result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
 
                     # 验证返回结果
@@ -160,12 +163,15 @@ class TestRefreshServerCapabilities:
                 "retrieve_tools_and_capabilities_from_server",
                 return_value=(mock_tools, [], [], {}, None),
             ):
-                # Mock _schedule_vector_sync 并验证调用
-                with patch.object(server_service, "_schedule_vector_sync") as mock_sync:
+                # Mock schedule_vector_sync 并验证调用
+                with patch.object(server_service, "schedule_vector_sync") as mock_sync:
                     await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
 
-                    # 验证 Weaviate 同步被触发
-                    mock_sync.assert_called_once_with(mock_server, "old-hash")
+                    # 验证 Weaviate 同步被触发，且携带该 server 的 plan
+                    mock_sync.assert_called_once()
+                    plan = mock_sync.call_args.args[0]
+                    assert plan.doc is mock_server
+                    assert mock_server.vectorSyncPendingAt is not None
 
     async def test_refresh_server_capabilities_updates_tool_count(self, server_service, mock_server):
         """测试刷新时更新工具数量"""
@@ -181,8 +187,8 @@ class TestRefreshServerCapabilities:
                 "retrieve_tools_and_capabilities_from_server",
                 return_value=(mock_tools, [], [], {}, None),
             ):
-                # Mock _schedule_vector_sync
-                with patch.object(server_service, "_schedule_vector_sync"):
+                # Prevent the real vector sync (scheduled post-commit)
+                with patch.object(server_service, "schedule_vector_sync"):
                     await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
 
                     # 验证 numTools 被更新
@@ -212,7 +218,7 @@ class TestRefreshServerCapabilities:
                 "retrieve_tools_and_capabilities_from_server",
                 return_value=([], [], [], {}, None),
             ):
-                with patch.object(server_service, "_schedule_vector_sync"):
+                with patch.object(server_service, "schedule_vector_sync"):
                     result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
 
         assert result["status"] == "success"
@@ -366,7 +372,6 @@ class TestHealthCheckEndpointUrlConstruction:
     @pytest.fixture
     def mock_mcp_server(self):
         """Create a mock MCP server document."""
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         server = Mock(spec=ExtendedMCPServer)
         server.serverName = "test-server"
@@ -583,7 +588,7 @@ class TestUpdateDisabledTools:
 
     def _make_service(self):
         mock_repo = Mock()
-        mock_repo.update_tools_metadata = AsyncMock()
+        mock_repo.sync_tools_enabled = AsyncMock()
         service = ServerServiceV1(
             user_service=Mock(),
             token_service=Mock(),
@@ -595,8 +600,6 @@ class TestUpdateDisabledTools:
     def _make_server(self, disabled=None):
         from datetime import UTC, datetime
 
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-
         server = Mock(spec=ExtendedMCPServer)
         server.id = "srv-1"
         server.serverName = "test-server"
@@ -607,6 +610,7 @@ class TestUpdateDisabledTools:
                 "delete_file_mcp_test": {"mcpToolName": "delete_file"},
             }
         }
+        server.vectorSyncPendingAt = None
         server.registryDisabledTools = disabled if disabled is not None else []
         server.updatedAt = datetime.now(UTC)
         server.save = AsyncMock()
@@ -623,8 +627,10 @@ class TestUpdateDisabledTools:
 
         assert result.registryDisabledTools == ["read_file"]  # ghost_tool dropped, sorted
         server.save.assert_awaited_once()
-        # Only the real newly-disabled tool is scheduled for the Weaviate push.
-        mock_schedule.assert_called_once_with("srv-1", {"read_file"}, set())
+        # Only the real newly-disabled tool is scheduled for the Weaviate push; the marker is set first.
+        mock_schedule.assert_called_once_with(ANY, {"read_file"}, set())
+        assert mock_schedule.call_args.args[0].full_resync is False
+        assert server.vectorSyncPendingAt is not None
 
     async def test_schedules_flip_sets_for_weaviate_push(self):
         """update_disabled_tools schedules the flipped new/previous sets, not the server's whole tool set."""
@@ -637,7 +643,7 @@ class TestUpdateDisabledTools:
                 await service.update_disabled_tools("srv-1", ["write_file"])
 
         assert server.registryDisabledTools == ["write_file"]
-        mock_schedule.assert_called_once_with("srv-1", {"write_file"}, {"read_file"})
+        mock_schedule.assert_called_once_with(ANY, {"write_file"}, {"read_file"})
 
     async def test_noop_when_unchanged_skips_save_and_weaviate(self):
         """Submitting the same effective list is an idempotent no-op."""
@@ -651,49 +657,22 @@ class TestUpdateDisabledTools:
         server.save.assert_not_awaited()
         mock_schedule.assert_not_called()
 
-    async def test_schedule_tool_enabled_sync_batches_by_flip(self, monkeypatch):
-        """_schedule_tool_enabled_sync partitions the diff into disable/enable groups and pushes
-        each batch to Weaviate. Verified by capturing the coroutine handed to asyncio.create_task
-        (fire-and-forget) and running it to completion directly, instead of scheduling it."""
-        service, repo = self._make_service()
-        captured: dict = {}
-        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
-
-        service._schedule_tool_enabled_sync("srv-1", {"write_file"}, {"read_file"})
-        await captured["coro"]
-
-        repo.update_tools_metadata.assert_any_await("srv-1", ["write_file"], {"tool_enabled": False})
-        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": True})
-
-    async def test_schedule_tool_enabled_sync_empty_group_still_pushed(self, monkeypatch):
-        """A group with no members is still passed through (repo no-ops on empty list), never crashes."""
-        service, repo = self._make_service()
-        captured: dict = {}
-        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
-
-        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
-        await captured["coro"]
-
-        repo.update_tools_metadata.assert_any_await("srv-1", ["read_file"], {"tool_enabled": False})
-        repo.update_tools_metadata.assert_any_await("srv-1", [], {"tool_enabled": True})
-
-    async def test_schedule_tool_enabled_sync_no_repo_is_noop(self):
-        """No mcp_server_repo configured -> returns without scheduling anything."""
-        service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=None)
-        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())  # must not raise
-
-    async def test_schedule_tool_enabled_sync_logs_errors_without_raising(self, monkeypatch, caplog):
-        """A Weaviate failure in the background task is logged, not raised (MongoDB stays authoritative)."""
-        service, repo = self._make_service()
-        repo.update_tools_metadata.side_effect = RuntimeError("weaviate down")
-        captured: dict = {}
-        monkeypatch.setattr(asyncio, "create_task", lambda coro: captured.setdefault("coro", coro))
-
-        service._schedule_tool_enabled_sync("srv-1", {"read_file"}, set())
-        with caplog.at_level("ERROR", logger="registry.services.server_service"):
-            await captured["coro"]  # must not raise
-
-        assert "tool_enabled metadata sync failed" in caplog.text
+    @pytest.mark.parametrize("pending", [False, True])
+    async def test_tool_delta_preserves_prior_pending_work(self, pending):
+        service, _ = self._make_service()
+        server = self._make_server(disabled=["read_file"])
+        server.vectorSyncPendingAt = datetime.now(UTC) if pending else None
+        server.vectorSyncAttempts = 4
+        with (
+            patch.object(service, "get_server_by_id", return_value=server),
+            patch.object(service, "schedule_vector_sync") as schedule,
+        ):
+            await service.update_disabled_tools("srv-1", ["write_file"])
+        plan = schedule.call_args.args[0]
+        assert plan.full_resync is pending
+        assert plan.tool_updates == ((("write_file",), False), (("read_file",), True))
+        assert server.vectorSyncAttempts == 0
+        assert plan.marker == server.vectorSyncPendingAt
 
     async def test_server_not_found_raises(self):
         service, _ = self._make_service()
@@ -705,8 +684,6 @@ class TestUpdateDisabledTools:
         """A capabilities refresh drops disabled names that no longer exist downstream."""
         from datetime import UTC, datetime
 
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-
         service, _ = self._make_service()
         server = Mock(spec=ExtendedMCPServer)
         server.id = "srv-1"
@@ -717,6 +694,7 @@ class TestUpdateDisabledTools:
         server.errorMessage = None
         server.lastConnected = None
         server.updatedAt = datetime.now(UTC)
+        server.vectorSyncPendingAt = None
         server.vectorContentHash = "old-hash"
         server.numTools = 0
         server.save = AsyncMock()
@@ -727,7 +705,7 @@ class TestUpdateDisabledTools:
                 "retrieve_tools_and_capabilities_from_server",
                 return_value=([{"name": "read_file"}], [], [], {"sampling": {}}, None),
             ):
-                with patch.object(service, "_schedule_vector_sync"):
+                with patch.object(service, "schedule_vector_sync"):
                     result = await service.refresh_server_capabilities(server_id="srv-1", user_id="u1")
 
         assert result["status"] == "success"
@@ -746,7 +724,6 @@ class TestOAuthReAuthRequired:
         )
 
     def _oauth_server(self) -> Mock:
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         server = Mock(spec=ExtendedMCPServer)
         server.id = "srv-1"
@@ -785,7 +762,7 @@ class TestOAuthReAuthRequired:
 
         with (
             patch.object(service, "retrieve_from_server", AsyncMock(side_effect=error)),
-            patch.object(service, "_schedule_vector_sync") as sync,
+            patch.object(service, "schedule_vector_sync") as sync,
         ):
             with pytest.raises(OAuthReAuthRequiredError) as exc_info:
                 await service.toggle_server_status(server_id="srv-1", enabled=True, user_id="user-1")
@@ -821,7 +798,7 @@ class TestOAuthReAuthRequired:
 
         with (
             patch("registry.services.server_service.build_complete_headers_for_server", build),
-            patch.object(service, "_schedule_vector_sync") as sync,
+            patch.object(service, "schedule_vector_sync") as sync,
         ):
             with pytest.raises(OAuthReAuthRequiredError):
                 await service.refresh_server_capabilities(server_id="srv-1", user_id="user-1")
@@ -853,8 +830,6 @@ class TestRegistryOAuthLifecycleOnUpdate:
     def _make_server(self, config):
         from beanie import PydanticObjectId
 
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-
         return ExtendedMCPServer.model_construct(
             id=PydanticObjectId("65f000000000000000000001"),
             serverName="atlassian",
@@ -866,11 +841,10 @@ class TestRegistryOAuthLifecycleOnUpdate:
         )
 
     async def _update(self, server, data):
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         service = self._make_service()
         service.get_server_by_id = AsyncMock(return_value=server)
-        service._schedule_vector_sync = Mock()
+        service.schedule_vector_sync = Mock()  # update_server returns a plan; route schedules it
         collection = Mock()
         collection.update_one = AsyncMock()
         with (
@@ -906,3 +880,214 @@ class TestRegistryOAuthLifecycleOnUpdate:
         import registry.services.server_service as server_service_module
 
         assert not hasattr(server_service_module, "get_oauth_metadata_from_server")
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+async def test_toggle_enable_marks_pending_and_forces_full_resync():
+    """Enabling a server marks it pending in the same save and forces a full resync even when the
+    content hash is unchanged."""
+    service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=Mock())
+    server = Mock()
+    server.id = "srv-1"
+    server.serverName = "s"
+    server.config = {"enabled": False}
+    server.vectorSyncPendingAt = None
+    server.vectorContentHash = "h"
+    server.save = AsyncMock()
+
+    with (
+        patch.object(service, "get_server_by_id", AsyncMock(return_value=server)),
+        patch.object(service, "_fetch_and_update_tools", AsyncMock(return_value=True)),
+        patch.object(service, "schedule_vector_sync") as sched,
+    ):
+        await service.toggle_server_status(server_id="srv-1", enabled=True, user_id="u")
+
+    assert server.vectorSyncPendingAt is not None
+    plan = sched.call_args.args[0]
+    assert plan.doc is server
+    assert plan.full_resync is True
+    assert plan.marker == server.vectorSyncPendingAt
+
+
+def _delete_service(repo, tracker=None):
+    return ServerServiceV1(
+        user_service=Mock(),
+        token_service=Mock(),
+        oauth_service=Mock(),
+        mcp_server_repo=repo,
+        background_task_tracker=tracker,
+    )
+
+
+class _RunningTracker:
+    """A tracker whose spawn runs the coroutine inline (and records the name)."""
+
+    def __init__(self):
+        self.names = []
+        self.task = None
+
+    def spawn(self, coro, name):
+        self.names.append(name)
+        self.task = _asyncio.ensure_future(coro)
+
+
+@pytest.mark.asyncio
+async def test_delete_server_no_longer_deletes_vectors():
+    from beanie import PydanticObjectId
+
+    repo = Mock()
+    repo.delete_by_server_id = AsyncMock()
+    service = _delete_service(repo)
+    fake_server = Mock()
+    fake_server.id = PydanticObjectId()
+    fake_server.serverName = "srv-x"
+    fake_server.delete = AsyncMock()
+
+    with (
+        patch("registry.services.server_service.ExtendedMCPServer") as MockServer,
+    ):
+        MockServer.get = AsyncMock(return_value=fake_server)
+        name = await service.delete_server(server_id=str(fake_server.id))
+
+    assert name == "srv-x"
+    repo.delete_by_server_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_goes_through_tracker():
+    repo = Mock()
+    repo.delete_by_server_id = AsyncMock(return_value=1)
+    tracker = _RunningTracker()
+    service = _delete_service(repo, tracker)
+
+    service.schedule_vector_delete("srv-1", "Srv One")
+    await tracker.task
+
+    assert tracker.names == ["vector-delete-server-srv-1"]
+    repo.delete_by_server_id.assert_awaited_once_with("srv-1", "Srv One")
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_logs_warning_on_repo_failure(caplog):
+    repo = Mock()
+    repo.delete_by_server_id = AsyncMock(side_effect=RuntimeError("weaviate down"))
+    tracker = _RunningTracker()
+    service = _delete_service(repo, tracker)
+
+    with caplog.at_level(_logging.WARNING):
+        service.schedule_vector_delete("srv-1", "Srv One")
+        await tracker.task  # must not raise
+
+    assert any("Vector delete failed for server srv-1" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_schedule_vector_delete_returns_when_tracker_refuses(caplog):
+    repo = Mock()
+    repo.delete_by_server_id = AsyncMock()
+
+    def _refuse(coro, name):
+        coro.close()  # the real tracker closes the coro before refusing
+        raise _TrackerShutdownError()
+
+    tracker = Mock()
+    tracker.spawn = _refuse
+    service = _delete_service(repo, tracker)
+
+    # Returns normally; the Mongo delete already committed, the sweep heals the orphan.
+    with caplog.at_level(_logging.INFO, logger="registry.services.server_service"):
+        service.schedule_vector_delete("srv-1", "Srv One")
+
+    # The log names the orphan sweep, not the reconciler (which never heals deletes).
+    assert "the orphan sweep will remove its vectors" in caplog.text
+    assert "reconciler" not in caplog.text
+
+
+def _record_marker_at_save(doc) -> list[tuple]:
+    """Make ``doc.save`` record the marker fields as they are at save time (i.e. what commits)."""
+    saved: list[tuple] = []
+
+    async def save(*args, **kwargs):
+        saved.append((doc.vectorSyncPendingAt, doc.vectorSyncAttempts))
+
+    doc.save = AsyncMock(side_effect=save)
+    return saved
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+async def test_update_server_persists_marker_in_same_save_and_resets_attempts():
+    """update_server stamps the marker before its save (so it commits with the change), resets the
+    backoff counter, and returns a plan carrying that exact marker."""
+    from types import SimpleNamespace
+
+    from beanie import PydanticObjectId
+
+    service = ServerServiceV1(
+        user_service=Mock(),
+        token_service=Mock(),
+        oauth_service=Mock(),
+        mcp_server_repo=Mock(),
+        embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: False),
+    )
+    server = ExtendedMCPServer.model_construct(
+        id=PydanticObjectId(),
+        serverName="srv",
+        path="/srv",
+        tags=[],
+        config={"url": "https://mcp.example.com/mcp"},
+        vectorContentHash=None,
+        vectorSyncPendingAt=None,
+        vectorSyncAttempts=5,
+        numTools=0,
+    )
+    service.get_server_by_id = AsyncMock(return_value=server)
+    collection = Mock(update_one=AsyncMock())
+    with (
+        patch.object(ExtendedMCPServer, "save", autospec=True) as save,
+        patch.object(ExtendedMCPServer, "get_pymongo_collection", Mock(return_value=collection)),
+    ):
+        saved: list[tuple] = []
+        save.side_effect = lambda doc, **kwargs: saved.append((doc.vectorSyncPendingAt, doc.vectorSyncAttempts))
+        _server, plan = await service.update_server(server_id=str(server.id), data=ServerUpdateRequest(title="New"))
+
+    assert saved == [(plan.marker, 0)]
+    assert plan.doc is server
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+async def test_refresh_capabilities_persists_marker_in_same_save_and_resets_attempts():
+    service = ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=Mock())
+    server = Mock(spec=ExtendedMCPServer)
+    server.id = "srv-1"
+    server.serverName = "test-server"
+    server.config = {}
+    server.registryDisabledTools = []
+    server.lastError = None
+    server.errorMessage = None
+    server.lastConnected = None
+    server.updatedAt = datetime.now(UTC)
+    server.vectorSyncPendingAt = None
+    server.vectorSyncAttempts = 5
+    server.vectorContentHash = "old-hash"
+    server.numTools = 0
+    saved = _record_marker_at_save(server)
+
+    with (
+        patch.object(service, "get_server_by_id", return_value=server),
+        patch.object(
+            service,
+            "retrieve_tools_and_capabilities_from_server",
+            return_value=([{"name": "tool1"}], [], [], {}, None),
+        ),
+        patch.object(service, "schedule_vector_sync") as schedule,
+    ):
+        await service.refresh_server_capabilities(server_id="srv-1", user_id="user-1")
+
+    plan = schedule.call_args.args[0]
+    assert saved == [(plan.marker, 0)]

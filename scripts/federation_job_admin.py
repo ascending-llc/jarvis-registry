@@ -31,9 +31,12 @@ from bson import ObjectId
 from pymongo import DESCENDING, MongoClient
 
 from registry.core.config import settings
+from registry.core.vector_backend import resolve_vector_backend_config
+from registry_pkgs.database.embedding_reindex_job_repository import get_active_embedding_reindex_job
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.federation import Federation
+from registry_pkgs.vector.adapters.factory import VectorStoreFactory
 from registry_pkgs.vector.client import create_database_client
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -185,22 +188,14 @@ def _fail_active_job(db, federation_id: ObjectId, reason: str) -> None:
         sort=[("createdAt", DESCENDING)],
     )
 
-    federation_result = db.federations.update_one(
-        {"_id": federation_id},
-        {
-            "$set": {
-                "syncStatus": "failed",
-                "syncMessage": reason,
-                "updatedAt": now,
-            }
-        },
-    )
-    if federation_result.matched_count == 0:
-        raise SystemExit(f"Federation not found: {federation_id}")
-
-    if active_job:
-        db.federation_sync_jobs.update_one(
-            {"_id": active_job["_id"]},
+    if active_job is not None:
+        job_result = db.federation_sync_jobs.update_one(
+            {
+                "_id": active_job["_id"],
+                "federationId": federation_id,
+                "status": {"$in": list(ACTIVE_JOB_STATUSES)},
+                "leaseToken": active_job.get("leaseToken"),
+            },
             {
                 "$set": {
                     "status": "failed",
@@ -208,15 +203,65 @@ def _fail_active_job(db, federation_id: ObjectId, reason: str) -> None:
                     "error": reason,
                     "finishedAt": now,
                     "updatedAt": now,
+                    "leaseOwner": None,
+                    "leaseToken": None,
+                    "leaseExpiresAt": None,
+                    "heartbeatAt": None,
                 }
             },
         )
+        if job_result.matched_count != 1:
+            raise SystemExit(f"Active job changed concurrently; no federation state was updated: {active_job['_id']}")
+
+        if active_job.get("jobType") == "delete_sync":
+            federation_filter = {
+                "_id": federation_id,
+                "status": "deleting",
+                "deletingJobId": {"$in": [active_job["_id"], None]},
+            }
+            federation_set = {
+                "status": "active",
+                "deletingJobId": None,
+                "syncStatus": "failed",
+                "syncMessage": reason,
+                "updatedAt": now,
+            }
+        else:
+            federation_filter = {
+                "_id": federation_id,
+                "status": "active",
+                "syncStatus": {"$in": list(ACTIVE_JOB_STATUSES)},
+                "lastSync.jobId": {"$in": [active_job["_id"], None]},
+            }
+            federation_set = {"syncStatus": "failed", "syncMessage": reason, "updatedAt": now}
+    else:
+        federation = db.federations.find_one({"_id": federation_id})
+        if federation is None:
+            raise SystemExit(f"Federation not found: {federation_id}")
+        federation_filter = {
+            "_id": federation_id,
+            "status": federation.get("status"),
+            "syncStatus": federation.get("syncStatus"),
+            "lastSync.jobId": (federation.get("lastSync") or {}).get("jobId"),
+            "deletingJobId": federation.get("deletingJobId"),
+        }
+        federation_set = {"syncStatus": "failed", "syncMessage": reason, "updatedAt": now}
+
+    federation_result = db.federations.update_one(
+        federation_filter,
+        {"$set": federation_set},
+    )
+    if federation_result.matched_count != 1 and (
+        active_job is None or db.federations.find_one({"_id": federation_id}) is not None
+    ):
+        raise SystemExit(f"Federation changed concurrently; job was failed but parent was not updated: {federation_id}")
 
     _print_json(
         {
             "federationId": federation_id,
             "activeJobId": active_job["_id"] if active_job else None,
             "clearedActiveJob": active_job is not None,
+            "federationUpdated": federation_result.matched_count == 1,
             "status": "failed",
             "message": reason,
         }
@@ -253,7 +298,14 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
 
     try:
         await init_mongodb(settings.mongo_config)
-        db_client = create_database_client(settings.vector_backend_config)
+        if await get_active_embedding_reindex_job() is not None:
+            raise SystemExit("Embedding reindex is active; retry vector sync after it completes")
+        config = await resolve_vector_backend_config(settings)
+        # A full rebuild deletes old vectors before insertion. Validate the configured model and
+        # credentials before touching any existing vector documents.
+        embedding = VectorStoreFactory._create_embedding(config)
+        await asyncio.to_thread(embedding.embed_query, "federation vector sync preflight")
+        db_client = create_database_client(config)
         mcp_repo = MCPServerRepository(db_client)
         a2a_repo = A2AAgentRepository(db_client)
 
@@ -274,7 +326,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
 
         for server in mcp_servers:
             try:
-                result = await mcp_repo.sync_to_vector_db(server, is_delete=False)
+                result = await mcp_repo.sync_to_vector_db(server, is_delete=True)
                 if not result or result.get("failed_tools"):
                     mcp_failed += 1
                     detail = result.get("error") if result else "sync returned no result"
@@ -290,7 +342,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
 
         for agent in a2a_agents:
             try:
-                result = await a2a_repo.sync_to_vector_db(agent, is_delete=False)
+                result = await a2a_repo.sync_to_vector_db(agent, is_delete=True)
                 if not result or result.get("failed"):
                     a2a_failed += 1
                     detail = result.get("error") if result else "sync returned no result"
@@ -308,6 +360,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
             {
                 "federationId": federation_id,
                 "displayName": federation.displayName,
+                "collectionGeneration": db_client.collection_generation,
                 "scanned": {
                     "mcpServers": len(mcp_servers),
                     "a2aAgents": len(a2a_agents),
@@ -324,6 +377,8 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
                 "errors": errors,
             }
         )
+        if errors:
+            raise SystemExit(1)
     finally:
         try:
             if db_client is not None:

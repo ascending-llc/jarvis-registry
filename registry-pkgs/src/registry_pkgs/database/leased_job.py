@@ -156,12 +156,13 @@ class LeasedRepository[D: Document]:
     def _fence(self, lease: Lease) -> dict[str, Any]:
         """The filter every held-lease write matches on: same doc, same claim token, still leased.
 
-        A re-claim mints a new token, so this stops matching the instant the lease changes hands —
-        that is the whole safety property.
+        A re-claim mints a new token, and an expired deadline stops matching even before a new
+        owner claims the document.
         """
         return {
             "_id": lease.doc_id,
             self._fields.token: lease.token,
+            self._fields.expires_at: {"$gt": datetime.now(UTC)},
             self._spec.status_field: {"$in": list(self._spec.leased_statuses)},
         }
 
@@ -243,7 +244,7 @@ class LeasedRepository[D: Document]:
         result = await self._collection.update_one(
             self._fence(lease), {"$set": {f.expires_at: expires_at, f.heartbeat_at: now, f.updated_at: now}}
         )
-        return replace(lease, expires_at=expires_at) if result.modified_count == 1 else None
+        return replace(lease, expires_at=expires_at) if result.matched_count == 1 else None
 
     async def transition(
         self,
@@ -266,7 +267,7 @@ class LeasedRepository[D: Document]:
         if unset:
             update["$unset"] = dict.fromkeys(unset, "")
         result = await self._collection.update_one(self._fence(lease), update, session=session)
-        return result.modified_count == 1
+        return result.matched_count == 1
 
     async def transition_or_raise(
         self,
@@ -287,7 +288,7 @@ class LeasedRepository[D: Document]:
             raise LeaseLostError(f"lost lease for {self._spec.document.__name__} {lease.doc_id}")
 
     async def reap_one(self, *, extra_filter: dict[str, Any], set_fields: dict[str, Any]) -> D | None:
-        """Finalize one expired leased document, clearing its lease. Not used in this spec."""
+        """Finalize one expired leased document, clearing its lease."""
         now = datetime.now(UTC)
         f = self._fields
         document = await self._collection.find_one_and_update(
@@ -359,10 +360,14 @@ async def run_with_lease[D: Document, T](
     heartbeat: asyncio.Task[NoReturn] = asyncio.ensure_future(keep_lease_alive(repo, lease))
     try:
         done, _pending = await asyncio.wait({execution, heartbeat}, return_when=asyncio.FIRST_COMPLETED)
-        if execution in done:
+        if execution in done and not execution.cancelled() and execution.exception() is None:
+            # A completed execution's lease-held writes were all fenced, so its result stands even
+            # when a renewal raced its final, lease-releasing write and lost.
             return execution.result()
-        _ = await heartbeat  # heartbeat only ever completes by raising LeaseLostError
-        raise AssertionError("keep_lease_alive returned without raising")  # pragma: no cover
+        if heartbeat in done:
+            _ = await heartbeat  # heartbeat only ever completes by raising LeaseLostError
+            raise AssertionError("keep_lease_alive returned without raising")  # pragma: no cover
+        return execution.result()
     except asyncio.CancelledError:
         if on_cancelled is not None:
             try:

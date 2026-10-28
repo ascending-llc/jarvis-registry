@@ -54,7 +54,7 @@ providers:
     # Entra ID specific claim mapping (with sensible defaults)
     username_claim: "${ENTRA_USERNAME_CLAIM:-preferred_username}"
     groups_claim: "${ENTRA_GROUPS_CLAIM:-groups}"
-    email_claim: "${ENTRA_EMAIL_CLAIM:-email}"
+    email_claim: "email"
     name_claim: "${ENTRA_NAME_CLAIM:-name}"
     # Microsoft Graph API base URL (for sovereign clouds)
     graph_url: "${ENTRA_GRAPH_URL:-https://graph.microsoft.com}"

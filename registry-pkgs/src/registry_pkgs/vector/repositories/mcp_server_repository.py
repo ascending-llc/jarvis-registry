@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, ClassVar
+
+from langchain_core.documents import Document
 
 from ...models import ExtendedMCPServer
 from ...models.federation_metadata import extract_runtime_version
@@ -15,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
     """Vector sync repository for MCP servers."""
+
+    ENTITY_ID_PROPERTY: ClassVar[str] = "server_id"
 
     FILTERABLE_PROPERTIES = {
         "server_id": "text",
@@ -42,7 +46,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         *,
         is_delete: bool = True,
     ) -> dict:
-        """Full rebuild for an MCP server — caller must ensure content actually changed.
+        """Rebuild an MCP server's docs after content changes or detected index drift.
 
         Args:
             server: Server instance with current MongoDB state.
@@ -60,18 +64,9 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
             await self.ensure_collection()
 
             if is_delete and self._collection_has_property("server_id"):
-                try:
-                    result.deleted = await asyncio.wait_for(
-                        self.adelete_by_filter({"server_id": server_id}),
-                        timeout=10.0,
-                    )
-                    if result.deleted:
-                        logger.debug("Deleted %d old docs for server_id=%s", result.deleted, server_id)
-                except TimeoutError:
-                    logger.warning(
-                        "adelete_by_filter timed out for server_id=%s — skipping delete, proceeding with insert",
-                        server_id,
-                    )
+                # Do not cancel a thread-backed delete and then insert: the late delete could
+                # erase the replacement. Transport timeouts propagate as a failed sync below.
+                result.deleted = await self.adelete_by_filter({"server_id": server_id})
 
             docs = server.to_documents()
             if not docs:
@@ -131,6 +126,42 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
             result.error = str(e)
 
         return result.to_dict_mcp()
+
+    def _result_dict(self, result: VectorSyncResult) -> dict:
+        return result.to_dict_mcp()
+
+    async def sync_tools_enabled(
+        self,
+        server: ExtendedMCPServer,
+        tool_names: list[str],
+        *,
+        reload: Callable[[], Awaitable[ExtendedMCPServer | None]] | None = None,
+    ) -> dict:
+        """Patch toggled tools' enabled state, rebuilding the server if their doc count differs."""
+        if not tool_names:
+            return self._result_dict(VectorSyncResult())
+
+        names = set(tool_names)
+        filters = {self.ENTITY_ID_PROPERTY: str(server.id), "tool_name": list(tool_names)}
+        expected = sum(doc.metadata.get("tool_name") in names for doc in server.to_documents())
+
+        def patch(docs: list[Document]) -> VectorSyncResult:
+            groups: dict[bool, list[Document]] = {False: [], True: []}
+            for doc in docs:
+                enabled = not server.is_tool_disabled(doc.metadata["tool_name"])
+                groups[enabled].append(doc)
+
+            result = VectorSyncResult()
+            for enabled, group in groups.items():
+                if not group:
+                    continue
+                outcome = self._patch_docs(group, {"tool_enabled": enabled}, filters)
+                result.metadata_updated += outcome.metadata_updated
+                if result.error is None:
+                    result.error = outcome.error
+            return result
+
+        return await self._patch_or_rebuild(server, filters=filters, expected=expected, patch=patch, reload=reload)
 
     async def update_tools_metadata(
         self,

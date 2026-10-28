@@ -45,6 +45,7 @@ def _make_ctx(
     user_id: str | None = "507f1f77bcf86cd799439011",
     accessible_server_ids: list[str] | None = None,
     include_user_context: bool = True,
+    client_params: InitializeRequestParams | None = None,
 ):
     accessible: object = _PermissiveAccessibleSet() if accessible_server_ids is None else accessible_server_ids
     acl_service = MagicMock()
@@ -59,7 +60,7 @@ def _make_ctx(
         mcp_client_service=MagicMock(),
         oauth_service=MagicMock(),
         redis_client=MagicMock(),
-        session_store=MagicMock(),
+        client_info_store=MagicMock(),
         consent_store=MagicMock(),
         pending_consent_store=MagicMock(),
     )
@@ -67,6 +68,8 @@ def _make_ctx(
     request_state = SimpleNamespace()
     if include_user_context:
         request_state.user = {"user_id": user_id, "username": "test", "client_id": "claude"}
+    # Pre-seed the per-request memo so get_client_params() returns these params without a Redis GET.
+    request_state.mcp_client_params = client_params
     request_context = SimpleNamespace(
         lifespan_context=lifespan_context,
         request=SimpleNamespace(state=request_state),
@@ -74,7 +77,6 @@ def _make_ctx(
 
     ctx = MagicMock()
     ctx.request_context = request_context
-    ctx.session = SimpleNamespace(client_params=None)
     ctx.request_id = "req-1"
     return ctx
 
@@ -333,11 +335,10 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
     downstream_call.assert_not_awaited()
 
 
-def test_get_state_metadata_returns_unrecognized_and_no_notify_for_missing_client_params():
+def test_get_state_metadata_returns_unrecognized_for_missing_client_params():
     result = utils._get_state_metadata(None)
 
     assert result["client_branding"] == utils.ClientBranding.UNRECOGNIZED
-    assert result["notify_elicitation_complete"] is False
 
 
 @pytest.mark.parametrize(
@@ -352,21 +353,12 @@ def test_get_state_metadata_returns_unrecognized_and_no_notify_for_missing_clien
         ("some-other-client", utils.ClientBranding.UNRECOGNIZED),
     ],
 )
-@pytest.mark.parametrize("supports_url_elicitation", [True, False])
-def test_get_state_metadata_notify_flag_matches_url_elicitation_support(
-    client_name,
-    expected_branding,
-    supports_url_elicitation,
-):
-    """notify_elicitation_complete must mirror _support_url_elicitation for every branding: a session
-    is only ever registered in SessionStore (making a later notification possible) when the client
-    supports URL mode elicitation, regardless of which brand it's recognized as."""
-    client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
+def test_get_state_metadata_maps_client_name_to_branding(client_name, expected_branding):
+    client_params = _make_client_params(client_name, supports_url_elicitation=False)
 
     result = utils._get_state_metadata(client_params)
 
     assert result["client_branding"] == expected_branding
-    assert result["notify_elicitation_complete"] is supports_url_elicitation
 
 
 @pytest.mark.parametrize("client_name", ["claude-code", "claude-ai/1.0", "Claude"])
@@ -410,9 +402,6 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     assert pending["client_id"] == INTERACTIVE_CLIENT_ID
     assert pending["server_path"] == "/github"
     assert pending["elicitation_id"]
-    # ctx.session.client_params is None here, so the client is treated as not supporting URL mode
-    # elicitation: no session gets registered in SessionStore, so there's nothing to notify later.
-    assert pending["notify_elicitation_complete"] is False
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
         "507f1f77bcf86cd799439011",
         INTERACTIVE_CLIENT_ID,
@@ -432,7 +421,7 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
     monkeypatch.setattr(utils, "_support_url_elicitation", lambda _client_params: True)
 
-    with pytest.raises(utils.UrlElicitationRequiredError):
+    with pytest.raises(utils.UrlElicitationRequiredError) as exc_info:
         await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
@@ -441,18 +430,13 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
         INTERACTIVE_CLIENT_ID,
         "/github",
     )
-    ctx.request_context.lifespan_context.session_store.append.assert_called_once()
-    elicitation_id, saved_session = ctx.request_context.lifespan_context.session_store.append.call_args.args
-    assert elicitation_id
-    assert saved_session is ctx.session
 
-    # The same elicitation_id must be threaded into the pending-consent payload so that
-    # approve_server_consent can later find this exact paused session to notify.
+    # The elicitation id raised to the client must be threaded into the pending-consent payload so
+    # the consent callback can later recover the client branding for the deep-link back.
+    raised_elicitation_id = exc_info.value.elicitations[0].elicitationId
+    assert raised_elicitation_id
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
-    assert pending["elicitation_id"] == elicitation_id
-    # A session was registered above, so the pending payload must say so, or approve_server_consent
-    # will skip the notification even though a session is waiting for it.
-    assert pending["notify_elicitation_complete"] is True
+    assert pending["elicitation_id"] == raised_elicitation_id
     downstream_call.assert_not_awaited()
 
 
@@ -787,3 +771,57 @@ async def test_downstream_tool_call_raises_unauthorized_with_challenge():
         await server._downstream_tool_call(ctx, "https://mcp.example.com/mcp", {}, {})
 
     assert exc_info.value.www_authenticate == 'Bearer resource_metadata="https://x"'
+
+
+def test_create_mcp_app_is_stateless_without_event_store():
+    """The gateway must be stateless (any pod serves any request) and keep json_response off so that
+    downstream notifications still ride the POST's own SSE stream."""
+    from registry.mcpgw.server import create_mcp_app
+
+    mcp = create_mcp_app(container_provider=lambda: None)
+
+    assert mcp.settings.stateless_http is True
+    assert mcp.settings.json_response is False
+    assert mcp._event_store is None
+
+
+@pytest.mark.asyncio
+async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
+    """Stateless FastMCP enters the lifespan on every request, so it must yield one cached context and
+    the container's single proxy client both times — never a fresh AsyncClient per request."""
+    from registry.mcpgw.server import create_mcp_app
+
+    proxy_client = object()
+    container = SimpleNamespace(
+        mcpgw_proxy_client=proxy_client,
+        a2a_client_registry=MagicMock(),
+        server_service=MagicMock(),
+        mcp_server_repo=MagicMock(),
+        a2a_agent_repo=MagicMock(),
+        search_service=MagicMock(),
+        mcp_client_service=MagicMock(),
+        oauth_service=MagicMock(),
+        client_info_store=MagicMock(),
+        redis_client=MagicMock(),
+        acl_service=MagicMock(),
+        consent_store=MagicMock(),
+        pending_consent_store=MagicMock(),
+    )
+    calls = {"n": 0}
+
+    def provider():
+        calls["n"] += 1
+        return container
+
+    mcp = create_mcp_app(container_provider=provider)
+    lifespan = mcp.settings.lifespan
+
+    async with lifespan(mcp) as ctx1:
+        async with lifespan(mcp) as ctx2:
+            pass
+
+    assert ctx1 is ctx2
+    assert ctx1.proxy_client is proxy_client
+    assert ctx2.proxy_client is proxy_client
+    # The container is resolved only on the first entry; the context is cached thereafter.
+    assert calls["n"] == 1

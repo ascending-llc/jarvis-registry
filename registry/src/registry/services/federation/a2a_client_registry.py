@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import httpx
-from beanie import PydanticObjectId
 
 from registry.core.a2a_proxy import A2AProxyClientRegistry
 from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
@@ -52,9 +51,6 @@ class A2AClientRegistry:
             agentcore_jwt=agentcore_jwt,
             runtime_jwt_config=_get_agentcore_runtime_jwt_config(agent.config) if agentcore_jwt else None,
         )
-
-    async def invalidate_azure_federation(self, federation_id: PydanticObjectId) -> None:
-        await self._azure_client_cache.invalidate(federation_id)
 
     async def close(self) -> None:
         await self._agentcore_registry.close()

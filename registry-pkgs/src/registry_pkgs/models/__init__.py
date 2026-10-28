@@ -33,6 +33,7 @@ from .federation_metadata import (
     FederationMetadata,
 )
 from .federation_sync_job import FederationSyncJob
+from .leader_lease import LeaderLease
 from .model_gateway_selection import ModelGatewaySelection
 from .model_source import ModelSource
 from .skill_sync_job import SkillSyncJob
@@ -55,6 +56,7 @@ __all__ = [
     "AzureFoundryFederationMetadata",
     "FederationMetadata",
     "FederationSyncJob",
+    "LeaderLease",
     "ModelGatewaySelection",
     "ModelSource",
     "SkillSyncJob",

@@ -6,11 +6,13 @@ from bson import ObjectId
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from registry.api.v1.mcp.oauth_router import router
-from registry.core.session_store import SessionStore
+from registry.api.v1.mcp.oauth_router import _client_branding_from_meta, router
 from registry.deps import get_container
 from registry.services.oauth.mcp_service import MCPService
+from registry_pkgs.oauth.errors import OAuthCoordinationError
+from registry_pkgs.oauth.refresh_lock import REFRESH_IN_PROGRESS_MESSAGE
 from registry_pkgs.oauth.schemas import OAuthFlowStatus, OAuthFlowStatusResponse
+from registry_pkgs.oauth.types import ClientBranding
 from tests.conftest import make_container_factory
 
 # Valid MongoDB ObjectId for testing (24 hex characters)
@@ -99,12 +101,16 @@ for attr in dir(mock_flow_manager):
 
 # Set up the TestClient with the necessary dependencies overridden
 @pytest.fixture
-def client():
+async def client():
     from fastapi import FastAPI
 
     mock_flow_manager.is_flow_expired = Mock(return_value=False)
-    mock_flow_manager.consume_flow = Mock(side_effect=lambda flow_id, _state: mock_flow_manager.get_flow(flow_id))
-    mock_flow_manager.fail_flow = Mock()
+
+    async def consume(flow_id, _state):
+        return await mock_flow_manager.get_flow(flow_id)
+
+    mock_flow_manager.consume_flow = AsyncMock(side_effect=consume)
+    mock_flow_manager.fail_flow = AsyncMock()
 
     app = FastAPI()
 
@@ -143,7 +149,6 @@ def client():
         server_service=mock_container.server_service,
         token_service=mock_container.token_service,
         mcp_service=mock_container.mcp_service,
-        session_store=SessionStore(),
         redis_client=Mock(),
         oauth_state_store=mock_oauth_state_store,
     )
@@ -314,7 +319,7 @@ class TestOAuthRouter:
             registry_app_name="jarvis-registry",
             base_redirect_url="http://localhost",
             encryption_key=bytes(16),
-            redis_client=None,
+            redis_client=Mock(),
             redis_key_prefix="test",
         )
         refresh = AsyncMock(return_value=(True, None))
@@ -339,6 +344,19 @@ class TestOAuthRouter:
         assert response.status_code == 400
         assert "Failed to refresh tokens" in response.json()["detail"]
 
+    def test_refresh_oauth_tokens_coordination_error_is_retryable(self, client, monkeypatch):
+        """A transient coordination failure (e.g. a double-clicked refresh) is a 503 with the retry message."""
+        monkeypatch.setattr(
+            mock_mcp_service.oauth_service,
+            "validate_and_refresh_tokens",
+            AsyncMock(side_effect=OAuthCoordinationError(REFRESH_IN_PROGRESS_MESSAGE)),
+        )
+
+        response = client.post(f"/mcp/oauth/refresh/{TEST_SERVER_ID}")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == REFRESH_IN_PROGRESS_MESSAGE
+
     def test_oauth_callback_success(self, client):
         """Test successful OAuth callback"""
 
@@ -356,7 +374,7 @@ class TestOAuthRouter:
         # Registry-frontend-initiated flow (not an MCP client) → no downstream redirect branch.
         mock_flow.metadata.mcp_client_context = None
         mock_flow.metadata.device_code = None
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda flow_id: mock_flow)
 
         # Mock successful completion
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
@@ -389,7 +407,7 @@ class TestOAuthRouter:
         mock_flow.status = "pending"
         mock_flow.metadata.mcp_client_context = None
         mock_flow.metadata.device_code = "device-1"
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda flow_id: mock_flow)
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
         mock_mcp_service.connection_service.create_user_connection = AsyncMock(return_value=None)
         mock_oauth_state_store.get_device_code.return_value = {
@@ -430,7 +448,7 @@ class TestOAuthRouter:
         mock_flow.status = "pending"
         mock_flow.metadata.mcp_client_context = None
         mock_flow.metadata.device_code = "device-1"
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda flow_id: mock_flow)
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
         mock_mcp_service.connection_service.create_user_connection = AsyncMock(return_value=None)
         mock_oauth_state_store.get_device_code.return_value = None
@@ -465,7 +483,7 @@ class TestOAuthRouter:
             "server_path": "github",
         }
         mock_flow.metadata.device_code = None
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda flow_id: mock_flow)
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
         mock_mcp_service.connection_service.create_user_connection = AsyncMock(return_value=None)
 
@@ -487,7 +505,7 @@ class TestOAuthRouter:
     def test_oauth_callback_missing_code(self, client):
         """Test OAuth callback with missing code parameter"""
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: None
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda _: None)
         response = client.get("/mcp/test_server/oauth/callback?state=valid-state", follow_redirects=False)
 
         assert response.status_code == 307
@@ -499,7 +517,7 @@ class TestOAuthRouter:
     def test_oauth_callback_missing_code_marks_verified_layer_a_flow_failed(self, client):
         flow = _layer_a_flow()
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_flow_manager.get_flow = lambda _: flow
+        mock_flow_manager.get_flow = AsyncMock(side_effect=lambda _: flow)
 
         response = client.get("/mcp/test_server/oauth/callback?state=valid-state", follow_redirects=False)
 
@@ -519,7 +537,7 @@ class TestOAuthRouter:
 
     def test_oauth_callback_provider_error_does_not_mutate_missing_flow(self, client):
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_flow_manager.get_flow = lambda _: None
+        mock_flow_manager.get_flow = AsyncMock(side_effect=lambda _: None)
 
         response = client.get(
             "/mcp/test_server/oauth/callback?error=access_denied&state=valid-state",
@@ -539,7 +557,7 @@ class TestOAuthRouter:
             flow.error = error
 
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: flow
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda _: flow)
         mock_flow_manager.fail_flow.side_effect = fail_flow
         response = client.get(
             "/mcp/test_server/oauth/callback?error=access_denied&state=valid-state",
@@ -577,7 +595,7 @@ class TestOAuthRouter:
         expected_description,
     ):
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: _layer_b_flow()
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda _: _layer_b_flow())
 
         response = client.get(f"/mcp/github/oauth/callback?{callback_query}", follow_redirects=False)
 
@@ -596,7 +614,7 @@ class TestOAuthRouter:
 
     def test_oauth_callback_relays_sanitized_complete_failure_to_layer_b_client(self, client):
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: _layer_b_flow()
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda _: _layer_b_flow())
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(
             lambda *args, **kwargs: (False, "provider secret: token exchange failed")
         )
@@ -619,7 +637,7 @@ class TestOAuthRouter:
         flow = _layer_b_flow()
         flow.status = OAuthFlowStatus.COMPLETED
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_flow_manager.get_flow = lambda _: flow
+        mock_flow_manager.get_flow = AsyncMock(side_effect=lambda _: flow)
 
         response = client.get(
             "/mcp/github/oauth/callback?error=access_denied&state=valid-state",
@@ -634,7 +652,7 @@ class TestOAuthRouter:
 
     def test_oauth_callback_does_not_relay_provider_error_for_expired_layer_b_flow(self, client):
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_flow_manager.get_flow = lambda _: _layer_b_flow()
+        mock_flow_manager.get_flow = AsyncMock(side_effect=lambda _: _layer_b_flow())
         mock_flow_manager.is_flow_expired.return_value = True
 
         response = client.get(
@@ -651,7 +669,7 @@ class TestOAuthRouter:
     def test_oauth_callback_layer_b_error_state_is_consumed_after_first_relay(self, client):
         flow_holder = {"flow": _layer_b_flow()}
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_flow_manager.get_flow = lambda _: flow_holder.get("flow")
+        mock_flow_manager.get_flow = AsyncMock(side_effect=lambda _: flow_holder.get("flow"))
         mock_flow_manager.consume_flow.side_effect = lambda _flow_id, _state: flow_holder.pop("flow", None)
 
         first_response = client.get(
@@ -672,7 +690,7 @@ class TestOAuthRouter:
 
     def test_oauth_callback_does_not_relay_when_atomic_consume_fails(self, client):
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_flow_manager.get_flow = lambda _: _layer_b_flow()
+        mock_flow_manager.get_flow = AsyncMock(side_effect=lambda _: _layer_b_flow())
         mock_flow_manager.consume_flow.side_effect = None
         mock_flow_manager.consume_flow.return_value = None
 
@@ -695,7 +713,9 @@ class TestOAuthRouter:
     )
     def test_oauth_callback_does_not_relay_error_for_state_mismatch(self, client, callback_query):
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: _layer_b_flow(state="expected-state")
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(
+            side_effect=lambda _: _layer_b_flow(state="expected-state")
+        )
 
         response = client.get(f"/mcp/github/oauth/callback?{callback_query}", follow_redirects=False)
 
@@ -706,7 +726,9 @@ class TestOAuthRouter:
 
     def test_oauth_callback_does_not_relay_complete_failure_for_state_mismatch(self, client):
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: _layer_b_flow(state="expected-state")
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(
+            side_effect=lambda _: _layer_b_flow(state="expected-state")
+        )
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(
             lambda *args, **kwargs: (False, "Invalid state parameter")
         )
@@ -724,7 +746,7 @@ class TestOAuthRouter:
     def test_oauth_callback_complete_failure_without_layer_b_context_keeps_page_redirect(self, client):
         flow = _layer_a_flow()
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: flow
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda _: flow)
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(
             lambda *args, **kwargs: (False, "upstream_failed")
         )
@@ -776,7 +798,7 @@ class TestOAuthRouter:
         mock_flow = Mock()
         mock_flow.status = OAuthFlowStatus.COMPLETED
         mock_flow.metadata.device_code = None
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda flow_id: mock_flow)
 
         response = client.get(
             "/mcp/test_server/oauth/callback?code=auth_code&state=test_user-flow123##security_token",
@@ -798,7 +820,7 @@ class TestOAuthRouter:
         mock_flow.status = OAuthFlowStatus.COMPLETED
         mock_flow.user_id = "test_user"
         mock_flow.metadata.device_code = "device-1"
-        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda flow_id: mock_flow)
         mock_mcp_service.oauth_service.complete_oauth_flow = AsyncMock()
         mock_oauth_state_store.get_device_code.return_value = {
             "status": "pending",
@@ -864,6 +886,32 @@ class TestOAuthRouter:
         assert response_data["serverId"] == TEST_SERVER_ID
         assert response_data["userId"] == "test_user"
         assert "oauth delete failed" in response_data["message"]
+
+
+class TestClientBrandingFromMeta:
+    """AS-1914: the branding helper replaced the old elicitation-complete notifier. It must keep the
+    exact return contract and tolerate pre-deploy flow metadata that still carries the dropped flag."""
+
+    def test_returns_none_when_meta_is_falsy(self):
+        assert _client_branding_from_meta(None) is None
+        assert _client_branding_from_meta({}) is None
+
+    def test_returns_none_without_elicitation_id(self):
+        assert _client_branding_from_meta({"client_branding": ClientBranding.VSCODE}) is None
+
+    def test_returns_branding_with_elicitation_id(self):
+        meta = {"elicitation_id": "e-1", "client_branding": ClientBranding.VSCODE}
+        assert _client_branding_from_meta(meta) == ClientBranding.VSCODE
+
+    def test_accepts_pre_deploy_meta_with_dropped_notify_flag(self):
+        """Flow metadata written before the deploy still carries the removed notification flag; the
+        helper must ignore the extra key, not choke on it."""
+        meta = {
+            "elicitation_id": "e-1",
+            "client_branding": ClientBranding.CURSOR,
+            "notify_elicitation_complete": True,
+        }
+        assert _client_branding_from_meta(meta) == ClientBranding.CURSOR
 
 
 if __name__ == "__main__":

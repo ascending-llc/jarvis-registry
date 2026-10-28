@@ -47,3 +47,9 @@ GENERATED_TOKEN_NO_GRANTABLE_SCOPES_DETAIL = (
     'None of your scopes can be granted to a token of type "{purpose}", so no token was generated. '
     "This token type only accepts: {allowed}."
 )
+
+# What repairs a vector task the background-task tracker refused at shutdown, logged so a skipped
+# write is traceable: the reconciler heals a sync's pending marker; the orphan sweep removes a skipped
+# delete's vectors.
+VECTOR_SYNC_SKIPPED_FALLBACK = "the reconciler will heal it"
+VECTOR_DELETE_SKIPPED_FALLBACK = "the orphan sweep will remove its vectors"

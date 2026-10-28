@@ -15,6 +15,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from bson import ObjectId
+
 from registry_pkgs.core.crypto_utils import decrypt_auth_fields as _decrypt_auth_fields
 from registry_pkgs.core.crypto_utils import decrypt_value as _decrypt_value
 from registry_pkgs.core.crypto_utils import encrypt_auth_fields as _encrypt_auth_fields
@@ -62,6 +64,20 @@ def decrypt_auth_fields(config: dict) -> dict:
     return _decrypt_auth_fields(config, encryption_key=_auth_fields_key())
 
 
+def identity_from_claims(claims: dict[str, Any]) -> tuple[str, str] | None:
+    """Read identity from a verified user token; reject legacy username subjects.
+
+    The subject is the MongoDB user ID. Preferred username is display-only and
+    falls back to the subject for downstream-AS tokens that omit it.
+    """
+    user_id = claims.get("sub")
+    if not isinstance(user_id, str) or not ObjectId.is_valid(user_id):
+        return None
+
+    username = claims.get("preferred_username")
+    return user_id, username if isinstance(username, str) and username else user_id
+
+
 def generate_access_token(
     user_id: str,
     username: str,
@@ -106,6 +122,7 @@ def generate_access_token(
     # Build extra claims
     extra_claims = {
         "user_id": user_id,
+        "preferred_username": username,
         "email": email,
         "groups": groups,
         "scope": " ".join(scopes) if isinstance(scopes, list) else scopes,
@@ -121,14 +138,14 @@ def generate_access_token(
     # CRUD-session (cookie) class: audience, client_id and token_class are set by the layer.
     token = mint_crud_session_token(
         settings.jwt_token_config,
-        subject=username,
+        subject=user_id,
         token_type="access_token",
         expires_in_seconds=expires_in_seconds,
         iat=iat,
         extra_claims=extra_claims,
     )
 
-    logger.debug(f"Generated access token for user {username}, expires in {expires_hours}h")
+    logger.debug("Generated access token for user ID %s, expires in %sh", user_id, expires_hours)
     return token
 
 
@@ -176,6 +193,7 @@ def generate_refresh_token(
     # Build extra claims - include groups/scopes for token refresh
     extra_claims = {
         "user_id": user_id,
+        "preferred_username": username,
         "auth_method": auth_method,
         "provider": provider,
         "groups": groups,
@@ -188,13 +206,13 @@ def generate_refresh_token(
     # CRUD-session (cookie) class: audience, client_id and token_class are set by the layer.
     token = mint_crud_session_token(
         settings.jwt_token_config,
-        subject=username,
+        subject=user_id,
         token_type="refresh_token",
         expires_in_seconds=expires_in_seconds,
         extra_claims=extra_claims,
     )
 
-    logger.debug(f"Generated refresh token for user {username}, expires in {expires_days} days")
+    logger.debug("Generated refresh token for user ID %s, expires in %s days", user_id, expires_days)
     return token
 
 
@@ -251,24 +269,21 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
 
 
 def generate_token_pair(
-    user_id: str | None = None,
-    username: str | None = None,
-    email: str | None = None,
-    groups: list | None = None,
-    scopes: list | None = None,
-    role: str | None = None,
-    auth_method: str | None = None,
-    provider: str | None = None,
+    *,
+    user_id: str,
+    username: str,
+    email: str,
+    groups: list,
+    scopes: list | str,
+    role: str,
+    auth_method: str,
+    provider: str,
     idp_id: str | None = None,
-    user_info: dict[str, Any] | None = None,
     iat: int | None = None,
     exp: int | None = None,
 ) -> tuple[str, str]:
     """
     Generate both access and refresh tokens.
-
-    Can accept either individual parameters or a user_info dict.
-    If user_info is provided, it takes precedence over individual parameters.
 
     Args:
         user_id: User's database ID
@@ -280,27 +295,12 @@ def generate_token_pair(
         auth_method: Authentication method
         provider: Auth provider
         idp_id: Identity provider user ID (optional)
-        user_info: Dict containing user info (takes precedence if provided)
         iat: Issued at timestamp (optional, honors OAuth token iat)
         exp: Expiration timestamp (optional, honors OAuth token exp)
 
     Returns:
         Tuple of (access_token, refresh_token)
     """
-    # Use user_info dict if provided, otherwise use individual parameters
-    if user_info:
-        user_id = user_info.get("user_id", user_id)
-        username = user_info.get("username", username)
-        email = user_info.get("email", email)
-        groups = user_info.get("groups", groups or [])
-        scopes = user_info.get("scopes", scopes or [])
-        role = user_info.get("role", role)
-        auth_method = user_info.get("auth_method", auth_method)
-        provider = user_info.get("provider", provider)
-        idp_id = user_info.get("idp_id", idp_id)
-        iat = user_info.get("iat", iat)
-        exp = user_info.get("exp", exp)
-
     access_token = generate_access_token(
         user_id=user_id,
         username=username,

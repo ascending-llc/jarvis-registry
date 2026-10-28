@@ -1,46 +1,17 @@
 import asyncio
-from typing import Any
 
 import pytest
-from redis.exceptions import ConnectionError as RedisConnectionError
 
 from registry_pkgs.oauth import refresh_lock as refresh_lock_module
 from registry_pkgs.oauth.errors import OAuthTokenError
 from registry_pkgs.oauth.refresh_lock import REFRESH_LOCK_TTL_MS, refresh_lock, refresh_lock_key
-
-
-class FakeRedis:
-    """Just enough of redis.Redis for SET NX PX and the compare-and-delete release script."""
-
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-        self.set_calls: list[dict[str, Any]] = []
-        self.fail_set = False
-        self.fail_eval = False
-
-    def set(self, key: str, value: str, *, nx: bool = False, px: int | None = None) -> bool | None:
-        self.set_calls.append({"key": key, "nx": nx, "px": px})
-        if self.fail_set:
-            raise RedisConnectionError("down")
-        if nx and key in self.store:
-            return None
-        self.store[key] = value
-        return True
-
-    def eval(self, script: str, numkeys: int, key: str, token: str) -> int:
-        if self.fail_eval:
-            raise RedisConnectionError("down")
-        if self.store.get(key) == token:
-            del self.store[key]
-            return 1
-        return 0
+from tests.fake_redis import FakeRedis
 
 
 @pytest.fixture(autouse=True)
 def _fast_polling(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(refresh_lock_module, "REFRESH_LOCK_POLL_SECONDS", 0.01)
     monkeypatch.setattr(refresh_lock_module, "REFRESH_LOCK_WAIT_SECONDS", 0.1)
-    refresh_lock_module._memory_locks.clear()
 
 
 KEY = refresh_lock_key("jarvis", "user-1", "server-1")
@@ -102,7 +73,7 @@ async def test_release_only_deletes_own_token() -> None:
 async def test_acquire_redis_error_propagates() -> None:
     redis = FakeRedis()
     redis.fail_set = True
-    with pytest.raises(RedisConnectionError):
+    with pytest.raises(OAuthTokenError):
         async with refresh_lock(redis, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
             pass
 
@@ -118,30 +89,83 @@ async def test_release_redis_error_is_swallowed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_memory_fallback_serializes_and_times_out() -> None:
-    order: list[str] = []
+async def test_no_memory_fallback() -> None:
+    with pytest.raises(OAuthTokenError, match="requires Redis"):
+        async with refresh_lock(None, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
+            pytest.fail("must not enter")
+
+
+@pytest.mark.asyncio
+async def test_lost_owner_cannot_renew_or_delete_new_owner() -> None:
+    redis = FakeRedis()
+    async with refresh_lock(redis, key_prefix="jarvis", user_id="user-1", server_id="server-1") as lease:
+        redis.store[KEY] = "new-owner"
+        with pytest.raises(OAuthTokenError, match="lease lost"):
+            await lease.ensure_owned()
+    assert redis.store[KEY] == "new-owner"
+
+
+@pytest.mark.asyncio
+async def test_waiter_observes_result_without_acquiring_second_lease() -> None:
+    redis = FakeRedis()
+    entered = asyncio.Event()
+    release = asyncio.Event()
 
     async def holder() -> None:
-        async with refresh_lock(None, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
-            order.append("first-in")
-            await asyncio.sleep(0.03)
-            order.append("first-out")
+        async with refresh_lock(redis, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
+            entered.set()
+            await release.wait()
+
+    task = asyncio.create_task(holder())
+    await entered.wait()
 
     async def waiter() -> None:
-        await asyncio.sleep(0.005)
-        async with refresh_lock(None, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
-            order.append("second-in")
+        async with refresh_lock(
+            redis, key_prefix="jarvis", user_id="user-1", server_id="server-1", wait_for_result=True
+        ) as lease:
+            assert lease is None
 
-    await asyncio.gather(holder(), waiter())
-    assert order == ["first-in", "first-out", "second-in"]
+    waiter_task = asyncio.create_task(waiter())
+    while len(redis.set_calls) < 2:
+        await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(task, waiter_task)
+    assert len(redis.set_calls) == 2  # Holder's SET and waiter's initial failed SET only.
 
-    async def long_holder() -> None:
-        async with refresh_lock(None, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
-            await asyncio.sleep(0.3)
 
-    task = asyncio.create_task(long_holder())
-    await asyncio.sleep(0.01)
-    with pytest.raises(OAuthTokenError, match="refresh already in progress"):
-        async with refresh_lock(None, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
-            pass
-    await task
+@pytest.mark.asyncio
+async def test_cancelled_holder_releases_lock() -> None:
+    redis = FakeRedis()
+    entered = asyncio.Event()
+
+    async def holder() -> None:
+        async with refresh_lock(redis, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(holder())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert KEY not in redis.store
+
+
+@pytest.mark.asyncio
+async def test_timeout_inside_held_lease_is_not_reported_as_refresh_in_progress() -> None:
+    redis = FakeRedis()
+    with pytest.raises(TimeoutError):
+        async with refresh_lock(redis, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
+            raise TimeoutError("IdP call timed out")
+    assert KEY not in redis.store
+
+
+@pytest.mark.asyncio
+async def test_held_lease_outlives_acquire_wait_without_cancelling_body() -> None:
+    redis = FakeRedis()
+    async with refresh_lock(redis, key_prefix="jarvis", user_id="user-1", server_id="server-1"):
+        # Longer than REFRESH_LOCK_WAIT_SECONDS (patched to 0.1s): the body is never cancelled.
+        await asyncio.sleep(0.15)
+        finished = True
+    assert finished
+    assert KEY not in redis.store

@@ -57,6 +57,34 @@ def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContex
     return user_context
 
 
+def get_client_params(ctx: Context[ServerSession, McpAppContext]) -> InitializeRequestParams | None:
+    """Load this request's cached client ``initialize`` params, at most one Redis GET per request.
+
+    In stateless mode the client params no longer live on ``ctx.session``; they are cached in Redis by
+    ``ClientInfoCaptureMiddleware`` and read back here. The result is memoized on
+    ``request.state.mcp_client_params``. Returns ``None`` when the client sent no cacheable
+    ``initialize`` (missing/empty key) or the entry is absent — callers then fall back to a plain-text
+    URL and ``UNRECOGNIZED`` branding, exactly as before the gateway went stateless.
+    """
+    request = ctx.request_context.request
+    if request is None:
+        return None
+    try:
+        return request.state.mcp_client_params
+    except AttributeError:
+        pass
+
+    params: InitializeRequestParams | None = None
+    user_context = _extract_authenticated_user_context(ctx)
+    if user_context is not None:
+        key = ctx.request_context.lifespan_context.client_info_store.key_for(user_context)
+        if key is not None:
+            params = ctx.request_context.lifespan_context.client_info_store.load(key)
+
+    request.state.mcp_client_params = params
+    return params
+
+
 def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
     """Return whether an MCP client supports URL-mode elicitation, based only on its declared capability.
 
@@ -75,14 +103,9 @@ def _support_url_elicitation(client_params: InitializeRequestParams | None) -> b
 
 
 def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata:
-    """Build consent state metadata, including client branding and notification support."""
-    notify_elicitation_complete = _support_url_elicitation(client_params)
-
+    """Build consent state metadata carrying the client branding for deep-link-back."""
     if client_params is None:
-        return {
-            "client_branding": ClientBranding.UNRECOGNIZED,
-            "notify_elicitation_complete": notify_elicitation_complete,
-        }
+        return {"client_branding": ClientBranding.UNRECOGNIZED}
 
     name = client_params.clientInfo.name.strip().lower()
     if name == "visual studio code":
@@ -92,10 +115,7 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     else:
         branding = ClientBranding.UNRECOGNIZED
 
-    return {
-        "client_branding": branding,
-        "notify_elicitation_complete": notify_elicitation_complete,
-    }
+    return {"client_branding": branding}
 
 
 def _build_url_elicitation_result(
@@ -109,10 +129,9 @@ def _build_url_elicitation_result(
     """Build a URL elicitation response or fallback result for unsupported clients."""
     if elicitation_id is None:
         elicitation_id = parse_elicitation_id(auth_url)
-    if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
+    if elicitation_id is not None and _support_url_elicitation(get_client_params(ctx)):
         message = llm_template.format("provided URL")
         logger.info("sending back the URL mode elicitation error response with ID %s.", elicitation_id)
-        ctx.request_context.lifespan_context.session_store.append(elicitation_id, ctx.session)
         raise UrlElicitationRequiredError(
             message=message,
             elicitations=[
@@ -164,6 +183,10 @@ async def forward_notification(session: ServerSession, obj: dict, *, related_req
 
         return
 
+    # The notification models keep extra fields, so a leftover "jsonrpc" key would be passed twice when the SDK
+    # wraps the notification in a JSONRPCNotification. Every downstream SSE notification carries it.
+    obj = {key: value for key, value in obj.items() if key != "jsonrpc"}
+
     try:
         match obj["method"]:
             case NotificationMethod.CANCELLED:
@@ -196,7 +219,7 @@ async def forward_notification(session: ServerSession, obj: dict, *, related_req
     try:
         await session.send_notification(notification, related_request_id)
     except Exception:
-        logger.error(f"encountered error while scheduling notification-forwarding to client: {str}")
+        logger.exception("encountered error while scheduling notification-forwarding to client")
 
         return
 

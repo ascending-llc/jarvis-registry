@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from contextlib import AsyncExitStack
@@ -16,10 +17,11 @@ from ..core.crypto_utils import decrypt_auth_fields, decrypt_value, encrypt_valu
 from ..core.exceptions import DownstreamAuthRejectedException
 from .discovery import DiscoveryResult, discover_mcp_oauth
 from .errors import (
+    OAuthCoordinationError,
     OAuthDiscoveryError,
+    OAuthFlowStorageError,
     OAuthReAuthRequiredError,
     OAuthTokenEndpointError,
-    OAuthTokenError,
     RegistryOAuthStateConflictError,
 )
 from .flow_state_manager import FlowStateManager
@@ -42,6 +44,9 @@ logger = logging.getLogger(__name__)
 
 # Lost compare-and-swap writes on registryOAuth tolerated by one ensure_registry_oauth_state call.
 ENSURE_STATE_MAX_ATTEMPTS = 3
+# Concurrent token writes tolerated by one login-callback commit before the login fails.
+LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS = 3
+_REFRESH_IO_CONCURRENCY = 8
 
 INVALID_CLIENT_ERROR = "invalid_client"
 
@@ -94,7 +99,7 @@ class MCPOAuthService:
         registry_app_name: str,
         base_redirect_url: str,
         encryption_key: bytes,
-        redis_client: Redis | None,
+        redis_client: Redis,
         redis_key_prefix: str,
     ):
         """
@@ -107,8 +112,7 @@ class MCPOAuthService:
                 (caller-supplied; e.g. settings.registry_client_url)
             encryption_key: AES key bytes for decrypting server auth config
                 (caller-supplied; e.g. settings.encryption_key)
-            redis_client: Redis client for the refresh lock (a process-local lock is used when
-                None, or when the flow manager fell back to memory storage)
+            redis_client: Required Redis client for cross-process refresh coordination
             redis_key_prefix: Namespace prefix for the refresh lock key (e.g. settings.redis_key_prefix)
         """
         self.flow_manager = flow_manager
@@ -117,7 +121,10 @@ class MCPOAuthService:
         self._registry_app_name = registry_app_name
         self._base_redirect_url = base_redirect_url
         self._encryption_key = encryption_key
-        self._lock_redis_client = redis_client if getattr(flow_manager, "uses_redis", False) else None
+        self._refresh_io_limit = asyncio.Semaphore(_REFRESH_IO_CONCURRENCY)
+        self._lock_redis_client = redis_client
+        if redis_client is None:
+            raise RuntimeError("MCPOAuthService requires Redis")
         self._redis_key_prefix = redis_key_prefix
 
     def _merge_oauth_config(
@@ -490,9 +497,33 @@ class MCPOAuthService:
             metadata.get("resource")
         ) == _none_if_empty(state.resource)
 
-    def _refresh_lock(self, user_id: str, server_id: str):
+    def has_usable_stored_authorization(self, server: ExtendedMCPServer, tokens: dict[str, dict[str, Any]]) -> bool:
+        """Use the same binding rules as request-time auth, without network discovery."""
+        static = self._is_static_client(server)
+        if static:
+            client_id = str((server.config.get("oauth") or {}).get("client_id") or "").strip()
+            expected = {"clientId": client_id}
+            return bool(client_id) and any(
+                self._binding_matches(metadata, expected, True) for metadata in tokens.values()
+            )
+        state = self._usable_state(server.registryOAuth, self._server_url(server))
+        if state is None:
+            return False
+        if "access" in tokens and self._access_binding_matches(tokens["access"], state):
+            return True
+        if "refresh" not in tokens or state.client is None:
+            return False
+        expected = _token_binding(client_id=state.client.clientId, issuer=state.issuer, resource=state.resource)
+        return self._binding_matches(tokens["refresh"], expected, False)
+
+    def _refresh_lock(self, user_id: str, server_id: str, *, wait_for_result: bool = False):
         return refresh_lock(
-            self._lock_redis_client, key_prefix=self._redis_key_prefix, user_id=user_id, server_id=server_id
+            self._lock_redis_client,
+            key_prefix=self._redis_key_prefix,
+            user_id=user_id,
+            server_id=server_id,
+            wait_for_result=wait_for_result,
+            io_limit=self._refresh_io_limit,
         )
 
     # ------------------------------------------------------------------
@@ -559,7 +590,7 @@ class MCPOAuthService:
             )
 
             # Create OAuth flow
-            flow_manager.create_flow(
+            await flow_manager.create_flow(
                 flow_id=flow_id,
                 server_id=server_id,
                 user_id=user_id,
@@ -608,7 +639,7 @@ class MCPOAuthService:
                 return False, "Flow ID mismatch"
 
             # 3. Get flow
-            flow = self.flow_manager.get_flow(flow_id)
+            flow = await self.flow_manager.get_flow(flow_id)
             if not flow:
                 return False, f"Flow '{flow_id}' not found"
 
@@ -622,7 +653,7 @@ class MCPOAuthService:
             # Check if flow has expired
             flow_manager = self.flow_manager
             if flow_manager.is_flow_expired(flow):
-                flow_manager.delete_flow(flow_id)
+                await flow_manager.delete_flow(flow_id)
                 return False, "Flow expired"
 
             # Get flow metadata
@@ -643,12 +674,10 @@ class MCPOAuthService:
             if not tokens:
                 return False, "Failed to exchange code for tokens"
 
-            # Update flow status
-            self.flow_manager.complete_flow(flow_id, tokens)
-
-            # Store under the refresh lock so an in-flight refresh with the old client can't overwrite
-            # these tokens after this write.
+            # A conditional commit: an in-flight refresh with the old client conflicts instead of
+            # overwriting these tokens after this write.
             await self._store_login_tokens(flow.user_id, flow.server_id, flow.server_name, tokens, flow.metadata)
+            await self.flow_manager.complete_flow(flow_id, tokens)
             logger.info(f"Persisted OAuth tokens to database for {flow.user_id}/{flow.server_id}")
 
             logger.info(f"Completed OAuth flow: {flow_id}")
@@ -666,17 +695,21 @@ class MCPOAuthService:
         tokens: OAuthTokens,
         flow_metadata: MCPOAuthFlowMetadata,
     ) -> None:
+        """Commit login tokens without the refresh lock; the authorization code is already spent.
+
+        Login tokens always win. A concurrent refresh commits against an older snapshot and
+        conflicts, so it can't overwrite them; a conflict here just means a fresh snapshot.
+        """
         binding = self._flow_binding(flow_metadata)
-        async with AsyncExitStack() as stack:
+        for attempt in range(1, LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS + 1):
+            snapshot = await self.token_service.token_write_snapshot(user_id, server_name)
             try:
-                await stack.enter_async_context(self._refresh_lock(user_id, server_id))
-            except (OAuthTokenError, RedisError) as e:
-                # The code is already spent, and these are the newest tokens; the refresh side
-                # re-checks before writing.
-                logger.warning(f"Storing login tokens for {user_id}/{server_name} without the refresh lock: {e}")
-            await self.token_service.store_oauth_tokens(
-                user_id=user_id, service_name=server_name, tokens=tokens, metadata=binding
-            )
+                await self.token_service.commit_oauth_tokens(server_name, tokens, binding, snapshot)
+                return
+            except OAuthCoordinationError:
+                if attempt == LOGIN_TOKEN_COMMIT_MAX_ATTEMPTS:
+                    raise
+                logger.info(f"Login token commit conflicted for {user_id}/{server_id}; retrying")
 
     async def get_valid_access_token(
         self,
@@ -769,7 +802,7 @@ class MCPOAuthService:
 
             return None, auth_url, None
 
-        except OAuthReAuthRequiredError:
+        except (OAuthReAuthRequiredError, OAuthCoordinationError):
             # Non-interactive re-auth signal must propagate, not be flattened into an error tuple.
             raise
         except Exception as e:
@@ -796,19 +829,19 @@ class MCPOAuthService:
 
     async def get_tokens_by_flow_id(self, flow_id: str) -> OAuthTokens | None:
         """Get OAuth tokens by flow ID"""
-        flow = self.flow_manager.get_flow(flow_id)
+        flow = await self.flow_manager.get_flow(flow_id)
         if not flow or flow.status != OAuthFlowStatus.COMPLETED:
             return None
         return flow.tokens
 
     async def get_flow_status(self, flow_id: str) -> OAuthFlowStatusResponse:
         """Return a flow's status, lazily expiring unfinished records by their logical TTL."""
-        flow = self.flow_manager.get_flow(flow_id)
+        flow = await self.flow_manager.get_flow(flow_id)
         if not flow:
             return _not_found_flow_status()
 
         if flow.status != OAuthFlowStatus.COMPLETED and self.flow_manager.is_flow_expired(flow):
-            self.flow_manager.delete_flow(flow_id)
+            await self.flow_manager.delete_flow(flow_id)
             return _not_found_flow_status()
 
         return OAuthFlowStatusResponse(
@@ -825,13 +858,15 @@ class MCPOAuthService:
     async def cancel_oauth_flow(self, user_id: str, server_id: str) -> tuple[bool, str | None]:
         """Cancel OAuth flow"""
         try:
-            success = self.flow_manager.cancel_user_flow(user_id, server_id)
+            success = await self.flow_manager.cancel_user_flow(user_id, server_id)
             if not success:
                 return True, "No active OAuth flow to cancel"
 
             logger.info(f"Cancelled OAuth flow for {user_id}/{server_id}")
             return True, None
 
+        except OAuthFlowStorageError:
+            raise
         except Exception as e:
             logger.error(f"Failed to cancel OAuth flow: {e}", exc_info=True)
             return False, str(e)
@@ -894,18 +929,24 @@ class MCPOAuthService:
         # 3./4. Serialize refreshes for this user and server across pods.
         async with AsyncExitStack() as stack:
             try:
-                await stack.enter_async_context(self._refresh_lock(user_id, str(server.id)))
-            except OAuthTokenError:
+                lease = await stack.enter_async_context(
+                    self._refresh_lock(user_id, str(server.id), wait_for_result=True)
+                )
+            except OAuthCoordinationError:
                 if await self._fresh_access_token_available(user_id, server_name, rejected_access_token, state, static):
                     return True, None
-                return False, REFRESH_IN_PROGRESS_MESSAGE
+                raise
             except RedisError as e:
                 logger.warning(f"Refresh lock unavailable for {user_id}/{server_name}: {e}")
-                return False, f"Refresh lock unavailable: {e}"
+                raise OAuthCoordinationError("OAuth coordination unavailable; retry") from e
 
             if await self._fresh_access_token_available(user_id, server_name, rejected_access_token, state, static):
                 logger.info(f"Another refresh already stored a new access token for {user_id}/{server_name}")
                 return True, None
+
+            if lease is None:
+                raise OAuthCoordinationError(REFRESH_IN_PROGRESS_MESSAGE)
+            snapshot = await self.token_service.token_write_snapshot(user_id, server_name)
 
             # 5. Re-read under the lock: the record read above may already have been rotated away.
             refresh_doc = await self.token_service.get_oauth_refresh_token(user_id, server_name)
@@ -914,7 +955,10 @@ class MCPOAuthService:
             if not self._binding_matches(refresh_doc.metadata, binding, static):
                 return False, "Refresh token is bound to a different OAuth client or authorization server"
             used_refresh_token = refresh_doc.token
+            if not self.token_service.snapshot_matches_refresh(snapshot, server_name, used_refresh_token):
+                raise OAuthCoordinationError("OAuth credentials changed before refresh; retry")
 
+            await lease.ensure_owned()
             try:
                 new_tokens = await self.oauth_client.refresh_tokens(
                     oauth_config, used_refresh_token, resource=state.resource
@@ -924,26 +968,15 @@ class MCPOAuthService:
                     await self.invalidate_registry_oauth_client(server, oauth_config["client_id"])
                 return False, f"Token refresh failed: {e.error_code or e}"
             if not new_tokens:
-                return False, "Token refresh failed"
+                raise OAuthCoordinationError("OAuth refresh outcome unknown; retry later")
 
-            # 6. A login may have stored newer tokens while the token endpoint call outlasted the lock.
-            current = await self.token_service.get_oauth_refresh_token(user_id, server_name)
-            if (
-                current is None
-                or current.token != used_refresh_token
-                or not self._binding_matches(current.metadata, binding, static)
-            ):
-                logger.info(f"Newer tokens were stored for {user_id}/{server_name} during refresh; keeping them")
-                return True, None
-
-            logger.info(
-                f"[OAuth] Token refresh successful for {server_name}, "
-                f"refresh_token_rotated={new_tokens.refresh_token != used_refresh_token}"
-            )
-            await self.token_service.store_oauth_tokens(
-                user_id=user_id, service_name=server_name, tokens=new_tokens, metadata=binding
-            )
-            logger.info(f"Persisted refreshed tokens to database for {user_id}/{server_name}")
+            await lease.ensure_owned()
+            try:
+                await self.token_service.commit_oauth_tokens(server_name, new_tokens, binding, snapshot)
+            except OAuthCoordinationError:
+                if await self._fresh_access_token_available(user_id, server_name, rejected_access_token, state, static):
+                    return True, None
+                raise
             return True, None
 
     async def validate_and_refresh_tokens(self, user_id: str, mcp_server: ExtendedMCPServer) -> tuple[bool, str | None]:
@@ -959,9 +992,12 @@ class MCPOAuthService:
                 return False, "No refresh token available"
             return await self._refresh_with_lock(user_id, mcp_server)
 
+        except OAuthCoordinationError:
+            raise
         except Exception as e:
-            logger.error(f"Failed to validate and refresh tokens: {e}", exc_info=True)
-            return False, str(e)
+            # Log the cause here: callers see only the coordination error's message.
+            logger.exception(f"[OAuth] Unexpected refresh failure for user={user_id}, server={mcp_server.serverName}")
+            raise OAuthCoordinationError("OAuth refresh unavailable; retry") from e
 
     # ------------------------------------------------------------------
     # Downstream 401 recovery
@@ -1042,12 +1078,12 @@ class MCPOAuthService:
 
     async def has_active_flow(self, user_id: str, server_name: str) -> bool:
         """Check if there is an active OAuth flow"""
-        user_flows = self.flow_manager.get_user_flows(user_id, server_name)
+        user_flows = await self.flow_manager.get_user_flows(user_id, server_name)
         return len(user_flows) > 0
 
     async def has_failed_flow(self, user_id: str, server_name: str) -> bool:
         """Check if there is a failed OAuth flow"""
-        user_flows = self.flow_manager.get_user_flows(user_id, server_name)
+        user_flows = await self.flow_manager.get_user_flows(user_id, server_name)
         return any(flow.status == OAuthFlowStatus.FAILED for flow in user_flows)
 
     async def handle_reinitialize_auth(self, user_id: str, server: ExtendedMCPServer) -> tuple[bool, dict[str, Any]]:
@@ -1147,9 +1183,12 @@ class MCPOAuthService:
                 logger.warning(f"[Reinitialize] Token refresh failed for {server_name}: {error}")
                 return await self._build_oauth_required_response(user_id, server)
 
+        except OAuthCoordinationError:
+            raise
         except Exception as e:
-            logger.error(f"[Reinitialize] Error in _refresh_and_connect: {e}", exc_info=True)
-            return await self._build_oauth_required_response(user_id, server)
+            # Log the cause here: callers see only the coordination error's message.
+            logger.exception(f"[Reinitialize] Unexpected refresh failure for {server_name}({server_id})")
+            raise OAuthCoordinationError("OAuth refresh unavailable; retry") from e
 
     async def _build_oauth_required_response(
         self, user_id: str, server: ExtendedMCPServer
