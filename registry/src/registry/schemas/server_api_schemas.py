@@ -398,7 +398,7 @@ def convert_to_list_item(
 
     # Mask first (reads snake_case keys), then convert to camelCase for API response
     oauth_config = convert_dict_keys_to_camel(_mask_oauth_client_secret(config.get("oauth")))
-    apikey_config = _mask_apikey(config.get("apiKey"))
+    apikey_config = convert_dict_keys_to_camel(_mask_apikey(config.get("apiKey")))
 
     author_id = str(server.author) if server.author else None
     transport_type = config.get("type", "streamable-http")
@@ -444,7 +444,7 @@ def convert_to_detail(
 
     # Mask first (reads snake_case keys), then convert to camelCase for API response
     oauth_config = convert_dict_keys_to_camel(_mask_oauth_client_secret(config.get("oauth")))
-    apikey_config = _mask_apikey(config.get("apiKey"))
+    apikey_config = convert_dict_keys_to_camel(_mask_apikey(config.get("apiKey")))
 
     author_id = str(server.author) if server.author else None
     transport_type = config.get("type", "streamable-http")

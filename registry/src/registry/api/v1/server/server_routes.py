@@ -389,7 +389,7 @@ async def get_server(
         except Exception as e:
             logger.warning(f"Error getting connection status for {server.serverName}: {e}", exc_info=True)
             # Apply error state with custom error message
-            fallback_requires_oauth = server.config.get("requires_oauth", False)
+            fallback_requires_oauth = server.config.get("requiresOAuth", False)
             apply_connection_status_to_server(server_detail, None, fallback_requires_oauth)
             server_detail.error = f"Failed to get connection status: {str(e)}"
 
