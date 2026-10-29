@@ -9,11 +9,22 @@ from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 
+from registry.core.mcp_client import MCPServerData
 from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
 from registry.services.background_task_tracker import TrackerShutdownError as _TrackerShutdownError
 from registry.services.server_service import ServerServiceV1
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+
+def _record_config_at_save(server: Mock) -> list[dict[str, object]]:
+    saved: list[dict[str, object]] = []
+
+    async def save() -> None:
+        saved.append(dict(server.config))
+
+    server.save = AsyncMock(side_effect=save)
+    return saved
 
 
 @pytest.mark.unit
@@ -139,6 +150,52 @@ class TestRefreshServerCapabilities:
 
                     # 验证 save 被调用
                     mock_server.save.assert_called_once()
+
+    @pytest.mark.parametrize("previous_requires_init", [True, False, None], ids=["stateful", "stateless", "unknown"])
+    async def test_failed_probe_preserves_requires_init_when_saved(
+        self, server_service: ServerServiceV1, mock_server: Mock, previous_requires_init: bool | None
+    ) -> None:
+        mock_server.config["url"] = "https://mcp.example.com/mcp"
+        if previous_requires_init is not None:
+            mock_server.config["requiresInit"] = previous_requires_init
+        original_config = dict(mock_server.config)
+        saved = _record_config_at_save(mock_server)
+        probe_result = MCPServerData(None, None, None, None, "Timeout connecting to server")
+
+        with (
+            patch.object(server_service, "get_server_by_id", return_value=mock_server),
+            patch("registry.services.server_service.build_complete_headers_for_server", AsyncMock(return_value={})),
+            patch("registry.core.mcp_client.get_tools_and_capabilities_from_server", return_value=probe_result),
+            patch.object(server_service, "schedule_vector_sync") as sync,
+        ):
+            result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+        assert result["status"] == "failed"
+        assert saved == [original_config]
+        assert mock_server.config == original_config
+        mock_server.save.assert_awaited_once()
+        sync.assert_not_called()
+
+    @pytest.mark.parametrize("requires_init", [True, False], ids=["stateful", "stateless"])
+    async def test_successful_probe_updates_requires_init_when_saved(
+        self, server_service: ServerServiceV1, mock_server: Mock, requires_init: bool
+    ) -> None:
+        mock_server.config.update({"url": "https://mcp.example.com/mcp", "requiresInit": not requires_init})
+        saved = _record_config_at_save(mock_server)
+        probe_result = MCPServerData([], [], [], {}, requires_init=requires_init)
+
+        with (
+            patch.object(server_service, "get_server_by_id", return_value=mock_server),
+            patch("registry.services.server_service.build_complete_headers_for_server", AsyncMock(return_value={})),
+            patch("registry.core.mcp_client.get_tools_and_capabilities_from_server", return_value=probe_result),
+            patch.object(server_service, "schedule_vector_sync"),
+        ):
+            result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+        assert result["status"] == "success"
+        assert [config["requiresInit"] for config in saved] == [requires_init]
+        assert mock_server.config["requiresInit"] is requires_init
+        mock_server.save.assert_awaited_once()
 
     async def test_refresh_server_capabilities_invalid_server_id(self, server_service):
         """测试无效的 server_id 抛出 ValueError"""
@@ -848,18 +905,24 @@ class TestOAuthReAuthRequired:
         server.save.assert_awaited_once()
         sync.assert_not_called()
 
-    async def test_toggle_enable_other_fetch_failure_keeps_value_error(self):
+    async def test_toggle_enable_other_fetch_failure_keeps_value_error(self) -> None:
         service = self._make_service()
         server = self._oauth_server()
+        server.config["requiresInit"] = True
+        original_config = dict(server.config)
+        saved = _record_config_at_save(server)
         service.get_server_by_id = AsyncMock(return_value=server)
+        probe_result = MCPServerData(None, None, None, None, "Connection refused")
 
-        with patch.object(
-            service, "retrieve_from_server", AsyncMock(return_value=(None, None, None, None, "Connection refused"))
+        with (
+            patch("registry.services.server_service.build_complete_headers_for_server", AsyncMock(return_value={})),
+            patch("registry.core.mcp_client.get_tools_and_capabilities_from_server", return_value=probe_result),
         ):
             with pytest.raises(ValueError, match="Failed to fetch tools from server. Server remains disabled."):
                 await service.toggle_server_status(server_id="srv-1", enabled=True, user_id="user-1")
 
         assert server.config["enabled"] is False
+        assert saved == [original_config]
         server.save.assert_awaited_once()
 
     async def test_refresh_leaves_server_error_fields_untouched_and_does_not_save(self):
@@ -951,6 +1014,47 @@ class TestRegistryOAuthLifecycleOnUpdate:
         update_one = await self._update(server, ServerUpdateRequest(title="Renamed"))
 
         update_one.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "data",
+        [ServerUpdateRequest(url="https://other.example.com/mcp"), ServerUpdateRequest(type="sse")],
+        ids=["url", "type"],
+    )
+    async def test_endpoint_change_clears_requires_init(self, data: ServerUpdateRequest) -> None:
+        server = self._make_server(
+            {"url": "https://mcp.example.com/mcp", "type": "streamable-http", "requiresInit": False}
+        )
+
+        await self._update(server, data)
+
+        assert "requiresInit" not in server.config
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            ServerUpdateRequest(title="Renamed"),
+            ServerUpdateRequest(apiKey={"key": "test-api-key", "authorizationType": "bearer"}),
+            ServerUpdateRequest(headers={"X-Test": "updated"}),
+            ServerUpdateRequest(oauth={"clientId": "updated-client"}),
+            ServerUpdateRequest(url="https://mcp.example.com/mcp", type="streamable-http"),
+        ],
+        ids=["title", "api-key", "headers", "oauth", "same-endpoint"],
+    )
+    async def test_unchanged_endpoint_keeps_requires_init(self, data: ServerUpdateRequest) -> None:
+        server = self._make_server(
+            {"url": "https://mcp.example.com/mcp", "type": "streamable-http", "requiresInit": False}
+        )
+
+        await self._update(server, data)
+
+        assert server.config["requiresInit"] is False
+
+    async def test_explicit_default_type_keeps_requires_init(self) -> None:
+        server = self._make_server({"url": "https://mcp.example.com/mcp", "requiresInit": False})
+
+        await self._update(server, ServerUpdateRequest(type="streamable-http"))
+
+        assert server.config["requiresInit"] is False
 
     async def test_create_and_update_no_longer_run_discovery(self):
         import registry.services.server_service as server_service_module

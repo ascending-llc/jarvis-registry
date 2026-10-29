@@ -636,7 +636,7 @@ class MCPServerData:
     prompts: list[dict[str, Any]] | None
     capabilities: dict[str, Any] | None
     error_message: str | None = None
-    requires_init: bool | None = False
+    requires_init: bool | None = None
 
 
 def _convert_pydantic_to_dict(obj: Any) -> dict:

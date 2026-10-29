@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from registry.core.mcp_client import (
+    MCPServerData,
     _get_from_sse,
     _get_from_streamable_http,
     call_tool_via_sse_ephemeral,
@@ -26,6 +27,11 @@ from registry_pkgs.oauth.errors import OAuthDiscoveryError
 @pytest.mark.core
 class TestMCPClient:
     """Test suite for MCP client functions."""
+
+    def test_failed_probe_has_unknown_initialization_requirement(self) -> None:
+        result = MCPServerData(None, None, None, None, "err")
+
+        assert result.requires_init is None
 
     @pytest.mark.asyncio
     async def test_call_tool_via_sse_ephemeral_waits_for_initialize_response(self, mock_headers):
@@ -887,6 +893,7 @@ class TestMCPClient:
 
             assert result.tools is None
             assert result.capabilities is None
+            assert result.requires_init is None
 
     @pytest.mark.asyncio
     async def test_connection_error_returns_none(self, mock_headers):
@@ -909,6 +916,7 @@ class TestMCPClient:
             assert result.tools is None
             assert result.capabilities is None
             assert result.error_message is not None
+            assert result.requires_init is None
 
 
 @pytest.mark.unit
