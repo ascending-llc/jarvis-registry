@@ -979,24 +979,30 @@ class TestRegistryOAuthLifecycleOnUpdate:
             numTools=0,
         )
 
-    async def _update(self, server, data):
-
+    async def _update(
+        self, server: ExtendedMCPServer, data: ServerUpdateRequest
+    ) -> tuple[AsyncMock, list[dict[str, object]]]:
         service = self._make_service()
         service.get_server_by_id = AsyncMock(return_value=server)
         service.schedule_vector_sync = Mock()  # update_server returns a plan; route schedules it
         collection = Mock()
         collection.update_one = AsyncMock()
+        saved_configs: list[dict[str, object]] = []
+
+        async def record_config(**_: object) -> None:
+            saved_configs.append(dict(server.config))
+
         with (
-            patch.object(ExtendedMCPServer, "save", AsyncMock()),
+            patch.object(ExtendedMCPServer, "save", AsyncMock(side_effect=record_config)),
             patch.object(ExtendedMCPServer, "get_pymongo_collection", Mock(return_value=collection)),
         ):
             await service.update_server(server_id=str(server.id), data=data)
-        return collection.update_one
+        return collection.update_one, saved_configs
 
     async def test_url_change_unsets_registry_oauth(self):
         server = self._make_server({"url": "https://mcp.atlassian.com/v1/sse", "requiresOAuth": True})
 
-        update_one = await self._update(server, ServerUpdateRequest(url="https://mcp.atlassian.com/v2/mcp"))
+        update_one, _ = await self._update(server, ServerUpdateRequest(url="https://mcp.atlassian.com/v2/mcp"))
 
         update_one.assert_awaited_once_with({"_id": server.id}, {"$unset": {"registryOAuth": ""}}, session=None)
         assert "oauthMetadata" not in server.config
@@ -1004,14 +1010,14 @@ class TestRegistryOAuthLifecycleOnUpdate:
     async def test_removing_oauth_unsets_registry_oauth(self):
         server = self._make_server({"url": "https://mcp.example.com/mcp", "requiresOAuth": True})
 
-        update_one = await self._update(server, ServerUpdateRequest(requiresOauth=False))
+        update_one, _ = await self._update(server, ServerUpdateRequest(requiresOauth=False))
 
         update_one.assert_awaited_once()
 
     async def test_unrelated_edit_keeps_registry_oauth(self):
         server = self._make_server({"url": "https://mcp.example.com/mcp", "requiresOAuth": True})
 
-        update_one = await self._update(server, ServerUpdateRequest(title="Renamed"))
+        update_one, _ = await self._update(server, ServerUpdateRequest(title="Renamed"))
 
         update_one.assert_not_awaited()
 
@@ -1025,8 +1031,10 @@ class TestRegistryOAuthLifecycleOnUpdate:
             {"url": "https://mcp.example.com/mcp", "type": "streamable-http", "requiresInit": False}
         )
 
-        await self._update(server, data)
+        _, saved_configs = await self._update(server, data)
 
+        (saved_config,) = saved_configs
+        assert "requiresInit" not in saved_config
         assert "requiresInit" not in server.config
 
     @pytest.mark.parametrize(
@@ -1045,15 +1053,19 @@ class TestRegistryOAuthLifecycleOnUpdate:
             {"url": "https://mcp.example.com/mcp", "type": "streamable-http", "requiresInit": False}
         )
 
-        await self._update(server, data)
+        _, saved_configs = await self._update(server, data)
 
+        (saved_config,) = saved_configs
+        assert saved_config["requiresInit"] is False
         assert server.config["requiresInit"] is False
 
     async def test_explicit_default_type_keeps_requires_init(self) -> None:
         server = self._make_server({"url": "https://mcp.example.com/mcp", "requiresInit": False})
 
-        await self._update(server, ServerUpdateRequest(type="streamable-http"))
+        _, saved_configs = await self._update(server, ServerUpdateRequest(type="streamable-http"))
 
+        (saved_config,) = saved_configs
+        assert saved_config["requiresInit"] is False
         assert server.config["requiresInit"] is False
 
     async def test_create_and_update_no_longer_run_discovery(self):
