@@ -1,6 +1,6 @@
 # Jarvis Registry — Release Notes Style Guide
-# This file is read by github/copilot-release-notes@v1 automatically.
-# Drop it at .github/release-notes-instructions.md and the action follows these conventions.
+
+<!-- Read automatically by github/copilot-release-notes@v1 from this path. -->
 
 ## Product context
 Jarvis Registry is an enterprise MCP/Agent gateway. Readers are platform engineers,
@@ -38,6 +38,13 @@ security, reliability, and integration impact — not marketing language.
 5. 📦 Dependencies
 6. 🌍 Documentation
 
+Set each entry's `tag` to the exact heading text above. The action renders the
+headings in the order their tags first appear in `entries`, so emit `entries`
+grouped by category, in the order listed above.
+
+A PR that changes only user-facing guides (`docs/**`, `README.md`) goes under
+🌍 Documentation.
+
 ## Ordering within each section
 
 List entries in **chronological order: oldest PR first, newest PR last.** The
@@ -52,13 +59,12 @@ final output will show `(#NNN) (#NNN)`. Just write the description; the
 action handles attribution.
 
 ## Skip rules
-Omit these from the output entirely. Evaluate these rules from the PR title and
-labels first — do **not** inspect the diff just to apply a skip rule.
-- Pure whitespace / formatting commits
-- Documentation-only PRs: title starts with `docs:` or `docs(<scope>):`, OR the
-  PR carries a `documentation` label, OR every changed path is under `docs/`,
-  `*.md`, or mkdocs config (only check paths if title/labels are inconclusive)
-- i18n translation-only commits unless they add a new language
+Omit these from the output entirely. Decide from the PR title, labels, commit
+message, and changed paths (`git show --stat`) — do **not** inspect the diff just
+to apply a skip rule.
+- Pure whitespace / formatting PRs, as stated by the title or commit message
+- PRs that only add a release's changelog page under `docs/changelog/`
+- i18n translation-only PRs unless they add a new language
 
 ## Investigating PRs (shell tool usage)
 
@@ -67,40 +73,21 @@ allowed `git` tool to inspect commits — but observe these rules:
 
 - Issue **one** `git <subcommand>` invocation per tool call. Do **not** wrap
   commands in bash constructs (no `for`/`while` loops, no `&&`, `;`, `|`,
-  `$(...)`, subshells, or `xargs`). Only bare `git ...` invocations are
-  permitted by the runner.
+  `$(...)`, subshells, or `xargs`), and do not prefix them with `cd`: the
+  working directory is already the repository. Only bare `git ...` invocations
+  are permitted by the runner.
+- **Never quote arguments.** A command containing `'` or `"` anywhere is denied
+  by the runner. Use `--oneline`, or an unquoted format such as `--format=%B` or
+  `--format=%h%x20%s` (`%x20` is a space).
 - If you need data about multiple commits, call `git` multiple times — once
   per commit — instead of looping.
-- Prefer cheap commands first: `git log -1 --format=%B <sha>`,
-  `git show --stat <sha>`, `git show -- <single-file> <sha>`.
+- Prefer cheap commands first: `git log --oneline <base>..<head>`,
+  `git log -1 --format=%B <sha>`, `git show --stat <sha>`,
+  `git show <sha> -- <single-file>`.
 - Avoid full diffs of large changes. If `git show --stat` reports a PR with
   more than ~500 changed lines, stick to the stat + commit message and the
   changed file list; do not request the full patch.
+- A "Permission denied" result means the command broke one of the rules above,
+  not that git is unavailable. Retry the same query in a permitted form.
 - If after one or two `git` calls you still cannot confidently describe the
-  change, flag it under **🔍 Needs Review** rather than guessing.
-
-## Uncertainty flagging
-If Copilot is not confident what a PR changes (e.g. the PR body is empty or the diff
-is ambiguous), place the entry under a separate section:
-
-### 🔍 Needs Review
-- [ ] PR #NNN — {title} — *could not determine impact; please review manually*
-
-## Release summary
-**Required.** Begin every set of notes with a 2–4 sentence plain-English paragraph
-summarising what this release is about, placed **before any category heading or
-bullet list**. Focus on the most impactful changes, not an exhaustive list.
-
-The first sentence of this paragraph is extracted verbatim by
-`.github/workflows/utils/update_changelog.py` and used as:
-
-- the `description:` field in the per-release page frontmatter
-  (`docs/changelog/{tag}.md`), which MkDocs surfaces in page metadata and
-  social cards, and
-- the **Description** column for this release's row in
-  `docs/changelog/index.md`.
-
-If the notes start with a category heading (e.g. `### ✨ Features`) or a bullet
-instead of prose, the script falls back to the generic placeholder
-`The {tag} release of Jarvis Registry`. Write the opening sentence so it stands
-on its own as a summary — it will be read out of context.
+  change, flag it as uncertain rather than guessing at specifics.
