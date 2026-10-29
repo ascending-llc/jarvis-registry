@@ -8,15 +8,26 @@ For installation, platform requirements, configuration, command reference, and t
 
 ## Shared Workflow
 
-For the CLI modes documented here, configure the Registry, sign in, and sync:
+Configure the Registry and sign in:
 
 ```sh
 jarvis-registry configure
 jarvis-registry auth login
+```
+
+Choose the sync mode for your client. The command syntax is:
+
+```text
+jarvis-registry skills sync --mode <claude|codex|copilot>
+```
+
+Replace the placeholder with one mode. For example, to sync for Claude Code:
+
+```sh
 jarvis-registry skills sync --mode claude
 ```
 
-This example selects the `claude` mode. The CLI also accepts `--mode codex` and `--mode copilot`. These mode names select local directory conventions; they are not an exhaustive list of Skill Gateway consumers.
+Use `--mode codex` for Codex or `--mode copilot` for GitHub Copilot. These mode names select local directory conventions; they are not an exhaustive list of Skill Gateway consumers.
 
 The CLI authenticates against the Registry and syncs only the skills available to the signed-in user. Browser sign-in normally stores credentials in the operating system keyring. On Linux without a usable keyring, it falls back to a plaintext `~/.jarvis-registry/credentials.json` file with mode `0600` and a first-use warning. The explicit `local.credentials.file_only: true` option also uses that file; it is not encrypted. Review the [credential-storage options](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/getting-started.md) for the machine running the CLI.
 
