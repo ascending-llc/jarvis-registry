@@ -113,6 +113,19 @@ def _make_client_params(name: str, *, supports_url_elicitation: bool) -> Initial
     )
 
 
+def _assert_stale_server_id_hint(result: CallToolResult) -> None:
+    assert result.isError is True
+    assert len(result.content) == 1
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == server._STALE_SERVER_ID_MESSAGE
+    assert "stale or wrong" in content.text
+    assert "discover_servers with the same query" in content.text
+    for name in ("tool_name", "resource_uri", "prompt_name", "server_id"):
+        assert name in content.text
+    assert "Never reuse this server_id" in content.text
+
+
 # Module where the metrics context managers look up the domain record functions.
 DECORATORS_PATH = "registry.core.telemetry_decorators"
 
@@ -213,7 +226,7 @@ class TestExecutionMetricsWiring:
                 ctx=SimpleNamespace(),
             )
 
-        assert result.isError is True
+        _assert_stale_server_id_hint(result)
         call_kwargs = mock_record.call_args[1]
         assert call_kwargs["success"] is False
         assert call_kwargs["error_type"] == "server_not_found"
@@ -250,6 +263,24 @@ class TestExecutionMetricsWiring:
         assert call_kwargs["server_name"] == "prompt-server"
         assert call_kwargs["success"] is True
         assert call_kwargs["error_type"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_execute_prompt_impl_records_server_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_server_service(monkeypatch, None)
+        with patch(f"{DECORATORS_PATH}._record_prompt_execution") as mock_record:
+            result = await server.execute_prompt_impl(
+                user_context={"username": "alice"},
+                server_id="missing",
+                prompt_name="research_assistant",
+                arguments=None,
+                ctx=SimpleNamespace(),
+            )
+
+        _assert_stale_server_id_hint(result)
+        mock_record.assert_called_once()
+        call_kwargs = mock_record.call_args[1]
+        assert call_kwargs["success"] is False
+        assert call_kwargs["error_type"] == "server_not_found"
 
     @pytest.mark.asyncio
     async def test_execute_prompt_impl_get_server_by_id_raises_returns_internal_error(self, monkeypatch):
@@ -295,8 +326,7 @@ async def test_execute_tool_impl_no_server_returns_error():
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, str(PydanticObjectId()))
 
-    assert result.isError is True
-    assert "no server" in result.content[0].text.lower()
+    _assert_stale_server_id_hint(result)
 
 
 @pytest.mark.asyncio
@@ -575,6 +605,9 @@ async def test_execute_tool_impl_disabled_tool_returns_error(monkeypatch):
     assert result.isError is True
     assert "tavily_search" in result.content[0].text
     assert server_id in result.content[0].text
+    assert "Do not retry this tool" in result.content[0].text
+    assert "another matching discovered candidate" in result.content[0].text
+    assert "tell the user it is unavailable" in result.content[0].text
     # No consent check and no downstream network call for a disabled tool.
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
     downstream_call.assert_not_awaited()
