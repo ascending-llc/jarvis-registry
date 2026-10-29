@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,7 +49,9 @@ async def test_run_search_success_returns_results() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock) -> CallToolResult:
+async def _call_tool_e2e(
+    tool_name: str, search_entities: AsyncMock, arguments: dict[str, Any] | None = None
+) -> CallToolResult:
     import mcp.types as types
     from mcp.server.fastmcp import FastMCP
     from mcp.server.lowlevel.server import request_ctx
@@ -79,7 +82,7 @@ async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock) -> CallTool
             method="tools/call",
             params=types.CallToolRequestParams(
                 name=tool_name,
-                arguments={"query": "x", "top_n": 3},
+                arguments=arguments if arguments is not None else {"query": "x", "top_n": 3},
             ),
         )
         return (await handler(req)).root
@@ -124,6 +127,69 @@ async def test_discover_tool_empty_results_are_not_errors(tool_name: str, other_
     ):
         assert guidance in content.text
     search_entities.assert_awaited_once()
+
+
+async def _empty_hint(tool_name: str, arguments: dict[str, Any]) -> str:
+    result = await _call_tool_e2e(tool_name, AsyncMock(return_value={"results": []}), arguments)
+    assert result.isError is False
+    assert result.structuredContent == {"result": []}
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    return content.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["discover_servers", "discover_agents"])
+async def test_discover_tool_empty_survey_does_not_suggest_repeating_it(tool_name: str) -> None:
+    text = await _empty_hint(tool_name, {"query": "", "top_n": 20})
+
+    assert "query=''" not in text
+    assert "synonyms" not in text
+    assert "after these fallbacks" in text
+
+
+@pytest.mark.asyncio
+async def test_discover_tool_empty_query_with_small_top_n_still_suggests_survey() -> None:
+    text = await _empty_hint("discover_agents", {"query": "", "top_n": 3})
+
+    assert "query='' and top_n=20" in text
+    assert "synonyms" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("type_list", "unsearched", "searched"),
+    [
+        (["tool"], ["'resource'", "'prompt'"], ["'tool'"]),
+        (["tool", "resource"], ["'prompt'"], ["'tool'", "'resource'"]),
+    ],
+)
+async def test_discover_servers_empty_hint_names_unsearched_entity_types(
+    type_list: list[str], unsearched: list[str], searched: list[str]
+) -> None:
+    text = await _empty_hint("discover_servers", {"query": "release notes feed", "type_list": type_list})
+
+    assert "type_list" in text
+    for entity_type in unsearched:
+        assert entity_type in text
+    for entity_type in searched:
+        assert entity_type not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("discover_servers", {"query": "x", "type_list": ["tool", "resource", "prompt"]}),
+        ("discover_agents", {"query": "x"}),
+    ],
+)
+async def test_discover_tool_empty_hint_omits_type_list_when_nothing_is_unsearched(
+    tool_name: str, arguments: dict[str, Any]
+) -> None:
+    text = await _empty_hint(tool_name, arguments)
+
+    assert "type_list" not in text
 
 
 @pytest.mark.asyncio

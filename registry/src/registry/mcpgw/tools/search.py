@@ -17,6 +17,8 @@ from ..tracing import DiscoveryKind, trace_discovery
 
 logger = logging.getLogger(__name__)
 
+_SURVEY_TOP_N = 20
+
 
 @trace_discovery
 async def _run_search(
@@ -50,21 +52,28 @@ async def _run_search(
         raise InternalServerException("entity discovery failed")
 
 
-def _empty_discovery_result(other_tool: str) -> CallToolResult:
+def _empty_discovery_result(
+    other_tool: str,
+    *,
+    query: str,
+    top_n: int,
+    unsearched_types: list[str],
+) -> CallToolResult:
+    # Offer only fallbacks that differ from the call that just came back empty.
+    hints = ["No matching capability found."]
+    if query:
+        hints.append("Refine the query with synonyms or a broader term.")
+    if query or top_n < _SURVEY_TOP_N:
+        hints.append(f"Survey with query='' and top_n={_SURVEY_TOP_N}.")
+    if unsearched_types:
+        types = ", ".join(repr(entity_type) for entity_type in unsearched_types)
+        hints.append(f"Entity types {types} were not searched; add them to type_list if they could fit.")
+    hints.append(f"If the capability type is unclear, also try {other_tool}.")
+    hints.append("Report no match only after these fallbacks.")
     return CallToolResult(
         isError=False,
         structuredContent={"result": []},
-        content=[
-            TextContent(
-                type="text",
-                text=(
-                    "No matching capability found. Refine the query with synonyms or a broader term, "
-                    "or survey with query='' and top_n=20. "
-                    f"If the capability type is unclear, also try {other_tool}. "
-                    "Report no match only after these fallbacks."
-                ),
-            )
-        ],
+        content=[TextContent(type="text", text=" ".join(hints))],
     )
 
 
@@ -134,7 +143,14 @@ def get_tools() -> list[tuple[str, Callable]]:
         of applying numeric thresholds. Avoid repeating identical searches."""
         # Annotated metadata preserves the list output schema while allowing a guided empty result.
         results = await _run_search(ctx, query, top_n, "hybrid", type_list, "mcp")
-        return results if results else _empty_discovery_result("discover_agents")
+        if results:
+            return results
+        return _empty_discovery_result(
+            "discover_agents",
+            query=query,
+            top_n=top_n,
+            unsearched_types=[entity_type.value for entity_type in MCPEntityType if entity_type.value not in type_list],
+        )
 
     async def discover_agents(
         ctx: Context[ServerSession, McpAppContext],
@@ -199,7 +215,15 @@ def get_tools() -> list[tuple[str, Callable]]:
         Scores from the two discovery tools are not comparable; judge descriptions instead.
         Avoid repeating identical searches."""
         results = await _run_search(ctx, query, top_n, "hybrid", type_list, "a2a")
-        return results if results else _empty_discovery_result("discover_servers")
+        if results:
+            return results
+        return _empty_discovery_result(
+            "discover_servers",
+            query=query,
+            top_n=top_n,
+            # Agent search already covers skills through the indexed agent card.
+            unsearched_types=[],
+        )
 
     return [
         ("discover_servers", discover_servers),
