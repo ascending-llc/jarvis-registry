@@ -15,7 +15,7 @@ An MCP server is any tool, service, or API that speaks the [Model Context Protoc
 - **Cloud APIs** — AWS Lambda, Google Cloud Functions, Azure Functions
 - **Local services** — running on your machine or private network
 
-Once registered, any authenticated AI copilot (Cursor, Claude Desktop, GitHub Copilot, VS Code) can discover and invoke it through the registry. How copilots connect and invoke tools is covered in [Registry Endpoint](registry-endpoint.md).
+Once registered, an authenticated MCP-compatible client can discover and invoke a server that its user is permitted to access. How clients connect and invoke tools is covered in [Registry Endpoint](registry-endpoint.md).
 
 ---
 
@@ -63,6 +63,8 @@ Every MCP server defaults to **private** — visible only to its creator. Sharin
 
 The creator is automatically granted OWNER. All other users must be explicitly granted access.
 
+Role scopes authorize Registry operations; resource ACLs determine access to an individual server. Both checks must pass. Permission to reach a server does not automatically grant permission to every record or action in its connected business system. See [Security Control Design](../design/security-design.md) for the enforcement model.
+
 ### Sharing a Server
 
 The sharing panel lets you grant access to individuals, groups, or your whole organization.
@@ -80,6 +82,8 @@ For the complete permission enforcement model and how ACL interacts with RBAC, s
 ---
 
 ## OAuth Token Management
+
+Client sign-in to the Registry and authorization to a downstream service are separate steps. A user can be signed in to the Registry and still need to authorize access to a connected service. See [IDP Integration](auth-server.md) and [Registry Endpoint](registry-endpoint.md) for client sign-in and connection setup.
 
 When an MCP server requires authentication (OAuth 2.0), the registry manages the token lifecycle on behalf of the user — so AI copilots never need to handle credentials directly.
 
@@ -131,7 +135,8 @@ See [Registry Endpoint](registry-endpoint.md) for the full integration guide, in
 ## Next Steps
 
 - [Registry Endpoint](registry-endpoint.md) — Connect any AI copilot to the gateway
-- [A2A Agent Registry](a2a-registry.md) — Register autonomous agents alongside MCP servers
+- [A2A Agent Registry](a2a-gateway-registry.md) — Register autonomous agents alongside MCP servers
+- [Test MCP access with two users](../walkthroughs/mcp-access-control.md) — Compare allowed and restricted discovery and invocation
 - [Security Control Design](../design/security-design.md) — How authentication, RBAC, and ACL compose
 
 **Product page & demo**

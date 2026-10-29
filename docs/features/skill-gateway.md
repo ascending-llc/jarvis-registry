@@ -21,13 +21,15 @@ Skills are private resources by default. The Registry applies resource-level ACL
 
 The skill creator receives full permissions, while other users receive only the access explicitly granted to them. Listing and content endpoints filter by ACL, so an inaccessible skill is not presented as an available delivery target.
 
-## Import from GitHub
+<span id="import-from-github"></span>
 
-GitHub is the supported source for repository import. A GitHub App or OAuth connection lets the Registry read a repository and import skills in one direction: repository to Registry. The Registry does not push changes back to GitHub.
+## Import from Git Providers
 
-The import pipeline resolves the selected ref to a commit, downloads an immutable repository snapshot, and discovers skill folders containing `SKILL.md`. It safely extracts configured paths with protections for traversal, links, oversized files, and decompression bombs. Each discovered skill is parsed and validated before the sync applies the batch atomically; item-level errors are retained so operators can see which skills were skipped or failed without losing the job's overall report.
+Skill Gateway supports any Git provider, including GitHub and GitLab. Repository import moves skills in one direction: source repository to Registry. The Registry does not push changes back to the source repository.
 
-GitHub sync supports repository paths configured for skill discovery, with the Registry as the managed destination for imported skills.
+The [GitHub source sync API](../design/skill-sync-source-api.md) documents the GitHub App connection and provider-specific fields used in the [private skill walkthrough](../walkthroughs/private-skill-lifecycle.md). These examples describe the GitHub integration rather than limiting Skill Gateway to one provider.
+
+The documented GitHub import pipeline resolves the selected ref to a commit, downloads an immutable repository snapshot, and discovers skill folders containing `SKILL.md` in configured repository paths. It safely extracts those paths with protections for traversal, links, oversized files, and decompression bombs. Each discovered skill is parsed and validated before the sync applies the batch atomically; item-level errors are retained so operators can see which skills were skipped or failed without losing the job's overall report.
 
 ## Private Hosting and Governance
 
@@ -35,26 +37,27 @@ The enterprise benefit is controlled distribution:
 
 - Keep organization-approved skills in a private Registry deployment.
 - Scope access per user, group, and skill resource through ACLs.
-- Protect GitHub and Registry credentials behind the configured authentication flow.
+- Protect source-provider and Registry credentials behind the configured authentication flow.
 - Share approved content with developers without publishing private skills to a public marketplace.
 
 ## Deliver Skills to Developer Tools
 
-The [AI Skills CLI](ai-skills-cli.md) is the delivery layer for accessible Registry skills. It syncs approved content into personal or project environments for Claude Code, Codex, and GitHub Copilot. These are the skill-sync integrations documented by this repository; MCP client support is a separate capability. The CLI repository contains the operational installation and command reference.
+Skill Gateway supports skill consumers including Claude Code, Codex, GitHub Copilot, and Cursor. The [AI Skills CLI](ai-skills-cli.md) delivers accessible Registry skills into personal or project environments using its documented directory modes. Use the client-specific setup for skill loading; the CLI repository contains the operational installation and command reference. MCP client connections are a separate capability.
 
 ## Common Questions
 
 ### What is a private skill marketplace?
 
-A private skill marketplace is an organization-controlled catalog for approved skills, with access limited by the organization's policies. Jarvis Skill Gateway provides Registry-based authoring, GitHub import, version and metadata management, and ACL-governed sharing rather than publishing private skills to a public marketplace.
+A private skill marketplace is an organization-controlled catalog for approved skills, with access limited by the organization's policies. Jarvis Skill Gateway provides Registry-based authoring, Git-provider import, version and metadata management, and ACL-governed sharing rather than publishing private skills to a public marketplace.
 
 ### Which developer tools can receive Registry skills?
 
-The AI Skills CLI documents skill synchronization for Claude Code, Codex, and GitHub Copilot. See [AI Skills CLI](ai-skills-cli.md) for the supported workflow. This list describes skill delivery, not the broader set of MCP-compatible clients.
+Supported consumers include Claude Code, Codex, GitHub Copilot, and Cursor. See [AI Skills CLI](ai-skills-cli.md) for the documented CLI modes and delivery workflow, and verify loading in the selected client. Skill delivery is distinct from connecting an MCP-compatible client to the gateway.
 
 ## Next Steps
 
 - [AI Skills CLI](ai-skills-cli.md) - distribute Registry skills to local developer tools
 - [RBAC & Scopes](../design/scopes.md) - understand identity scopes and access control
 - [Security Control Design](../design/security-design.md) - see how authentication and ACLs compose
-- [GitHub source sync API](../api-reference.md) - review the Registry API surface
+- [GitHub source sync API](../design/skill-sync-source-api.md) - configure repository import and inspect sync jobs
+- [Private skill lifecycle walkthrough](../walkthroughs/private-skill-lifecycle.md) - verify import, updates, and access removal

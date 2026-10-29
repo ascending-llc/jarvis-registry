@@ -13,14 +13,33 @@ Jarvis Registry supports common MCP clients and coding assistants through the sa
 - VS Code
 - Cursor
 - Claude Desktop
-- Chatgpt
-- Micosoft Copilot
+- ChatGPT
+- Microsoft Copilot
 - AWS Kiro
 - AWS QuickSuite
 
 All of them connect to the same registry endpoint pattern and then receive only the resources the user is allowed to access.
 
 ![Endpoint Configuration](../img/endpoint-instruction.png)
+
+### Copy the configuration generated for your deployment
+
+Use the Registry's client configuration dialog to generate the endpoint URL and configuration for your client. It includes the deployment's configured base path; do not add `/gateway` unless that is your deployment's base path.
+
+For example, a VS Code `.vscode/mcp.json` configuration for a Registry hosted at `https://registry.example.com` **with `BASE_PATH=/gateway`** is:
+
+```json
+{
+  "servers": {
+    "jarvis-registry": {
+      "type": "http",
+      "url": "https://registry.example.com/gateway/proxy/mcpgw/mcp"
+    }
+  }
+}
+```
+
+A root-mounted deployment instead uses `https://registry.example.com/proxy/mcpgw/mcp`. The example hostname is a placeholder. Other clients use their own configuration format, so copy their generated configuration rather than reusing the VS Code JSON unchanged.
 
 ![Claude example screenshot](../img/endpoint-claude-example.png)
 
@@ -38,6 +57,8 @@ What this means in practice:
 
 This gives users SSO-style access and gives admins centralized identity control without per-tool credential setup in each copilot.
 
+Registry sign-in does not replace authorization to a downstream business service. If a registered server requires its own OAuth identity, the user may also need to complete that service's authorization flow. Gateway access and backend record permissions remain separate checks.
+
 For identity setup details, see [IDP Integration](auth-server.md).
 
 ---
@@ -52,7 +73,7 @@ Discovery is permission-aware by default:
 - **ACL filter**: resource-level permissions for specific MCP servers and agents
 - **Context matching**: discovery ranks tools by relevance to the current task
 
-So when users call discovery (for example through `discover_entities` style workflows), they only see resources they are authorized to use.
+Clients use `discover_servers` to find MCP servers and `discover_agents` to find agents. These public tools return resources the caller is authorized to access. The gateway's `execute_tool` tool invokes a selected MCP tool through the Registry; successful discovery does not bypass the invocation checks.
 
 This prevents accidental exposure while still enabling fast, context-aware tool selection.
 
@@ -85,7 +106,9 @@ That enables:
 - Policy enforcement at the gateway layer
 - Easier debugging and targeted testing of a specific agent endpoint
 
-In other words, even direct path-based interaction still benefits from centralized auth, RBAC, ACL, logging, and observability.
+Direct routes still check the applicable server or agent resource permissions. Review the telemetry configured for that route rather than assuming it emits every field needed for an investigation.
+
+The MCP direct-connect proxy does **not** enforce the Registry's server-wide `disabledTools` list. That list hides disabled tools from `discover_servers` and rejects them through `execute_tool`; it is not a per-user tool permission. See [MCP Tool Enablement API](../design/mcp-tool-enablement-api.md) before treating gateway and direct-proxy routes as equivalent.
 
 ---
 
@@ -93,7 +116,7 @@ In other words, even direct path-based interaction still benefits from centraliz
 
 The Registry Endpoint is the runtime layer that connects all feature areas:
 
-- Resources come from [MCP Server Registry](mcp-registry.md), [A2A Agent Registry](a2a-registry.md), and federated sources.
+- Resources come from [MCP Server Registry](mcp-gateway-registry.md), [A2A Agent Registry](a2a-gateway-registry.md), and federated sources.
 - Security comes from IdP auth, RBAC scopes, and ACL checks.
 - Discovery and invocation happen through one consistent interface for every supported copilot.
 
@@ -107,7 +130,8 @@ The Registry Endpoint is the runtime layer that connects all feature areas:
 
 ## Next Steps
 
-- [MCP Server Registry](mcp-registry.md) — Register and share MCP resources
-- [A2A Agent Registry](a2a-registry.md) — Register and share autonomous agents
+- [MCP Server Registry](mcp-gateway-registry.md) — Register and share MCP resources
+- [A2A Agent Registry](a2a-gateway-registry.md) — Register and share autonomous agents
+- [Test MCP access with two users](../walkthroughs/mcp-access-control.md) — Verify allowed and restricted requests
 - [AgentCore Federation](agentcore-federation.md) — Import federated MCP servers and agents
 - [Security Control Design](../design/security-design.md) — Full auth, RBAC, and ACL model
