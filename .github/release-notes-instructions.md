@@ -64,6 +64,8 @@ message, and changed paths (`git show --stat`) — do **not** inspect the diff j
 to apply a skip rule.
 - Pure whitespace / formatting PRs, as stated by the title or commit message
 - PRs that only add a release's changelog page under `docs/changelog/`
+- PRs that only change contributor- or agent-facing files: `CLAUDE.md`,
+  `AGENTS.md`, `DEVELOPMENT.md`, `CONTRIBUTING.md`, `.github/**`, `.claude/**`
 - i18n translation-only PRs unless they add a new language
 
 ## Investigating PRs (shell tool usage)
