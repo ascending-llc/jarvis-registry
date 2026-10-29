@@ -65,16 +65,53 @@ jobs:
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_KEY_PERSONAL }}
 
+      # The action exits successfully even when Copilot couldn't write any notes
+      # (e.g. every git call was denied), so gate the release on its JSON outputs:
+      # fail when there are no confirmed entries, and create a draft for a human
+      # to finish when only some entries are uncertain.
+      - name: Check release notes
+        id: check_notes
+        env:
+          ENTRIES: ${{ steps.notes.outputs['release-notes-json'] }}
+          UNCERTAIN: ${{ steps.notes.outputs['uncertain-entries'] }}
+          SKIPPED: ${{ steps.notes.outputs['skipped-prs'] }}
+        run: |
+          entries=$(jq length <<< "${ENTRIES:-[]}")
+          uncertain=$(jq length <<< "${UNCERTAIN:-[]}")
+          skipped=$(jq length <<< "${SKIPPED:-[]}")
+          echo "📋 Entries: $entries, uncertain: $uncertain, skipped: $skipped"
+          if [ "$entries" -eq 0 ] && [ "$uncertain" -gt 0 ]; then
+            echo "::error::Copilot could not confidently describe any PR ($uncertain uncertain). Check the Copilot step's log, fix the cause, and re-run."
+            exit 1
+          fi
+          if [ "$entries" -eq 0 ] && [ "$skipped" -eq 0 ]; then
+            echo "::error::Copilot produced no release notes. Check the Copilot step's log, fix the cause, and re-run."
+            exit 1
+          fi
+          if [ "$uncertain" -gt 0 ]; then
+            echo "::warning::$uncertain entries need review. Creating a draft release: edit the Needs Review section, then publish it."
+            echo "draft=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_TAG: ${{ inputs.new_tag }}
-          RELEASE_NOTES: ${{ steps.notes.outputs['release-notes'] }}
+          DRAFT: ${{ steps.check_notes.outputs.draft }}
+          # Empty only when every PR was skipped by the style guide's skip rules.
+          RELEASE_NOTES: ${{ steps.notes.outputs['release-notes'] || 'Maintenance changes only; no user-facing changes.' }}
         run: |
+          if [ "$DRAFT" = "true" ]; then
+            release_args=(--draft)
+          else
+            release_args=(--latest)
+          fi
           gh release create "$NEW_TAG" \
             --title "Jarvis Registry $NEW_TAG" \
             --notes "$RELEASE_NOTES" \
-            --latest
+            "${release_args[@]}"
         # Changelog generation is a separate manual step: run the "Release
         # Changelog" workflow (release_changelog.yaml, workflow_dispatch) against
         # this tag. If auto-triggering on `release: published` is ever restored,
