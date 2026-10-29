@@ -35,7 +35,7 @@ specs**, and which one is used is decided per connection at negotiation.
 Standalone uv project (`mcp>=2,<3`), decoupled from the repo root:
 
 ```bash
-cd scripts/spike/as_1962_url_elicitation
+cd scripts/spike
 uv run run_spike.py     # Client exercises 3 paths (below) + self-checks
 uv run server.py        # standalone HTTP server -> http://127.0.0.1:8765/mcp (for a real agent)
 ```

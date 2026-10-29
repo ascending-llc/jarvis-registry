@@ -84,7 +84,7 @@ async def main() -> None:
     assert url_params["url"] == AUTH_URL
     assert url_params.get("elicitationId") is None  # modern strips it; continuation via request_state
     assert modern["raw_wire"].get("requestState")
-    assert modern["final"] == ["Authorization confirmed; proceeding with the real work."]
+    assert modern["final"] == ["Authorization accept; proceeding with the real work."]
 
     # 2) modern WITHOUT elicitation support -> CallToolResult fallback carrying the URL
     assert fallback["raw_type"] == "CallToolResult"

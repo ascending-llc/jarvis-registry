@@ -63,8 +63,12 @@ async def authorize(ctx: Context):
 
     if ctx.protocol_version in MODERN_PROTOCOL_VERSIONS:
         # 2026-07-28: no back-channel; deliver the elicitation via the return value.
-        if ctx.input_responses:
-            return "Authorization confirmed; proceeding with the real work."  # 2nd round: answered
+        if ctx.input_responses:  # 2nd round: the client answered
+            answer = ctx.input_responses.get(_ELICIT_KEY)
+            action = answer.action if answer else "cancel"  # missing key -> treat as cancel
+            if action != "accept":
+                return f"Authorization {action}; no work performed."
+            return f"Authorization {action}; proceeding with the real work."
         # 1st round: request_state is the opaque continuation token the client
         # echoes back on retry (the SDK encrypts it).
         return InputRequiredResult(
@@ -86,6 +90,8 @@ async def authorize(ctx: Context):
         url=AUTH_URL,
         elicitation_id=_ELICITATION_ID,
     )
+    if result.action != "accept":
+        return f"Authorization {result.action}; no work performed."
     return f"Authorization {result.action}; proceeding with the real work."
 
 
