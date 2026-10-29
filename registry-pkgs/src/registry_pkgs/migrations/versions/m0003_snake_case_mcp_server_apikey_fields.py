@@ -1,3 +1,21 @@
+"""Rename camelCase `apiKey` sub-fields of MCP servers to the shared snake_case contract.
+
+Jarvis Chat's `mcpservers` schema and Registry's invocation path read `config.apiKey.authorization_type`
+and `config.apiKey.custom_header`. Older Registry code stored the REST payload's `authorizationType` /
+`customHeader` as received, so the invocation path fell back to Bearer and sent the wrong header.
+
+Scope: `mcpservers` documents that have `config.apiKey.authorizationType` or `config.apiKey.customHeader`.
+`source` and `key` are spelled the same either way and are never read or written; `key` stays encrypted.
+
+Merge rule: camelCase wins. The UI only ever writes camelCase, so in a document holding both spellings
+the camelCase value is from the most recent save.
+
+Idempotent: each write `$unset`s the camelCase fields it `$set`s, so a re-run matches nothing and a
+partial run resumes on the documents still matched. Each write is a compare-and-swap on the camelCase
+values read, so a concurrent app save turns it into a no-op instead of being clobbered. An old-code pod
+can still write camelCase after this runs; delete this migration's record to re-run it.
+"""
+
 import asyncio
 import logging
 
