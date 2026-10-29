@@ -114,6 +114,19 @@ async def test_mixed_document_camel_case_wins_and_key_source_untouched() -> None
 
 
 @pytest.mark.asyncio
+async def test_writes_are_flushed_in_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(migration, "_BATCH_SIZE", 2)
+    ids = [ObjectId() for _ in range(3)]
+    db, collection = _db([{"_id": _id, "config": {"apiKey": {"authorizationType": "bearer"}}} for _id in ids])
+
+    await migration.up(db)
+
+    # One full batch mid-stream, then the remainder: no op dropped or sent twice.
+    assert [len(call.args[0]) for call in collection.bulk_write.await_args_list] == [2, 1]
+    assert [op._filter["_id"] for op in _ops(collection)] == ids
+
+
+@pytest.mark.asyncio
 async def test_document_without_camel_case_fields_is_skipped() -> None:
     db, collection = _db([{"_id": ObjectId(), "config": {"apiKey": {"authorization_type": "bearer"}}}])
 
