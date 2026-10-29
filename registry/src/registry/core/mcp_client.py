@@ -636,7 +636,7 @@ class MCPServerData:
     prompts: list[dict[str, Any]] | None
     capabilities: dict[str, Any] | None
     error_message: str | None = None
-    requires_init: bool | None = False
+    requires_init: bool | None = None
 
 
 def _convert_pydantic_to_dict(obj: Any) -> dict:
@@ -822,7 +822,8 @@ async def get_tools_from_server_with_transport(base_url: str, transport: str = "
         return None
 
 
-async def _is_requires_init(get_session_id):
+async def _is_requires_init(get_session_id) -> bool | None:
+    """Return None when the session ID can't be read, so the stored requiresInit is kept."""
     try:
         session_id = get_session_id() if callable(get_session_id) else None
         requires_init = session_id is not None
@@ -830,8 +831,8 @@ async def _is_requires_init(get_session_id):
             f"streamable-http: session_id={'present' if session_id else 'absent'}, requiresInit={requires_init}"
         )
     except Exception as e:
-        logger.warning(f"Failed to get session_id: {e}, assuming stateless")
-        requires_init = False
+        logger.warning(f"Failed to get session_id: {e}, leaving requiresInit undetermined")
+        requires_init = None
     return requires_init
 
 

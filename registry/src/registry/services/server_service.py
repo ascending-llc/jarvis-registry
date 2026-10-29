@@ -752,6 +752,7 @@ class ServerServiceV1:
         # Get current config
         config = server.config or {}
         previous_url = config.get("url")
+        previous_type = config.get("type", "streamable-http")
 
         # Check for duplicate tags if tags are being updated
         if data.tags is not None:
@@ -767,6 +768,8 @@ class ServerServiceV1:
 
         # Update config with MCP-specific values only
         updated_config = _update_config_from_request(config, data, server_name=server.serverName)
+        if updated_config.get("url") != previous_url or updated_config.get("type", "streamable-http") != previous_type:
+            updated_config.pop("requiresInit", None)
 
         # Encrypt sensitive authentication fields if they were updated
         if data.oauth is not None or data.apiKey is not None:
@@ -1150,7 +1153,8 @@ class ServerServiceV1:
                 include_resources=include_resources,
                 include_prompts=include_prompts,
             )
-            server.config["requiresInit"] = bool(result.requires_init)
+            if result.requires_init is not None:
+                server.config["requiresInit"] = result.requires_init
 
             if include_capabilities:
                 if result.tools is None or result.capabilities is None:
