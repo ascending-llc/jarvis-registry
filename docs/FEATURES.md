@@ -37,6 +37,7 @@ Jarvis Registry federates agents across AWS AgentCore Runtime, Azure AI Foundry 
 
 Single authenticated entry point for AI copilots and MCP-compatible clients — handling discovery, access control, elicitation, and credential management centrally so individual MCP servers carry none of that complexity.
 
+- **Developer IDE and Business Chatbot Integration**: Connect Claude Code, OpenAI Codex, GitHub Copilot, and Cursor through [developer setup](production-configuration.md#for-developers-local-client-setup), or let administrators make the gateway available to business users through [Claude and ChatGPT workspace integrations](production-configuration.md#for-organization-administrators-business-chatbot-integration). Users authenticate individually, with Registry permissions applied to gateway access.
 - **Unified Catalog**: Clients discover tools, prompts, and resources across all registered MCP servers through a single endpoint — no per-server configuration or manual tool list maintenance
 - **ACL-Filtered Discovery**: Discovery results are scoped per caller identity — agents and copilots only see tools, prompts, and resources they are authorized to invoke; unauthorized entries are invisible, not just blocked
 - **Transport Negotiation**: Supports SSE (Server-Sent Events) for streaming responses to copilots and IDEs (Cursor, Claude Desktop, GitHub Copilot, VS Code) and Streamable HTTP for bidirectional long-running tool calls — the gateway selects the right transport per client based on capability negotiation

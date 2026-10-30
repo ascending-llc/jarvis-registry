@@ -112,7 +112,7 @@ Jarvis provides operational logging, OpenTelemetry instrumentation and Prometheu
 
 The main files are `.env` (runtime config, copy from `.env.example`), `oauth2_providers.yml` (IdP settings), and `scopes.yml` (RBAC scope mappings).
 
-→ Full reference: [Configuration Reference](configuration.md)
+→ Full reference: [Production Configuration Reference](production-configuration.md)
 
 ### How do I manage ACL permissions?
 
@@ -142,7 +142,7 @@ Verify your IdP credentials and token, confirm ACL rules permit the user/scope, 
 docker compose logs registry | grep -i acl
 ```
 
-→ See: [Authentication and Authorization Guide](auth.md)
+→ See: [Client Connection Troubleshooting](production-configuration.md#troubleshooting)
 
 ### A2A agents are not coordinating
 

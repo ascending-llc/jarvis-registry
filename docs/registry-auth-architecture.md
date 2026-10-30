@@ -1,6 +1,6 @@
 # Registry Authentication Architecture
 
-This document provides comprehensive technical documentation for the MCP Gateway Registry's authentication and authorization system. While the main [auth.md](./auth.md) covers the overall system architecture, this document focuses specifically on the **registry application's internal authentication mechanisms**, UI-based authentication flows, and technical implementation details.
+This document provides comprehensive technical documentation for the MCP Gateway Registry's authentication and authorization system. While [IDP Integration](features/auth-server.md) covers supported identity providers and authentication flows, this document focuses specifically on the **registry application's internal authentication mechanisms**, UI-based authentication flows, and technical implementation details.
 
 ## Table of Contents
 
