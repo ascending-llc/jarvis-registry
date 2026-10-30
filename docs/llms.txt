@@ -2,7 +2,7 @@
 
 > Jarvis Registry is a self-hostable enterprise gateway and registry for governed access to MCP servers, A2A agents, and private AI skills.
 
-Last updated: 2026-10-30T18:46:04Z
+Last updated: 2026-10-30T18:57:41Z
 
 Use the guides below for deployment, developer clients, business chatbot integrations, identity, access control, and operations. Capabilities depend on deployment configuration and the connected platform. Private deployment does not itself confer compliance certification.
 
@@ -18,7 +18,7 @@ Use the guides below for deployment, developer clients, business chatbot integra
 ## Get Started
 
 - [Quick Start](https://jarvisregistry.com/quick-start/): Get the Jarvis Registry running in 5 minutes with this streamlined setup guide.
-- [Generate Secrets](https://jarvisregistry.com/generate-secrets/): All keys are generated locally in your browser using the Web Crypto API . Nothing is sent to any server.
+- [Generate Secrets](https://jarvisregistry.com/generate-secrets/): All keys are generated locally in your browser using the Web Crypto API. Nothing is sent to any server.
 - [Production Deployment: Overview](https://jarvisregistry.com/deployment-guide/): This guide is cloud-platform-agnostic. It describes what components are needed and why for deploying Jarvis Registry to an existing Kubernetes cluster on AWS (EKS) or Azure (AKS). Sections that differ between platforms are clearly marked.
 - [Production Deployment: Configuration](https://jarvisregistry.com/production-configuration/): Choose the instructions for your role: developers connect local IDE to the centralized MCP gateway; organization administrators make it available in business chatbots such as Claude and ChatGPT; deployment operators configure the...
 
@@ -54,7 +54,7 @@ Use the guides below for deployment, developer clients, business chatbot integra
 
 ## Overview
 
-- [FAQ](https://jarvisregistry.com/faq/): Jarvis Registry is an open-source, enterprise-grade MCP (Model Context Protocol) and A2A Agent Gateway and Workflow Orchestration platform built by ASCENDING Inc . It gives AI copilots and autonomous agents secure, governed access to...
+- [FAQ](https://jarvisregistry.com/faq/): Jarvis Registry is an open-source, enterprise-grade MCP (Model Context Protocol) and A2A Agent Gateway and Workflow Orchestration platform built by ASCENDING Inc. It gives AI copilots and autonomous agents secure, governed access to...
 
 ## Explore Agentic Jarvis
 
@@ -88,24 +88,24 @@ Use the guides below for deployment, developer clients, business chatbot integra
 ## Changelog
 
 - [Overview](https://jarvisregistry.com/changelog/): Release notes for every version of Jarvis Registry.
-- [asc0.5.16](https://jarvisregistry.com/changelog/asc0.5.16/): title: "🚀 Jarvis Registry asc0.5.16" description: "The asc0.5.16 release of Jarvis Registry" date: 2026-10-29 tags:
-- [asc0.5.15](https://jarvisregistry.com/changelog/asc0.5.15/): title: "🚀 Jarvis Registry asc0.5.15" description: "The asc0.5.15 release of Jarvis Registry" date: 2026-10-28 tags:
-- [asc0.5.14](https://jarvisregistry.com/changelog/asc0.5.14/): title: "🚀 Jarvis Registry asc0.5.14" description: "The asc0.5.14 release of Jarvis Registry" date: 2026-10-08 tags:
-- [asc0.5.13](https://jarvisregistry.com/changelog/asc0.5.13/): title: "🚀 Jarvis Registry asc0.5.13" description: "The asc0.5.13 release of Jarvis Registry" date: 2026-10-06 tags:
-- [asc0.5.12](https://jarvisregistry.com/changelog/asc0.5.12/): title: "🚀 Jarvis Registry asc0.5.12" description: "The asc0.5.12 release of Jarvis Registry" date: 2026-10-05 tags:
-- [asc0.5.11](https://jarvisregistry.com/changelog/asc0.5.11/): title: "🚀 Jarvis Registry asc0.5.11" description: "The asc0.5.11 release of Jarvis Registry" date: 2026-09-24 tags:
-- [asc0.5.10](https://jarvisregistry.com/changelog/asc0.5.10/): title: "🚀 Jarvis Registry asc0.5.10" description: "The asc0.5.10 release of Jarvis Registry" date: 2026-09-22 tags:
-- [asc0.5.9](https://jarvisregistry.com/changelog/asc0.5.9/): title: "🚀 Jarvis Registry asc0.5.9" description: "The asc0.5.9 release of Jarvis Registry" date: 2026-09-22 tags:
-- [asc0.5.8](https://jarvisregistry.com/changelog/asc0.5.8/): title: "🚀 Jarvis Registry asc0.5.8" description: "The asc0.5.8 release of Jarvis Registry" date: 2026-09-14 tags:
-- [asc0.5.7](https://jarvisregistry.com/changelog/asc0.5.7/): title: "🚀 Jarvis Registry asc0.5.7" description: "The asc0.5.7 release of Jarvis Registry" date: 2026-09-01 tags:
-- [asc0.5.6](https://jarvisregistry.com/changelog/asc0.5.6/): title: "🚀 Jarvis Registry asc0.5.6" description: "The asc0.5.6 release of Jarvis Registry" date: 2026-08-26 tags:
-- [asc0.5.5](https://jarvisregistry.com/changelog/asc0.5.5/): title: "🚀 Jarvis Registry asc0.5.5" description: "The asc0.5.5 release of Jarvis Registry" date: 2026-08-26 tags:
-- [asc0.5.4](https://jarvisregistry.com/changelog/asc0.5.4/): title: "🚀 Jarvis Registry asc0.5.4" description: "The asc0.5.4 release of Jarvis Registry" date: 2026-07-29 tags:
-- [asc0.5.3](https://jarvisregistry.com/changelog/asc0.5.3/): title: "🚀 Jarvis Registry asc0.5.3" description: "The asc0.5.3 release of Jarvis Registry" date: 2026-07-24 tags:
-- [asc0.5.2](https://jarvisregistry.com/changelog/asc0.5.2/): title: "🚀 Jarvis Registry asc0.5.2" description: "The asc0.5.2 release of Jarvis Registry" date: 2026-07-10 tags:
-- [asc0.5.1](https://jarvisregistry.com/changelog/asc0.5.1/): title: "🚀 Jarvis Registry asc0.5.1" description: "The asc0.5.1 release of Jarvis Registry" date: 2026-07-06 tags:
-- [asc0.3.1](https://jarvisregistry.com/changelog/asc0.3.1/): title: "🚀 Jarvis Registry asc0.3.1" description: "✨ Features" date: 2026-05-26 tags:
-- [asc0.2.12](https://jarvisregistry.com/changelog/asc0.2.12/): title: "🚀 Jarvis Registry asc0.2.12" description: "JWT security hardening, AgentCore federation auth, workflow refactor, and documentation expansion" date: 2025-05-13 tags:
+- [asc0.5.16](https://jarvisregistry.com/changelog/asc0.5.16/): The asc0.5.16 release of Jarvis Registry
+- [asc0.5.15](https://jarvisregistry.com/changelog/asc0.5.15/): The asc0.5.15 release of Jarvis Registry
+- [asc0.5.14](https://jarvisregistry.com/changelog/asc0.5.14/): The asc0.5.14 release of Jarvis Registry
+- [asc0.5.13](https://jarvisregistry.com/changelog/asc0.5.13/): The asc0.5.13 release of Jarvis Registry
+- [asc0.5.12](https://jarvisregistry.com/changelog/asc0.5.12/): The asc0.5.12 release of Jarvis Registry
+- [asc0.5.11](https://jarvisregistry.com/changelog/asc0.5.11/): The asc0.5.11 release of Jarvis Registry
+- [asc0.5.10](https://jarvisregistry.com/changelog/asc0.5.10/): The asc0.5.10 release of Jarvis Registry
+- [asc0.5.9](https://jarvisregistry.com/changelog/asc0.5.9/): The asc0.5.9 release of Jarvis Registry
+- [asc0.5.8](https://jarvisregistry.com/changelog/asc0.5.8/): The asc0.5.8 release of Jarvis Registry
+- [asc0.5.7](https://jarvisregistry.com/changelog/asc0.5.7/): The asc0.5.7 release of Jarvis Registry
+- [asc0.5.6](https://jarvisregistry.com/changelog/asc0.5.6/): The asc0.5.6 release of Jarvis Registry
+- [asc0.5.5](https://jarvisregistry.com/changelog/asc0.5.5/): The asc0.5.5 release of Jarvis Registry
+- [asc0.5.4](https://jarvisregistry.com/changelog/asc0.5.4/): The asc0.5.4 release of Jarvis Registry
+- [asc0.5.3](https://jarvisregistry.com/changelog/asc0.5.3/): The asc0.5.3 release of Jarvis Registry
+- [asc0.5.2](https://jarvisregistry.com/changelog/asc0.5.2/): The asc0.5.2 release of Jarvis Registry
+- [asc0.5.1](https://jarvisregistry.com/changelog/asc0.5.1/): The asc0.5.1 release of Jarvis Registry
+- [asc0.3.1](https://jarvisregistry.com/changelog/asc0.3.1/): ✨ Features
+- [asc0.2.12](https://jarvisregistry.com/changelog/asc0.2.12/): JWT security hardening, AgentCore federation auth, workflow refactor, and documentation expansion
 
 ## Project
 

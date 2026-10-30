@@ -1,6 +1,7 @@
 """Generate LLM documentation exports from the MkDocs navigation."""
 
 import argparse
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ from urllib.parse import urljoin, urlsplit
 from markdown_it import MarkdownIt
 from mkdocs.config import load_config
 from mkdocs.structure.files import get_files
+from mkdocs.utils.meta import get_data
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = (
@@ -31,6 +33,10 @@ def navigation_pages(entries: Navigation, parents: tuple[str, ...] = ()) -> Iter
 
 
 def page_description(content: str) -> str:
+    content, metadata = get_data(content)
+    metadata_description = metadata.get("description")
+    if isinstance(metadata_description, str) and metadata_description.strip():
+        content = metadata_description
     tokens = MarkdownIt().parse(content)
     for position, token in enumerate(tokens[:-1]):
         if token.type != "paragraph_open":
@@ -40,12 +46,28 @@ def page_description(content: str) -> str:
             continue
         description = " ".join(
             "".join(
-                child.content if child.type in {"text", "code_inline"} else " " for child in paragraph.children or []
+                child.content
+                if child.type in {"text", "code_inline"}
+                else " "
+                if child.type in {"softbreak", "hardbreak"}
+                else ""
+                for child in paragraph.children or []
             ).split()
         )
         if description:
             return description if len(description) <= 240 else description[:237].rsplit(" ", 1)[0] + "..."
     return "Documentation and reference."
+
+
+def with_update_timestamp(path: Path, content: str) -> str:
+    if path.exists():
+        previous = path.read_text(encoding="utf-8")
+        timestamp = re.search(r"^Last updated: [^\n]+\n\n", previous, re.MULTILINE)
+        if timestamp and previous[: timestamp.start()] + previous[timestamp.end() :] == content:
+            return previous
+    last_updated = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    title, summary, body = content.split("\n\n", 2)
+    return f"{title}\n\n{summary}\n\nLast updated: {last_updated}\n\n{body}"
 
 
 def generate() -> dict[Path, str]:
@@ -55,17 +77,10 @@ def generate() -> dict[Path, str]:
     docs_dir = Path(config["docs_dir"])
     files = get_files(config)
     pages = list(navigation_pages(config["nav"]))
-    inputs = [config_path, Path(__file__), *(docs_dir / source for _, _, source in pages)]
-    last_updated = datetime.fromtimestamp(max(path.stat().st_mtime for path in inputs), UTC).isoformat(
-        timespec="seconds"
-    )
-    last_updated = last_updated.replace("+00:00", "Z")
     index = [
         "# Jarvis Registry",
         "",
         f"> {SUMMARY}",
-        "",
-        f"Last updated: {last_updated}",
         "",
         "Use the guides below for deployment, developer clients, business chatbot integrations, "
         "identity, access control, and operations. Capabilities depend on deployment configuration "
@@ -80,8 +95,6 @@ def generate() -> dict[Path, str]:
         "",
         f"> {SUMMARY}",
         "",
-        f"Last updated: {last_updated}",
-        "",
         f"Documentation: {site_url}",
         f"Index: {urljoin(site_url, 'llms.txt')}",
         "",
@@ -89,8 +102,8 @@ def generate() -> dict[Path, str]:
         "Archived and unlisted pages are excluded. Each section includes its published URL and "
         "checkout-relative Markdown source path. Relative links, images, and documentation extension syntax "
         "are preserved from that source; interactive controls require the published site. "
-        "The UTC update timestamp reflects the newest modification time among the included Markdown files, "
-        "MkDocs configuration, and generator, not the site's deployment time.",
+        "The UTC update timestamp records when this export's content last changed. "
+        "It is preserved when the content is unchanged, regardless of checkout or file modification times.",
     ]
     seen: set[str] = set()
     current_section = ""
@@ -120,10 +133,11 @@ def generate() -> dict[Path, str]:
                 content,
             ]
         )
-    return {
+    exports = {
         docs_dir / "llms.txt": "\n".join(index).rstrip() + "\n",
         docs_dir / "llms-full.txt": "\n".join(full).rstrip() + "\n",
     }
+    return {path: with_update_timestamp(path, content) for path, content in exports.items()}
 
 
 def main() -> None:

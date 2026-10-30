@@ -2,12 +2,12 @@
 
 > Jarvis Registry is a self-hostable enterprise gateway and registry for governed access to MCP servers, A2A agents, and private AI skills.
 
-Last updated: 2026-10-30T18:46:04Z
+Last updated: 2026-10-30T18:57:41Z
 
 Documentation: https://jarvisregistry.com/
 Index: https://jarvisregistry.com/llms.txt
 
-Generated from local Markdown files in this checkout, using mkdocs.yml navigation order. Archived and unlisted pages are excluded. Each section includes its published URL and checkout-relative Markdown source path. Relative links, images, and documentation extension syntax are preserved from that source; interactive controls require the published site. The UTC update timestamp reflects the newest modification time among the included Markdown files, MkDocs configuration, and generator, not the site's deployment time.
+Generated from local Markdown files in this checkout, using mkdocs.yml navigation order. Archived and unlisted pages are excluded. Each section includes its published URL and checkout-relative Markdown source path. Relative links, images, and documentation extension syntax are preserved from that source; interactive controls require the published site. The UTC update timestamp records when this export's content last changed. It is preserved when the content is unchanged, regardless of checkout or file modification times.
 
 ---
 
