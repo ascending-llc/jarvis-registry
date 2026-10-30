@@ -4,6 +4,7 @@ import logging
 
 from beanie import BulkWriter, PydanticObjectId
 
+from registry_pkgs.access_control import group_member_id_for_user
 from registry_pkgs.models import ExtendedGroup, ExtendedGroupSource
 from registry_pkgs.models._generated.user import User
 
@@ -39,10 +40,12 @@ class GroupService:
         """
         source = ExtendedGroupSource.GOOGLE if user.provider == "google" else ExtendedGroupSource.ENTRA
         client = self._clients.get(source)
-        if client is None or not user.idOnTheSource:
+        member_id = group_member_id_for_user(user)
+        if client is None or member_id is None:
             return
 
-        user_oid: str = user.idOnTheSource
+        # For Google users this is the Workspace member email; for Entra, the AAD object id.
+        user_oid: str = member_id
         group_ids = await client.get_user_group_ids(user_oid)
         if not group_ids:
             return

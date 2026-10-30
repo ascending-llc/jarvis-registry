@@ -11,9 +11,10 @@ from registry_pkgs.models import ExtendedGroupSource
 from registry_pkgs.models._generated.user import User
 
 
-def _make_user(oid: str = "user-oid-1", provider: str = "openid") -> MagicMock:
+def _make_user(oid: str | None = "user-oid-1", provider: str = "openid", email: str = "user@example.com") -> MagicMock:
     user = MagicMock(spec=User)
     user.idOnTheSource = oid
+    user.email = email
     user.id = PydanticObjectId()
     user.provider = provider
     return user
@@ -118,16 +119,35 @@ async def test_sync_adds_user_to_existing_entra_group():
 
 
 async def test_sync_google_user_uses_google_client_not_entra():
-    """A provider='google' user must sync against the Google directory client only."""
+    """A provider='google' user must sync against the Google directory client only, keyed by email."""
     entra = _make_client(group_ids=["entra-g"])
     google = _make_client(group_ids=[])  # empty -> no DB writes, short-circuits after fetch
     service = _make_service(entra_client=entra, google_client=google)
-    user = _make_user(provider="google")
+    user = _make_user(provider="google", email="ada@example.com")
 
     await service.sync_user_group_memberships(user)
 
-    google.get_user_group_ids.assert_called_once_with(user.idOnTheSource)
+    google.get_user_group_ids.assert_called_once_with("ada@example.com")
     entra.get_user_group_ids.assert_not_called()
+
+
+async def test_sync_google_user_without_idOnTheSource_syncs_by_email():
+    """A Chat-created Google user has no idOnTheSource; sync still runs, keyed by email."""
+    google = _make_client(group_ids=["groups/1"])
+    service = _make_service(google_client=google)
+    user = _make_user(provider="google", email="ada@example.com", oid=None)
+
+    find_mock = MagicMock()
+    find_mock.update_many = AsyncMock()
+    find_mock.to_list = AsyncMock(return_value=[])
+
+    with patch("registry.services.group_service.ExtendedGroup") as mock_group_cls:
+        mock_group_cls.find.return_value = find_mock
+        await service.sync_user_group_memberships(user)
+
+    google.get_user_group_ids.assert_called_once_with("ada@example.com")
+    # the email is the memberIds value in the $addToSet / $pullAll update steps
+    assert any("ada@example.com" in str(c) for c in find_mock.update_many.call_args_list)
 
 
 async def test_sync_google_upserts_with_google_source():
