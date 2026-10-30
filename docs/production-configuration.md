@@ -1,9 +1,9 @@
 # Configuration Reference
 
-Choose the instructions for your role: developers connect local IDE to the centerlized MCP gateway; organization administrators configure the shared gateway, manage access, and distribute approved connections to users through supported AI platform.
+Choose the instructions for your role: developers connect local IDE to the centralized MCP gateway; organization administrators make it available in business chatbots such as Claude and ChatGPT; deployment operators configure the Registry runtime environment.
 
 - [For developers: local client setup](#for-developers-local-client-setup)
-- [For organization administrators: MCP gateway rollout](#for-organization-administrators-mcp-gateway-rollout)
+- [For organization administrators: business chatbot integration](#for-organization-administrators-business-chatbot-integration)
 - [For deployment operators: Registry runtime environment](#registry-runtime-environment-configuration)
 
 ## For Developers: Local Client Setup
@@ -123,36 +123,67 @@ See the [Cursor MCP reference](https://cursor.com/docs/mcp) for configuration lo
 
 Connecting to the gateway does not grant access to every registered server. Discovery and execution remain subject to the [caller's permissions](features/mcp-gateway-registry.md#resource-sharing-access-control). Some downstream services also require a separate authorization step.
 
-## For Organization Administrators: MCP Gateway Rollout
+## For Organization Administrators: Business Chatbot Integration
 
-Configure and govern the shared gateway for your organization's users. This section covers deployment prerequisites, server registration, access policies, and client configuration distribution rather than individual workstation setup.
+Make Jarvis Registry available inside your organization's Claude or ChatGPT workspace so business users can access approved tools from chat. Administrators register and approve the connection in the AI platform; users select it and sign in when prompted. Users do not edit JSON/TOML files, run CLI commands, or configure individual downstream MCP servers.
 
-### Administrator Setup
-
-Use Jarvis Registry as the organization's shared MCP entry point, rather than distributing a separate connection and credential for every backend server:
-
-1. Complete [Production Deployment](deployment-guide.md) and identity provider configuration. Publish the gateway behind HTTPS with a stable hostname reachable by employee workstations.
-2. Ensure your reverse proxy routes MCP traffic and the advertised OAuth discovery, registration, authorization, and token endpoints to the appropriate services. A working Registry UI alone does not prove that MCP authentication is reachable.
-3. [Register the organization's MCP servers](features/mcp-gateway-registry.md) in Jarvis Registry. Configure downstream credentials through the Registry interface where required; do not distribute those credentials to clients.
-4. Assign roles and resource ACLs for the intended users and groups. Validate with [the two-user access walkthrough](walkthroughs/mcp-access-control.md), including a user who should not have access.
-5. Publish the gateway URL and approved client configuration through your internal onboarding documentation, repository templates, or managed client configuration.
-6. Have each developer sign in with their own organization identity and run the connection checks above. Verify the access and telemetry required for your rollout before expanding it.
-
-!!! warning "Share configuration, not credentials"
-      A shared gateway URL is not a shared identity. Do not commit access tokens, refresh tokens, client secrets, or authenticated client state to a repository or distribute one user's token to a team. Keep user OAuth credentials in each client's own credential storage. Do not disable authentication to simplify onboarding.
-
-### Distribute Client Configuration
-
-| Client | Repository-based setup | Organization-managed setup |
+| Platform | Organization integration | Business user experience |
 |---|---|---|
-| Claude Code | Commit the non-secret gateway entry in `.mcp.json`; users review it and sign in | Use Claude Code's [managed MCP configuration](https://code.claude.com/docs/en/mcp#managed-mcp-configuration) through your endpoint management process |
-| OpenAI Codex | Commit the gateway table in `.codex/config.toml`; users trust the project and sign in | Use OpenAI's [admin configuration guidance](https://developers.openai.com/codex/enterprise/admin-setup/) for the installed client and any centrally enforced restrictions |
-| GitHub Copilot (VS Code) | Commit the gateway entry in `.vscode/mcp.json`; users review it, start the server, and sign in | Distribute approved configuration through endpoint management and apply your organization's Copilot and [VS Code MCP policies](https://code.visualstudio.com/docs/copilot/customization/mcp-servers); each user authenticates independently |
-| Cursor | Commit the gateway entry in `.cursor/mcp.json`; users enable it and sign in | Use Cursor's [team MCP distribution](https://cursor.com/docs/mcp), where available for your plan, or deploy the approved user configuration through endpoint management |
+| Claude Team / Enterprise | An organization owner adds Jarvis Registry as a custom remote MCP connector | Members connect their account and enable the connector in Claude, including Claude Desktop |
+| ChatGPT Business / Enterprise / Edu | An authorized administrator adds a custom MCP server through Plugins and approves workspace availability | Authorized users install or connect the approved integration and use it in chat |
 
-Repository templates make setup consistent; they do not prevent users from adding other MCP servers. If your organization requires an allowlist or mandatory configuration, enforce it using the client's supported administrative controls. Jarvis Registry governs traffic sent through its gateway, not connections a client makes outside it. Managed configuration and team distribution do not replace per-user authentication or Registry permissions.
+### Before You Begin
 
-The organization gateway above is an MCP connection in each local client. Claude web/Desktop connectors and ChatGPT workspace apps/connectors have separate vendor administration and network reachability requirements; a local configuration file does not register them there.
+- Have an organization owner/admin account and a plan that supports custom remote MCP integrations. Availability, role names, and menu labels depend on the platform and plan; consult the vendor guides linked below.
+- Complete [Production Deployment](deployment-guide.md), configure your [identity provider](features/auth-server.md#supported-identity-providers), and [register the approved MCP servers](features/mcp-gateway-registry.md). Assign the intended users and groups the required [Registry permissions](features/mcp-gateway-registry.md#resource-sharing-access-control).
+- Copy the shared gateway URL from [Integration guide](#choose-your-gateway-url), for example `https://jarvis.example.com/gateway/proxy/mcpgw/mcp`. Use the gateway URL, not a user-specific direct server URL.
+- Confirm that the AI platform can reach the gateway and its advertised OAuth discovery, registration, authorization, and token endpoints. Use HTTPS with a trusted certificate. A successful connection from an employee workstation does not establish cloud connectivity.
+
+!!! important "Remote connections do not originate from the desktop app"
+   Claude's remote connectors connect from Anthropic's cloud, including when used in Claude Desktop. Your gateway must be reachable from that infrastructure; a private VPN or `localhost` URL is not sufficient. ChatGPT also requires a remotely reachable endpoint, or a supported Secure MCP Tunnel configured by your administrators. Do not expose an unauthenticated gateway to satisfy network requirements.
+
+### Claude: Organization Custom Connector
+
+Sign in as an organization Owner or another role permitted to manage connectors.
+
+![Claude organization Connectors page with the Add button highlighted and the Add custom connector dialog showing Name and MCP server URL fields](img/mcp-registry-custom-claude.png)
+
+1. Open **Organization settings > Connectors**, then select **Add** and the custom connector option.
+2. In **Add custom connector**, enter **Jarvis Registry** in **Name**.
+3. Paste your shared gateway URL into **MCP server URL**, for example `https://jarvis.example.com/gateway/proxy/mcpgw/mcp`, then select **Continue**.
+4. Review the detected OAuth settings and complete the sign-in setup for your deployment. Keep per-user OAuth authentication enabled rather than selecting **No sign in** or supplying a shared user's token.
+5. Finish adding the connector and review its availability and tool controls for your organization.
+
+**For business users:** Open **Customize > Connectors**, select **Jarvis Registry > Connect**, and sign in with your organization account. Enable it in a conversation through **+ > Connectors**. The organization connector can be used in Claude Desktop without editing local configuration files.
+
+See Anthropic's [custom connectors using remote MCP](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) for current organization roles, authentication options, and client availability.
+
+### ChatGPT: Custom MCP Server / Plugin
+
+Sign in to the intended ChatGPT workspace as an admin or owner. Enterprise/Edu may also authorize members to create and test connections; workspace publishing remains an admin/owner action.
+
+![ChatGPT Plugins page with the Add button highlighted and the Add custom MCP server dialog showing Name, Server URL, OAuth authentication, and the risk acknowledgement](img/mcp-registry-custom-open-ai.png)
+
+1. Open **Plugins**, select **Add**, then **Add custom MCP server**.
+2. Enter **Jarvis Registry** in **Name**. The icon and description are optional.
+3. Under **Connection**, keep **Server URL** selected and paste your shared HTTPS gateway URL. Set **Authentication** to **OAuth**. Use **Advanced OAuth settings** only if your deployment requires specific client settings or scopes. If your administrators have configured a Secure MCP Tunnel instead, select **Tunnel**.
+4. Review the risk warning, select **I understand and want to continue**, and choose **Create as a plugin**. Complete OAuth sign-in when prompted.
+5. Review the discovered tools and use your workspace's admin controls to approve availability for the intended users. Creating the connection alone does not establish organization-wide access.
+
+**For business users:** Open **Plugins**, find the approved **Jarvis Registry** integration, install/connect it, and sign in with your own organization account when prompted. Select it in a new conversation and try a permitted read-only task.
+
+Use **ChatGPT web** for administration and initial validation. Confirm support in your deployed ChatGPT desktop app before directing users there. Older workspaces may show different Apps or publishing controls; use OpenAI's guide below for those variants.
+
+See OpenAI's [Connecting custom MCP servers in ChatGPT](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt) for current creation, publishing, network, and plan requirements.
+
+### Business User Access and Validation
+
+Admin approval makes the integration available; it does not grant every user access to every Registry server. Users still authenticate individually, Registry roles and resource ACLs still apply, and some downstream services require additional user consent. Platform tool approval governs the gateway tools exposed to the chatbot; it does not replace Registry authorization for downstream servers.
+
+Before enabling the integration broadly, test with both an allowed and a restricted account using the [two-user access walkthrough](walkthroughs/mcp-access-control.md). Verify discovery and a read-only invocation from the actual chatbot, including any downstream authorization prompt. Review write-capable tools before approving them. When gateway tool definitions change, review and refresh the platform's tool list as required; ChatGPT retains an approved snapshot rather than automatically accepting every change.
+
+!!! warning "Approve the connection, not a shared identity"
+   Do not share an administrator's OAuth session, access token, or refresh token with business users. Keep per-user sign-in enabled, and use platform access controls together with Registry permissions. Jarvis Registry governs requests routed through its gateway, not other integrations users connect outside it.
 
 ### Gateway Versus Direct Server Connection
 
@@ -171,7 +202,7 @@ The header's **Integration guide** connects to the Registry gateway and is the r
 
 ## Registry Runtime Environment Configuration
 
-This section is for operators deploying and running Jarvis Registry. These environment files, identity provider settings, authorization rules, and Docker Compose definitions configure the Registry services themselves. They are separate from the MCP client connection files used by developers and the client distribution settings used for organization rollout.
+This section is for operators deploying and running Jarvis Registry. These environment files, identity provider settings, authorization rules, and Docker Compose definitions configure the Registry services themselves. They are separate from the MCP client connection files used by developers IDE and the chatbot integration settings managed by organization administrators.
 
 ### Active Configuration Files
 
