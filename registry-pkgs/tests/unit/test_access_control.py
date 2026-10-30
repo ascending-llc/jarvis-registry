@@ -40,7 +40,9 @@ def test_group_member_id_uses_idonthesource_for_other_providers():
 
 
 def test_group_member_id_none_when_selected_field_empty():
-    assert access_control.group_member_id_for_user(_user("google", email="")) is None
+    # Google must not fall back to idOnTheSource when email is empty.
+    google = _user("google", email="", idOnTheSource="should-not-be-used")
+    assert access_control.group_member_id_for_user(google) is None
     assert access_control.group_member_id_for_user(_user("openid", idOnTheSource=None)) is None
 
 

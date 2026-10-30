@@ -485,6 +485,16 @@ async def test_google_login_blocked_when_email_lost_update_race(users: MemoryUse
     assert users.documents[0]["email"] == "old@example.com"
 
 
+async def test_google_login_updates_changed_email_when_free(users: MemoryUsers) -> None:
+    # Guard must not over-block: a legitimate Google email change with no conflict persists and signs in.
+    existing = user(provider="google", googleId="subject-1", email="old@example.com")
+    users.documents = [existing]
+    result = await IdentityService().resolve_or_provision(identity(provider="google"))
+    assert result.id == existing["_id"]
+    assert result.email == "ada@example.com"
+    assert users.documents[0]["email"] == "ada@example.com"
+
+
 async def test_google_subject_cannot_match_local_provider(users: MemoryUsers) -> None:
     users.documents = [user(provider="local", googleId="subject-1")]
     with pytest.raises(IdentityConflictError, match="provider_mismatch"):
