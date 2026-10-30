@@ -82,7 +82,9 @@ in `admin.google.com`:
    custom-role privilege set used internally wasn't precisely recorded (shorthanded as "Users:Read" in
    Slack chat) — confirm the precise bundle with Daoqi Zhang / Kelvin Yu before repeating this instruction
    verbatim to a client, since granting more than Groups Reader is a bigger ask of a client's Super Admin
-   than the original least-privilege design intended, and worth being precise about.
+   than the original least-privilege design intended, and worth being precise about. Unverified: the
+   dogfood failure may instead have been the `Error(4013)` that Google returns when the member also belongs
+   to a group owned by another organization, which `GOOGLE_CUSTOMER_ID` (§1.7) avoids.
 3. Role changes can take up to ~24h to propagate — don't debug a 403 as a config error in the first few
    hours after granting.
 
@@ -110,7 +112,13 @@ synced by External Secrets Operator; Azure: individual Key Vault secrets). Add a
 
 | Category | Keys | Notes |
 |---|---|---|
-| **Identity Provider (Google)** | `GOOGLE_ENABLED`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_ALLOWED_HD`, `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`, `GOOGLE_GROUP_SYNC_ENABLED` | `GOOGLE_ALLOWED_HD` = client's domain; **required for scope grants**. `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` = the full JSON key pasted verbatim as downloaded — do not trim unused fields (`project_id`, `client_id`, etc. are harmless; `private_key_id` is useful for tracking key rotation later). |
+| **Identity Provider (Google)** | `GOOGLE_ENABLED`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_ALLOWED_HD`, `GOOGLE_CUSTOMER_ID`, `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`, `GOOGLE_GROUP_SYNC_ENABLED` | `GOOGLE_ALLOWED_HD` = client's domain; **required for scope grants**. `GOOGLE_CUSTOMER_ID` = client's Workspace customer ID (`C…`); limits group lookups to the client's own groups, without which users who also belong to an outside group (e.g. a public `@googlegroups.com` list) get no groups. `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` = the full JSON key pasted verbatim as downloaded — do not trim unused fields (`project_id`, `client_id`, etc. are harmless; `private_key_id` is useful for tracking key rotation later). |
+
+To obtain `GOOGLE_CUSTOMER_ID`, either ask the client's Super Admin (Admin Console → Account → Account
+settings → Customer ID), or run `scripts/diagnose_google_groups.py` (see `scripts/README.md`) for any
+account that signs in successfully and read the `owner: customers/C…` line. Run the script again with
+`--customer-id` before adding the value to the secret: a malformed value stops every service at startup,
+and a wrong one makes every group lookup fail.
 
 For a Google-only deployment, set `AUTH_PROVIDER=google` and `ENTRA_ENABLED=false`. If Entra remains
 enabled, auth-server also requires the four bindings described in [Entra scope groups](entra-scope-groups.md).
@@ -125,6 +133,8 @@ Secrets must be in place **before** the Helm chart deploys (Phase 4 precedes Pha
       `idOnTheSource` equal to the account's email.
 - [ ] A login from an account outside `GOOGLE_ALLOWED_HD` is rejected with a clear error, not a generic
       failure page.
+- [ ] A member who also belongs to a group owned by another organization (e.g. a public
+      `@googlegroups.com` list) can sign in and receives their `jarvis-registry-*` scope group.
 - [ ] A Workspace group, shared to a resource via the ShareModal UI, correctly shares that resource with a
       member of that group.
 - [ ] Revoke the service account's Workspace role and verify that group resolution fails closed.
@@ -197,6 +207,7 @@ GOOGLE_ENABLED=true
 GOOGLE_CLIENT_ID=<dogfood OAuth client id>
 GOOGLE_CLIENT_SECRET=<dogfood OAuth client secret>
 GOOGLE_ALLOWED_HD=famulei.us
+GOOGLE_CUSTOMER_ID=<famulei.us customer ID>
 GOOGLE_SERVICE_ACCOUNT_KEY_JSON=<full JSON key, pasted verbatim>
 GOOGLE_GROUP_SYNC_ENABLED=true
 ```
