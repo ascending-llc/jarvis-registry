@@ -1666,7 +1666,7 @@ class Token(Document):
     "type": "streamable-http",
     "url": "https://mcp.tavily.com/mcp/",
     "apiKey": {
-      "key": "51d082dd191f6dcf7dfdd60bc318f53e:5a052bb48fef0635329562541e62f6cc9e866d1c9303af4b36bae0ae3662eceac0265872b4e92b9469a459c44055091d",
+      "key": "<encrypted-api-key-placeholder>",
       "source": "admin",
       "authorization_type": "custom",
       "custom_header": "tavilyApiKey"
