@@ -229,7 +229,6 @@ class IdentityService:
             createdAt=now,
             updatedAt=now,
         )
-        document = user.model_dump(by_alias=True, exclude_none=True)
-        if identity.provider == "google":
-            document["idOnTheSource"] = identity.email
-        return document
+        # Google users are matched to groups by email, not idOnTheSource (see
+        # access_control.group_member_id_for_user), so it is not stored for them.
+        return user.model_dump(by_alias=True, exclude_none=True)

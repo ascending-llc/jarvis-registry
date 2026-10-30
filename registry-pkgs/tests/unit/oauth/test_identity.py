@@ -296,7 +296,7 @@ async def test_provision_populates_chat_compatible_fields(users: MemoryUsers, pr
     else:
         assert stored["provider"] == "google"
         assert stored["googleId"] == "subject-1"
-        assert stored["idOnTheSource"] == "ada@example.com"
+        assert "idOnTheSource" not in stored
         assert "openidId" not in stored and "openidIssuer" not in stored
 
 
