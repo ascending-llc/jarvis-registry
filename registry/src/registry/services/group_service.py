@@ -44,28 +44,28 @@ class GroupService:
         if client is None or member_id is None:
             return
 
-        # For Google users this is the Workspace member email; for Entra, the AAD object id.
-        user_oid: str = member_id
-        group_ids = await client.get_user_group_ids(user_oid)
+        group_ids = await client.get_user_group_ids(member_id)
         if not group_ids:
             return
 
-        await self._add_user_to_known_groups(source, user_oid, group_ids)
-        await self._upsert_new_groups_and_enroll_user(source, client, user_oid, group_ids)
-        await self._remove_user_from_stale_groups(source, user_oid, group_ids)
+        await self._add_user_to_known_groups(source, member_id, group_ids)
+        await self._upsert_new_groups_and_enroll_user(source, client, member_id, group_ids)
+        await self._remove_user_from_stale_groups(source, member_id, group_ids)
 
-    async def _add_user_to_known_groups(self, source: ExtendedGroupSource, user_oid: str, group_ids: list[str]) -> None:
+    async def _add_user_to_known_groups(
+        self, source: ExtendedGroupSource, member_id: str, group_ids: list[str]
+    ) -> None:
         """$addToSet the user into groups that already exist in the DB."""
         await ExtendedGroup.find(
             {
                 "idOnTheSource": {"$in": group_ids},
                 "source": source,
-                "memberIds": {"$ne": user_oid},
+                "memberIds": {"$ne": member_id},
             }
-        ).update_many({"$addToSet": {"memberIds": user_oid}})
+        ).update_many({"$addToSet": {"memberIds": member_id}})
 
     async def _upsert_new_groups_and_enroll_user(
-        self, source: ExtendedGroupSource, client: IdPGroupDirectoryClient, user_oid: str, group_ids: list[str]
+        self, source: ExtendedGroupSource, client: IdPGroupDirectoryClient, member_id: str, group_ids: list[str]
     ) -> None:
         """Fetch details for groups absent from the DB, upsert them, then enroll the user."""
         existing = await ExtendedGroup.find({"idOnTheSource": {"$in": group_ids}, "source": source}).to_list()
@@ -103,20 +103,20 @@ class GroupService:
 
         if detail_ids:
             await ExtendedGroup.find({"idOnTheSource": {"$in": detail_ids}, "source": source}).update_many(
-                {"$addToSet": {"memberIds": user_oid}}
+                {"$addToSet": {"memberIds": member_id}}
             )
 
     async def _remove_user_from_stale_groups(
-        self, source: ExtendedGroupSource, user_oid: str, group_ids: list[str]
+        self, source: ExtendedGroupSource, member_id: str, group_ids: list[str]
     ) -> None:
         """$pullAll the user from groups they no longer belong to."""
         await ExtendedGroup.find(
             {
                 "source": source,
-                "memberIds": user_oid,
+                "memberIds": member_id,
                 "idOnTheSource": {"$nin": group_ids},
             }
-        ).update_many({"$pullAll": {"memberIds": [user_oid]}})
+        ).update_many({"$pullAll": {"memberIds": [member_id]}})
 
     async def ensure_group_principal_exists(self, group_id: str) -> None:
         """Snapshot all transitive group members into ExtendedGroup.memberIds before ACL grant.
