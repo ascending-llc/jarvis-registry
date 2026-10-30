@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,10 +16,12 @@ from registry.schemas.server_api_schemas import (
     convert_to_detail,
     convert_to_list_item,
 )
+from registry.services.background_task_tracker import BackgroundTaskTracker
 from registry.services.server_service import ServerServiceV1
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models import PrincipalType, ResourceType
-from registry_pkgs.models.enums import McpAuthMode, RoleBits
+from registry_pkgs.models.enums import RoleBits
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 
 @pytest.fixture
@@ -79,7 +82,7 @@ async def test_create_server_route_creates_acl_entry(
     mock_session = AsyncMock()
     mock_server_service = MagicMock()
     mock_server_service.create_server = AsyncMock(side_effect=record_create)
-    mock_server_service.fetch_registration_capabilities = AsyncMock(side_effect=lambda *_: events.append("fetch"))
+    mock_server_service.schedule_registration_capabilities = MagicMock(side_effect=lambda *_: events.append("schedule"))
     mock_acl_service = MagicMock()
     mock_acl_service.grant_permission = AsyncMock(side_effect=lambda **_: events.append("grant"))
 
@@ -124,10 +127,10 @@ async def test_create_server_route_creates_acl_entry(
         assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
         assert call_args.kwargs["session"] is mock_session
 
-        mock_server_service.fetch_registration_capabilities.assert_awaited_once_with(
+        mock_server_service.schedule_registration_capabilities.assert_called_once_with(
             mock_created_server, sample_user_context["user_id"]
         )
-        assert events == ["create", "grant", "transaction_exit", "session_exit", "fetch", "response"]
+        assert events == ["create", "grant", "transaction_exit", "session_exit", "schedule", "response"]
 
 
 @pytest.mark.asyncio
@@ -140,7 +143,7 @@ async def test_create_server_route_skips_capabilities_when_transaction_fails(
 ) -> None:
     service = MagicMock()
     service.create_server = AsyncMock(return_value=mock_created_server)
-    service.fetch_registration_capabilities = AsyncMock()
+    service.schedule_registration_capabilities = MagicMock()
     acl = MagicMock()
     acl.grant_permission = AsyncMock()
 
@@ -167,31 +170,53 @@ async def test_create_server_route_skips_capabilities_when_transaction_fails(
 
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == "Internal server error while creating server"
-    service.fetch_registration_capabilities.assert_not_awaited()
+    service.schedule_registration_capabilities.assert_not_called()
     convert.assert_not_called()
     if failure == "create":
         acl.grant_permission.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["retrieve", "save"])
-async def test_create_server_returns_201_when_capabilities_fail(
+@pytest.mark.parametrize("tracker_state", ["running", "shutting-down"])
+async def test_create_server_returns_201_without_waiting_for_capabilities(
     sample_server_request: ServerCreateRequest,
     sample_user_context: dict[str, object],
-    failure: str,
+    tracker_state: str,
 ) -> None:
-    server = _fake_mcp_server(enabled=False)
-    server.config.update(url=sample_server_request.url, capabilities="{}")
-    server.mcp_auth_mode = McpAuthMode.NONE
-    server.save = AsyncMock(side_effect=RuntimeError("save failed"))
+    now = datetime.now(UTC)
+    server = ExtendedMCPServer.model_construct(
+        id=PydanticObjectId(),
+        serverName="test-server",
+        author=None,
+        lastConnected=None,
+        lastError=None,
+        path="/test",
+        tags=["t"],
+        numTools=0,
+        numStars=0,
+        createdAt=now,
+        updatedAt=now,
+        config={"enabled": False, "title": "Test", "url": sample_server_request.url, "capabilities": "{}"},
+    )
+    tracker = BackgroundTaskTracker()
+    if tracker_state == "shutting-down":
+        await tracker.shutdown()
     service = ServerServiceV1(
-        user_service=MagicMock(), token_service=MagicMock(), oauth_service=MagicMock(), mcp_server_repo=MagicMock()
+        user_service=MagicMock(),
+        token_service=MagicMock(),
+        oauth_service=MagicMock(),
+        mcp_server_repo=MagicMock(),
+        background_task_tracker=tracker,
     )
     service.create_server = AsyncMock(return_value=server)
-    service.retrieve_from_server = AsyncMock(
-        return_value=([], [], [], {"tools": {}}, None),
-        side_effect=RuntimeError("retrieve failed") if failure == "retrieve" else None,
-    )
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def slow_fetch(*_: object) -> None:
+        await release.wait()
+        finished.set()
+
+    service.fetch_registration_capabilities = AsyncMock(side_effect=slow_fetch)
     acl = MagicMock()
     acl.grant_permission = AsyncMock()
     app = FastAPI()
@@ -211,11 +236,16 @@ async def test_create_server_returns_201_when_capabilities_fail(
     assert response.json()["id"] == str(server.id)
     assert response.json()["capabilities"] == "{}"
     acl.grant_permission.assert_awaited_once()
-    service.retrieve_from_server.assert_awaited_once()
-    if failure == "save":
-        server.save.assert_awaited_once_with()
+    assert not finished.is_set()
+    if tracker_state == "running":
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        (copy, user_id), _ = service.fetch_registration_capabilities.call_args
+        assert copy is not server
+        assert copy.id == server.id
+        assert user_id == sample_user_context["user_id"]
     else:
-        server.save.assert_not_awaited()
+        service.fetch_registration_capabilities.assert_not_awaited()
 
 
 # ==================== refresh_server_capabilities endpoint tests ====================
@@ -594,7 +624,7 @@ def _mock_mongo_transaction(mock_get_client: MagicMock) -> AsyncMock:
 async def test_create_server_route_returns_503_during_reindex(sample_server_request, sample_user_context):
     mock_server_service = MagicMock()
     mock_server_service.create_server = AsyncMock(side_effect=EmbeddingReindexInProgressException("reindex"))
-    mock_server_service.fetch_registration_capabilities = AsyncMock()
+    mock_server_service.schedule_registration_capabilities = MagicMock()
 
     with patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client:
         _mock_mongo_transaction(mock_get_client)
@@ -610,7 +640,7 @@ async def test_create_server_route_returns_503_during_reindex(sample_server_requ
     assert exc.status_code == 503
     assert exc.headers["Retry-After"] == "30"
     assert exc.detail["error"] == "reindex_in_progress"
-    mock_server_service.fetch_registration_capabilities.assert_not_awaited()
+    mock_server_service.schedule_registration_capabilities.assert_not_called()
 
 
 @pytest.mark.asyncio

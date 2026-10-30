@@ -19,6 +19,7 @@ from typing import Any
 from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
@@ -35,7 +36,11 @@ from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
-from ..constants import VECTOR_DELETE_SKIPPED_FALLBACK, VECTOR_SYNC_SKIPPED_FALLBACK
+from ..constants import (
+    REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK,
+    VECTOR_DELETE_SKIPPED_FALLBACK,
+    VECTOR_SYNC_SKIPPED_FALLBACK,
+)
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.server_api_schemas import (
     ServerCreateRequest,
@@ -579,8 +584,23 @@ class ServerServiceV1:
                 raise
         return server
 
+    def schedule_registration_capabilities(self, server: ExtendedMCPServer, user_id: str) -> None:
+        """Fetch a committed registration's capabilities in the background, so upstream latency never delays the 201.
+
+        The task works on a copy, because discovery mutates ``config`` while the route serializes the original.
+        """
+        self._spawn_background_task(
+            self.fetch_registration_capabilities(server.model_copy(deep=True), user_id),
+            f"registration-capabilities-server-{server.id}",
+            fallback=REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK,
+        )
+
     async def fetch_registration_capabilities(self, server: ExtendedMCPServer, user_id: str) -> None:
-        """Best-effort capability discovery after registration commits; failures preserve the response config."""
+        """Best-effort capability discovery for a committed registration; never raises.
+
+        Writes only the fetched fields with a targeted ``$set``: the creator already has the server ID, so a
+        whole-document save could revert a concurrent enable or edit, or re-insert a server deleted mid-fetch.
+        """
         if not server.config.get("url"):
             return
 
@@ -591,7 +611,6 @@ class ServerServiceV1:
             )
             return
 
-        original_config = server.config.copy()
         try:
             _, resources, prompts, capabilities, error_msg = await self.retrieve_from_server(
                 server,
@@ -600,22 +619,35 @@ class ServerServiceV1:
                 include_prompts=True,
                 user_id=user_id,
             )
-
-            if error_msg is None:
-                server.config.update(
-                    capabilities=json.dumps(capabilities),
-                    resources=resources or [],
-                    prompts=prompts or [],
-                )
-                await server.save()
+            if error_msg is not None:
+                logger.warning("Registration capabilities fetch failed for %s: %s", server.id, error_msg)
                 return
 
-            logger.warning("Registration capabilities fetch failed for %s: %s", server.id, error_msg)
+            # The fetch can outlast the create route's reindex check, so check again before writing.
+            raise_if_reindex_active(self._embedding_maintenance_watcher)
+
+            fields: dict[str, Any] = {
+                "config.capabilities": json.dumps(capabilities),
+                "config.resources": resources or [],
+                "config.prompts": prompts or [],
+                # A query update skips the model's save hooks, and the reindex watermark reads updatedAt.
+                "updatedAt": _get_current_utc_time(),
+            }
+            # Discovery sets requiresInit only when the upstream reported it.
+            if "requiresInit" in server.config:
+                fields["config.requiresInit"] = server.config["requiresInit"]
+
+            result = await ExtendedMCPServer.find_one({"_id": server.id}).update({"$set": fields})
+            if result.matched_count == 0:
+                logger.info("Server %s was deleted before its registration capabilities were stored", server.id)
+        except EmbeddingReindexInProgressException:
+            logger.info(
+                "Skipping registration capabilities write for %s during an embedding reindex; %s",
+                server.id,
+                REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK,
+            )
         except Exception:
             logger.warning("Registration capabilities fetch failed for %s", server.id, exc_info=True)
-
-        # Discovery can also change requiresInit before reporting an error.
-        server.config = original_config
 
     @staticmethod
     def _mark_vector_sync_pending(server: ExtendedMCPServer) -> datetime:
@@ -629,12 +661,13 @@ class ServerServiceV1:
         server.vectorSyncAttempts = 0
         return marker
 
-    def _spawn_vector_task(self, coro: Any, name: str, *, fallback: str = VECTOR_SYNC_SKIPPED_FALLBACK) -> None:
-        """Spawn a vector task through the tracker; tolerate shutdown, and an unwired tracker in tests.
+    def _spawn_background_task(self, coro: Any, name: str, *, fallback: str = VECTOR_SYNC_SKIPPED_FALLBACK) -> None:
+        """Spawn a post-commit task through the tracker; tolerate shutdown, and an unwired tracker in tests.
 
         After shutdown the spawn is refused — the Mongo write has already committed, so the request
         must still succeed. ``fallback`` names what repairs the skipped work: the reconciler heals a
-        sync's marker that stays set, and the orphan sweep removes a skipped delete's vectors.
+        sync's marker that stays set, the orphan sweep removes a skipped delete's vectors, and a refresh
+        fetches skipped registration capabilities.
         """
         if self._task_tracker is None:
             coro.close()
@@ -643,7 +676,7 @@ class ServerServiceV1:
         try:
             self._task_tracker.spawn(coro, name=name)
         except TrackerShutdownError:
-            logger.info("Vector task %s not scheduled (shutting down); %s", name, fallback)
+            logger.info("Background task %s not scheduled (shutting down); %s", name, fallback)
 
     def schedule_vector_sync(self, plan: VectorSyncPlan) -> None:
         """Run the immediate Weaviate sync for a committed write, tracked and marker-clearing.
@@ -669,7 +702,7 @@ class ServerServiceV1:
                     "Vector sync failed for server %s; marker left for the reconciler", server.id, exc_info=True
                 )
 
-        self._spawn_vector_task(_sync_task(), f"vector-sync-server-{server.id}")
+        self._spawn_background_task(_sync_task(), f"vector-sync-server-{server.id}")
 
     def schedule_vector_delete(self, entity_id: str, name: str | None = None) -> None:
         """Remove an MCP server's Weaviate docs, tracked, after its Mongo delete commits.
@@ -687,7 +720,7 @@ class ServerServiceV1:
             except Exception:
                 logger.warning("Vector delete failed for server %s", entity_id, exc_info=True)
 
-        self._spawn_vector_task(
+        self._spawn_background_task(
             _delete_task(), f"vector-delete-server-{entity_id}", fallback=VECTOR_DELETE_SKIPPED_FALLBACK
         )
 

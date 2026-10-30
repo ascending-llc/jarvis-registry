@@ -7,6 +7,7 @@ import json
 import logging as _logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
@@ -14,6 +15,7 @@ from beanie import PydanticObjectId
 
 from registry.core.mcp_client import MCPServerData
 from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
+from registry.services.background_task_tracker import BackgroundTaskTracker
 from registry.services.background_task_tracker import TrackerShutdownError as _TrackerShutdownError
 from registry.services.server_service import ServerServiceV1
 from registry.utils.crypto_utils import encrypt_auth_fields
@@ -36,8 +38,18 @@ def _record_config_at_save(server: Mock) -> list[dict[str, object]]:
 @pytest.mark.asyncio
 class TestFetchRegistrationCapabilities:
     @pytest.fixture
-    def service(self) -> ServerServiceV1:
-        return ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=Mock())
+    def reindex_active(self) -> list[bool]:
+        return [False]
+
+    @pytest.fixture
+    def service(self, reindex_active: list[bool]) -> ServerServiceV1:
+        return ServerServiceV1(
+            user_service=Mock(),
+            token_service=Mock(),
+            oauth_service=Mock(),
+            mcp_server_repo=Mock(),
+            embedding_maintenance_watcher=SimpleNamespace(is_active=lambda: reindex_active[0]),
+        )
 
     @pytest.fixture
     def server(self) -> ExtendedMCPServer:
@@ -58,9 +70,21 @@ class TestFetchRegistrationCapabilities:
         )
 
     @pytest.fixture
-    def save(self) -> Iterator[AsyncMock]:
-        with patch.object(ExtendedMCPServer, "save", new_callable=AsyncMock) as save:
-            yield save
+    def update(self) -> Iterator[AsyncMock]:
+        """Patch the targeted update and fail if the test falls back to a whole-document save."""
+        update = AsyncMock(return_value=Mock(matched_count=1))
+        with (
+            patch.object(ExtendedMCPServer, "find_one", Mock(return_value=Mock(update=update))) as find_one,
+            patch.object(ExtendedMCPServer, "save", AsyncMock(side_effect=AssertionError("save() must not be used"))),
+        ):
+            update.find_one = find_one
+            yield update
+
+    @staticmethod
+    def _set_fields(update: AsyncMock) -> dict[str, object]:
+        (modifications,) = update.await_args.args
+        assert set(modifications) == {"$set"}
+        return modifications["$set"]
 
     @pytest.mark.parametrize(
         ("capabilities", "resources", "prompts"),
@@ -69,11 +93,11 @@ class TestFetchRegistrationCapabilities:
             ({}, None, None),
         ],
     )
-    async def test_saves_capabilities_without_tools(
+    async def test_sets_only_fetched_fields(
         self,
         service: ServerServiceV1,
         server: ExtendedMCPServer,
-        save: AsyncMock,
+        update: AsyncMock,
         capabilities: dict[str, object],
         resources: list[dict[str, str]] | None,
         prompts: list[dict[str, str]] | None,
@@ -92,22 +116,31 @@ class TestFetchRegistrationCapabilities:
             include_prompts=True,
             user_id="user-1",
         )
-        assert server.config["capabilities"] == json.dumps(capabilities)
-        assert server.config["resources"] == (resources or [])
-        assert server.config["prompts"] == (prompts or [])
-        assert server.config["requiresInit"] is False
-        assert server.config["toolFunctions"] == {}
-        assert server.config["tools"] == ""
-        assert server.config["enabled"] is False
-        assert server.numTools == 0
-        save.assert_awaited_once_with()
+        update.find_one.assert_called_once_with({"_id": server.id})
+        update.assert_awaited_once()
+        assert self._set_fields(update) == {
+            "config.capabilities": json.dumps(capabilities),
+            "config.resources": resources or [],
+            "config.prompts": prompts or [],
+            "config.requiresInit": False,
+            "updatedAt": ANY,
+        }
+        assert isinstance(self._set_fields(update)["updatedAt"], datetime)
+
+    async def test_omits_requires_init_when_upstream_did_not_report_it(
+        self, service: ServerServiceV1, server: ExtendedMCPServer, update: AsyncMock
+    ) -> None:
+        with patch.object(service, "retrieve_from_server", AsyncMock(return_value=([], [], [], {"tools": {}}, None))):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        assert "config.requiresInit" not in self._set_fields(update)
 
     @pytest.mark.parametrize("transport_type", ["sse", "streamable-http"])
     async def test_builds_real_auth_headers_from_encrypted_config(
         self,
         service: ServerServiceV1,
         server: ExtendedMCPServer,
-        save: AsyncMock,
+        update: AsyncMock,
         transport_type: str,
     ) -> None:
         server.config.update(type=transport_type, headers={"X-Test": "custom-value"})
@@ -139,14 +172,11 @@ class TestFetchRegistrationCapabilities:
         assert headers["X-Test"] == "custom-value"
         assert all(isinstance(value, str) for value in headers.values())
         assert set(headers).isdisjoint({"tags", "type", "apiKey", "headers"})
-        assert json.loads(server.config["capabilities"]) == result.capabilities
-        assert server.config["resources"] == result.resources
-        assert server.config["prompts"] == result.prompts
-        assert server.config["requiresInit"] is False
-        assert server.config["apiKey"]["key"] == encrypted_key
-        assert server.config["toolFunctions"] == {}
-        assert server.config["tools"] == ""
-        save.assert_awaited_once_with()
+        fields = self._set_fields(update)
+        assert json.loads(fields["config.capabilities"]) == result.capabilities
+        assert fields["config.resources"] == result.resources
+        assert fields["config.prompts"] == result.prompts
+        assert fields["config.requiresInit"] is False
 
     @pytest.mark.parametrize(
         "config", [{}, {"oauth": {}}, {"requiresOAuth": True}], ids=["no-url", "oauth", "requires-oauth"]
@@ -155,12 +185,11 @@ class TestFetchRegistrationCapabilities:
         self,
         service: ServerServiceV1,
         server: ExtendedMCPServer,
-        save: AsyncMock,
+        update: AsyncMock,
         config: dict[str, object],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         server.config = {"url": "https://mcp.example.com/mcp", **config} if config else {}
-        original_config = server.config.copy()
         with (
             patch.object(service, "retrieve_from_server", new_callable=AsyncMock) as fetch,
             caplog.at_level(_logging.INFO, logger="registry.services.server_service"),
@@ -168,29 +197,23 @@ class TestFetchRegistrationCapabilities:
             await service.fetch_registration_capabilities(server, "user-1")
 
         fetch.assert_not_awaited()
-        save.assert_not_awaited()
-        assert server.config == original_config
+        update.assert_not_awaited()
         if config:
             assert "Skipping registration capabilities fetch for OAuth server" in caplog.text
 
-    @pytest.mark.parametrize("failure", ["error-tuple", "retrieve", "save", "timeout"])
-    @pytest.mark.parametrize("previous_requires_init", [None, True])
-    async def test_failure_restores_config(
+    @pytest.mark.parametrize("failure", ["error-tuple", "retrieve", "timeout", "update"])
+    async def test_failure_returns_normally(
         self,
         service: ServerServiceV1,
         server: ExtendedMCPServer,
-        save: AsyncMock,
+        update: AsyncMock,
         failure: str,
-        previous_requires_init: bool | None,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        if previous_requires_init is not None:
-            server.config["requiresInit"] = previous_requires_init
-        original_config = server.config.copy()
-        if failure == "save":
-            save.side_effect = RuntimeError("save failed")
+        if failure == "update":
+            update.side_effect = RuntimeError("update failed")
 
-        async def retrieve(current_server: ExtendedMCPServer, **_: object) -> tuple[object, ...]:
-            current_server.config["requiresInit"] = False
+        async def retrieve(_: ExtendedMCPServer, **__: object) -> tuple[object, ...]:
             if failure == "error-tuple":
                 return None, None, None, None, "boom"
             if failure == "retrieve":
@@ -199,14 +222,106 @@ class TestFetchRegistrationCapabilities:
                 raise TimeoutError("upstream timed out")
             return [], [{"uri": "test://resource"}], [{"name": "summary"}], {"tools": {}}, None
 
-        with patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)):
+        with (
+            patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)),
+            caplog.at_level(_logging.WARNING, logger="registry.services.server_service"),
+        ):
             await service.fetch_registration_capabilities(server, "user-1")
 
-        assert server.config == original_config
-        if failure == "save":
-            save.assert_awaited_once_with()
+        assert "Registration capabilities fetch failed" in caplog.text
+        if failure == "update":
+            update.assert_awaited_once()
         else:
-            save.assert_not_awaited()
+            update.assert_not_awaited()
+
+    async def test_skips_write_when_reindex_starts_during_fetch(
+        self,
+        service: ServerServiceV1,
+        server: ExtendedMCPServer,
+        update: AsyncMock,
+        reindex_active: list[bool],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        async def retrieve(_: ExtendedMCPServer, **__: object) -> tuple[object, ...]:
+            reindex_active[0] = True
+            return [], [], [], {"tools": {}}, None
+
+        with (
+            patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)),
+            caplog.at_level(_logging.INFO, logger="registry.services.server_service"),
+        ):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        update.assert_not_awaited()
+        assert "during an embedding reindex" in caplog.text
+
+    async def test_deleted_server_is_not_reinserted(
+        self,
+        service: ServerServiceV1,
+        server: ExtendedMCPServer,
+        update: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        update.return_value = Mock(matched_count=0)
+
+        with (
+            patch.object(service, "retrieve_from_server", AsyncMock(return_value=([], [], [], {"tools": {}}, None))),
+            caplog.at_level(_logging.INFO, logger="registry.services.server_service"),
+        ):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        update.assert_awaited_once()
+        assert "upsert" not in update.await_args.kwargs
+        assert "was deleted before its registration capabilities were stored" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestScheduleRegistrationCapabilities:
+    @pytest.fixture
+    def server(self) -> ExtendedMCPServer:
+        return ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="registration-test",
+            config={"url": "https://mcp.example.com/mcp", "capabilities": "{}"},
+        )
+
+    async def test_spawns_fetch_on_a_copy(self, server: ExtendedMCPServer) -> None:
+        tracker = _RunningTracker()
+        service = _delete_service(Mock(), tracker)
+        fetched: list[ExtendedMCPServer] = []
+
+        async def fetch(current_server: ExtendedMCPServer, user_id: str) -> None:
+            assert user_id == "user-1"
+            current_server.config["requiresInit"] = False
+            fetched.append(current_server)
+
+        with patch.object(service, "fetch_registration_capabilities", side_effect=fetch):
+            service.schedule_registration_capabilities(server, "user-1")
+            await tracker.task
+
+        assert tracker.names == [f"registration-capabilities-server-{server.id}"]
+        assert fetched[0] is not server
+        assert fetched[0].id == server.id
+        assert "requiresInit" not in server.config
+
+    @pytest.mark.parametrize("tracker", [None, "shutting-down"])
+    async def test_refused_spawn_is_tolerated(
+        self, server: ExtendedMCPServer, tracker: str | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        refusing = BackgroundTaskTracker()
+        await refusing.shutdown()
+        service = _delete_service(Mock(), refusing if tracker else None)
+
+        with (
+            patch.object(service, "retrieve_from_server", new_callable=AsyncMock) as fetch,
+            caplog.at_level(_logging.INFO, logger="registry.services.server_service"),
+        ):
+            service.schedule_registration_capabilities(server, "user-1")
+
+        fetch.assert_not_awaited()
+        assert "refresh the server to fetch its capabilities" in caplog.text
 
 
 @pytest.mark.unit
