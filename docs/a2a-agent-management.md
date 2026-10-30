@@ -289,7 +289,7 @@ These files are involved in the automatic setup:
 
 ## Related Documentation
 
-- [Authentication Guide](auth.md) - General authentication and authorization
+- [IDP Integration](features/auth-server.md) - Identity provider setup and authentication
 - [Internal MCP Client CLI Guide](development/mcp-client-cli.md) - Internal scripts for MCP testing and A2A agent management
 - [Keycloak Integration](keycloak-integration.md) - Keycloak configuration details
 

@@ -103,8 +103,9 @@ nav:
   - Get Started:
     - Quick Start: quick-start.md
     - Generate Secrets: generate-secrets.md
-    - Production Deployment: deployment-guide.md
-    - Configuration: configuration.md
+    - Production Deployment:
+      - Overview: deployment-guide.md
+      - Configuration: production-configuration.md
   - Core Features:
     - IDP Integration: features/auth-server.md
     - MCPServer Gateway & Registry: features/mcp-gateway-registry.md
