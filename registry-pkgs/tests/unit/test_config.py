@@ -311,3 +311,26 @@ def test_import_checks_disable_scope_group_validation() -> None:
         x_jarvis_registry_import_checks="disabled", **dict.fromkeys(SCOPE_GROUP_OBJECT_ID_FIELDS.values())
     )
     assert settings.jarvis_registry_admin_group_object_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("import_checks", ["enabled", "disabled"])
+@pytest.mark.parametrize(
+    ("value", "expected"), [("C046psxkn", "C046psxkn"), (" C046psxkn ", "C046psxkn"), ("", ""), ("  ", "")]
+)
+def test_google_customer_id_accepts_valid_or_blank(import_checks: str, value: str, expected: str) -> None:
+    settings = JarvisBaseSettings(
+        google_customer_id=value, x_jarvis_registry_import_checks=import_checks, **TEST_SCOPE_GROUP_OBJECT_IDS
+    )
+    assert settings.google_customer_id == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("import_checks", ["enabled", "disabled"])
+@pytest.mark.parametrize("value", ["c046psxkn", "C1' || true", "C", "C04 6psxkn"])
+def test_google_customer_id_rejects_malformed(import_checks: str, value: str) -> None:
+    """The value is interpolated into a CEL query, so it fails at startup whatever the import-check mode."""
+    with pytest.raises(ValidationError, match="GOOGLE_CUSTOMER_ID must start with 'C'"):
+        JarvisBaseSettings(
+            google_customer_id=value, x_jarvis_registry_import_checks=import_checks, **TEST_SCOPE_GROUP_OBJECT_IDS
+        )
