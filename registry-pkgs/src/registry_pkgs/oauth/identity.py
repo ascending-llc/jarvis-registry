@@ -195,7 +195,7 @@ class IdentityService:
         for _ in range(_UPDATE_ATTEMPTS):
             updates = await self._updates(identity, document, update_email=update_email)
             if not updates:
-                return User.model_validate(document)
+                return self._matched_user(identity, document)
             try:
                 updated = await User.get_pymongo_collection().find_one_and_update(
                     self._snapshot_filter(document), {"$set": updates}, return_document=ReturnDocument.AFTER
@@ -207,11 +207,25 @@ class IdentityService:
                 update_email = False
             else:
                 if updated is not None:
-                    return User.model_validate(updated)
+                    return self._matched_user(identity, updated)
             document = await self._find_match(identity)
             if document is None or document["_id"] != user_id:
                 raise IdentityConflictError("concurrent_identity_change", user_id)
         raise IdentityConflictError("concurrent_identity_change", user_id)
+
+    def _matched_user(self, identity: VerifiedIdentity, document: dict[str, Any]) -> User:
+        # Google resolves group membership by users.email (access_control.group_member_id_for_user).
+        # If the current verified email could not be persisted (held by another user, or lost an
+        # update race), logging in would sync groups off a stale address that may since have been
+        # reassigned to someone else — block it. Entra keys off idOnTheSource, so it is unaffected.
+        if (
+            identity.provider == "google"
+            and identity.email_trusted
+            and identity.email
+            and document["email"] != identity.email
+        ):
+            raise IdentityConflictError("google_email_not_persisted", document["_id"])
+        return User.model_validate(document)
 
     def _new_document(self, identity: VerifiedIdentity) -> dict[str, Any]:
         now = datetime.now(UTC)

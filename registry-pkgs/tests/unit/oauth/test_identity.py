@@ -465,6 +465,26 @@ async def test_google_email_link_fills_only_google_identity(users: MemoryUsers) 
     assert users.documents == [{**existing, "googleId": "subject-1"}]
 
 
+async def test_google_login_blocked_when_current_email_held_by_another_user(users: MemoryUsers) -> None:
+    # Google groups key off users.email; a stale email could sync another user's groups.
+    existing = user(provider="google", googleId="subject-1", email="old@example.com")
+    owner = user(provider="google", email="ada@example.com")
+    users.documents = [existing, owner]
+    with pytest.raises(IdentityConflictError, match="google_email_not_persisted"):
+        await IdentityService().resolve_or_provision(identity(provider="google"))
+    assert users.documents[0]["email"] == "old@example.com"
+
+
+async def test_google_login_blocked_when_email_lost_update_race(users: MemoryUsers) -> None:
+    existing = user(provider="google", googleId="subject-1", email="old@example.com")
+    owner = user(provider="google", email="ada@example.com")
+    users.documents = [existing]
+    users.before_update = lambda: users.documents.append(owner)
+    with pytest.raises(IdentityConflictError, match="google_email_not_persisted"):
+        await IdentityService().resolve_or_provision(identity(provider="google"))
+    assert users.documents[0]["email"] == "old@example.com"
+
+
 async def test_google_subject_cannot_match_local_provider(users: MemoryUsers) -> None:
     users.documents = [user(provider="local", googleId="subject-1")]
     with pytest.raises(IdentityConflictError, match="provider_mismatch"):
