@@ -270,9 +270,9 @@ async def execute_agent_impl(
         auth_url = f"{settings.registry_client_url}/consent/agent?nonce={nonce}"
         agent_name = agent.config.title if agent.config else agent.card.name
         template = (
-            f"In order to call the '{agent_name}' A2A agent, the user must explicitly consent in a browser window. "
-            "Please direct the client to open the {} in a browser window, grant consent, and come back to retry "
-            "the same request again."
+            f"Calling the '{agent_name}' A2A agent requires the user's explicit consent in a browser. "
+            "Show the user this {} so they can open it and approve, then retry the same request once they "
+            "confirm they are done."
         )
         human_message = (
             f"Jarvis Registry needs your explicit consent before this application can call the '{agent_name}' "

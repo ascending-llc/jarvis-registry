@@ -190,3 +190,15 @@ def test_entra_slot_absent_and_client_never_built_when_sync_disabled():
 
     assert ExtendedGroupSource.ENTRA not in clients
     assert "group_directory_client" not in container.__dict__
+
+
+@pytest.mark.unit
+def test_cloud_identity_client_is_scoped_to_google_customer_id():
+    settings = _make_settings()
+    settings.google_service_account_key_json = "{}"
+    settings.google_customer_id = "C046psxkn"
+
+    client = _make_container(settings).cloud_identity_client
+
+    assert client._key_json == "{}"
+    assert client._customer_id == "C046psxkn"

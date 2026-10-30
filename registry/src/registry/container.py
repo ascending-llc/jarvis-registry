@@ -189,7 +189,9 @@ class RegistryContainer:
 
     @cached_property
     def cloud_identity_client(self) -> CloudIdentityGroupsClient:
-        return CloudIdentityGroupsClient(self.settings.google_service_account_key_json)
+        return CloudIdentityGroupsClient(
+            self.settings.google_service_account_key_json, customer_id=self.settings.google_customer_id
+        )
 
     @cached_property
     def google_group_directory_client(self) -> GoogleGroupDirectoryClient:

@@ -184,7 +184,7 @@ async def test_execute_agent_without_agent_consent_returns_elicitation():
         result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
     assert result.isError is True
-    assert "explicitly consent" in result.content[0].text
+    assert "explicit consent" in result.content[0].text
     assert "/consent/agent?nonce=" in result.content[0].text
     mock_call.assert_not_awaited()
     ctx.request_context.lifespan_context.consent_store.has_agent_consent.assert_called_once_with(
@@ -221,6 +221,10 @@ async def test_execute_agent_without_consent_raises_url_elicitation_for_capable_
     assert raised_elicitation_id
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["elicitation_id"] == raised_elicitation_id
+    # Clients that stringify -32042 only show the model the message, so it must carry the URL itself.
+    consent_url = exc_info.value.elicitations[0].url
+    assert "/consent/agent?nonce=" in consent_url
+    assert f"URL `{consent_url}`" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

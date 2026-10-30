@@ -23,7 +23,7 @@ _SYSTEM_INSTRUCTIONS = """Jarvis Registry provides MCP tools and A2A agents. Bef
 Use discover_servers for tools/resources/prompts and discover_agents for delegation; start with concise keywords, top_n=3.
 Ordinary text-only work needs no discovery. Respect user restrictions and required approvals.
 Match descriptions, not scores. Use discovered IDs/names verbatim and follow schemas; never invent identifiers, schemas or missing inputs.
-Errors, denied access and unavailable services are not empty results or proof of no capability. Surface auth errors and wait for reauthorization.
+Errors, denied access and unavailable services are not empty results or proof of no capability. When an error says the user must consent or re-authorize in a browser, show the user its URL verbatim and wait for them to finish before retrying.
 If no match, refine or survey; check both discovery types when unclear. Avoid repeated identical searches; report no match after these fallbacks. Rediscover stale IDs. Limit execution retries to 2 per request, then report the outcome."""
 
 

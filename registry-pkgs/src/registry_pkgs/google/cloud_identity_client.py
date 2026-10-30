@@ -16,6 +16,28 @@ _GROUPS_READONLY_SCOPE = "https://www.googleapis.com/auth/cloud-identity.groups.
 _JWT_BEARER_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 _ASSERTION_TTL_SECONDS = 3600
 _TOKEN_REFRESH_SKEW_SECONDS = 60
+_MAX_LOGGED_ERROR_CHARS = 500
+
+
+def _raise_for_status_logged(resp: httpx.Response) -> None:
+    """Log Google's error status and message before raising, since httpx's exception keeps only the status line.
+
+    Decides on `status_code` rather than `is_success`, which test doubles that set only `status_code` don't honor.
+    """
+    if 200 <= resp.status_code < 300:
+        return
+    try:
+        error = resp.json().get("error")
+    except (ValueError, AttributeError):  # not JSON, or not a JSON object
+        error = None
+    detail = f"{error.get('status')}: {error.get('message')}" if isinstance(error, dict) else resp.text
+    logger.warning(
+        "Cloud Identity request %s failed with HTTP %s: %s",
+        resp.request.url.path,
+        resp.status_code,
+        detail[:_MAX_LOGGED_ERROR_CHARS],
+    )
+    resp.raise_for_status()
 
 
 class GoogleWorkspaceGroupInfo(BaseModel):
@@ -25,8 +47,10 @@ class GoogleWorkspaceGroupInfo(BaseModel):
 
 
 class CloudIdentityGroupsClient:
-    def __init__(self, service_account_key_json: str) -> None:
+    def __init__(self, service_account_key_json: str, *, customer_id: str = "") -> None:
         self._key_json = service_account_key_json
+        self._customer_id = customer_id
+        self._warned_unscoped = False
         self._client_email: str | None = None
         self._private_key: str | None = None
         self._token_uri: str = "https://oauth2.googleapis.com/token"
@@ -91,7 +115,7 @@ class CloudIdentityGroupsClient:
             if page_token:
                 page_params["pageToken"] = page_token
             resp = await self._client().get(url, params=page_params, headers=headers)
-            resp.raise_for_status()
+            _raise_for_status_logged(resp)
             data = resp.json()
             memberships.extend(data.get("memberships", []))
             page_token = data.get("nextPageToken")
@@ -102,7 +126,18 @@ class CloudIdentityGroupsClient:
         """Paginates groups.memberships.searchTransitiveGroups via nextPageToken."""
         url = f"{_CLOUD_IDENTITY_BASE_URL}/groups/-/memberships:searchTransitiveGroups"
         escaped_email = member_email.replace("\\", "\\\\").replace("'", "\\'")
-        params = {"query": f"member_key_id == '{escaped_email}' && '{_GROUPS_DISCUSSION_FORUM_LABEL}' in labels"}
+        query = f"member_key_id == '{escaped_email}' && '{_GROUPS_DISCUSSION_FORUM_LABEL}' in labels"
+        if self._customer_id:
+            # Without this, Google fails the whole search with 403 when any of the member's groups is
+            # owned by another organization.
+            query += f" && parent == 'customers/{self._customer_id}'"
+        elif not self._warned_unscoped:
+            self._warned_unscoped = True
+            logger.warning(
+                "GOOGLE_CUSTOMER_ID is not set; Cloud Identity group lookups are unscoped and fail with 403 "
+                "for members of groups outside the Workspace."
+            )
+        params = {"query": query}
         memberships = await self._search_memberships(url, params)
         return [
             GoogleWorkspaceGroupInfo(
@@ -121,7 +156,7 @@ class CloudIdentityGroupsClient:
         token = await self._get_token()
         headers = {"Authorization": f"Bearer {token}"}
         resp = await self._client().get(f"{_CLOUD_IDENTITY_BASE_URL}/{group_resource_name}", headers=headers)
-        resp.raise_for_status()
+        _raise_for_status_logged(resp)
         return resp.json()
 
     async def list_transitive_members_of_group(self, group_resource_name: str) -> list[str]:

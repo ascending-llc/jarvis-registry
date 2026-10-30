@@ -1,6 +1,8 @@
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -34,8 +36,8 @@ def _resp(json_data: dict, status: int = 200):
     return r
 
 
-def _client_with_token() -> CloudIdentityGroupsClient:
-    client = CloudIdentityGroupsClient(_sa_key_json())
+def _client_with_token(customer_id: str = "") -> CloudIdentityGroupsClient:
+    client = CloudIdentityGroupsClient(_sa_key_json(), customer_id=customer_id)
     client._http = MagicMock()
     client._http.post = AsyncMock(return_value=_resp({"access_token": "tok", "expires_in": 3600}))
     return client
@@ -139,3 +141,98 @@ async def test_aclose_closes_and_resets_http():
     await client.aclose()
     mock_http.aclose.assert_awaited_once()
     assert client._http is None
+
+
+_UNSCOPED_WARNING = "GOOGLE_CUSTOMER_ID is not set"
+_SEARCH_URL = "https://cloudidentity.googleapis.com/v1/groups/-/memberships:searchTransitiveGroups"
+_GROUP_URL = "https://cloudidentity.googleapis.com/v1/groups/1"
+
+
+def _error_resp(url: str, status: int = 403, **kwargs) -> httpx.Response:
+    return httpx.Response(status, request=httpx.Request("GET", url), **kwargs)
+
+
+def _google_error(message: str) -> dict:
+    return {"error": {"code": 403, "message": message, "status": "PERMISSION_DENIED"}}
+
+
+async def test_list_groups_with_customer_id_adds_parent_filter():
+    client = _client_with_token(customer_id="C046psxkn")
+    client._http.get = AsyncMock(return_value=_resp({"memberships": []}))
+
+    await client.list_transitive_groups_for_member("ada@x.com")
+
+    assert client._http.get.await_args.kwargs["params"]["query"] == (
+        "member_key_id == 'ada@x.com' && 'cloudidentity.googleapis.com/groups.discussion_forum' in labels"
+        " && parent == 'customers/C046psxkn'"
+    )
+
+
+async def test_unscoped_warning_logged_once_per_client(caplog):
+    client = _client_with_token()
+    client._http.get = AsyncMock(return_value=_resp({"memberships": []}))
+
+    with caplog.at_level(logging.WARNING):
+        await client.list_transitive_groups_for_member("a@x.com")
+        await client.list_transitive_groups_for_member("b@x.com")
+
+    assert sum(_UNSCOPED_WARNING in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_no_unscoped_warning_with_customer_id(caplog):
+    client = _client_with_token(customer_id="C046psxkn")
+    client._http.get = AsyncMock(return_value=_resp({"memberships": []}))
+
+    with caplog.at_level(logging.WARNING):
+        await client.list_transitive_groups_for_member("a@x.com")
+
+    assert not any(_UNSCOPED_WARNING in r.getMessage() for r in caplog.records)
+
+
+async def test_search_error_logs_google_message_and_raises(caplog):
+    client = _client_with_token(customer_id="C046psxkn")
+    message = "Error(4013): Insufficient permissions to retrieve memberships."
+    client._http.get = AsyncMock(return_value=_error_resp(_SEARCH_URL, json=_google_error(message)))
+
+    with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
+        await client.list_transitive_groups_for_member("a@x.com")
+
+    logged = caplog.records[-1].getMessage()
+    assert "403" in logged
+    assert "/v1/groups/-/memberships:searchTransitiveGroups" in logged
+    assert f"PERMISSION_DENIED: {message}" in logged
+
+
+async def test_get_group_error_logs_google_message_and_raises(caplog):
+    client = _client_with_token()
+    client._http.get = AsyncMock(return_value=_error_resp(_GROUP_URL, json=_google_error("denied")))
+
+    with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
+        await client.get_group("groups/1")
+
+    logged = caplog.records[-1].getMessage()
+    assert "403" in logged
+    assert "/v1/groups/1" in logged
+    assert "PERMISSION_DENIED: denied" in logged
+
+
+async def test_error_with_non_json_body_logs_text(caplog):
+    client = _client_with_token()
+    client._http.get = AsyncMock(return_value=_error_resp(_GROUP_URL, status=502, text="<html>Bad Gateway</html>"))
+
+    with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
+        await client.get_group("groups/1")
+
+    assert "<html>Bad Gateway</html>" in caplog.records[-1].getMessage()
+
+
+async def test_error_message_is_truncated(caplog):
+    client = _client_with_token()
+    client._http.get = AsyncMock(return_value=_error_resp(_GROUP_URL, json=_google_error("x" * 2000)))
+
+    with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
+        await client.get_group("groups/1")
+
+    logged = caplog.records[-1].getMessage()
+    assert "x" * 480 in logged
+    assert "x" * 501 not in logged
