@@ -41,19 +41,11 @@
          <lastmod>2026-10-30</lastmod>
     </url>
     <url>
-         <loc>https://jarvisregistry.com/auth/</loc>
-         <lastmod>2026-10-30</lastmod>
-    </url>
-    <url>
          <loc>https://jarvisregistry.com/cognito/</loc>
          <lastmod>2026-10-30</lastmod>
     </url>
     <url>
          <loc>https://jarvisregistry.com/complete-setup-guide/</loc>
-         <lastmod>2026-10-30</lastmod>
-    </url>
-    <url>
-         <loc>https://jarvisregistry.com/configuration/</loc>
          <lastmod>2026-10-30</lastmod>
     </url>
     <url>
@@ -102,6 +94,10 @@
     </url>
     <url>
          <loc>https://jarvisregistry.com/prebuilt-images/</loc>
+         <lastmod>2026-10-30</lastmod>
+    </url>
+    <url>
+         <loc>https://jarvisregistry.com/production-configuration/</loc>
          <lastmod>2026-10-30</lastmod>
     </url>
     <url>
