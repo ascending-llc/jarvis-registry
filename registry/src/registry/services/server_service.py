@@ -59,32 +59,6 @@ def _extract_config_field(server: ExtendedMCPServer, field: str, default: Any = 
     return server.config.get(field, default)
 
 
-def _build_server_info_for_mcp_client(config: dict[str, Any], tags: list[str]) -> dict[str, Any]:
-    """
-    Build server_info dictionary for MCP client operations.
-
-    Args:
-        config: Server config dictionary
-        tags: Server tags list
-
-    Returns:
-        server_info dictionary with type, tags, headers, and apiKey (if present)
-    """
-    server_info = {
-        "type": config.get("type", "streamable-http"),
-        "tags": tags or [],
-    }
-
-    # Add optional fields if present
-    if "headers" in config:
-        server_info["headers"] = config["headers"]
-
-    if "apiKey" in config:
-        server_info["apiKey"] = config["apiKey"]
-
-    return server_info
-
-
 def _get_current_utc_time() -> datetime:
     """Get current UTC time. Centralizes datetime.now(timezone.utc) calls."""
     return datetime.now(UTC)
@@ -473,7 +447,9 @@ class ServerServiceV1:
             Created server document
 
         Raises:
-            ValueError: If path+url combination already exists, server_name already exists, or tags contain duplicates (case-insensitive)
+            ValueError: If path+url combination or server_name already exists,
+                tags contain duplicates (case-insensitive), or the health check fails.
+            Other exceptions propagate; the caller's transaction rolls back the insert.
         """
         # Guard first: block the Mongo write below when a reindex is in progress.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
@@ -540,9 +516,9 @@ class ServerServiceV1:
         await server.insert(session=session)
         logger.info(f"Created server: {server.serverName} (ID: {server.id}, Path: {data.path})")
 
-        # Perform health check and tool retrieval after registration
+        # Perform the required health check within the caller's transaction.
         if data.url and not skip_post_registration_checks:
-            logger.info(f"Performing post-registration health check and tool retrieval for {server.serverName}")
+            logger.info(f"Performing post-registration health check for {server.serverName}")
 
             try:
                 # 1. Health check - REQUIRED
@@ -574,51 +550,13 @@ class ServerServiceV1:
                 # Update server with health check results (root-level field)
                 server.lastConnected = _get_current_utc_time()
 
-                # 2. Retrieve capabilities (but skip tools - they will be fetched on-demand)
-                logger.info(f"Retrieving capabilities for {server.serverName} (skipping tools)")
-
-                # Initialize empty toolFunctions and tools (will be populated on first use)
+                # Tools are populated when the server is enabled.
                 config["toolFunctions"] = {}
                 config["tools"] = ""
 
-                # Try to get capabilities only
-                try:
-                    # Build server_info dict for mcp_client
-                    server_info = _build_server_info_for_mcp_client(config, server.tags)
-
-                    from registry.core.mcp_client import (
-                        get_tools_and_capabilities_from_server,
-                    )
-
-                    # Get tools, resources, prompts, and capabilities (we'll only use capabilities for now)
-                    result = await get_tools_and_capabilities_from_server(
-                        data.url,
-                        server_info,
-                        include_resources=True,
-                        include_prompts=True,
-                    )
-
-                    # Save capabilities if retrieved successfully
-                    if result.capabilities:
-                        config["capabilities"] = json.dumps(result.capabilities)
-                        logger.info(f"Saved capabilities for {server.serverName}: {config['capabilities']}")
-                    else:
-                        config["capabilities"] = "{}"
-                        logger.warning(f"No capabilities retrieved for {server.serverName}, using empty JSON")
-
-                    # Store resources and prompts (empty lists if not retrieved)
-                    config["resources"] = result.resources or []
-                    config["prompts"] = result.prompts or []
-                    logger.info(
-                        f"Saved {len(result.resources or [])} resources and {len(result.prompts or [])} prompts for {server.serverName}"
-                    )
-
-                except Exception as e:
-                    # If capabilities retrieval fails, just use empty capabilities
-                    config["capabilities"] = "{}"
-                    logger.warning(f"Failed to retrieve capabilities for {server.serverName}: {e}")
-
-                logger.info(f"Server {server.serverName} registered successfully. Tools will be fetched on-demand.")
+                logger.info(
+                    f"Server {server.serverName} passed registration checks. Tools will be fetched when enabled."
+                )
 
                 # Update numTools at root level (0 since tools not fetched yet)
                 server.numTools = 0
@@ -630,18 +568,54 @@ class ServerServiceV1:
                 # Re-raise ValueError (our validation errors)
                 raise
             except Exception as e:
-                # Unexpected error during health check or tool retrieval
                 logger.error(
-                    "Unexpected error during post-registration health check and tool "
-                    "retrieval for server %s (ID: %s, Path: %s): %s",
+                    "Unexpected error during post-registration checks for server %s (ID: %s, Path: %s): %s",
                     server.serverName,
                     server.id,
                     server.path,
                     str(e),
                     exc_info=True,
                 )
-                await server.delete(session=session)
+                raise
         return server
+
+    async def fetch_registration_capabilities(self, server: ExtendedMCPServer, user_id: str) -> None:
+        """Best-effort capability discovery after registration commits; failures preserve the response config."""
+        if not server.config.get("url"):
+            return
+
+        if server.mcp_auth_mode is McpAuthMode.OAUTH:
+            logger.info(
+                "Skipping registration capabilities fetch for OAuth server %s; authorize and refresh to fetch capabilities",
+                server.id,
+            )
+            return
+
+        original_config = server.config.copy()
+        try:
+            _, resources, prompts, capabilities, error_msg = await self.retrieve_from_server(
+                server,
+                include_capabilities=True,
+                include_resources=True,
+                include_prompts=True,
+                user_id=user_id,
+            )
+
+            if error_msg is None:
+                server.config.update(
+                    capabilities=json.dumps(capabilities),
+                    resources=resources or [],
+                    prompts=prompts or [],
+                )
+                await server.save()
+                return
+
+            logger.warning("Registration capabilities fetch failed for %s: %s", server.id, error_msg)
+        except Exception:
+            logger.warning("Registration capabilities fetch failed for %s", server.id, exc_info=True)
+
+        # Discovery can also change requiresInit before reporting an error.
+        server.config = original_config
 
     @staticmethod
     def _mark_vector_sync_pending(server: ExtendedMCPServer) -> datetime:

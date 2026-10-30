@@ -442,6 +442,8 @@ async def create_server(
 
         logger.info(f"Granted user {user_id} {RoleBits.OWNER} permissions for server Id {server.id}")
 
+        await server_service.fetch_registration_capabilities(server, user_id)
+
         perms = ResourcePermissions(
             VIEW=True,
             EDIT=True,

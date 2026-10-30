@@ -3,16 +3,20 @@ Unit tests for server service.
 """
 
 import asyncio as _asyncio
+import json
 import logging as _logging
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
+from beanie import PydanticObjectId
 
 from registry.core.mcp_client import MCPServerData
 from registry.schemas.server_api_schemas import ServerCreateRequest, ServerUpdateRequest
 from registry.services.background_task_tracker import TrackerShutdownError as _TrackerShutdownError
 from registry.services.server_service import ServerServiceV1
+from registry.utils.crypto_utils import encrypt_auth_fields
 from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
@@ -25,6 +29,184 @@ def _record_config_at_save(server: Mock) -> list[dict[str, object]]:
 
     server.save = AsyncMock(side_effect=save)
     return saved
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestFetchRegistrationCapabilities:
+    @pytest.fixture
+    def service(self) -> ServerServiceV1:
+        return ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=Mock())
+
+    @pytest.fixture
+    def server(self) -> ExtendedMCPServer:
+        return ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="registration-test",
+            tags=["test"],
+            numTools=0,
+            config={
+                "url": "https://mcp.example.com/mcp",
+                "type": "streamable-http",
+                "apiKey": {"source": "system", "authorization_type": "bearer", "key": "test-only"},
+                "capabilities": "{}",
+                "toolFunctions": {},
+                "tools": "",
+                "enabled": False,
+            },
+        )
+
+    @pytest.fixture
+    def save(self) -> Iterator[AsyncMock]:
+        with patch.object(ExtendedMCPServer, "save", new_callable=AsyncMock) as save:
+            yield save
+
+    @pytest.mark.parametrize(
+        ("capabilities", "resources", "prompts"),
+        [
+            ({"tools": {"listChanged": True}}, [{"uri": "test://resource"}], [{"name": "summary"}]),
+            ({}, None, None),
+        ],
+    )
+    async def test_saves_capabilities_without_tools(
+        self,
+        service: ServerServiceV1,
+        server: ExtendedMCPServer,
+        save: AsyncMock,
+        capabilities: dict[str, object],
+        resources: list[dict[str, str]] | None,
+        prompts: list[dict[str, str]] | None,
+    ) -> None:
+        def retrieve(current_server: ExtendedMCPServer, **_: object) -> tuple[object, ...]:
+            current_server.config["requiresInit"] = False
+            return [{"name": "ignored-tool"}], resources, prompts, capabilities, None
+
+        with patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)) as fetch:
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        fetch.assert_awaited_once_with(
+            server,
+            include_capabilities=True,
+            include_resources=True,
+            include_prompts=True,
+            user_id="user-1",
+        )
+        assert server.config["capabilities"] == json.dumps(capabilities)
+        assert server.config["resources"] == (resources or [])
+        assert server.config["prompts"] == (prompts or [])
+        assert server.config["requiresInit"] is False
+        assert server.config["toolFunctions"] == {}
+        assert server.config["tools"] == ""
+        assert server.config["enabled"] is False
+        assert server.numTools == 0
+        save.assert_awaited_once_with()
+
+    @pytest.mark.parametrize("transport_type", ["sse", "streamable-http"])
+    async def test_builds_real_auth_headers_from_encrypted_config(
+        self,
+        service: ServerServiceV1,
+        server: ExtendedMCPServer,
+        save: AsyncMock,
+        transport_type: str,
+    ) -> None:
+        server.config.update(type=transport_type, headers={"X-Test": "custom-value"})
+        server.config = encrypt_auth_fields(server.config)
+        encrypted_key = server.config["apiKey"]["key"]
+        assert encrypted_key != "test-only"
+        result = MCPServerData(
+            tools=[{"name": "ignored-tool"}],
+            resources=[{"uri": "test://resource"}],
+            prompts=[{"name": "summary"}],
+            capabilities={"tools": {}},
+            requires_init=False,
+        )
+
+        with patch(
+            "registry.core.mcp_client.get_tools_and_capabilities_from_server", AsyncMock(return_value=result)
+        ) as fetch:
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        fetch.assert_awaited_once_with(
+            server.config["url"],
+            headers=ANY,
+            transport_type=transport_type,
+            include_resources=True,
+            include_prompts=True,
+        )
+        headers = fetch.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer test-only"
+        assert headers["X-Test"] == "custom-value"
+        assert all(isinstance(value, str) for value in headers.values())
+        assert set(headers).isdisjoint({"tags", "type", "apiKey", "headers"})
+        assert json.loads(server.config["capabilities"]) == result.capabilities
+        assert server.config["resources"] == result.resources
+        assert server.config["prompts"] == result.prompts
+        assert server.config["requiresInit"] is False
+        assert server.config["apiKey"]["key"] == encrypted_key
+        assert server.config["toolFunctions"] == {}
+        assert server.config["tools"] == ""
+        save.assert_awaited_once_with()
+
+    @pytest.mark.parametrize(
+        "config", [{}, {"oauth": {}}, {"requiresOAuth": True}], ids=["no-url", "oauth", "requires-oauth"]
+    )
+    async def test_skips_missing_url_and_oauth(
+        self,
+        service: ServerServiceV1,
+        server: ExtendedMCPServer,
+        save: AsyncMock,
+        config: dict[str, object],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        server.config = {"url": "https://mcp.example.com/mcp", **config} if config else {}
+        original_config = server.config.copy()
+        with (
+            patch.object(service, "retrieve_from_server", new_callable=AsyncMock) as fetch,
+            caplog.at_level(_logging.INFO, logger="registry.services.server_service"),
+        ):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        fetch.assert_not_awaited()
+        save.assert_not_awaited()
+        assert server.config == original_config
+        if config:
+            assert "Skipping registration capabilities fetch for OAuth server" in caplog.text
+
+    @pytest.mark.parametrize("failure", ["error-tuple", "retrieve", "save", "timeout"])
+    @pytest.mark.parametrize("previous_requires_init", [None, True])
+    async def test_failure_restores_config(
+        self,
+        service: ServerServiceV1,
+        server: ExtendedMCPServer,
+        save: AsyncMock,
+        failure: str,
+        previous_requires_init: bool | None,
+    ) -> None:
+        if previous_requires_init is not None:
+            server.config["requiresInit"] = previous_requires_init
+        original_config = server.config.copy()
+        if failure == "save":
+            save.side_effect = RuntimeError("save failed")
+
+        async def retrieve(current_server: ExtendedMCPServer, **_: object) -> tuple[object, ...]:
+            current_server.config["requiresInit"] = False
+            if failure == "error-tuple":
+                return None, None, None, None, "boom"
+            if failure == "retrieve":
+                raise RuntimeError("retrieve failed")
+            if failure == "timeout":
+                raise TimeoutError("upstream timed out")
+            return [], [{"uri": "test://resource"}], [{"name": "summary"}], {"tools": {}}, None
+
+        with patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        assert server.config == original_config
+        if failure == "save":
+            save.assert_awaited_once_with()
+        else:
+            save.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -633,6 +815,42 @@ class TestCreateServerNormalizedServerName:
 
             with pytest.raises(ValueError, match="already exists"):
                 await service.create_server(data=data, user_id="user-1")
+
+    @pytest.mark.parametrize("save_fails", [False, True])
+    async def test_post_registration_save_does_not_fetch_or_delete(self, save_fails: bool) -> None:
+        service = self._make_service()
+        data = ServerCreateRequest(title="Example Server", path="/example", url="https://mcp.example.com/mcp")
+        session = Mock()
+        error = RuntimeError("save failed")
+
+        with (
+            patch("registry.services.server_service.ExtendedMCPServer") as MockServer,
+            patch("registry.core.mcp_client.perform_health_check", AsyncMock(return_value=(True, "healthy", 1, None))),
+            patch("registry.core.mcp_client.get_tools_and_capabilities_from_server", new_callable=AsyncMock) as fetch,
+        ):
+            MockServer.find.return_value.to_list = AsyncMock(return_value=[])
+            MockServer.find_one = AsyncMock(return_value=None)
+            server = MockServer.return_value
+            server.config = {"url": data.url, "capabilities": "{}"}
+            server.insert = AsyncMock()
+            server.save = AsyncMock(side_effect=error if save_fails else None)
+            server.delete = AsyncMock()
+
+            if save_fails:
+                with pytest.raises(RuntimeError) as exc_info:
+                    await service.create_server(data=data, user_id="user-1", session=session)
+                assert exc_info.value is error
+            else:
+                result = await service.create_server(data=data, user_id="user-1", session=session)
+                assert result is server
+                assert server.config["capabilities"] == "{}"
+                assert server.config["toolFunctions"] == {}
+                assert server.config["tools"] == ""
+                assert server.numTools == 0
+
+            server.save.assert_awaited_once_with(session=session)
+            server.delete.assert_not_awaited()
+            fetch.assert_not_awaited()
 
 
 @pytest.mark.unit
