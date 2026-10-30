@@ -151,6 +151,14 @@ printf '   workflow-worker → %s\n' $(grep -m1 '^version = ' workflow-worker/py
 help = "Sync version across all projects (usage: poe version-sync 0.2.0)"
 script = "scripts.sync_version:main"
 
+[tool.poe.tasks.generate-llms]
+help = "Generate llms.txt and llms-full.txt from local documentation"
+cmd = "python scripts/generate_llms.py"
+
+[tool.poe.tasks.check-llms]
+help = "Check that llms.txt and llms-full.txt are up to date"
+cmd = "python scripts/generate_llms.py --check"
+
 # Run all tests across all projects
 [tool.poe.tasks.test-all]
 shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test && cd ../workflow-worker && uv run poe test"
