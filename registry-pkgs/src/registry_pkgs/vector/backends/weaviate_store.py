@@ -687,7 +687,11 @@ class WeaviateStore(VectorStoreAdapter):
 
     def batch_update_properties(self, doc_ids: list[str], update_data: dict[str, Any], collection_name: str) -> int:
         """
-        Batch update properties using native Weaviate batch update.
+        Patch properties on many documents without server-side re-vectorization.
+
+        For each chunk of ids, fetches the objects' existing vectors and sends each one back with
+        its ``data.update`` (one PATCH per object), so Weaviate never re-embeds. An object whose
+        vector can't be fetched is skipped and counted as failed; a vector-less update is never sent.
 
         Args:
             doc_ids: List of document UUIDs to update
