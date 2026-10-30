@@ -88,7 +88,19 @@ def test_token_failure_is_reported_per_member(monkeypatch, fake_client, capsys):
     fake_client.return_value.list_transitive_groups_for_member.side_effect = ValueError("bad key")
 
     assert _run_main(monkeypatch, "ada@example.com") == 1
-    assert "FAILED to acquire a Cloud Identity access token: bad key" in capsys.readouterr().out
+    assert "FAILED: ValueError: bad key" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_non_json_response_is_not_reported_as_token_failure(monkeypatch, fake_client, capsys):
+    fake_client.return_value.list_transitive_groups_for_member.side_effect = json.JSONDecodeError(
+        "Expecting value", "<html>", 0
+    )
+
+    assert _run_main(monkeypatch, "ada@example.com") == 1
+    out = capsys.readouterr().out
+    assert "FAILED: JSONDecodeError: Expecting value" in out
+    assert "access token" not in out
 
 
 @pytest.mark.unit

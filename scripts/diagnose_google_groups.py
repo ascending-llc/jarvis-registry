@@ -131,8 +131,8 @@ async def diagnose_member(client: CloudIdentityGroupsClient, email: str, allowed
         print(f"  FAILED: network error {type(exc).__name__}: {exc}")
         return False
     except ValueError as exc:
-        # The client raises ValueError when the key can't be loaded or the token can't be acquired.
-        print(f"  FAILED to acquire a Cloud Identity access token: {exc}")
+        # Not only token failures: a non-JSON response body or a malformed membership also raises a ValueError.
+        print(f"  FAILED: {type(exc).__name__}: {exc}")
         return False
 
     print(f"  OK: {len(groups)} group(s) returned")
