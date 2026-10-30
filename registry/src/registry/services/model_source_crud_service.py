@@ -3,24 +3,36 @@ from typing import Any
 
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
+from fastapi import HTTPException
+from fastapi import status as http_status
 from pydantic import BaseModel
 
 from registry.utils.crypto_utils import encrypt_value
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.database.embedding_reindex_job_repository import get_active_embedding_reindex_job
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
+from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    ModelSource,
+    OpenAIModelConfig,
+    _FirstPartyModelConfig,
+)
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 
+from ..schemas.errors import ErrorCode, create_error_detail
 from ..schemas.model_source_api_schemas import (
+    AnthropicModelConfigInput,
     AwsBedrockModelConfigInput,
     AzureOpenAIModelConfigInput,
     ModelSourceProviderConfigInput,
+    OpenAIModelConfigInput,
 )
 from .model_gateway_selection_service import ModelGatewaySelectionService, ModelSourceModeMismatchError
 
-StoredProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig
+StoredProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig | AnthropicModelConfig | OpenAIModelConfig
 
 # Fields whose change moves an embedding to a different vector space (different model / different
 # Azure resource+deployment). Editing them on the source backing the ACTIVE embedding selection would
@@ -29,6 +41,8 @@ StoredProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig
 _VECTOR_SPACE_FIELDS: dict[type, tuple[str, ...]] = {
     AwsBedrockModelConfig: ("modelIdOrArn",),
     AzureOpenAIModelConfig: ("deploymentName", "endpoint"),
+    AnthropicModelConfig: ("modelId",),
+    OpenAIModelConfig: ("modelId",),
 }
 _ACTIVE_SOURCE_VECTOR_SPACE_ERROR = (
     "Cannot change the embedding model or endpoint of the model source backing the active embedding "
@@ -77,7 +91,38 @@ class ModelSourceCrudService:
                 apiVersion=config.apiVersion,
                 apiKeyEncrypted=cls._encrypt_secret(config.apiKey) if config.apiKey else None,
             )
+        if isinstance(config, (AnthropicModelConfigInput, OpenAIModelConfigInput)):
+            stored_cls = AnthropicModelConfig if isinstance(config, AnthropicModelConfigInput) else OpenAIModelConfig
+            return stored_cls(
+                modelId=config.modelId,
+                baseUrl=config.baseUrl,
+                apiKeyEncrypted=cls._encrypt_secret(config.apiKey) if config.apiKey else None,
+            )
         raise ValueError(f"Unsupported provider config: {type(config).__name__}")
+
+    @staticmethod
+    def _validate_config_for_mode(config: StoredProviderConfig, mode: ModelSourceMode) -> None:
+        """Reject (provider, mode) combinations that cannot work. Anthropic has no embedding API."""
+        if isinstance(config, AnthropicModelConfig) and mode == ModelSourceMode.EMBEDDING:
+            raise HTTPException(
+                http_status.HTTP_400_BAD_REQUEST,
+                detail=create_error_detail(
+                    ErrorCode.INVALID_REQUEST,
+                    "Anthropic does not provide embedding models; use mode 'chat' or a different provider.",
+                ),
+            )
+
+    @staticmethod
+    def _require_first_party_key(config: StoredProviderConfig) -> None:
+        """First-party providers have no ambient identity, so an API key must be present at creation."""
+        if isinstance(config, _FirstPartyModelConfig) and not config.apiKeyEncrypted:
+            raise HTTPException(
+                http_status.HTTP_400_BAD_REQUEST,
+                detail=create_error_detail(
+                    ErrorCode.INVALID_REQUEST,
+                    "An API key is required for first-party (Anthropic / OpenAI) model sources.",
+                ),
+            )
 
     async def create_source(
         self,
@@ -89,12 +134,15 @@ class ModelSourceCrudService:
         provider_config: ModelSourceProviderConfigInput,
         created_by: str | None,
     ) -> ModelSource:
+        stored_config = self._to_stored_config(provider_config)
+        self._validate_config_for_mode(stored_config, mode)
+        self._require_first_party_key(stored_config)
         source = ModelSource(
             displayName=display_name,
             description=description,
             tags=tags,
             mode=mode,
-            providerConfig=self._to_stored_config(provider_config),
+            providerConfig=stored_config,
             createdBy=created_by,
             updatedBy=created_by,
         )
@@ -171,6 +219,10 @@ class ModelSourceCrudService:
             new_config = self._to_stored_config(provider_config)
             await self._reject_vector_space_change_on_active_source(source, new_config)
             source.providerConfig = self._preserve_existing_secret(new_config, source.providerConfig)
+            self._require_first_party_key(source.providerConfig)
+        # Reject an invalid (provider, mode) combo the update would leave behind — e.g. switching an
+        # Anthropic source to embedding mode, or switching mode on an Anthropic source.
+        self._validate_config_for_mode(source.providerConfig, source.mode)
         source.updatedBy = updated_by
         await source.save()
         return source
@@ -197,6 +249,15 @@ class ModelSourceCrudService:
             isinstance(new_config, AzureOpenAIModelConfig)
             and new_config.apiKeyEncrypted is None
             and isinstance(old_config, AzureOpenAIModelConfig)
+            and old_config.apiKeyEncrypted
+        ):
+            new_config.apiKeyEncrypted = old_config.apiKeyEncrypted
+        # Same carry-over for a first-party source keeping its provider type across an update.
+        if (
+            isinstance(new_config, _FirstPartyModelConfig)
+            and new_config.apiKeyEncrypted is None
+            and type(new_config) is type(old_config)
+            and isinstance(old_config, _FirstPartyModelConfig)
             and old_config.apiKeyEncrypted
         ):
             new_config.apiKeyEncrypted = old_config.apiKeyEncrypted

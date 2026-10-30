@@ -28,8 +28,34 @@ class AzureOpenAIModelConfigInput(BaseModel):
     )
 
 
+class _FirstPartyModelConfigInput(BaseModel):
+    modelId: str = Field(min_length=1)
+    baseUrl: str | None = Field(default=None, min_length=1)
+    apiKey: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Required on create (first-party has no ambient identity); may be omitted on "
+        "update to keep the stored key. Encrypted by the service before storage.",
+    )
+
+    @field_validator("baseUrl")
+    @classmethod
+    def _require_https(cls, value: str | None) -> str | None:
+        if value is not None and not value.lower().startswith("https://"):
+            raise ValueError("baseUrl must start with https://")
+        return value
+
+
+class AnthropicModelConfigInput(_FirstPartyModelConfigInput):
+    providerType: Literal[ModelSourceProviderType.ANTHROPIC] = ModelSourceProviderType.ANTHROPIC
+
+
+class OpenAIModelConfigInput(_FirstPartyModelConfigInput):
+    providerType: Literal[ModelSourceProviderType.OPENAI] = ModelSourceProviderType.OPENAI
+
+
 ModelSourceProviderConfigInput = Annotated[
-    AwsBedrockModelConfigInput | AzureOpenAIModelConfigInput,
+    AwsBedrockModelConfigInput | AzureOpenAIModelConfigInput | AnthropicModelConfigInput | OpenAIModelConfigInput,
     Field(discriminator="providerType"),
 ]
 
@@ -52,7 +78,27 @@ class AzureOpenAIModelConfigResponse(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
 
-ModelSourceProviderConfigResponse = AwsBedrockModelConfigResponse | AzureOpenAIModelConfigResponse
+class _FirstPartyModelConfigResponse(BaseModel):
+    modelId: str
+    baseUrl: str | None = None
+    hasApiKey: bool = False
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class AnthropicModelConfigResponse(_FirstPartyModelConfigResponse):
+    providerType: Literal[ModelSourceProviderType.ANTHROPIC] = ModelSourceProviderType.ANTHROPIC
+
+
+class OpenAIModelConfigResponse(_FirstPartyModelConfigResponse):
+    providerType: Literal[ModelSourceProviderType.OPENAI] = ModelSourceProviderType.OPENAI
+
+
+ModelSourceProviderConfigResponse = (
+    AwsBedrockModelConfigResponse
+    | AzureOpenAIModelConfigResponse
+    | AnthropicModelConfigResponse
+    | OpenAIModelConfigResponse
+)
 
 
 class ModelSourceCreateRequest(BaseModel):

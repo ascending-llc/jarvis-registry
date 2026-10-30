@@ -36,12 +36,20 @@ export const modelDetailToForm = (detail: ModelSourceDetail): ModelFormState => 
     };
   }
 
+  if (detail.providerConfig.providerType === 'azure_openai') {
+    return {
+      ...base,
+      endpoint: detail.providerConfig.endpoint,
+      deploymentName: detail.providerConfig.deploymentName,
+      baseModelId: detail.providerConfig.baseModelId,
+      apiVersion: detail.providerConfig.apiVersion,
+    };
+  }
+
   return {
     ...base,
-    endpoint: detail.providerConfig.endpoint,
-    deploymentName: detail.providerConfig.deploymentName,
-    baseModelId: detail.providerConfig.baseModelId,
-    apiVersion: detail.providerConfig.apiVersion,
+    baseModelId: detail.providerConfig.modelId,
+    baseUrl: detail.providerConfig.baseUrl ?? '',
   };
 };
 
@@ -56,12 +64,21 @@ const getProviderConfig = (form: ModelFormState) => {
     } as const;
   }
 
+  if (form.providerType === 'azure_openai') {
+    return {
+      providerType: form.providerType,
+      endpoint: form.endpoint.trim(),
+      deploymentName: form.deploymentName.trim(),
+      baseModelId: form.baseModelId.trim(),
+      apiVersion: form.apiVersion.trim(),
+      ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
+    } as const;
+  }
+
   return {
     providerType: form.providerType,
-    endpoint: form.endpoint.trim(),
-    deploymentName: form.deploymentName.trim(),
-    baseModelId: form.baseModelId.trim(),
-    apiVersion: form.apiVersion.trim(),
+    modelId: form.baseModelId.trim(),
+    ...(form.baseUrl.trim() ? { baseUrl: form.baseUrl.trim() } : {}),
     ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
   } as const;
 };
