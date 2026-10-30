@@ -195,7 +195,7 @@ class IdentityService:
         for _ in range(_UPDATE_ATTEMPTS):
             updates = await self._updates(identity, document, update_email=update_email)
             if not updates:
-                return User.model_validate(document)
+                return self._matched_user(identity, document)
             try:
                 updated = await User.get_pymongo_collection().find_one_and_update(
                     self._snapshot_filter(document), {"$set": updates}, return_document=ReturnDocument.AFTER
@@ -207,11 +207,30 @@ class IdentityService:
                 update_email = False
             else:
                 if updated is not None:
-                    return User.model_validate(updated)
+                    return self._matched_user(identity, updated)
             document = await self._find_match(identity)
             if document is None or document["_id"] != user_id:
                 raise IdentityConflictError("concurrent_identity_change", user_id)
         raise IdentityConflictError("concurrent_identity_change", user_id)
+
+    def _matched_user(self, identity: VerifiedIdentity, document: dict[str, Any]) -> User:
+        """Validate a matched document into a User, guarding Google logins against a stale email.
+
+        _update_matched has already attempted to persist the verified email by the time this runs,
+        so a document whose email still differs from the verified one means that write was refused
+        (another user holds the address, or it lost the uniqueness race). Google resolves group
+        membership by users.email, so letting such a login through would sync groups off that stale
+        address — which may since have been reassigned to a different person. Block it. Entra keys
+        off idOnTheSource rather than email, so this does not apply to it.
+        """
+        if (
+            identity.provider == "google"
+            and identity.email_trusted
+            and identity.email
+            and document["email"] != identity.email
+        ):
+            raise IdentityConflictError("google_email_not_persisted", document["_id"])
+        return User.model_validate(document)
 
     def _new_document(self, identity: VerifiedIdentity) -> dict[str, Any]:
         now = datetime.now(UTC)
@@ -229,7 +248,6 @@ class IdentityService:
             createdAt=now,
             updatedAt=now,
         )
-        document = user.model_dump(by_alias=True, exclude_none=True)
-        if identity.provider == "google":
-            document["idOnTheSource"] = identity.email
-        return document
+        # Google users are matched to groups by email, not idOnTheSource (see
+        # access_control.group_member_id_for_user), so it is not stored for them.
+        return user.model_dump(by_alias=True, exclude_none=True)
