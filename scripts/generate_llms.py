@@ -98,12 +98,16 @@ def generate() -> dict[Path, str]:
         f"Documentation: {site_url}",
         f"Index: {urljoin(site_url, 'llms.txt')}",
         "",
-        "Generated from local Markdown files in this checkout, using mkdocs.yml navigation order. "
-        "Archived and unlisted pages are excluded. Each section includes its published URL and "
-        "checkout-relative Markdown source path. Relative links, images, and documentation extension syntax "
-        "are preserved from that source; interactive controls require the published site. "
-        "The UTC update timestamp records when this export's content last changed. "
-        "It is preserved when the content is unchanged, regardless of checkout or file modification times.",
+        " ".join(
+            [
+                "Generated from local Markdown files in this checkout, using mkdocs.yml navigation order.",
+                "Archived and unlisted pages are excluded. Each section includes its published URL and",
+                "checkout-relative Markdown source path. Relative links, images, and documentation extension syntax",
+                "are preserved from that source; interactive controls require the published site.",
+                "The UTC update timestamp records when this export's content last changed.",
+                "It is preserved when the content is unchanged, regardless of checkout or file modification times.",
+            ]
+        ),
     ]
     seen: set[str] = set()
     current_section = ""

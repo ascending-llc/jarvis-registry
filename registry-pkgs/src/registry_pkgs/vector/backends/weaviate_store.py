@@ -687,7 +687,11 @@ class WeaviateStore(VectorStoreAdapter):
 
     def batch_update_properties(self, doc_ids: list[str], update_data: dict[str, Any], collection_name: str) -> int:
         """
-        Batch update properties using native Weaviate batch update.
+        Patch properties on many documents without server-side re-vectorization.
+
+        For each chunk of ids, fetches the objects' existing vectors and sends each one back with
+        its ``data.update`` (one PATCH per object), so Weaviate never re-embeds. An object whose
+        vector can't be fetched is skipped and counted as failed; a vector-less update is never sent.
 
         Args:
             doc_ids: List of document UUIDs to update
@@ -702,41 +706,50 @@ class WeaviateStore(VectorStoreAdapter):
 
         collection = self.get_collection(collection_name)
 
-        try:
-            # Filter out vector fields to avoid re-vectorization
-            safe_update_data = {k: v for k, v in update_data.items() if k != "content"}
+        # Excluding "content" keeps the patch from changing the vectorized text; the per-object
+        # vector sent below is what prevents Weaviate from re-vectorizing server-side.
+        safe_update_data = {k: v for k, v in update_data.items() if k != "content"}
 
-            if not safe_update_data:
-                logger.warning("No safe fields to update (content field excluded)")
-                return 0
-
-            updated_count = 0
-            failed_count = 0
-            chunk_size = 100
-
-            # Process in chunks using batch context
-            for i in range(0, len(doc_ids), chunk_size):
-                chunk_ids = doc_ids[i : i + chunk_size]
-
-                with collection.batch.dynamic() as batch:
-                    for doc_id in chunk_ids:
-                        try:
-                            collection.data.update(uuid=doc_id, properties=safe_update_data)
-                            updated_count += 1
-                        except Exception as e:
-                            logger.warning(f"Failed to update {doc_id}: {e}")
-                            failed_count += 1
-
-                # Check for batch errors
-                if hasattr(batch, "failed_objects") and batch.failed_objects:
-                    failed_count += len(batch.failed_objects)
-
-            logger.info(f"Batch updated {updated_count}/{len(doc_ids)} documents (failed: {failed_count})")
-            return updated_count
-
-        except Exception as e:
-            logger.error(f"Batch update failed: {e}", exc_info=True)
+        if not safe_update_data:
+            logger.warning("No safe fields to update (content field excluded)")
             return 0
+
+        updated_count = 0
+        failed_count = 0
+        chunk_size = 100
+
+        for i in range(0, len(doc_ids), chunk_size):
+            chunk_ids = doc_ids[i : i + chunk_size]
+
+            try:
+                response = collection.query.fetch_objects_by_ids(
+                    chunk_ids, limit=len(chunk_ids), include_vector=True, return_properties=[]
+                )
+            except Exception as e:
+                # Count the whole chunk as failed and keep going, so counts for already-written
+                # chunks aren't discarded.
+                logger.warning(f"Vector fetch failed for chunk starting at {i}: {e}; counting {len(chunk_ids)} failed")
+                failed_count += len(chunk_ids)
+                continue
+
+            # Legacy single-vector collections (vectorConfig is null) return obj.vector["default"].
+            vectors_by_id = {str(obj.uuid): (obj.vector or {}).get("default") for obj in response.objects}
+
+            for doc_id in chunk_ids:
+                vector = vectors_by_id.get(doc_id)
+                if vector is None:
+                    logger.warning(f"No stored vector for {doc_id}; skipping update to avoid re-vectorization")
+                    failed_count += 1
+                    continue
+                try:
+                    collection.data.update(uuid=doc_id, properties=safe_update_data, vector=vector)
+                    updated_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to update {doc_id}: {e}")
+                    failed_count += 1
+
+        logger.info(f"Batch updated {updated_count}/{len(doc_ids)} documents (failed: {failed_count})")
+        return updated_count
 
     def delete_by_filter(self, filters: Any, collection_name: str | None = None) -> int:
         """
@@ -799,13 +812,22 @@ class WeaviateStore(VectorStoreAdapter):
         """
         collection = self.get_collection(collection_name)
 
+        properties = {k: v for k, v in metadata.items() if k != "collection"}
+
+        # Send the object's existing vector so Weaviate skips server-side re-vectorization
         try:
-            # Filter out non-property fields
-            properties = {k: v for k, v in metadata.items() if k != "collection"}
+            obj = collection.query.fetch_object_by_id(doc_id, include_vector=True, return_properties=[])
+        except Exception as e:
+            logger.warning(f"Vector fetch failed for {doc_id}: {e}")
+            return False
 
-            # Update properties using Weaviate's update API
-            collection.data.update(uuid=doc_id, properties=properties)
+        vector = (obj.vector or {}).get("default") if obj is not None else None
+        if vector is None:
+            logger.warning(f"No stored vector for {doc_id}; skipping metadata update to avoid re-vectorization")
+            return False
 
+        try:
+            collection.data.update(uuid=doc_id, properties=properties, vector=vector)
             logger.info(f"Updated metadata for document {doc_id}: {list(properties.keys())}")
             return True
 

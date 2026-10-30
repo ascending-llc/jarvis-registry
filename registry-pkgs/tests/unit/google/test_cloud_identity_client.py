@@ -70,14 +70,15 @@ async def test_list_members_extracts_emails():
     page = {
         "memberships": [
             {"preferredMemberKey": [{"id": "a@x.com"}]},
-            {"preferredMemberKey": [{"id": "b@x.com"}]},
+            # Mixed-case key must be lowercased to match the lowercase users.email.
+            {"preferredMemberKey": [{"id": "B.User@X.com"}]},
         ]
     }
     client._http.get = AsyncMock(return_value=_resp(page))
 
     members = await client.list_transitive_members_of_group("groups/1")
 
-    assert members == ["a@x.com", "b@x.com"]
+    assert members == ["a@x.com", "b.user@x.com"]
 
 
 async def test_token_is_cached_across_calls():

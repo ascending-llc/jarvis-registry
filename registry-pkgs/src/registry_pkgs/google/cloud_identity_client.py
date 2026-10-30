@@ -168,5 +168,5 @@ class CloudIdentityGroupsClient:
             for key in m.get("preferredMemberKey", []):
                 member_id = key.get("id")
                 if member_id:
-                    emails.append(member_id)
+                    emails.append(member_id.lower())
         return emails

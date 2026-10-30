@@ -29,6 +29,7 @@ from registry.auth.dependencies import UserContextDict, effective_scopes_from_co
 from registry.core.config import settings
 from registry.services.background_task_tracker import TrackerShutdownError
 from registry.services.workflow_run_launcher import ABORT_CONTINUE, WorkflowRunLauncher
+from registry_pkgs.access_control import group_member_id_for_user
 from registry_pkgs.core.scope_groups import (
     entra_scope_group_ids,
     scope_group_for_google_email,
@@ -920,8 +921,9 @@ async def _refresh_triggering_auth_context(
         return None
 
     groups: list[str] = []
-    if user.idOnTheSource:
-        current_groups = await ExtendedGroup.find({"memberIds": user.idOnTheSource}).to_list()
+    member_id = group_member_id_for_user(user)
+    if member_id:
+        current_groups = await ExtendedGroup.find({"memberIds": member_id}).to_list()
         groups = _scope_groups_from_current_groups(current_groups)
 
     return {
