@@ -122,7 +122,7 @@ Secrets must be in place **before** the Helm chart deploys (Phase 4 precedes Pha
 - [ ] `GET /oauth2/providers` returns `google`.
 - [ ] Login button appears and redirects correctly.
 - [ ] A fresh Google login creates a `users` document with `provider="google"`, `googleId` set,
-      `idOnTheSource` equal to the account's email.
+      and **no** `idOnTheSource`. Google group membership is matched on `users.email`.
 - [ ] A login from an account outside `GOOGLE_ALLOWED_HD` is rejected with a clear error, not a generic
       failure page.
 - [ ] A Workspace group, shared to a resource via the ShareModal UI, correctly shares that resource with a
