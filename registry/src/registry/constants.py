@@ -48,8 +48,9 @@ GENERATED_TOKEN_NO_GRANTABLE_SCOPES_DETAIL = (
     "This token type only accepts: {allowed}."
 )
 
-# What repairs a vector task the background-task tracker refused at shutdown, logged so a skipped
+# What repairs a post-commit task the background-task tracker refused at shutdown, logged so a skipped
 # write is traceable: the reconciler heals a sync's pending marker; the orphan sweep removes a skipped
-# delete's vectors.
+# delete's vectors; a refresh fetches a new server's skipped capabilities.
 VECTOR_SYNC_SKIPPED_FALLBACK = "the reconciler will heal it"
 VECTOR_DELETE_SKIPPED_FALLBACK = "the orphan sweep will remove its vectors"
+REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK = "refresh the server to fetch its capabilities"
