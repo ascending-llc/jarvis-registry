@@ -60,7 +60,7 @@ Add this table to `~/.codex/config.toml` for your user account. Merge it with ex
 
 ```toml
 [mcp_servers.jarvis-registry]
-url = "https://registry.example.com/gateway/proxy/mcpgw/mcp"
+url = "https://jarvis.example.com/gateway/proxy/mcpgw/mcp"
 ```
 
 Authenticate and inspect the connection:
@@ -105,7 +105,7 @@ Merge the following entry into `~/.cursor/mcp.json` to make the gateway availabl
 {
    "mcpServers": {
       "jarvis-registry": {
-         "url": "https://registry.example.com/gateway/proxy/mcpgw/mcp"
+         "url": "https://jarvis.example.com/gateway/proxy/mcpgw/mcp"
       }
    }
 }
