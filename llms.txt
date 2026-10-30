@@ -1,64 +1,115 @@
 # Jarvis Registry
 
-> Jarvis Registry is an open-source, enterprise-grade MCP (Model Context Protocol) and A2A Agent Gateway built by ASCENDING Inc. It connects any AI copilot or autonomous agent to enterprise tools through a single secure gateway with identity-first access control, semantic tool discovery, and full observability.
+> Jarvis Registry is a self-hostable enterprise gateway and registry for governed access to MCP servers, A2A agents, and private AI skills.
 
-Jarvis Registry solves the hardest problem in enterprise AI adoption: giving AI copilots and autonomous agents governed access to internal tools and data — without fragmented integrations, scattered credentials, or security blind spots.
+Last updated: 2026-10-30T18:57:41Z
 
-It sits between your AI clients (Cursor, Claude Desktop, GitHub Copilot, VS Code, AWS Kiro) and your enterprise MCP servers and A2A agents. Every request is authenticated against your Identity Provider (Keycloak, Amazon Cognito, or Microsoft Entra ID) and checked against fine-grained ACL policies before a single tool is invoked.
+Use the guides below for deployment, developer clients, business chatbot integrations, identity, access control, and operations. Capabilities depend on deployment configuration and the connected platform. Private deployment does not itself confer compliance certification.
 
-**Publisher:** ASCENDING Inc — https://ascendingdc.com/jarvis-ai/
-**GitHub:** https://github.com/ascending-llc/jarvis-registry
-**Docs:** https://jarvisregistry.com/
-**Explore Agentic** (field guide to enterprise agentic AI by ASCENDING): https://exploreagentic.ai/
+- [Documentation](https://jarvisregistry.com/)
+- [Source repository](https://github.com/ascending-llc/jarvis-registry)
+- [Full documentation text](https://jarvisregistry.com/llms-full.txt)
 
-**Tech stack:** Python 3.12, FastAPI, MongoDB (Beanie ODM), Weaviate vector DB, Redis, React 18 (Vite + TailwindCSS). All Python workspaces managed via `uv`.
+## Overview
 
-**Key capabilities:**
-- Universal MCP gateway — one authenticated endpoint for all AI copilots
-- A2A Agent Registry — register, govern, and orchestrate autonomous agents
-- Identity federation — Keycloak, Amazon Cognito, Microsoft Entra ID (OAuth 2.0/OIDC)
-- Four-layer security — JWT auth → RBAC scope check → resource ACL → business logic
-- Semantic tool discovery — Weaviate vector search + FlashRank reranker + hybrid tag matching
-- External registry federation — Anthropic MCP Registry, Amazon Bedrock AgentCore, FoundryAI
-- OpenTelemetry tracing, Prometheus metrics, Grafana dashboards
+- [Jarvis Registry](https://jarvisregistry.com/): Jarvis Registry is a self-hostable enterprise AI gateway and registry for connecting AI clients to governed MCP servers(tools), agents, and private skills. Deploy it in your environment and use its identity, access-control, and...
+- [Why use Registry](https://jarvisregistry.com/FEATURES/): Jarvis Registry is the enterprise control plane for AI — connecting copilots, autonomous agents, and enterprise tools through a single, secure, and observable gateway. It handles both MCP (Model Context Protocol) servers and A2A agents...
 
-## Getting Started
+## Get Started
 
-- [Quick Start](https://jarvisregistry.com/quick-start/): Get Jarvis Registry running in 5 minutes with Docker Compose
-- [Generate Secrets](https://jarvisregistry.com/generate-secrets/): Create all required credentials and secrets before first run
-- [Production Deployment](https://jarvisregistry.com/deployment-guide/): Deploy to AWS, Azure, GCP, or Kubernetes
-- [Configuration Reference](https://jarvisregistry.com/configuration/): All environment variables and settings
+- [Quick Start](https://jarvisregistry.com/quick-start/): Get the Jarvis Registry running in 5 minutes with this streamlined setup guide.
+- [Generate Secrets](https://jarvisregistry.com/generate-secrets/): All keys are generated locally in your browser using the Web Crypto API. Nothing is sent to any server.
+- [Production Deployment: Overview](https://jarvisregistry.com/deployment-guide/): This guide is cloud-platform-agnostic. It describes what components are needed and why for deploying Jarvis Registry to an existing Kubernetes cluster on AWS (EKS) or Azure (AKS). Sections that differ between platforms are clearly marked.
+- [Production Deployment: Configuration](https://jarvisregistry.com/production-configuration/): Choose the instructions for your role: developers connect local IDE to the centralized MCP gateway; organization administrators make it available in business chatbots such as Claude and ChatGPT; deployment operators configure the...
 
 ## Core Features
 
-- [IDP Integration](https://jarvisregistry.com/features/auth-server/): Built-in OAuth 2.0/OIDC auth server supporting Keycloak, Cognito, and Entra ID
-- [MCP Server Registry](https://jarvisregistry.com/features/mcp-registry/): Register, catalog, and proxy enterprise MCP servers with access control
-- [A2A Agent Registry](https://jarvisregistry.com/features/a2a-registry/): Register and govern autonomous A2A agents alongside MCP servers
-- [Registry Endpoint](https://jarvisregistry.com/features/registry-endpoint/): The single MCP entry point for AI copilots — one URL, all tools
-- [AgentCore Federation](https://jarvisregistry.com/features/agentcore-federation/): Import and govern resources from Amazon Bedrock AgentCore
-- [FoundryAI Federation](https://jarvisregistry.com/features/foundry-ai-federation/): Federate with FoundryAI agent registries
+- [IDP Integration](https://jarvisregistry.com/features/auth-server/): Jarvis Registry ships with a built-in Auth Server — a standards-compliant OpenID Connect (OIDC) and OAuth 2.0 authorization server. It handles token issuance, validation, and refresh for all users and AI agents connecting to the gateway.
+- [MCPServer Gateway & Registry](https://jarvisregistry.com/features/mcp-gateway-registry/): Jarvis Registry's MCP Gateway is a single authenticated entry point for MCP-compatible clients to discover and invoke registered Model Context Protocol (MCP) servers. The MCP Registry catalogs those servers and their metadata;...
+- [A2AAgent Gateway & Registry](https://jarvisregistry.com/features/a2a-gateway-registry/): The A2A Agent Gateway & Registry is the central catalog for autonomous agents exposed through Jarvis Registry. It lets platform teams register agents, organize them by skills and capabilities, control who can access them, and expose...
+- [Skill Gateway](https://jarvisregistry.com/features/skill-gateway/): The Skill Gateway is a private, organization-managed catalog for authoring, importing, governing, and distributing approved AI skills. Skills remain private by default and are shared through Registry ACLs; the AI Skills CLI delivers...
+- [AI Skills CLI](https://jarvisregistry.com/features/ai-skills-cli/): The Jarvis Registry CLI delivers accessible private Registry skills into local developer environments. It lets developers consume organization-approved skills without manually copying content or handling Registry credentials in scripts....
+- [AWS AgentCore Federation](https://jarvisregistry.com/features/agentcore-federation/): AgentCore Federation connects an external Amazon Bedrock AgentCore gateway to Jarvis Registry so platform admins can import and govern resources from one control plane.
+- [Azure AI Foundry Federation](https://jarvisregistry.com/features/foundry-ai-federation/): Azure AI Foundry Federation connects an external Azure AI Foundry workspace to Jarvis Registry so platform admins can import and govern agents from one control plane.
+- [Workflow Orchestration](https://jarvisregistry.com/features/workflow-orchestration/): Jarvis Registry workflow orchestration lets you compose A2A agents, MCP tools, and skills into multi-step pipelines that complete complex tasks — with conditional logic, parallel execution, and human approval gates.
+- [Registry Endpoint](https://jarvisregistry.com/features/registry-endpoint/): The Registry Endpoint is the single MCP entry point that AI copilots use to access your enterprise tools and agents.
+- [Observability](https://jarvisregistry.com/features/observability/): Jarvis instruments every layer of the platform with OpenTelemetry and ships that telemetry through a vendor-neutral pipeline. The goal is simple: connect to whatever observability backend you already use — Grafana, New Relic, Datadog,...
+
+## Walkthroughs
+
+- [Test MCP Access with Two Users](https://jarvisregistry.com/walkthroughs/mcp-access-control/): Before connecting a business system, check whether your Jarvis Registry deployment stops an unauthorized user from calling a registered MCP server, even when that user knows its server ID and tool name. This walkthrough uses two...
+- [Private Skill Import, Updates & Access Removal](https://jarvisregistry.com/walkthroughs/private-skill-lifecycle/): Use this walkthrough to check how a private GitHub skill moves into Jarvis Registry, reaches an authorized developer, receives an update, and is removed from the CLI's managed directory after access is revoked.
 
 ## Architecture & Design
 
-- [Security Control Design](https://jarvisregistry.com/design/security-design/): Four-layer security model — authentication, RBAC, ACL, business logic
-- [RBAC & Scopes](https://jarvisregistry.com/design/scopes/): Scope catalog, role definitions, and `scopes.yml` configuration
-- [ACL Connector Service](https://jarvisregistry.com/design/acl-connector-service/): Resource-level access control for MCP servers and A2A agents
-- [A2A Agent API Design](https://jarvisregistry.com/design/a2a-agent-api-design/): REST API design for autonomous agent registration and lifecycle
-- [Agent Workflow](https://jarvisregistry.com/design/agent-workflow/): Orchestrator–worker agent workflow platform technical design
-- [Federation Guide](https://jarvisregistry.com/design/federation/): Federate with Anthropic MCP Registry and Workday ASOR
-- [DB Persistence](https://jarvisregistry.com/design/mcp_db_persistence_design/): MongoDB schema and Beanie document model design
+- [Security Control Design](https://jarvisregistry.com/design/security-design/): Security in the registry is layered. Each layer has a distinct responsibility, and they compose in a fixed order on every request. This design aligns with enterprise AI governance best practices and the Jarvis AI Guardrails model for...
+- [RBAC & Scopes](https://jarvisregistry.com/design/scopes/): The registry uses a two-layer authorization model: scopes control which API endpoints a user can call, and ACL controls which specific resources they can see or modify within those endpoints. This model is grounded in enterprise AI...
+- [ACL Connector Service](https://jarvisregistry.com/design/acl-connector-service/): Introduction
+- [A2A Agent API](https://jarvisregistry.com/design/a2a-agent-api-design/): All agent responses follow this structure:
+- [Agent Workflow](https://jarvisregistry.com/design/agent-workflow/): Architecture: Agno as outer workflow runtime (operator controls, pause/resume, SSE streaming) + PydanticAI as internal protocol executor (MCP tool calls, A2A agent handoffs). Customer-facing schema is pure Pydantic — no runtime...
+- [AgentCore Integration](https://jarvisregistry.com/design/agentcore/): This guide demonstrates how to register and use an Amazon Bedrock AgentCore Gateway as an MCP server through the MCP Gateway Registry.
+- [Federation Guide](https://jarvisregistry.com/design/federation/): The MCP Gateway Registry supports federation with external registries, allowing you to import and manage servers/agents from multiple sources through a unified interface.
+- [Federation API](https://jarvisregistry.com/design/federation-api/): Base URL: /api/v1
+- [DB Persistence](https://jarvisregistry.com/design/mcp_db_persistence_design/): Living design document for MongoDB integration
 
-## Why Jarvis Registry
+## Overview
 
-- [Features Overview](https://jarvisregistry.com/FEATURES/): Full capability comparison and use case guide
-- [Home / What It Does](https://jarvisregistry.com/): Architecture diagram and capability table
+- [FAQ](https://jarvisregistry.com/faq/): Jarvis Registry is an open-source, enterprise-grade MCP (Model Context Protocol) and A2A Agent Gateway and Workflow Orchestration platform built by ASCENDING Inc. It gives AI copilots and autonomous agents secure, governed access to...
 
-## Optional
+## Explore Agentic Jarvis
 
-- [Embeddings Configuration](https://jarvisregistry.com/embeddings/): Configure `embedded` (local FAISS) or `external` (Weaviate + Bedrock/OpenAI) mode
-- [Keycloak Integration](https://jarvisregistry.com/keycloak-integration/): Step-by-step Keycloak setup with realm, clients, and group mappers
-- [Entra ID Setup](https://jarvisregistry.com/entra-id-setup/): Microsoft Entra ID (Azure AD) configuration guide
-- [AgentCore Integration Design](https://jarvisregistry.com/design/agentcore/): Deep-dive into Amazon Bedrock AgentCore integration architecture
-- [Federation API](https://jarvisregistry.com/design/federation-api/): REST API reference for federation management endpoints
-- [Contributing](https://jarvisregistry.com/CONTRIBUTING/): How to contribute — code, docs, and new IdP provider implementations
-- [Security Policy](https://jarvisregistry.com/SECURITY/): Responsible disclosure and security reporting
+- [Overview](https://jarvisregistry.com/explore-agentic/): Field guides, glossary entries, and side-by-sides on agentic AI, the Model Context Protocol, AI governance, and enterprise RAG. Reading material curated alongside the Jarvis Registry — every page is dated, cited, and reviewed before...
+- [Pillars: Overview](https://jarvisregistry.com/explore-agentic/pillars/): Four long-read field guides on the categories that determine 2026 enterprise AI architecture. Each one is dated, cited, and reviewed by a named editor before publication.
+- [Pillars: Agentic AI](https://jarvisregistry.com/explore-agentic/pillars/agentic-ai/): A field guide to autonomous agents in 2026: the five tells that separate real agentic AI from a rebadged chatbot, the runtimes that matter (Strands, Microsoft Agent Framework, LangGraph, CrewAI, OpenAI Agents SDK), and the workloads...
+- [Pillars: Model Context Protocol](https://jarvisregistry.com/explore-agentic/pillars/mcp/): Anthropic open-sourced MCP on November 25, 2024. Sixteen months later it has 97 million monthly SDK downloads, a Linux Foundation home, and an OAuth 2.1 authorization spec that finally satisfies most CISOs. Field guide for platform...
+- [Pillars: AI Governance](https://jarvisregistry.com/explore-agentic/pillars/ai-governance/): A working AI governance program in 2026: ISO 42001 certified vendors, the NIST AI RMF Generative AI Profile, EU AI Act enforcement dates, the OWASP LLM Top 10, and the governance platforms CISOs are actually procuring.
+- [Pillars: Enterprise RAG](https://jarvisregistry.com/explore-agentic/pillars/enterprise-rag/): Production RAG in 2026: chunk strategies including late chunking, the embedding model landscape (OpenAI text-embedding-3, Cohere Embed v4, Voyage 3/4), re-rankers, the RAGAS eval framework, vector database selection, and when agentic...
+- [Glossary: Overview](https://jarvisregistry.com/explore-agentic/glossary/): Short, careful entries on the terms that matter in enterprise AI. Each one is dated, cited, and reviewed by a named editor before publication. We skip the terms a general-interest AI glossary already covers and focus on the ones that...
+- [Glossary: Model Context Protocol](https://jarvisregistry.com/explore-agentic/glossary/model-context-protocol/): Also known as: MCP · 7 min · Updated April 17, 2026 · Author Alexander · Reviewed by Ryo Hang
+- [Glossary: MCP Gateway](https://jarvisregistry.com/explore-agentic/glossary/mcp-gateway/): Also known as: MCP proxy, Agent gateway, MCP federation layer · 7 min · Updated April 17, 2026 · Author Mehrdad Faqiri · Reviewed by Gloria Qian Zhang
+- [Glossary: Agentic RAG](https://jarvisregistry.com/explore-agentic/glossary/agentic-rag/): Also known as: Agent-augmented retrieval, Active retrieval, Reasoning RAG · 7 min · Updated April 17, 2026 · Author Ziyi Tao · Reviewed by Michael Clough
+- [Glossary: Agent Observability](https://jarvisregistry.com/explore-agentic/glossary/agent-observability/): Also known as: AI agent tracing, LLM observability · 7 min · Updated April 17, 2026 · Author Kelvin Yu · Reviewed by Elias Saljuki
+- [Glossary: ISO/IEC 42001:2023](https://jarvisregistry.com/explore-agentic/glossary/iso-42001/): Also known as: ISO 42001, ISO AI Management Standard, AIMS standard · 8 min · Updated April 17, 2026 · Author Gloria Qian Zhang · Reviewed by Ryo Hang
+- [Glossary: NIST AI RMF](https://jarvisregistry.com/explore-agentic/glossary/nist-ai-rmf/): Also known as: NIST AI RMF, AI RMF 1.0 · 7 min · Updated April 17, 2026 · Author Merve Tengiz · Reviewed by Gloria Qian Zhang
+- [Glossary: Shadow AI](https://jarvisregistry.com/explore-agentic/glossary/shadow-ai/): Also known as: Unsanctioned AI, Bring-your-own AI · 7 min · Updated April 17, 2026 · Author Gloria Qian Zhang · Reviewed by Michael Clough
+- [Glossary: Agent Washing](https://jarvisregistry.com/explore-agentic/glossary/agent-washing/): Also known as: AI agent washing · 7 min · Updated April 17, 2026 · Author Michael Clough · Reviewed by Ryo Hang
+- [Glossary: Guardian Agent](https://jarvisregistry.com/explore-agentic/glossary/guardian-agent/): Also known as: Guardrail agent, Supervisor agent · 7 min · Updated April 17, 2026 · Author Xintian Zhang · Reviewed by Michael Clough
+- [Comparisons: Overview](https://jarvisregistry.com/explore-agentic/comparisons/): Honest side-by-sides — including where Jarvis loses. Comparisons built from public documentation, AWS Marketplace listings, and analyst commentary. Entries that include Jarvis (our product) open with a disclosure banner and mark...
+- [Comparisons: Jarvis vs Moveworks](https://jarvisregistry.com/explore-agentic/comparisons/jarvis-vs-moveworks/): ServiceNow closed its $2.85B Moveworks acquisition on December 15, 2025. Moveworks now sells as the AI Agents layer inside the ServiceNow platform. Jarvis is our product. A Jarvis vs Moveworks side-by-side for buyers weighing both, with...
+- [Comparisons: Jarvis vs Glean](https://jarvisregistry.com/explore-agentic/comparisons/jarvis-vs-glean/): Glean raised a $150M Series F at a $7.2B valuation in June 2025 and lists 100+ connectors on its site. Jarvis is our product. A Jarvis vs Glean side-by-side for buyers weighing both, with citations and pricing on each column.
+- [Comparisons: Jarvis vs Copilot Studio](https://jarvisregistry.com/explore-agentic/comparisons/jarvis-vs-copilot-studio/): Microsoft 365 Copilot is $30 per user per month on an E3/E5 base; Copilot Studio is $200 per 25,000-credit pack per month. Jarvis is our product. A Jarvis vs Microsoft Copilot Studio side-by-side for buyers weighing the cloud-neutral...
+- [Comparisons: Moveworks vs Glean](https://jarvisregistry.com/explore-agentic/comparisons/moveworks-vs-glean/): ServiceNow closed the $2.85B Moveworks acquisition on December 15, 2025. Glean raised a $150M Series F at a $7.2B valuation six months earlier. A rebuilt Moveworks vs Glean side-by-side drawn from both vendors' homepages, AWS...
+- [Comparisons: MCP vs RAG](https://jarvisregistry.com/explore-agentic/comparisons/mcp-vs-rag/): MCP is a wire protocol Anthropic released on November 25, 2024. RAG is an architectural pattern Lewis et al. introduced in May 2020. A clean MCP vs RAG side-by-side on what each is for, where they overlap, and why the production answer...
+- [Comparisons: Agentforce vs Copilot Studio](https://jarvisregistry.com/explore-agentic/comparisons/agentforce-vs-copilot-studio/): Salesforce announced Agentforce September 12, 2024, hit GA October 25, 2024, shipped Agentforce 2.0 December 17, 2024, and has cycled through three pricing models ($2/conversation, $0.10/Flex Credit, $125+/user/month). Microsoft Copilot...
+- [Comparisons: Agentspace vs Copilot](https://jarvisregistry.com/explore-agentic/comparisons/agentspace-vs-copilot/): Google Agentspace, the company's enterprise-AI offering, was folded into Gemini Enterprise in early 2026. The conversational and agent-orchestration technology that was Agentspace now powers Gemini Enterprise's core functionality. A...
+- [Playbooks: Overview](https://jarvisregistry.com/explore-agentic/playbooks/): Step-by-step guides for the work people quietly need to do: measuring ROI, picking a gateway, running an internal eval. Each one ships with named reviewers and a citation list.
+- [Playbooks: Measure AI Agent ROI](https://jarvisregistry.com/explore-agentic/playbooks/ai-agent-roi/): A ten-week, CFO-ready framework for measuring AI agent ROI. Productivity-minute arithmetic is why the first wave of agent programs lost their renewal. This playbook (baseline first, direct P&L second, quarterly report third) is the...
+
+## Changelog
+
+- [Overview](https://jarvisregistry.com/changelog/): Release notes for every version of Jarvis Registry.
+- [asc0.5.16](https://jarvisregistry.com/changelog/asc0.5.16/): The asc0.5.16 release of Jarvis Registry
+- [asc0.5.15](https://jarvisregistry.com/changelog/asc0.5.15/): The asc0.5.15 release of Jarvis Registry
+- [asc0.5.14](https://jarvisregistry.com/changelog/asc0.5.14/): The asc0.5.14 release of Jarvis Registry
+- [asc0.5.13](https://jarvisregistry.com/changelog/asc0.5.13/): The asc0.5.13 release of Jarvis Registry
+- [asc0.5.12](https://jarvisregistry.com/changelog/asc0.5.12/): The asc0.5.12 release of Jarvis Registry
+- [asc0.5.11](https://jarvisregistry.com/changelog/asc0.5.11/): The asc0.5.11 release of Jarvis Registry
+- [asc0.5.10](https://jarvisregistry.com/changelog/asc0.5.10/): The asc0.5.10 release of Jarvis Registry
+- [asc0.5.9](https://jarvisregistry.com/changelog/asc0.5.9/): The asc0.5.9 release of Jarvis Registry
+- [asc0.5.8](https://jarvisregistry.com/changelog/asc0.5.8/): The asc0.5.8 release of Jarvis Registry
+- [asc0.5.7](https://jarvisregistry.com/changelog/asc0.5.7/): The asc0.5.7 release of Jarvis Registry
+- [asc0.5.6](https://jarvisregistry.com/changelog/asc0.5.6/): The asc0.5.6 release of Jarvis Registry
+- [asc0.5.5](https://jarvisregistry.com/changelog/asc0.5.5/): The asc0.5.5 release of Jarvis Registry
+- [asc0.5.4](https://jarvisregistry.com/changelog/asc0.5.4/): The asc0.5.4 release of Jarvis Registry
+- [asc0.5.3](https://jarvisregistry.com/changelog/asc0.5.3/): The asc0.5.3 release of Jarvis Registry
+- [asc0.5.2](https://jarvisregistry.com/changelog/asc0.5.2/): The asc0.5.2 release of Jarvis Registry
+- [asc0.5.1](https://jarvisregistry.com/changelog/asc0.5.1/): The asc0.5.1 release of Jarvis Registry
+- [asc0.3.1](https://jarvisregistry.com/changelog/asc0.3.1/): ✨ Features
+- [asc0.2.12](https://jarvisregistry.com/changelog/asc0.2.12/): JWT security hardening, AgentCore federation auth, workflow refactor, and documentation expansion
+
+## Project
+
+- [Contributing](https://jarvisregistry.com/CONTRIBUTING/): Thank you for your interest in contributing to our project. Whether it's a bug report, new feature, correction, or additional documentation, we greatly value feedback and contributions from our community.
+- [License](https://jarvisregistry.com/LICENSE/): Apache License Version 2.0, January 2004 http://www.apache.org/licenses/
+- [Code of Conduct](https://jarvisregistry.com/CODE_OF_CONDUCT/): We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender...
+- [Notice](https://jarvisregistry.com/NOTICE/): Copyright 2025-Present ASCENDING Inc. or its affiliates. All Rights Reserved.
