@@ -214,10 +214,15 @@ class IdentityService:
         raise IdentityConflictError("concurrent_identity_change", user_id)
 
     def _matched_user(self, identity: VerifiedIdentity, document: dict[str, Any]) -> User:
-        # Google resolves group membership by users.email (access_control.group_member_id_for_user).
-        # If the current verified email could not be persisted (held by another user, or lost an
-        # update race), logging in would sync groups off a stale address that may since have been
-        # reassigned to someone else — block it. Entra keys off idOnTheSource, so it is unaffected.
+        """Validate a matched document into a User, guarding Google logins against a stale email.
+
+        _update_matched has already attempted to persist the verified email by the time this runs,
+        so a document whose email still differs from the verified one means that write was refused
+        (another user holds the address, or it lost the uniqueness race). Google resolves group
+        membership by users.email, so letting such a login through would sync groups off that stale
+        address — which may since have been reassigned to a different person. Block it. Entra keys
+        off idOnTheSource rather than email, so this does not apply to it.
+        """
         if (
             identity.provider == "google"
             and identity.email_trusted
