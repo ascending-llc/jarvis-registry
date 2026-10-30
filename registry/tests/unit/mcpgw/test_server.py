@@ -104,10 +104,12 @@ def _make_server(
     )
 
 
-def _make_client_params(name: str, *, supports_url_elicitation: bool) -> InitializeRequestParams:
+def _make_client_params(
+    name: str, *, supports_url_elicitation: bool, protocol_version: str = "2025-11-25"
+) -> InitializeRequestParams:
     elicitation = ElicitationCapability(url=UrlElicitationCapability()) if supports_url_elicitation else None
     return InitializeRequestParams(
-        protocolVersion="2025-11-25",
+        protocolVersion=protocol_version,
         capabilities=ClientCapabilities(elicitation=elicitation),
         clientInfo=Implementation(name=name, version="1.0"),
     )
@@ -411,6 +413,89 @@ def test_support_url_elicitation_returns_false_for_missing_client_params():
     assert utils._support_url_elicitation(None) is False
 
 
+@pytest.mark.parametrize(
+    ("protocol_version", "expected"),
+    [
+        ("2025-11-25", True),
+        # Codex 0.166.0 declares `url` while negotiating 2025-06-18, which predates URL mode.
+        ("2025-06-18", False),
+        ("2025-03-26", False),
+        ("2024-11-05", False),
+        # An unsupported future version negotiates to LATEST_PROTOCOL_VERSION.
+        ("2026-07-28", True),
+    ],
+)
+def test_support_url_elicitation_requires_negotiated_version_defining_url_mode(protocol_version, expected):
+    client_params = _make_client_params("some-client", supports_url_elicitation=True, protocol_version=protocol_version)
+
+    assert utils._support_url_elicitation(client_params) is expected
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        ("2025-06-18", "2025-06-18"),
+        ("2025-11-25", "2025-11-25"),
+        ("2026-07-28", utils.LATEST_PROTOCOL_VERSION),
+        (1, utils.LATEST_PROTOCOL_VERSION),
+    ],
+)
+def test_negotiated_protocol_version_mirrors_sdk_negotiation(requested, expected):
+    assert utils._negotiated_protocol_version(requested) == expected
+
+
+_ELICITATION_URL = "https://registry.example.com/consent/server?nonce=abc"
+_ELICITATION_TEMPLATE = "Show the user this {} so they can open it."
+
+
+def test_build_url_elicitation_result_message_matches_fallback_text():
+    capable_ctx = _make_ctx(client_params=_make_client_params("vscode", supports_url_elicitation=True))
+    fallback_ctx = _make_ctx(client_params=_make_client_params("claude-ai", supports_url_elicitation=False))
+
+    with pytest.raises(utils.UrlElicitationRequiredError) as exc_info:
+        utils._build_url_elicitation_result(
+            capable_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+        )
+    fallback = utils._build_url_elicitation_result(
+        fallback_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+    )
+
+    assert str(exc_info.value) == fallback.content[0].text
+    assert f"URL `{_ELICITATION_URL}`" in fallback.content[0].text
+
+
+def test_build_url_elicitation_result_logs_why_url_mode_was_not_used(caplog):
+    ctx = _make_ctx(
+        client_params=_make_client_params(
+            "codex-mcp-client", supports_url_elicitation=True, protocol_version="2025-06-18"
+        )
+    )
+
+    with caplog.at_level("INFO", logger=utils.logger.name):
+        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human")
+
+    message = caplog.records[-1].getMessage()
+    assert "'codex-mcp-client'" in message
+    assert "'1.0'" in message
+    assert "'2025-06-18'" in message
+    assert "declared url: True" in message
+    assert "elicitation ID found: False" in message
+
+
+def test_build_url_elicitation_result_logs_missing_client_params(caplog):
+    ctx = _make_ctx(client_params=None)
+
+    with caplog.at_level("INFO", logger=utils.logger.name):
+        result = utils._build_url_elicitation_result(
+            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+        )
+
+    assert result.isError is True
+    message = caplog.records[-1].getMessage()
+    assert "no cached client params" in message
+    assert "elicitation ID found: True" in message
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_impl_without_server_consent_returns_elicitation_fallback(monkeypatch):
     server_id = str(PydanticObjectId())
@@ -424,7 +509,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
     assert result.isError is True
-    assert "explicitly consent" in result.content[0].text
+    assert "explicit consent" in result.content[0].text
     assert "/consent/server?nonce=" in result.content[0].text
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
@@ -467,6 +552,10 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     assert raised_elicitation_id
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["elicitation_id"] == raised_elicitation_id
+    # Clients that stringify -32042 only show the model the message, so it must carry the URL itself.
+    consent_url = exc_info.value.elicitations[0].url
+    assert "/consent/server?nonce=" in consent_url
+    assert f"URL `{consent_url}`" in str(exc_info.value)
     downstream_call.assert_not_awaited()
 
 
