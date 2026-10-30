@@ -135,6 +135,27 @@ Secrets must be in place **before** the Helm chart deploys (Phase 4 precedes Pha
       requested scopes can continue with zero scopes; it must never gain privileges from the failure.
       Restore the role and sign in again before continuing verification.
 
+### 1.9 Troubleshooting: Google login blocked after an email change
+
+**Symptom:** an existing Google user is redirected to the login error page with "We couldn't sign you in
+because this account conflicts with an existing account", and auth-server logs
+`IDENTITY_CONFLICT reason=google_email_not_persisted user_id=<id>`.
+
+**Cause:** the user's Workspace primary email changed, and Registry could not store the new address on
+their `users` document because a different `users` document already holds it (`email` is unique).
+Google group membership is matched on `users.email`, so Registry refuses the login rather than keep
+syncing groups for the old address, which Workspace may since have given to someone else.
+
+**Fix:**
+
+1. Read the blocked user's document: `db.users.findOne({_id: ObjectId("<id>")})`. Its `email` is the old
+   address. Get the user's current primary email from the Workspace Admin Console.
+2. Find the document holding the new address: `db.users.findOne({email: "<new address>"})`.
+3. With the client's admin, decide which account should own the address. `users` is shared with Jarvis
+   Chat and other records reference the user `_id`, so don't delete either document. Instead, change the
+   other document's `email` so the address is free.
+4. Ask the user to sign in again. Registry then stores the new email and the login succeeds.
+
 ---
 
 ## Part 2 — Internal Dogfooding Setup (DEMO + PROD)
