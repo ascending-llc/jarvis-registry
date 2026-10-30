@@ -572,9 +572,9 @@ async def execute_tool_impl(
             # Re-auth required: a handled failure mode, not a downstream/internal error.
             metrics_ctx.set_error_type("url_elicitation")
             template = (
-                f"In order to make tool calls to the '{exc.server_name}' MCP server, the client must first perform "
-                "out-of-band re-authorization in a browser window. Please direct the client to open the {} "
-                "in a browser window, finish re-authorization, and come back to retry the same tool call again."
+                f"Calling the '{exc.server_name}' MCP server requires the user to authorize (or re-authorize) it in a "
+                "browser. Show the user this {} so they can open it and authorize, then retry the same tool call once "
+                "they confirm they are done."
             )
             human_message = (
                 f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
@@ -584,9 +584,9 @@ async def execute_tool_impl(
         except ConsentRequiredException as exc:
             metrics_ctx.set_error_type("consent_required")
             template = (
-                f"In order to call the '{exc.server_name}' MCP server, the user must explicitly consent in a browser "
-                "window. Please direct the client to open the {} in a browser window, grant consent, and come back to "
-                "retry the same tool call again."
+                f"Calling the '{exc.server_name}' MCP server requires the user's explicit consent in a browser. "
+                "Show the user this {} so they can open it and approve, then retry the same tool call once they "
+                "confirm they are done."
             )
             human_message = (
                 "Jarvis Registry needs your explicit consent before this application can call the "

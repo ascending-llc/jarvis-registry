@@ -89,6 +89,13 @@ def test_instruction_budget_preserves_the_discovery_rule_in_the_first_line() -> 
     assert "try Registry discovery when permitted" in first_line
 
 
+def test_instructions_tell_the_model_to_show_consent_urls() -> None:
+    instructions = gateway._SYSTEM_INSTRUCTIONS
+
+    assert "show the user its URL verbatim" in instructions
+    assert "Surface auth errors" not in instructions
+
+
 @pytest.mark.asyncio
 async def test_initialize_delivers_instructions_without_prompts() -> None:
     async with _gateway_session() as (client, initialized):
