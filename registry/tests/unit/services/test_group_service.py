@@ -133,21 +133,35 @@ async def test_sync_google_user_uses_google_client_not_entra():
 
 async def test_sync_google_user_without_idOnTheSource_syncs_by_email():
     """A Chat-created Google user has no idOnTheSource; sync still runs, keyed by email."""
-    google = _make_client(group_ids=["groups/1"])
+    # groups/1 already exists in the DB; groups/2 is new, so all three update steps run.
+    google = _make_client(
+        group_ids=["groups/1", "groups/2"],
+        details=[{"id": "groups/2", "name": "G2", "email": "g2@example.com", "description": None}],
+    )
     service = _make_service(google_client=google)
     user = _make_user(provider="google", email="ada@example.com", oid=None)
 
+    existing_group = MagicMock()
+    existing_group.idOnTheSource = "groups/1"
+
     find_mock = MagicMock()
     find_mock.update_many = AsyncMock()
-    find_mock.to_list = AsyncMock(return_value=[])
+    find_mock.to_list = AsyncMock(return_value=[existing_group])
 
     with patch("registry.services.group_service.ExtendedGroup") as mock_group_cls:
         mock_group_cls.find.return_value = find_mock
         await service.sync_user_group_memberships(user)
 
     google.get_user_group_ids.assert_called_once_with("ada@example.com")
-    # the email is the memberIds value in the $addToSet / $pullAll update steps
-    assert any("ada@example.com" in str(c) for c in find_mock.update_many.call_args_list)
+    membership_updates = [c.args[0] for c in find_mock.update_many.call_args_list if "$setOnInsert" not in c.args[0]]
+    assert membership_updates == [
+        {"$addToSet": {"memberIds": "ada@example.com"}},  # known groups
+        {"$addToSet": {"memberIds": "ada@example.com"}},  # newly upserted groups
+        {"$pullAll": {"memberIds": ["ada@example.com"]}},  # stale groups
+    ]
+    filters = [c.args[0] for c in mock_group_cls.find.call_args_list]
+    assert filters[0]["memberIds"] == {"$ne": "ada@example.com"}
+    assert filters[-1]["memberIds"] == "ada@example.com"
 
 
 async def test_sync_google_upserts_with_google_source():
