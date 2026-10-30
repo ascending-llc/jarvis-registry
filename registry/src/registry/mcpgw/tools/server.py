@@ -572,9 +572,9 @@ async def execute_tool_impl(
             # Re-auth required: a handled failure mode, not a downstream/internal error.
             metrics_ctx.set_error_type("url_elicitation")
             template = (
-                f"The user's authorization for the '{exc.server_name}' MCP server has expired and must be renewed in a "
-                "browser. Show the user this {} so they can open it and re-authorize, then retry the same tool call "
-                "once they confirm they are done."
+                f"Calling the '{exc.server_name}' MCP server requires the user to authorize (or re-authorize) it in a "
+                "browser. Show the user this {} so they can open it and authorize, then retry the same tool call once "
+                "they confirm they are done."
             )
             human_message = (
                 f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
