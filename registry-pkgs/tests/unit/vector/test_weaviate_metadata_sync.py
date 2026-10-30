@@ -141,14 +141,42 @@ async def test_plain_metadata_patch_preserves_real_backend_count_contract(
     repo.adapter.embedding.embed_documents.assert_not_called()
 
 
-def test_batch_update_skips_object_without_vector() -> None:
-    """An id the vector fetch doesn't return is not written and counts as failed."""
+@pytest.mark.asyncio
+async def test_missing_vector_makes_metadata_sync_incomplete(sync_kind: str) -> None:
+    """An object the vector fetch doesn't return surfaces as an incomplete patch, never a rebuild."""
+    repo, entity, collection = _make_repository(sync_kind, successful_updates=3)
+    missing_id = entity.to_documents()[1].id
+    del collection.vectors_by_id[missing_id]
+
+    if sync_kind == "tools":
+        result = await repo.sync_tools_enabled(entity, ["read_file", "write_file"])
+    else:
+        result = await repo.sync_entity_metadata(entity, {"enabled": False})
+
+    assert result["error"] == "Metadata-only update incomplete: 2/3 docs updated"
+    assert collection.data.update.call_count == 2
+    assert missing_id not in {call.kwargs["uuid"] for call in collection.data.update.call_args_list}
+    _assert_vectors_sent(collection)
+    repo.sync_to_vector_db.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "second_object",
+    [
+        None,
+        SimpleNamespace(uuid=UUID(int=2), vector={}),
+        SimpleNamespace(uuid=UUID(int=2), vector=None),
+    ],
+    ids=["not-returned", "empty-vector", "none-vector"],
+)
+def test_batch_update_skips_object_without_vector(second_object: SimpleNamespace | None) -> None:
+    """An object that isn't returned, or has no default vector, is not written and counts as failed."""
     store, collection = _store_with_collection()
     ids = [str(UUID(int=1)), str(UUID(int=2))]
-    # Only the first id comes back from the fetch (second deleted concurrently).
-    collection.query.fetch_objects_by_ids.return_value = SimpleNamespace(
-        objects=[SimpleNamespace(uuid=UUID(ids[0]), vector={"default": [1.0, 2.0]})]
-    )
+    objects = [SimpleNamespace(uuid=UUID(ids[0]), vector={"default": [1.0, 2.0]})]
+    if second_object is not None:
+        objects.append(second_object)
+    collection.query.fetch_objects_by_ids.return_value = SimpleNamespace(objects=objects)
 
     updated = store.batch_update_properties(ids, {"enabled": False}, "MCP_Servers")
 
@@ -199,6 +227,15 @@ def test_update_metadata_missing_object_returns_false() -> None:
     collection.query.fetch_object_by_id.return_value = None
 
     assert store.update_metadata(str(UUID(int=8)), {"enabled": False}, "MCP_Servers") is False
+    collection.data.update.assert_not_called()
+
+
+def test_update_metadata_fetch_error_returns_false() -> None:
+    """A failed vector fetch is not followed by a write and returns False."""
+    store, collection = _store_with_collection()
+    collection.query.fetch_object_by_id.side_effect = RuntimeError("Weaviate fetch unavailable")
+
+    assert store.update_metadata(str(UUID(int=10)), {"enabled": False}, "MCP_Servers") is False
     collection.data.update.assert_not_called()
 
 
