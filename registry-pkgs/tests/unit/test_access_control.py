@@ -5,8 +5,6 @@ from beanie import PydanticObjectId
 
 from registry_pkgs import access_control
 
-pytestmark = pytest.mark.asyncio
-
 
 def _group(gid, source):
     g = MagicMock()
@@ -46,12 +44,14 @@ def test_group_member_id_none_when_selected_field_empty():
     assert access_control.group_member_id_for_user(_user("openid", idOnTheSource=None)) is None
 
 
+@pytest.mark.asyncio
 async def test_returns_empty_when_user_missing():
     with patch.object(access_control.User, "get", AsyncMock(return_value=None)):
         result = await access_control.resolve_group_ids_for_user(PydanticObjectId())
     assert result == []
 
 
+@pytest.mark.asyncio
 async def test_returns_empty_when_user_has_no_source_id():
     user = _user("openid", idOnTheSource=None)
     with patch.object(access_control.User, "get", AsyncMock(return_value=user)):
@@ -59,7 +59,7 @@ async def test_returns_empty_when_user_has_no_source_id():
     assert result == []
 
 
-async def _resolve(user: MagicMock) -> tuple[list, MagicMock]:
+async def _resolve(user: MagicMock) -> tuple[list, list, MagicMock]:
     g1, g2 = PydanticObjectId(), PydanticObjectId()
     query = MagicMock()
     query.to_list = AsyncMock(return_value=[_group(g1, "google"), _group(g2, "entra")])
@@ -68,32 +68,36 @@ async def _resolve(user: MagicMock) -> tuple[list, MagicMock]:
         patch.object(access_control.ExtendedGroup, "find", MagicMock(return_value=query)) as find,
     ):
         result = await access_control.resolve_group_ids_for_user(user.id)
-    return [g1, g2] == result, find
+    return result, [g1, g2], find
 
 
+@pytest.mark.asyncio
 async def test_resolves_group_ids_including_google_source():
     # A Google user with no idOnTheSource resolves by email.
     user = _user("google", email="ada@example.com")
-    ok, find = await _resolve(user)
-    assert ok
+    result, expected, find = await _resolve(user)
+    assert result == expected
     find.assert_called_once()
     assert find.call_args.args[0] == {"memberIds": "ada@example.com"}
 
 
+@pytest.mark.asyncio
 async def test_google_user_resolves_by_email_not_stale_source_id():
     user = _user("google", email="ada@example.com", idOnTheSource="old@example.com")
-    ok, find = await _resolve(user)
-    assert ok
+    result, expected, find = await _resolve(user)
+    assert result == expected
     assert find.call_args.args[0] == {"memberIds": "ada@example.com"}
 
 
+@pytest.mark.asyncio
 async def test_entra_user_resolves_by_idonthesource():
     user = _user("openid", idOnTheSource="object-1")
-    ok, find = await _resolve(user)
-    assert ok
+    result, expected, find = await _resolve(user)
+    assert result == expected
     assert find.call_args.args[0] == {"memberIds": "object-1"}
 
 
+@pytest.mark.asyncio
 async def test_entra_user_without_source_id_returns_empty():
     user = _user("openid", idOnTheSource=None)
     with patch.object(access_control.User, "get", AsyncMock(return_value=user)):
