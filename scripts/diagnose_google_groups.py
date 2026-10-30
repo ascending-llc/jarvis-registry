@@ -9,10 +9,10 @@ service account, for each given email and prints the full response.
 Run from the repository root with the client's settings in an env file (see
 scripts/diagnose_google_groups.env.example):
     uv run python scripts/diagnose_google_groups.py --env-file scripts/.env.google-groups \
-        jason@example.com tommy@example.com
+        working-user@example.com failing-user@example.com
 
 Or run it inside the auth-server pod, which already has the settings in its environment:
-    kubectl exec -i <auth-server-pod> -- python - jason@example.com tommy@example.com \
+    kubectl exec -i <auth-server-pod> -- python - working-user@example.com failing-user@example.com \
         < scripts/diagnose_google_groups.py
 
 Pass a working account and a failing account together so the two responses can be compared.

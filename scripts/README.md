@@ -100,7 +100,7 @@ together to compare them.
 Inside the auth-server pod, which already has the settings in its environment:
 
 ```bash
-kubectl exec -i <auth-server-pod> -- python - jason@example.com tommy@example.com \
+kubectl exec -i <auth-server-pod> -- python - working-user@example.com failing-user@example.com \
     < scripts/diagnose_google_groups.py
 ```
 
@@ -109,7 +109,7 @@ Locally, from the repository root, with the settings in an env file copied from
 
 ```bash
 uv run python scripts/diagnose_google_groups.py --env-file scripts/.env.google-groups \
-    jason@example.com tommy@example.com
+    working-user@example.com failing-user@example.com
 ```
 
 `--customer-id C0xxxxxxx` overrides `GOOGLE_CUSTOMER_ID`, e.g. to test an ID before adding it to the
