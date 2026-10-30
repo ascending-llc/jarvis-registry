@@ -154,7 +154,7 @@ Sign in as an organization Owner or another role permitted to manage connectors.
 4. Review the detected OAuth settings and complete the sign-in setup for your deployment. Keep per-user OAuth authentication enabled rather than selecting **No sign in** or supplying a shared user's token.
 5. Finish adding the connector and review its availability and tool controls for your organization.
 
-**For business users:** Open **Customize > Connectors**, select **Jarvis Registry > Connect**, and sign in with your organization account. Enable it in a conversation through **+ > Connectors**. The organization connector can be used in Claude Desktop without editing local configuration files.
+**For business users:** In a chat, select **+ > Connectors > Jarvis Registry**. Sign in with your organization account if prompted. The organization connector can be used in Claude Desktop without editing local configuration files.
 
 See Anthropic's [custom connectors using remote MCP](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) for current organization roles, authentication options, and client availability.
 
@@ -168,11 +168,12 @@ Sign in to the intended ChatGPT workspace as an admin or owner. Enterprise/Edu m
 2. Enter **Jarvis Registry** in **Name**. The icon and description are optional.
 3. Under **Connection**, keep **Server URL** selected and paste your shared HTTPS gateway URL. Set **Authentication** to **OAuth**. Use **Advanced OAuth settings** only if your deployment requires specific client settings or scopes. If your administrators have configured a Secure MCP Tunnel instead, select **Tunnel**.
 4. Review the risk warning, select **I understand and want to continue**, and choose **Create as a plugin**. Complete OAuth sign-in when prompted.
-5. Review the discovered tools and use your workspace's admin controls to approve availability for the intended users. Creating the connection alone does not establish organization-wide access.
+5. Review the discovered tools and use your workspace's admin controls to approve the tools intended for users.
+6. Select **Publish to workspace** (or the equivalent workspace publishing control) and confirm the intended audience. Users can connect only after the integration is published; creating the connection and approving tools alone does not establish organization-wide access.
 
-**For business users:** Open **Plugins**, find the approved **Jarvis Registry** integration, install/connect it, and sign in with your own organization account when prompted. Select it in a new conversation and try a permitted read-only task.
+**For business users:** In a new conversation, type **@** and find and select the approved **Jarvis Registry** plugin or custom MCP server. Sign in with your organization account if prompted, then try a permitted read-only task.
 
-Use **ChatGPT web** for administration and initial validation. Confirm support in your deployed ChatGPT desktop app before directing users there. Older workspaces may show different Apps or publishing controls; use OpenAI's guide below for those variants.
+Use **ChatGPT web** for administration. To validate publishing, open a new conversation, type **@**, select **Jarvis Registry**, and try a permitted read-only task. Confirm support in your deployed ChatGPT desktop app before directing users there. Older workspaces may show different Apps or publishing controls; use OpenAI's guide below for those variants.
 
 See OpenAI's [Connecting custom MCP servers in ChatGPT](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt) for current creation, publishing, network, and plan requirements.
 
