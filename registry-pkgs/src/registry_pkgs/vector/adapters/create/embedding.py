@@ -17,7 +17,10 @@ def create_openai_embedding(config: BackendConfig):
         if not isinstance(embed_config, OpenAIEmbeddingConfig):
             raise ValueError("Expected OpenAIEmbeddingConfig")
 
-        return embedding_class(api_key=embed_config.api_key, model=embed_config.model)
+        kwargs = {"api_key": embed_config.api_key, "model": embed_config.model}
+        if embed_config.base_url:
+            kwargs["base_url"] = embed_config.base_url
+        return embedding_class(**kwargs)
 
     except ImportError as e:
         raise DependencyMissingError(

@@ -1,6 +1,10 @@
 from registry.services import model_metadata_service
 from registry.services.model_metadata_service import get_model_metadata
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
+from registry_pkgs.models.model_source import (
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    OpenAIModelConfig,
+)
 
 
 def _bedrock() -> AwsBedrockModelConfig:
@@ -48,6 +52,18 @@ def test_uses_azure_prefix_for_azure_config(monkeypatch) -> None:
     monkeypatch.setattr(model_metadata_service, "get_litellm_model_info", _capture)
     get_model_metadata(_azure())
     assert seen["model"] == "azure/gpt-4o"
+
+
+def test_uses_bare_model_id_for_first_party_config(monkeypatch) -> None:
+    seen: dict[str, str] = {}
+
+    def _capture(model: str):
+        seen["model"] = model
+        return {"max_input_tokens": 200000}
+
+    monkeypatch.setattr(model_metadata_service, "get_litellm_model_info", _capture)
+    get_model_metadata(OpenAIModelConfig(modelId="gpt-4.1", baseUrl=None, apiKeyEncrypted="x"))
+    assert seen["model"] == "gpt-4.1"
 
 
 def test_unmapped_model_degrades_to_reason(monkeypatch) -> None:

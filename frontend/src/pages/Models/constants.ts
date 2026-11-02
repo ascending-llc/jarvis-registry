@@ -9,8 +9,8 @@ export const MODEL_PROVIDER_OPTIONS: Array<{
 }> = [
   { value: 'aws_bedrock', label: 'AWS Bedrock', auth: 'IAM role' },
   { value: 'azure_openai', label: 'Azure OpenAI', auth: 'Workload Identity or API key' },
-  { value: 'openai', label: 'OpenAI', auth: 'API key · backend support pending' },
-  { value: 'anthropic', label: 'Anthropic', auth: 'API key · backend support pending' },
+  { value: 'openai', label: 'OpenAI', auth: 'API key' },
+  { value: 'anthropic', label: 'Anthropic', auth: 'API key' },
 ];
 
 export const PROVIDER_LABELS: Record<ModelFormProviderType, string> = {
@@ -39,6 +39,15 @@ export const MODE_BADGE_CLASSES: Record<ModelSourceMode, string> = {
 
 export const AWS_REGION_OPTIONS = ['us-east-1', 'us-east-2', 'us-west-2', 'eu-central-1', 'ap-northeast-1'];
 
+export const FIRST_PARTY_DEFAULT_BASE_URL: Record<'anthropic' | 'openai', string> = {
+  anthropic: 'https://api.anthropic.com',
+  openai: 'https://api.openai.com/v1',
+};
+
 export const isBackendSupportedProvider = (
   providerType: ModelFormProviderType,
-): providerType is ModelSourceProviderType => providerType === 'aws_bedrock' || providerType === 'azure_openai';
+): providerType is ModelSourceProviderType =>
+  providerType === 'aws_bedrock' ||
+  providerType === 'azure_openai' ||
+  providerType === 'anthropic' ||
+  providerType === 'openai';

@@ -1,8 +1,9 @@
 # Model Source Management API
 
 Catalog, CRUD, and gateway-selection API for cloud-hosted LLMs (the "Model Gateway").
-A **ModelSource** is a catalog entry describing one model hosted on AWS Bedrock or
-Azure OpenAI plus the connection details needed to reach it. A **ModelGatewaySelection**
+A **ModelSource** is a catalog entry describing one model hosted on AWS Bedrock,
+Azure OpenAI, or a first-party provider (Anthropic / OpenAI, reached directly with an API key)
+plus the connection details needed to reach it. A **ModelGatewaySelection**
 singleton records which ModelSource currently backs each of the two global slots
 (default workflow/chat model, and embedding model).
 
@@ -95,6 +96,33 @@ before storage and it is never returned:
 }
 ```
 
+**Request Body (first-party: Anthropic / OpenAI)** — direct API-key providers. `apiKey` is
+required (there is no ambient identity), plaintext on input, encrypted before storage and never
+returned. `baseUrl` is optional (proxy / regional endpoint; must be `https://`):
+```json
+{
+  "displayName": "Claude Sonnet 4.5",
+  "mode": "chat",
+  "providerConfig": {
+    "providerType": "anthropic",
+    "modelId": "claude-sonnet-4-5",
+    "baseUrl": "https://api.anthropic.com",
+    "apiKey": "sk-ant-..."
+  }
+}
+```
+```json
+{
+  "displayName": "OpenAI GPT-4.1",
+  "mode": "chat",
+  "providerConfig": {
+    "providerType": "openai",
+    "modelId": "gpt-4.1",
+    "apiKey": "sk-..."
+  }
+}
+```
+
 **Request Fields**:
 - `displayName` (required, string, 1–128 chars)
 - `description` (optional, string)
@@ -114,7 +142,7 @@ before storage and it is never returned:
 
 **Query Parameters**:
 - `mode` (optional, enum): filter by `chat` | `embedding`
-- `providerType` (optional, enum): filter by `aws_bedrock` | `azure_openai`
+- `providerType` (optional, enum): filter by `aws_bedrock` | `azure_openai` | `anthropic` | `openai`
 - `tag` (optional, string): filter by a single tag
 - `query` (optional, string): full-text search over `displayName` / `description`
 - `page` (optional, int, default 1, ≥1)
@@ -379,7 +407,7 @@ Model sources are **scope-only** — no ACL, no per-record ownership.
 | `description` | string \| null | |
 | `tags` | string[] | |
 | `mode` | `ModelSourceMode` | `chat` \| `embedding` |
-| `providerConfig` | discriminated union | `AwsBedrockModelConfig` \| `AzureOpenAIModelConfig` |
+| `providerConfig` | discriminated union | `AwsBedrockModelConfig` \| `AzureOpenAIModelConfig` \| `AnthropicModelConfig` \| `OpenAIModelConfig` |
 | `createdBy` / `updatedBy` | string \| null | audit only |
 | `createdAt` / `updatedAt` | datetime | |
 | `deletedAt` | datetime \| null | soft-delete marker |
@@ -413,6 +441,21 @@ Primary Azure auth is **Workload Identity** (ambient, no field); `apiKeyEncrypte
 optional fallback. Note: the embedding path (AS-1853) supports only the API-key fallback, not
 Workload Identity.
 
+### AnthropicModelConfig / OpenAIModelConfig (first-party, AS-1952)
+
+Direct API-key providers (`providerType` = `"anthropic"` / `"openai"`). Same shape:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `providerType` | `"anthropic"` \| `"openai"` | discriminator |
+| `modelId` | string | provider-native id, e.g. `claude-sonnet-4-5` / `gpt-4.1`; also the metadata-lookup key |
+| `baseUrl` | string \| null | optional proxy/regional endpoint (must be `https://`); null = public API |
+| `apiKeyEncrypted` | string \| null | **required at creation** (no ambient identity); encrypted at rest; **response returns `hasApiKey: bool` instead** |
+
+No ambient identity exists for first-party providers, so `apiKey` is required on create
+(omit on update to keep the stored key). Anthropic has no embedding API, so
+`providerType: "anthropic"` with `mode: "embedding"` is rejected with `400`.
+
 ### ModelGatewaySelection (singleton)
 
 | Field | Type | Notes |
@@ -424,16 +467,17 @@ Workload Identity.
 
 ### Enums
 
-- `ModelSourceProviderType`: `aws_bedrock`, `azure_openai`
+- `ModelSourceProviderType`: `aws_bedrock`, `azure_openai`, `anthropic`, `openai`
 - `ModelSourceMode`: `chat`, `embedding`
 
 ---
 
 ## Credentials & Encryption
 
-- Only Azure's `apiKey` is a secret. It is submitted in plaintext, encrypted by the service
-  with the registry `encryption_key` (same key `SkillSyncSource` uses), and stored as
-  `apiKeyEncrypted`. It is never returned — responses expose `hasApiKey: bool`.
+- Azure's (optional) `apiKey` and the first-party (Anthropic / OpenAI) `apiKey` are secrets.
+  They are submitted in plaintext, encrypted by the service with the registry `encryption_key`
+  (same key `SkillSyncSource` uses), and stored as `apiKeyEncrypted`. They are never returned —
+  responses expose `hasApiKey: bool`.
 - AWS Bedrock stores **no** credentials (IRSA).
 - **The registry does not verify cloud-side invoke permission at registration time.** A model
   the pod's IAM role / managed identity cannot actually call can still be registered; the
@@ -444,7 +488,8 @@ Workload Identity.
 ## Model Metadata
 
 `GET /model-sources/{id}` populates `metadata` live via `litellm.get_model_info()` keyed on
-`bedrock/{baseModelId}` or `azure/{baseModelId}`. This reads litellm's in-memory model-cost map
+`bedrock/{baseModelId}`, `azure/{baseModelId}`, or — for first-party — the bare `modelId`
+(already litellm's canonical key). This reads litellm's in-memory model-cost map
 (no network I/O) and is not snapshotted onto the document. When a model is not in litellm's map
 (e.g. an AIP ARN, or an unmapped id), metadata degrades gracefully: the fields are `null` and
 `unavailableReason` carries the reason — the request still returns `200`, never `500`.

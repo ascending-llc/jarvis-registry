@@ -5,7 +5,13 @@ import { useState } from 'react';
 import { InputField, SelectField } from '@/components/FormFields';
 import type { ModelGatewaySelection, ModelSourceListItem } from '@/services/model/type';
 
-import { AWS_REGION_OPTIONS, isBackendSupportedProvider, MODEL_PROVIDER_OPTIONS, PROVIDER_LABELS } from './constants';
+import {
+  AWS_REGION_OPTIONS,
+  FIRST_PARTY_DEFAULT_BASE_URL,
+  isBackendSupportedProvider,
+  MODEL_PROVIDER_OPTIONS,
+  PROVIDER_LABELS,
+} from './constants';
 import ModelBackLink from './ModelBackLink';
 import ModelDefaultBadge from './ModelDefaultBadge';
 import { slugifyModelName } from './modelForm';
@@ -131,9 +137,6 @@ const DirectProviderFields: React.FC<ProviderFieldsProps> = ({ form, errors, has
   const isOpenAI = form.providerType === 'openai';
   return (
     <div className='space-y-4'>
-      <div className='rounded-lg border border-[var(--jarvis-warning)]/40 bg-[var(--jarvis-warning-soft)] p-3.5 text-sm leading-5 text-[var(--jarvis-warning-text)]'>
-        This provider form is ready for review. Saving will be enabled when backend ModelSource support is available.
-      </div>
       <div className='grid gap-4 sm:grid-cols-2'>
         <InputField
           name='baseModelId'
@@ -171,7 +174,7 @@ const DirectProviderFields: React.FC<ProviderFieldsProps> = ({ form, errors, has
         helperText={
           hasStoredApiKey
             ? 'Leave blank to preserve the stored key.'
-            : 'This field will be encrypted at rest when backend support is added.'
+            : 'Encrypted at rest; used to call the provider API.'
         }
         error={errors.apiKey}
       />
@@ -247,8 +250,18 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
     setErrors(current => (current[field] ? { ...current, [field]: undefined } : current));
   };
 
+  const handleProviderChange = (value: ModelFormProviderType) => {
+    setForm(current => ({
+      ...current,
+      providerType: value,
+      // Prefill the correct public base URL for a first-party provider so it isn't mistyped.
+      baseUrl: value === 'anthropic' || value === 'openai' ? FIRST_PARTY_DEFAULT_BASE_URL[value] : current.baseUrl,
+    }));
+    setErrors(current => (current.baseUrl ? { ...current, baseUrl: undefined } : current));
+  };
+
   const handleSubmit = () => {
-    const nextErrors = validateForm(form, hasStoredApiKey);
+    const nextErrors = validateForm(form, storedKeyApplies);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length === 0) onSubmit(form);
   };
@@ -257,6 +270,8 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
     value: provider.value,
     label: `${provider.label} — ${provider.auth}`,
   }));
+  // The stored key belongs to the original provider; switching provider re-requires a key.
+  const storedKeyApplies = hasStoredApiKey && form.providerType === initialForm.providerType;
   const providerSupported = isBackendSupportedProvider(form.providerType);
   const pageTitle = editing
     ? initialForm.displayName
@@ -365,7 +380,7 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
                         required
                         value={form.providerType}
                         options={providerOptions}
-                        onChange={value => updateField('providerType', value as ModelFormProviderType)}
+                        onChange={value => handleProviderChange(value as ModelFormProviderType)}
                       />
                       <div>
                         <div className='mb-1 text-sm font-medium text-[var(--jarvis-text)]'>
@@ -411,14 +426,9 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
                   <ProviderFields
                     form={form}
                     errors={errors}
-                    hasStoredApiKey={hasStoredApiKey}
+                    hasStoredApiKey={storedKeyApplies}
                     updateField={updateField}
                   />
-                  {!providerSupported && (
-                    <p className='mt-3 text-xs text-[var(--jarvis-muted)]'>
-                      OpenAI and Anthropic ModelSource APIs are pending backend implementation.
-                    </p>
-                  )}
                 </section>
               </div>
             </div>
