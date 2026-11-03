@@ -71,6 +71,27 @@ def test_build_agno_model_for_bedrock_application_inference_profile() -> None:
     assert model.get_request_params()["aws_region_name"] == "us-east-1"
 
 
+def test_build_agno_model_for_bedrock_inference_profile() -> None:
+    profile_arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.deepseek.r1-v1:0"
+    source = _source(
+        AwsBedrockModelConfig(
+            awsRegion="us-east-1",
+            modelIdOrArn=profile_arn,
+            baseModelId="us.deepseek.r1-v1:0",
+        )
+    )
+
+    model = model_resolution.build_agno_model(
+        source,
+        encryption_key=b"unused",
+        azure_ad_token_provider=None,
+    )
+
+    assert isinstance(model, LiteLLM)
+    assert model.id == f"bedrock/converse/{profile_arn}"
+    assert model.get_request_params()["aws_region_name"] == "us-east-1"
+
+
 def test_build_agno_model_for_azure_decrypts_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(model_resolution, "decrypt_value", lambda *_a, **_kw: "plain-key")
     source = _source(
