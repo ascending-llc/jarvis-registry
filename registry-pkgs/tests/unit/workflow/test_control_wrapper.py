@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.run import RunContext
 from agno.workflow import Condition, Loop, Parallel, Router, Step, StepOutput, Steps, Workflow
 from beanie import PydanticObjectId
 from opentelemetry import baggage
@@ -438,7 +439,7 @@ class TestWithControlHaltsAgnoWorkflow:
         queue.register(run_id)
         executed: list[str] = []
 
-        async def fail_executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+        async def fail_executor(step_input: object, run_context: RunContext | None = None) -> StepOutput:
             executed.append("failure")
             raise RuntimeError("terminal failure")
 
@@ -513,7 +514,7 @@ class TestWithControlHaltsAgnoWorkflow:
         queue.register(run_id)
         executed: list[str] = []
 
-        async def fail_executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+        async def fail_executor(step_input: object, run_context: RunContext | None = None) -> StepOutput:
             executed.append("optional")
             return StepOutput(success=False, error="optional error")
 
@@ -580,7 +581,7 @@ class TestWithControlHaltsAgnoWorkflow:
         monkeypatch.setattr(wrapper_module, "_read_mongodb_directive", AsyncMock(return_value=None))
         monkeypatch.setattr(wrapper_module, "_record_attempt_start", AsyncMock())
 
-        async def executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+        async def executor(step_input: object, run_context: RunContext | None = None) -> StepOutput:
             return StepOutput(content="done", success=True)
 
         wrapped = with_control(
@@ -755,7 +756,7 @@ class TestWithControlHaltsAgnoWorkflow:
         queue.register(run_id)
         seen: list[dict[str, str | None]] = []
 
-        async def executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+        async def executor(step_input: object, run_context: RunContext | None = None) -> StepOutput:
             seen.append(
                 {
                     "run_id": baggage.get_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID),
@@ -824,7 +825,7 @@ class TestWithControlHaltsAgnoWorkflow:
             inner_seen["attempt"] = baggage.get_baggage(BAGGAGE_KEY_ATTEMPT)
             inner_seen["run_id"] = baggage.get_baggage(BAGGAGE_KEY_WORKFLOW_RUN_ID)
 
-        async def executor(step_input: object, session_state: dict | None = None) -> StepOutput:
+        async def executor(step_input: object, run_context: RunContext | None = None) -> StepOutput:
             await asyncio.create_task(inner())
             return StepOutput(content="ok", success=True)
 

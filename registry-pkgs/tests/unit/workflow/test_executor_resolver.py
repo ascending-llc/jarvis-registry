@@ -3,8 +3,20 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from a2a.types import AgentCard
+from agno.run import RunContext
 from agno.workflow import StepInput
 from beanie import PydanticObjectId
+
+
+def _rc(session_state: dict | None = None) -> RunContext:
+    """RunContext matching agno v3's step-executor call convention (see test_compiler._rc)."""
+    return RunContext(
+        run_id="test-run",
+        session_id="test-session",
+        session_state=session_state if session_state is not None else {},
+    )
+
+
 from pydantic import HttpUrl
 
 from registry_pkgs.core import agentcore_jwt
@@ -281,7 +293,7 @@ class TestExecutorResolver:
             jwt_config=_jwt_config(),
         )
 
-        output = await resolved(StepInput(input="hello", previous_step_content="ctx"), {"echo_count": 0})
+        output = await resolved(StepInput(input="hello", previous_step_content="ctx"), _rc({"echo_count": 0}))
 
         assert output.success is True
         assert output.content == "hello"
@@ -560,8 +572,10 @@ class TestA2AExecutor:
                         kind="file",
                         file=FileWithBytes(
                             bytes="emlw",
-                            mimeType="application/zip",
-                            name="bundle.zip",
+                            # A mime still outside agno's File.valid_mime_types() (zip became
+                            # valid in agno v3), so the unsupported-mime fallback path is exercised.
+                            mimeType="application/x-7z-compressed",
+                            name="bundle.7z",
                         ),
                     )
                 ),
@@ -575,9 +589,9 @@ class TestA2AExecutor:
 
         output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
 
-        assert output.files and output.files[0].filename == "bundle.zip"
+        assert output.files and output.files[0].filename == "bundle.7z"
         assert output.files[0].mime_type is None
-        assert output.files[0].file_type == "application/zip"
+        assert output.files[0].file_type == "application/x-7z-compressed"
 
 
 @pytest.mark.unit
@@ -622,7 +636,7 @@ class TestA2APoolExecutorQueries:
             jwt_config=_jwt_config(),
         )
 
-        result = await executor(StepInput(input="hello"), {})
+        result = await executor(StepInput(input="hello"), _rc())
 
         assert result.success is False  # no agents found → pool resolution failed
         assert len(captured_queries) == 1, "expected exactly one find() call"
@@ -653,7 +667,7 @@ class TestA2APoolExecutorQueries:
 
         # Pre-fill cache to simulate retry path
         state = {"a2a_target_retry-pool": "agent-a"}
-        result = await executor(StepInput(input="hello"), state)
+        result = await executor(StepInput(input="hello"), _rc(state))
 
         assert result.success is False
         assert "not found or disabled" in result.error

@@ -6,6 +6,7 @@ from typing import Any
 
 from agno.agent import Agent
 from agno.models.base import Model
+from agno.run import RunContext
 from agno.tools.mcp import MCPTools
 from agno.tools.mcp.params import StreamableHTTPClientParams
 from agno.workflow import StepInput, StepOutput
@@ -104,7 +105,7 @@ def make_mcp_executor(
                               for manually-registered servers.
 
     Returns:
-        An async callable that accepts ``(StepInput, session_state)`` and
+        An async callable that accepts ``(StepInput, run_context)`` and
         returns a ``StepOutput``.
 
     Raises:
@@ -140,7 +141,7 @@ def make_mcp_executor(
             # agent run that may invoke multiple downstream tools).
             return inject_trace_context({"Authorization": f"Bearer {token}"})
 
-        async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
+        async def executor(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
             prompt = build_prompt(step_input)
             target_url = _get_target_url(mcp_server)
             mcp_tools = MCPTools(
@@ -166,7 +167,7 @@ def make_mcp_executor(
     else:
         # Case 2: manually-registered server (OAuth/apiKey/etc) — build headers
         # fresh inside each step executor call.
-        async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
+        async def executor(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
             if auth_context is None:
                 raise WorkflowConfigError(
                     f"No auth context available to call MCP server {mcp_server.serverName!r} "

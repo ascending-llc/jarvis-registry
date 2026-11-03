@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from agno.db.in_memory import InMemoryDb
+from agno.run import RunContext
 from agno.workflow import Router, Step, StepInput, StepOutput, Workflow
 from beanie import PydanticObjectId
 
@@ -38,7 +39,7 @@ async def test_manual_router_continuation_honors_stop(
 ) -> None:
     executed: list[str] = []
 
-    async def selected_executor(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+    async def selected_executor(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
         executed.append("selected")
         if outcome == "success":
             return StepOutput(content="selected output")
@@ -46,7 +47,7 @@ async def test_manual_router_continuation_honors_stop(
             return StepOutput(success=False, error="original auth error")
         raise RuntimeError("original auth error")
 
-    async def record_executor(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+    async def record_executor(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
         name = step_input.additional_data[ADDITIONAL_DATA_STEP_OBJECTIVE]
         executed.append(name)
         return StepOutput(content=name)

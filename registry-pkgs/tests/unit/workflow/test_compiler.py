@@ -3,9 +3,24 @@ from types import SimpleNamespace
 
 import pytest
 from agno.media import File, Image
+from agno.run import RunContext
 from agno.workflow import StepInput, StepOutput
-from agno.workflow.step import OnError
 from beanie import PydanticObjectId
+
+
+def _rc(session_state: dict | None = None) -> RunContext:
+    """Build a RunContext the way agno v3 invokes a step executor.
+
+    agno v3 passes a RunContext (whose ``.session_state`` is the shared dict),
+    not a raw session_state dict as in v2. Tests that drive a compiled step's
+    executor directly wrap their state dict with this helper.
+    """
+    return RunContext(
+        run_id="test-run",
+        session_id="test-session",
+        session_state=session_state if session_state is not None else {},
+    )
+
 
 from registry_pkgs.models.enums import WorkflowNodeType, WorkflowRunStatus
 from registry_pkgs.models.workflow import (
@@ -275,8 +290,7 @@ class TestWorkflowCompiler:
         session_state = {}
 
         await workflow.steps[0].executor(
-            StepInput(input={"prompt": "hello"}, previous_step_content="prior"),
-            session_state,
+            StepInput(input={"prompt": "hello"}, previous_step_content="prior"), _rc(session_state)
         )
 
         snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
@@ -298,10 +312,7 @@ class TestWorkflowCompiler:
         session_state = {}
         raw_payload = '{"method": "message/send", "params": {"text": "hi"}}'
 
-        await workflow.steps[0].executor(
-            StepInput(input=raw_payload),
-            session_state,
-        )
+        await workflow.steps[0].executor(StepInput(input=raw_payload), _rc(session_state))
 
         snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
         assert snapshots[node.id]["input"] == {"method": "message/send", "params": {"text": "hi"}}
@@ -319,10 +330,7 @@ class TestWorkflowCompiler:
         )
         session_state = {}
 
-        await workflow.steps[0].executor(
-            StepInput(input="3+4 and weather in London"),
-            session_state,
-        )
+        await workflow.steps[0].executor(StepInput(input="3+4 and weather in London"), _rc(session_state))
 
         snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
         assert snapshots[node.id]["input"] == "3+4 and weather in London"
@@ -341,10 +349,7 @@ class TestWorkflowCompiler:
 
         for raw_input in ("123", "true", '"hello"'):
             session_state = {}
-            await workflow.steps[0].executor(
-                StepInput(input=raw_input),
-                session_state,
-            )
+            await workflow.steps[0].executor(StepInput(input=raw_input), _rc(session_state))
             snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
             assert snapshots[node.id]["input"] == raw_input
 
@@ -361,10 +366,7 @@ class TestWorkflowCompiler:
         )
         session_state = {}
 
-        await workflow.steps[0].executor(
-            StepInput(input='[{"id": 1}, {"id": 2}]'),
-            session_state,
-        )
+        await workflow.steps[0].executor(StepInput(input='[{"id": 1}, {"id": 2}]'), _rc(session_state))
 
         snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
         assert snapshots[node.id]["input"] == [{"id": 1}, {"id": 2}]
@@ -415,7 +417,7 @@ class TestMediaSnapshotIntegration:
         )
         session_state: dict = {}
 
-        output = await workflow.steps[0].executor(StepInput(input="ignored"), session_state)
+        output = await workflow.steps[0].executor(StepInput(input="ignored"), _rc(session_state))
 
         assert output.content == "generated an image"
         assert session_state["restored"] is True
@@ -441,7 +443,7 @@ class TestMediaSnapshotIntegration:
             injected_outputs={node.id: {"content": "plain text", "session_state": {}}},
         )
 
-        output = await workflow.steps[0].executor(StepInput(input="ignored"), {})
+        output = await workflow.steps[0].executor(StepInput(input="ignored"), _rc())
 
         assert output.content == "plain text"
         assert output.images is None
@@ -497,19 +499,20 @@ class TestStepConfig:
         kwargs = step_kwargs(None)
         assert kwargs["max_retries"] == 0
         assert kwargs["skip_on_failure"] is False
-        assert kwargs["on_error"] == OnError.fail
+        # agno v3 dropped Step.on_error; skip_on_failure alone encodes skip-vs-fail.
+        assert "on_error" not in kwargs
 
     def test_step_kwargs_fail_config(self):
         kwargs = step_kwargs(StepConfig(max_retries=2, on_error="fail"))
         assert kwargs["max_retries"] == 2
         assert kwargs["skip_on_failure"] is False
-        assert kwargs["on_error"] == OnError.fail
+        assert "on_error" not in kwargs
 
     def test_step_kwargs_skip_config(self):
         kwargs = step_kwargs(StepConfig(max_retries=1, on_error="skip"))
         assert kwargs["max_retries"] == 1
         assert kwargs["skip_on_failure"] is True
-        assert kwargs["on_error"] == OnError.skip
+        assert "on_error" not in kwargs
 
     # ── compile_workflow honours StepConfig ──────────────────────────────────
 
@@ -1189,7 +1192,7 @@ class TestIntentionData:
         definition = _workflow_definition([upstream, node])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1200,8 +1203,7 @@ class TestIntentionData:
         )
         previous = self._make_previous_outputs(**{"Weather Agent": "32°C, windy"})
         await workflow2.steps[1].executor(
-            StepInput(input="summarise the weather", previous_step_outputs=previous),
-            {},
+            StepInput(input="summarise the weather", previous_step_outputs=previous), _rc()
         )
 
         assert len(received_prompts) == 1
@@ -1219,7 +1221,7 @@ class TestIntentionData:
         definition = _workflow_definition([upstream_a, upstream_b, node])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1229,7 +1231,7 @@ class TestIntentionData:
             executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor}),
         )
         previous = self._make_previous_outputs(**{"Node A": "output-a", "Node B": "output-b"})
-        await workflow.steps[2].executor(StepInput(input="task", previous_step_outputs=previous), {})
+        await workflow.steps[2].executor(StepInput(input="task", previous_step_outputs=previous), _rc())
 
         prompt = received_prompts[0]
         node_b_dependency = '## "Node B"\n\nproduce B'
@@ -1247,7 +1249,7 @@ class TestIntentionData:
         definition = _workflow_definition([first, second, third])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1257,8 +1259,7 @@ class TestIntentionData:
             executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor}),
         )
         await workflow.steps[1].executor(
-            StepInput(input="task", previous_step_outputs=self._make_previous_outputs(**{"Echo Agent 1": "one"})),
-            {},
+            StepInput(input="task", previous_step_outputs=self._make_previous_outputs(**{"Echo Agent 1": "one"})), _rc()
         )
         await workflow.steps[2].executor(
             StepInput(
@@ -1270,7 +1271,7 @@ class TestIntentionData:
                     }
                 ),
             ),
-            {},
+            _rc(),
         )
 
         second_prompt = received_prompts[0]
@@ -1292,7 +1293,7 @@ class TestIntentionData:
         definition = _workflow_definition([first, second])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1302,8 +1303,7 @@ class TestIntentionData:
             executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor}),
         )
         await workflow.steps[1].executor(
-            StepInput(input="task", previous_step_outputs=self._make_previous_outputs(First="first-output")),
-            {},
+            StepInput(input="task", previous_step_outputs=self._make_previous_outputs(First="first-output")), _rc()
         )
 
         prompt = received_prompts[0]
@@ -1325,7 +1325,7 @@ class TestIntentionData:
         definition = _workflow_definition([first, parallel, after])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1345,7 +1345,7 @@ class TestIntentionData:
                     }
                 ),
             ),
-            {},
+            _rc(),
         )
 
         prompt = received_prompts[0]
@@ -1362,7 +1362,7 @@ class TestIntentionData:
         definition = _workflow_definition([ghost, node])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1372,7 +1372,7 @@ class TestIntentionData:
             executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor}),
         )
         # previous_step_outputs does NOT contain "Ghost Node"
-        await workflow.steps[1].executor(StepInput(input="my task", previous_step_outputs={}), {})
+        await workflow.steps[1].executor(StepInput(input="my task", previous_step_outputs={}), _rc())
 
         prompt = received_prompts[0]
         assert '# Dependencies\n\n## "Ghost Node"\n\nproduce ghost output' in prompt
@@ -1386,7 +1386,7 @@ class TestIntentionData:
         definition = _workflow_definition([upstream, node])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1400,12 +1400,12 @@ class TestIntentionData:
             input="task", previous_step_outputs=self._make_previous_outputs(**{"Big Node": long_content})
         )
 
-        await workflow.steps[1].executor(step_input, {})
+        await workflow.steps[1].executor(step_input, _rc())
         full_prompt = received_prompts[0]
         assert len(full_prompt) > 10_000  # sanity check before mocking a cap below that size
 
         monkeypatch.setattr(helpers, "_MAX_PROMPT_CHARS", 8000)
-        await workflow.steps[1].executor(step_input, {})
+        await workflow.steps[1].executor(step_input, _rc())
         truncated_prompt = received_prompts[1]
 
         omitted = len(full_prompt) - 8000
@@ -1417,7 +1417,7 @@ class TestIntentionData:
         definition = _workflow_definition([node])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1427,11 +1427,11 @@ class TestIntentionData:
             executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor}),
         )
         previous = self._make_previous_outputs(**{"Some Node": "irrelevant"})
-        await workflow.steps[0].executor(StepInput(input="original task", previous_step_outputs=previous), {})
+        await workflow.steps[0].executor(StepInput(input="original task", previous_step_outputs=previous), _rc())
 
         assert received_prompts[0] == "# Step Objective\n\nhandle initial input"
 
-        await workflow.steps[0].executor(StepInput(input="original task"), {})
+        await workflow.steps[0].executor(StepInput(input="original task"), _rc())
         assert "## Workflow Trigger Input" in received_prompts[1]
         assert "original task" in received_prompts[1]
 
@@ -1448,10 +1448,7 @@ class TestIntentionData:
         session_state: dict = {}
         previous = self._make_previous_outputs(**{"Upstream": "upstream-content"})
         raw_input = StepInput(input="original task", previous_step_outputs=previous, additional_data={"custom": "keep"})
-        await workflow.steps[1].executor(
-            raw_input,
-            session_state,
-        )
+        await workflow.steps[1].executor(raw_input, _rc(session_state))
 
         snapshot = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY][node.id]
         assert snapshot["input"] == "original task"
@@ -1464,7 +1461,7 @@ class TestIntentionData:
         definition = _workflow_definition([node])
         received: list[dict] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received.append(step_input.additional_data)
             return SimpleNamespace(content="ok")
 
@@ -1478,7 +1475,7 @@ class TestIntentionData:
                 input="task",
                 additional_data={"custom": "keep", "step_objective": "caller objective"},
             ),
-            {},
+            _rc(),
         )
 
         assert received == [
@@ -1500,15 +1497,15 @@ class TestIntentionData:
         definition = _workflow_definition([first, second])
         prompts: list[str] = []
 
-        async def shared_executor(step_input, session_state=None):
+        async def shared_executor(step_input, run_context=None):
             prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
         workflow = compiler.compile_workflow(
             definition, _workflow_run(), executor_registry=_node_keyed_registry(definition, {"tool": shared_executor})
         )
-        await workflow.steps[0].executor(StepInput(input="task"), {})
-        await workflow.steps[1].executor(StepInput(input="task"), {})
+        await workflow.steps[0].executor(StepInput(input="task"), _rc())
+        await workflow.steps[1].executor(StepInput(input="task"), _rc())
 
         assert "# Step Objective\n\ndo the first task" in prompts[0]
         assert "# Step Objective\n\ndo the second task" in prompts[1]
@@ -1524,7 +1521,7 @@ class TestIntentionData:
         )
         prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1533,7 +1530,7 @@ class TestIntentionData:
             _workflow_run(),
             executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor}),
         )
-        await workflow.steps[0].executor(StepInput(input="task"), {})
+        await workflow.steps[0].executor(StepInput(input="task"), _rc())
 
         assert "# Workflow Context" in prompts[0]
         assert "coordinate a research workflow" in prompts[0]
@@ -1550,14 +1547,14 @@ class TestIntentionData:
         )
         prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
         workflow = compiler.compile_workflow(
             definition, run, executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor})
         )
-        await workflow.steps[0].executor(StepInput(input="task"), {})
+        await workflow.steps[0].executor(StepInput(input="task"), _rc())
 
         assert "Workflow Trigger Parameters" in prompts[0]
         assert '"memberId": "U123"' in prompts[0]
@@ -1582,7 +1579,7 @@ class TestIntentionData:
         )
         prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1590,7 +1587,7 @@ class TestIntentionData:
             definition, run, executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor})
         )
         previous = self._make_previous_outputs(**{"github": "PR #42: Fix the bug"})
-        await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
+        await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), _rc())
 
         prompt = prompts[0]
         assert "Workflow Trigger Parameters" in prompt
@@ -1605,7 +1602,7 @@ class TestIntentionData:
         definition = _workflow_definition([node])
         prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1614,7 +1611,7 @@ class TestIntentionData:
             _workflow_run(),
             executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor}),
         )
-        await workflow.steps[0].executor(StepInput(input="task"), {})
+        await workflow.steps[0].executor(StepInput(input="task"), _rc())
 
         assert "Workflow Trigger Parameters" not in prompts[0]
 
@@ -1632,7 +1629,7 @@ class TestIntentionData:
         )
         prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1641,12 +1638,12 @@ class TestIntentionData:
         )
         step_input = StepInput(input="task")
 
-        await workflow.steps[0].executor(step_input, {})
+        await workflow.steps[0].executor(step_input, _rc())
         full_prompt = prompts[0]
         assert len(full_prompt) > 10_000  # sanity check before mocking a cap below that size
 
         monkeypatch.setattr(helpers, "_MAX_PROMPT_CHARS", 8000)
-        await workflow.steps[0].executor(step_input, {})
+        await workflow.steps[0].executor(step_input, _rc())
         truncated_prompt = prompts[1]
 
         omitted = len(full_prompt) - 8000
@@ -1683,7 +1680,7 @@ class TestIntentionData:
         definition = _workflow_definition([upstream, node])
         call_data: list[dict] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             call_data.append(step_input.additional_data)
             return SimpleNamespace(content="ok", success=True, error=None)
 
@@ -1698,8 +1695,8 @@ class TestIntentionData:
             previous_step_outputs=previous,
             additional_data={"custom": "value"},
         )
-        await workflow.steps[1].executor(shared_input, {})
-        await workflow.steps[1].executor(shared_input, {})
+        await workflow.steps[1].executor(shared_input, _rc())
+        await workflow.steps[1].executor(shared_input, _rc())
 
         assert shared_input.additional_data == {"custom": "value"}
         assert [data["jarvis_dependency_node_names"] for data in call_data] == [["Upstream"], ["Upstream"]]
@@ -1763,7 +1760,7 @@ class TestIntentionData:
             definition = _workflow_definition([upstream, node])
             received_prompts: list[str] = []
 
-            async def capturing_executor(step_input, session_state=None, _prompts=received_prompts):
+            async def capturing_executor(step_input, run_context=None, _prompts=received_prompts):
                 _prompts.append(build_prompt(step_input))
                 return SimpleNamespace(content="ok")
 
@@ -1773,7 +1770,7 @@ class TestIntentionData:
                 executor_registry=_node_keyed_registry(definition, {"tool": capturing_executor}),
             )
             previous = {"Validator": StepOutput(step_name="Validator", content=falsy_content, success=True)}
-            await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
+            await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), _rc())
 
             assert '# Current Step Inputs\n\n## "Validator" — Output' in received_prompts[-1], (
                 f"falsy content {falsy_content!r} was silently dropped but should have been rendered"
@@ -1793,7 +1790,7 @@ class TestIntentionData:
         definition = _workflow_definition([upstream, node])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1804,7 +1801,7 @@ class TestIntentionData:
         )
         dict_content = {"temperature": 32.3, "unit": "celsius", "city": "New York"}
         previous = {"Structured Node": StepOutput(step_name="Structured Node", content=dict_content, success=True)}
-        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), {})
+        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), _rc())
 
         prompt = received_prompts[0]
         assert '# Current Step Inputs\n\n## "Structured Node" — Output' in prompt
@@ -1827,7 +1824,7 @@ class TestIntentionData:
         definition = _workflow_definition([upstream, node])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1854,7 +1851,7 @@ class TestIntentionData:
                 success=True,
             )
         }
-        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), {})
+        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), _rc())
 
         prompt = received_prompts[0]
         assert "Text output:" in prompt
@@ -1882,7 +1879,7 @@ class TestIntentionData:
         definition = _workflow_definition([upstream, node])
         received_prompts: list[str] = []
 
-        async def capturing_executor(step_input, session_state=None):
+        async def capturing_executor(step_input, run_context=None):
             received_prompts.append(build_prompt(step_input))
             return SimpleNamespace(content="ok")
 
@@ -1901,7 +1898,7 @@ class TestIntentionData:
                 success=True,
             )
         }
-        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), {})
+        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), _rc())
 
         prompt = received_prompts[0]
         assert f"alt_text={long_alt_text}" in prompt
@@ -1948,3 +1945,64 @@ class TestEnumDriftAgainstAgno:
         agno_values = {member.value for member in OnTimeout}
         for ours, agno_str in _ON_TIMEOUT_TO_AGNO.items():
             assert agno_str in agno_values, f"OnTimeoutPolicy.{ours.name} → {agno_str!r} not in agno OnTimeout"
+
+
+@pytest.mark.asyncio
+async def test_executor_session_state_is_persisted_by_real_agno_run() -> None:
+    """Executors write shared state through ``run_context.session_state`` (agno v3), and agno must
+    persist it under ``session_data["session_state"]`` — the exact place WorkflowRunSyncer reads
+    NodeRun.input_snapshot and the A2A pool selection from. Drives real agno dispatch end to end.
+    """
+    from agno.db.in_memory import InMemoryDb
+
+    from registry_pkgs.workflows.executor_resolver import _builtin_executor
+    from registry_pkgs.workflows.types import BUILTIN_ECHO_EXECUTOR_KEY
+
+    first = _step_node("first", BUILTIN_ECHO_EXECUTOR_KEY)
+    second = _step_node("second", BUILTIN_ECHO_EXECUTOR_KEY)
+    definition = _workflow_definition([first, second])
+    run = _workflow_run()
+    echo = _builtin_executor(BUILTIN_ECHO_EXECUTOR_KEY)
+    workflow = compiler.compile_workflow(definition, run, executor_registry={first.id: echo, second.id: echo})
+    workflow.db = InMemoryDb()
+    workflow.telemetry = False
+
+    await workflow.arun(input="hello", session_id=str(run.id), session_state={"user_text": "hello"})
+
+    session = await workflow.aget_session(session_id=str(run.id))
+    state = session.session_data["session_state"]
+    assert state["echo_count"] == 2
+    assert set(state[compiler.NODE_INPUT_SNAPSHOTS_KEY]) == {first.id, second.id}
+
+
+@pytest.mark.asyncio
+async def test_user_cancel_inside_a_step_is_recorded_as_cancelled_not_error() -> None:
+    """agno v3 persists any non-cancellation step exception as an *errored* run before re-raising.
+
+    WorkflowCancelledError must therefore be an agno RunCancelledException, or a user cancel would be
+    persisted as ERROR (-> FAILED) and first-terminal-wins would reject the runner's CANCELLED write.
+    """
+    from agno.db.in_memory import InMemoryDb
+    from agno.exceptions import RunCancelledException
+    from agno.run.base import RunStatus
+
+    from registry_pkgs.workflows.control import WorkflowCancelledError
+
+    async def cancelled(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
+        raise WorkflowCancelledError("Workflow cancelled by user")
+
+    node = _step_node("cancel-me")
+    definition = _workflow_definition([node])
+    run = _workflow_run()
+    workflow = compiler.compile_workflow(definition, run, executor_registry={node.id: cancelled})
+    workflow.db = InMemoryDb()
+    workflow.telemetry = False
+
+    # agno handles a RunCancelledException in-band: the run ends CANCELLED (which WorkflowRunSyncer maps to
+    # WorkflowRunStatus.CANCELLED) instead of being persisted as an errored run.
+    assert issubclass(WorkflowCancelledError, RunCancelledException)
+    result = await workflow.arun(input="hello", session_id=str(run.id))
+
+    assert result.status == RunStatus.cancelled
+    session = await workflow.aget_session(session_id=str(run.id))
+    assert session.runs[-1].status == RunStatus.cancelled

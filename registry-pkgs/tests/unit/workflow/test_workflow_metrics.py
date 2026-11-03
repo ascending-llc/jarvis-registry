@@ -107,7 +107,7 @@ def test_detect_agent_type_no_name():
 @pytest.mark.asyncio
 @patch("registry_pkgs.workflows.executor_resolver.record_agent_invocation")
 async def test_instrumented_executor_records_success(mock_record):
-    async def _inner(step_input, session_state=None):
+    async def _inner(step_input, run_context=None):
         return StepOutput(content="ok", success=True)
 
     _inner.__name__ = "test_mcp_executor"
@@ -128,7 +128,7 @@ async def test_instrumented_executor_records_success(mock_record):
 @pytest.mark.asyncio
 @patch("registry_pkgs.workflows.executor_resolver.record_agent_invocation")
 async def test_instrumented_executor_records_failure_on_exception(mock_record):
-    async def _inner(step_input, session_state=None):
+    async def _inner(step_input, run_context=None):
         raise TimeoutError("timed out")
 
     _inner.__name__ = "test_a2a_executor"
@@ -146,7 +146,7 @@ async def test_instrumented_executor_records_failure_on_exception(mock_record):
 @pytest.mark.asyncio
 @patch("registry_pkgs.workflows.executor_resolver.record_agent_invocation")
 async def test_instrumented_executor_records_step_output_failure(mock_record):
-    async def _inner(step_input, session_state=None):
+    async def _inner(step_input, run_context=None):
         return StepOutput(content="error", success=False)
 
     _inner.__name__ = "test_mcp_executor"
@@ -163,7 +163,7 @@ async def test_instrumented_executor_records_step_output_failure(mock_record):
 @pytest.mark.asyncio
 @patch("registry_pkgs.workflows.executor_resolver.record_agent_invocation")
 async def test_instrumented_executor_records_cancellation(mock_record):
-    async def _inner(step_input, session_state=None):
+    async def _inner(step_input, run_context=None):
         raise asyncio.CancelledError
 
     wrapped = _instrumented_executor(_inner, "mcp", "my-key")
@@ -371,3 +371,26 @@ def test_runner_records_duration_for_naive_started_at(mock_record):
         status="failed",
         duration_seconds=12.0,
     )
+
+
+@pytest.mark.asyncio
+@patch("registry_pkgs.workflows.executor_resolver.record_agent_invocation")
+async def test_instrumented_executor_forwards_positional_run_context(mock_record):
+    """The wrapper chain passes run_context positionally (agno v3); it must reach the executor intact.
+
+    Regression: the wrapper used to declare (step_input, session_state, run_context), so a positional
+    RunContext landed in ``session_state`` and was forwarded as ``session_state=`` -> TypeError.
+    """
+    from agno.run import RunContext
+
+    received = {}
+
+    async def _inner(step_input, run_context=None):  # no session_state parameter, as in production
+        received["run_context"] = run_context
+        return StepOutput(content="ok", success=True)
+
+    rc = RunContext(run_id="r", session_id="s", session_state={"k": 1})
+    result = await _instrumented_executor(_inner, "mcp", "my-key")(StepInput(input="hi"), rc)
+
+    assert result.success is True
+    assert received["run_context"] is rc

@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 from agno.models.base import Model
+from agno.run import RunContext
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 
@@ -64,21 +65,13 @@ def _instrumented_executor(
     """Wrap a StepExecutor with invocation metrics."""
 
     @functools.wraps(executor)
-    async def _wrapper(
-        step_input: StepInput,
-        session_state: dict[str, Any] | None = None,
-        run_context: Any | None = None,
-    ) -> StepOutput:
+    async def _wrapper(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
+        # agno v3 contract: the wrapper chain passes run_context positionally (see compiler/with_control).
         start = time.perf_counter()
         error_type = "none"
         success = True
         try:
-            kwargs: dict[str, Any] = {}
-            if session_state is not None:
-                kwargs["session_state"] = session_state
-            if run_context is not None:
-                kwargs["run_context"] = run_context
-            result = await executor(step_input, **kwargs)
+            result = await executor(step_input, run_context)
             success = getattr(result, "success", True)
             if not success:
                 error_type = "StepOutputFailure"
@@ -104,11 +97,13 @@ def _builtin_executor(key: str) -> StepExecutor | None:
     """Return a lightweight in-process executor for builtin workflow demo steps."""
     if key == BUILTIN_ECHO_EXECUTOR_KEY:
 
-        async def _echo(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+        async def _echo(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
             # Demo executor: not LLM-backed, echoes the raw trigger text.
             # Uses get_input_as_string() rather than build_prompt() to avoid
             # storing the structured Markdown prompt in session_state.
-            state = session_state if session_state is not None else {}
+            state = (
+                run_context.session_state if run_context is not None and run_context.session_state is not None else {}
+            )
             state["echo_count"] = int(state.get("echo_count", 0)) + 1
             return StepOutput(content=step_input.get_input_as_string() or "", success=True)
 
@@ -117,9 +112,11 @@ def _builtin_executor(key: str) -> StepExecutor | None:
 
     if key == BUILTIN_SET_VALUE_EXECUTOR_KEY:
 
-        async def _set_value(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+        async def _set_value(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
             # Demo executor: not LLM-backed, stores raw trigger text in session_state.
-            state = session_state if session_state is not None else {}
+            state = (
+                run_context.session_state if run_context is not None and run_context.session_state is not None else {}
+            )
             state["value"] = step_input.get_input_as_string() or ""
             return StepOutput(content=str(state["value"]), success=True)
 
