@@ -47,8 +47,9 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from registry import settings
-from registry.utils.csrf import compute_csrf_token
+SESSION_COOKIE_NAME = "jarvis_registry_session"
+CSRF_COOKIE_NAME = "jarvis_registry_csrf"
+CSRF_HEADER_NAME = "X-Jarvis-CSRF"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -478,15 +479,15 @@ async def main() -> int:
 
     session_token = args.session_token
     csrf_token = args.csrf_token
-    if f"{settings.session_cookie_name}=" in session_token:
+    if f"{SESSION_COOKIE_NAME}=" in session_token:
         cookies = SimpleCookie()
         try:
             cookies.load(session_token)
         except CookieError:
             log.error("REGISTRY_SESSION_TOKEN contains an invalid Cookie header.")
             return 1
-        session_cookie = cookies.get(settings.session_cookie_name)
-        csrf_cookie = cookies.get(settings.csrf_cookie_name)
+        session_cookie = cookies.get(SESSION_COOKIE_NAME)
+        csrf_cookie = cookies.get(CSRF_COOKIE_NAME)
         if session_cookie is None:
             log.error("Cookie header does not contain the Registry session cookie.")
             return 1
@@ -494,11 +495,15 @@ async def main() -> int:
         if not csrf_token and csrf_cookie is not None:
             csrf_token = csrf_cookie.value
     if not csrf_token:
+        # Local CSRF derivation genuinely needs the backend signing secret; import it lazily so
+        # callers that pass their own CSRF token (or a full Cookie header) never require it.
+        from registry.utils.csrf import compute_csrf_token
+
         csrf_token = compute_csrf_token(session_token)
 
     headers = {
-        "Cookie": f"{settings.session_cookie_name}={session_token}",
-        settings.csrf_header_name: csrf_token,
+        "Cookie": f"{SESSION_COOKIE_NAME}={session_token}",
+        CSRF_HEADER_NAME: csrf_token,
     }
     scenarios_to_run = args.scenario or sorted(SCENARIOS.keys())
 

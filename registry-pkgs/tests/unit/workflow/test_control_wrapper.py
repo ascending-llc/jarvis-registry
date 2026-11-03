@@ -709,6 +709,40 @@ class TestWithControlHaltsAgnoWorkflow:
             await wrapped(SimpleNamespace(input="hello"), {})
 
     @pytest.mark.asyncio
+    async def test_bare_run_cancelled_exception_propagates(self, monkeypatch: pytest.MonkeyPatch):
+        """A bare RunCancelledException raised from inside a step (agno re-raises it) must propagate
+        as a cancel, not be swallowed into a failed StepOutput that would then be retried."""
+        from agno.exceptions import RunCancelledException
+
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+
+        executor = AsyncMock(side_effect=RunCancelledException("cancelled mid-agent"))
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=StepConfig(on_error="retry", max_retries=2),
+            directive_queue=queue,
+        )
+
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_start",
+            AsyncMock(),
+        )
+
+        with pytest.raises(RunCancelledException):
+            await wrapped(SimpleNamespace(input="hello"), None)
+        # Propagated on the first attempt — never retried as a failure.
+        assert executor.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_pause_timeout_raises_cancelled_error(self, monkeypatch: pytest.MonkeyPatch):
         run_id = str(PydanticObjectId())
         queue = DirectiveQueue()

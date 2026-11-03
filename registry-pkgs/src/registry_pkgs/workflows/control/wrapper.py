@@ -151,7 +151,10 @@ def with_control(
             token = context_api.attach(ctx)
             try:
                 result: StepOutput = await executor(step_input, run_context)
-            except WorkflowCancelledError:
+            except RunCancelledException:
+                # Our WorkflowCancelledError and any cancellation agno raises from inside the
+                # step (it re-raises RunCancelledException rather than retrying). Propagate as a
+                # cancel; never swallow it into a failed StepOutput that would then be retried.
                 raise
             except Exception as exc:
                 logger.exception("[run=%s] step %r executor raised", run_id, node_name)

@@ -342,12 +342,15 @@ class WorkflowControlService:
         # 1. Load the run (404s if it is unknown or not under this definition).
         run = await self._load_run(workflow_definition_id, run_id)
 
-        # 2. Already armed for cancel → idempotent. Nothing new to signal; a CANCELLED run may
-        #    still have open NodeRuns to repair. AWAITING_APPROVAL is the exception: it is still
-        #    unfinalized, so it falls through to step 4.
+        # 2. Already terminal-cancelled → idempotent, whatever the pending_directive: the control
+        #    wrapper clears CANCEL when it acks it, so a finished cancel is usually CANCELLED with
+        #    pending_directive=None. Repair any NodeRuns the original cancel left open.
+        if run.status == WorkflowRunStatus.CANCELLED:
+            return await self._repair_cancelled_run(run)
+
+        # 2b. Armed for cancel but not yet terminal → nothing new to signal. AWAITING_APPROVAL is
+        #     the exception: it is still unfinalized, so it falls through to step 4 to be finalized.
         if run.pending_directive == WorkflowDirective.CANCEL and run.status != WorkflowRunStatus.AWAITING_APPROVAL:
-            if run.status == WorkflowRunStatus.CANCELLED:
-                return await self._repair_cancelled_run(run)
             return run
 
         # 3. Validate the CANCEL transition up front (raises 4xx for a finished/non-cancellable run).
@@ -363,10 +366,11 @@ class WorkflowControlService:
             # 4a. A continuation resumed the run before our guarded write landed. Re-read and
             #     re-route on the winning state.
             run = await self._reload_run(PydanticObjectId(run.id))
-            # 4b. It finished cancelling already → repair open nodes; else leave its state as-is.
+            # 4b. It finished cancelling already → repair open nodes, independent of pending_directive
+            #     (the wrapper clears CANCEL on ack). Still armed but not terminal → leave its state.
+            if run.status == WorkflowRunStatus.CANCELLED:
+                return await self._repair_cancelled_run(run)
             if run.pending_directive == WorkflowDirective.CANCEL:
-                if run.status == WorkflowRunStatus.CANCELLED:
-                    return await self._repair_cancelled_run(run)
                 return run
             # 4c. Not resumed to a live state → the caller's view is stale.
             if run.status not in {WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED}:
@@ -442,6 +446,8 @@ class WorkflowControlService:
         )
         if result.modified_count == 0:
             run = await self._reload_run(PydanticObjectId(run.id))
+            if run.status == WorkflowRunStatus.CANCELLED:
+                return await self._repair_cancelled_run(run)  # finished cancelling concurrently — idempotent
             if run.pending_directive == WorkflowDirective.CANCEL:
                 return run  # another request already armed cancel — idempotent
             raise HTTPException(status_code=409, detail="Run state changed concurrently; refresh and retry")

@@ -94,6 +94,35 @@ async def test_send_cancel_concurrent_cancel_is_idempotent_on_reload(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_send_cancel_live_run_finished_cancelling_on_reload_is_idempotent(monkeypatch: pytest.MonkeyPatch):
+    """A double-clicked cancel: the first request armed CANCEL, the wrapper acked it (clearing the
+    directive) and the run reached CANCELLED. The second request's arm CAS misses; the reload shows
+    CANCELLED with pending_directive=None, which must repair open nodes and return 200 — not 409."""
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    workflow_collection = AsyncMock()
+    workflow_collection.update_one.return_value = SimpleNamespace(modified_count=0)  # arm CAS misses
+    node_collection = AsyncMock()
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: workflow_collection))
+    monkeypatch.setattr(NodeRun, "get_pymongo_collection", classmethod(lambda cls: node_collection))
+    cancelled = SimpleNamespace(
+        id=run_id,
+        status=WorkflowRunStatus.CANCELLED,
+        pending_directive=None,  # the wrapper cleared CANCEL when it acked it
+        finished_at=datetime.now(UTC),
+        error_summary="Workflow cancelled by user",
+    )
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=cancelled))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_cancel("wf-1", str(run_id))
+
+    assert result is cancelled  # 200 idempotent, not 409
+    node_collection.update_many.assert_awaited_once()  # open nodes repaired
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("pending_directive", [None, WorkflowDirective.CANCEL])
 async def test_send_cancel_awaiting_approval_finalizes_run_and_open_nodes(
     monkeypatch: pytest.MonkeyPatch, pending_directive: WorkflowDirective | None
@@ -1356,16 +1385,22 @@ async def test_trigger_resume_does_not_mask_unrelated_runtime_error_as_shutdown(
 
 
 @pytest.mark.asyncio
-async def test_send_cancel_awaiting_lost_race_then_continuation_already_cancelled(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("cancelled_directive", [WorkflowDirective.CANCEL, None])
+async def test_send_cancel_awaiting_lost_race_then_continuation_already_cancelled(
+    monkeypatch: pytest.MonkeyPatch, cancelled_directive: WorkflowDirective | None
+):
     """Finalize CAS misses (a continuation moved the run); the winner already cancelled it,
-    so send_cancel only repairs that run's open NodeRuns."""
+    so send_cancel only repairs that run's open NodeRuns. This must hold even when the control
+    wrapper has already cleared the CANCEL directive (pending_directive=None) — otherwise the
+    reload falls through to the conflict check and returns a spurious 409 for a cancel that
+    actually succeeded."""
     run_id = PydanticObjectId()
     finished_at = datetime.now(UTC)
     awaiting = SimpleNamespace(id=run_id, status=WorkflowRunStatus.AWAITING_APPROVAL, pending_directive=None)
     cancelled = SimpleNamespace(
         id=run_id,
         status=WorkflowRunStatus.CANCELLED,
-        pending_directive=WorkflowDirective.CANCEL,
+        pending_directive=cancelled_directive,
         finished_at=finished_at,
         error_summary="Workflow cancelled by user",
     )
