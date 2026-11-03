@@ -10,7 +10,6 @@ from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .container import RegistryContainer
-from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
 from .services.background_task_tracker import BackgroundTaskTracker
@@ -46,10 +45,6 @@ def get_container(request: Request) -> RegistryContainer:
 
 def get_search_service(container: RegistryContainer = Depends(get_container)) -> SearchService:
     return container.search_service
-
-
-def get_health_service(container: RegistryContainer = Depends(get_container)) -> HealthMonitoringService:
-    return container.health_service
 
 
 def get_federation_service(container: RegistryContainer = Depends(get_container)) -> FederationService:

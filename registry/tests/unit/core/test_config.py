@@ -53,7 +53,6 @@ class TestSettings:
         assert settings.session_max_age_seconds == 60 * 60 * 8  # 8 hours
         assert settings.local_embeddings_model_name == "all-MiniLM-L6-v2"
         assert settings.local_embeddings_model_dimensions == 384
-        assert settings.health_check_interval_seconds == 300  # 5 minutes
         assert settings.auth_server_redis_key_prefix == "jarvis-auth-server"
 
     @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
@@ -107,7 +106,6 @@ class TestSettings:
             **_SETTINGS_ENV,
             "SECRET_KEY": "test-secret",
             "LOCAL_EMBEDDINGS_MODEL_NAME": "test-model",
-            "HEALTH_CHECK_INTERVAL_SECONDS": "120",
             "AUTH_SERVER_REDIS_KEY_PREFIX": "jarvis-auth-server-test",
         },
     )
@@ -117,7 +115,6 @@ class TestSettings:
 
         assert settings.secret_key == "test-secret"
         assert settings.local_embeddings_model_name == "test-model"
-        assert settings.health_check_interval_seconds == 120
         assert settings.auth_server_redis_key_prefix == "jarvis-auth-server-test"
 
     def test_case_insensitive_env_vars(self):

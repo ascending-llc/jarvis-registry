@@ -718,37 +718,6 @@ def normalize_sse_endpoint_url_for_request(url_str: str) -> str:
     return url_str
 
 
-async def detect_server_transport_aware(base_url: str, server_info: dict = None) -> str:
-    """
-    Detect which transport a server supports by checking configuration and testing endpoints.
-    Uses server_info type if available, otherwise falls back to auto-detection.
-
-    Args:
-        base_url: The base URL of the MCP server
-        server_info: Optional server configuration dict containing type
-
-    Returns:
-        The preferred transport type (uses mcp_config constants)
-    """
-    # If URL already has a transport endpoint, detect from it
-    if base_url.endswith(MCPClientConfig.ENDPOINT_SSE) or MCPClientConfig.ENDPOINT_SSE in base_url:
-        logger.debug(f"Server URL {base_url} already has SSE endpoint")
-        return MCPClientConfig.TRANSPORT_SSE
-    elif base_url.endswith(MCPClientConfig.ENDPOINT_MCP) or MCPClientConfig.ENDPOINT_MCP in base_url:
-        logger.debug(f"Server URL {base_url} already has MCP endpoint")
-        return MCPClientConfig.TRANSPORT_HTTP
-
-    # Use server configuration if available
-    if server_info:
-        transport_type = server_info.get("type")
-        if transport_type:
-            logger.debug(f"Server configuration specifies transport type: {transport_type}")
-            return transport_type
-
-    # Fall back to auto-detection
-    return await detect_server_transport(base_url)
-
-
 async def detect_server_transport(base_url: str) -> str:
     """
     Detect which transport a server supports by testing endpoints.
@@ -1273,44 +1242,6 @@ def _extract_prompt_details(prompts_response) -> list[dict]:
     return prompt_details_list
 
 
-async def get_tools_from_server_with_server_info(base_url: str, server_info: dict = None) -> list[dict] | None:
-    """
-    Get tools from server using server configuration to determine optimal transport.
-
-    Args:
-        base_url: The base URL of the MCP server (e.g., http://localhost:8000).
-        server_info: Optional server configuration dict containing supported_transports
-
-    Returns:
-        A list of tool detail dictionaries (keys: name, description, schema),
-        or None if connection/retrieval fails.
-    """
-
-    if not base_url:
-        logger.error("MCP Check Error: Base URL is empty.")
-        return None
-
-    # Use transport-aware detection
-    transport = await detect_server_transport_aware(base_url, server_info)
-
-    logger.info(f"Attempting to connect to MCP server at {base_url} using {transport} transport (server-info aware)...")
-
-    try:
-        if transport == "streamable-http":
-            return await _get_tools_streamable_http(base_url, server_info)
-        elif transport == "sse":
-            return await _get_tools_sse(base_url, server_info)
-        else:
-            logger.error(f"Unsupported transport type: {transport}")
-            return None
-
-    except Exception as e:
-        logger.error(
-            f"MCP Check Error: Failed to get tool list from {base_url} with {transport}: {type(e).__name__} - {e}"
-        )
-        return None
-
-
 async def get_tools_and_capabilities_from_server(
     base_url: str,
     headers: dict[str, str] = None,
@@ -1445,9 +1376,3 @@ class MCPClientService:
             transport_type,
             redis_client=self.redis_client,
         )
-
-    async def get_tools_from_server_with_server_info(
-        self, base_url: str, server_info: dict = None
-    ) -> list[dict] | None:
-        """Wrapper method that uses server configuration for transport selection."""
-        return await get_tools_from_server_with_server_info(base_url, server_info)

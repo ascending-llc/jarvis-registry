@@ -34,7 +34,6 @@ from registry_pkgs.workflows.schedule_repository import WorkflowScheduleReposito
 from .auth.dependencies import effective_scopes_from_context
 from .core.a2a_proxy import A2AProxyClientRegistry
 from .core.mcp_client import MCPClientService
-from .health.service import HealthMonitoringService
 from .mcpgw.core.client_info_store import ClientInfoStore
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
@@ -164,10 +163,6 @@ class RegistryContainer:
             a2a_agent_repo=self.a2a_agent_repo,
             acl_service=self.acl_service,
         )
-
-    @cached_property
-    def health_service(self) -> HealthMonitoringService:
-        return HealthMonitoringService(server_service=self.server_service, mcp_client_service=self.mcp_client_service)
 
     @cached_property
     def federation_service(self) -> FederationService:
@@ -634,9 +629,6 @@ class RegistryContainer:
             logger.warning("Vector search service not initialized - index update skipped")
             logger.info("App will continue without vector search features")
 
-        logger.info("Initializing health monitoring service...")
-        await self.health_service.initialize()
-
         logger.info("Initializing MCP service (OAuth flow state storage)...")
         await self.mcp_service.initialize()
 
@@ -679,7 +671,6 @@ class RegistryContainer:
         await self.embedding_maintenance_watcher.shutdown()
         # Cancel and finalize all tracked background runs (replaces the cluster-wide shutdown sweep).
         await self.background_task_tracker.shutdown()
-        await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
         await self.mcpgw_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()

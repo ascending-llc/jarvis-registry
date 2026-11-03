@@ -1,6 +1,8 @@
-# MCP Gateway Registry - Complete API Reference
+# MCP Gateway Registry - API Reference
 
-This document provides a comprehensive overview of all 43 API endpoints available in the MCP Gateway Registry, organized by category with authentication requirements, request/response specifications, and OpenAPI documentation links.
+This document provides an overview of MCP Gateway Registry APIs by category, with authentication requirements, request/response specifications, and OpenAPI documentation links.
+
+For current HTTP endpoints and schemas, use the running Registry's `/openapi.json` or `/docs`; see [OpenAPI Specifications](#openapi-specifications).
 
 ## Table of Contents
 
@@ -9,26 +11,23 @@ This document provides a comprehensive overview of all 43 API endpoints availabl
 3. [A2A Agent Management APIs](#a2a-agent-management-apis)
 4. [Internal Server Management APIs](#internal-server-management-apis)
 5. [Authentication & Login APIs](#authentication--login-apis)
-6. [Health Monitoring APIs](#health-monitoring-apis)
-7. [Discovery & Well-Known Endpoints](#discovery--well-known-endpoints)
-8. [Utility Endpoints](#utility-endpoints)
-9. [Response Codes & Error Handling](#response-codes--error-handling)
-10. [OpenAPI Specifications](#openapi-specifications)
+6. [Discovery & Well-Known Endpoints](#discovery--well-known-endpoints)
+7. [Utility Endpoints](#utility-endpoints)
+8. [Response Codes & Error Handling](#response-codes--error-handling)
+9. [OpenAPI Specifications](#openapi-specifications)
 
 ---
 
 ## API Categories
 
-| Category | Count | Auth Method | Purpose |
-|----------|-------|-------------|---------|
-| A2A Agent Management | 8 | JWT Bearer Token | Agent registration, discovery, and management |
-| Internal Server Management (UI) | 10 | Session Cookie | Dashboard and service management |
-| Internal Server Management (Admin) | 12 | HTTP Basic Auth | Administrative operations and group management |
-| Authentication & Login | 7 | OAuth2 + Session | User authentication and provider management |
-| Health Monitoring | 3 | Session Cookie / None | Real-time health updates and statistics |
-| Discovery | 1 | None (Public) | Public MCP server discovery |
-| Utility | 2 | Session Cookie / Public | Current user info and service health |
-| **TOTAL** | **46** | **Multiple** | **Full registry functionality** |
+| Category | Auth Method | Purpose |
+|----------|-------------|---------|
+| A2A Agent Management | JWT Bearer Token | Agent registration, discovery, and management |
+| Internal Server Management (UI) | Session Cookie | Dashboard and service management |
+| Internal Server Management (Admin) | HTTP Basic Auth | Administrative operations and group management |
+| Authentication & Login | OAuth2 + Session | User authentication and provider management |
+| Discovery | None (Public) | Public MCP server discovery |
+| Utility | Session Cookie / Public | Current user info and service health |
 
 ---
 
@@ -58,7 +57,7 @@ curl -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ..." \
 
 ### 2. Session Cookie (Enhanced Auth)
 
-**Used by:** UI Server Management, Health Monitoring (WebSocket), Auth status endpoints
+**Used by:** UI Server Management, Auth status endpoints
 
 **How it works:**
 - User logs in via OAuth2 (Keycloak)
@@ -810,57 +809,6 @@ curl -u admin:password http://localhost/api/internal/register \
 
 ---
 
-## Health Monitoring APIs
-
-**File:** `registry/health/routes.py`
-**Route Prefix:** `/api/health`
-
-### 1. Health Status WebSocket
-
-**Endpoint:** `WebSocket /api/health/ws/health_status`
-
-**Purpose:** Real-time health status updates via WebSocket
-
-**Authentication:** Session cookie required
-
-**Messages:** Periodic health status broadcasts
-
-**Features:**
-- Authenticated connections only
-- Ping/pong keep-alive
-- Graceful disconnect handling
-
----
-
-### 2. Health Status HTTP
-
-**Endpoint:** `GET /api/health/ws/health_status`
-
-**Purpose:** Get health status via HTTP (WebSocket fallback)
-
-**Authentication:** None
-
-**Response:** `200 OK` with health status JSON
-
----
-
-### 3. WebSocket Statistics
-
-**Endpoint:** `GET /api/health/ws/stats`
-
-**Purpose:** Get WebSocket performance statistics
-
-**Response:** `200 OK`
-```json
-{
-  "active_connections": 5,
-  "total_messages_sent": 1234,
-  "uptime_seconds": 86400
-}
-```
-
----
-
 ## Discovery & Well-Known Endpoints
 
 **File:** `registry/api/wellknown_routes.py`
@@ -1043,16 +991,14 @@ curl -s http://localhost:7860/openapi.json | \
 
 ## Summary Table
 
-| Category | Endpoints | Auth | Purpose |
-|----------|-----------|------|---------|
-| A2A Agents | 8 | JWT Bearer | Agent lifecycle management |
-| UI Management | 10 | Session Cookie | Dashboard operations |
-| Admin Operations | 12 | HTTP Basic Auth | Administrative tasks |
-| Authentication | 7 | OAuth2/Session | User login/logout |
-| Health Monitoring | 3 | Session/None | Real-time status |
-| Discovery | 1 | None | Public server discovery |
-| Utility | 2 | Session/None | Helper endpoints |
-| **TOTAL** | **43** | **Multiple** | **Full system coverage** |
+| Category | Auth | Purpose |
+|----------|------|---------|
+| A2A Agents | JWT Bearer | Agent lifecycle management |
+| UI Management | Session Cookie | Dashboard operations |
+| Admin Operations | HTTP Basic Auth | Administrative tasks |
+| Authentication | OAuth2/Session | User login/logout |
+| Discovery | None | Public server discovery |
+| Utility | Session/None | Helper endpoints |
 
 ---
 

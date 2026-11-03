@@ -43,7 +43,6 @@ def _stub_shutdown_dependencies(container: RegistryContainer, monkeypatch) -> No
     container.__dict__["background_task_tracker"] = MagicMock(shutdown=AsyncMock(return_value=0))
     container.__dict__["embedding_reindex_job_runner"] = MagicMock(shutdown=AsyncMock())
     container.__dict__["embedding_maintenance_watcher"] = MagicMock(shutdown=AsyncMock(), start=AsyncMock())
-    container.__dict__["health_service"] = MagicMock(shutdown=AsyncMock())
     container.__dict__["mcp_proxy_client"] = MagicMock(aclose=AsyncMock())
     container.__dict__["a2a_httpx_client"] = MagicMock(aclose=AsyncMock())
     container.__dict__["a2a_client_registry"] = MagicMock(close=AsyncMock())

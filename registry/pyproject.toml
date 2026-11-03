@@ -17,7 +17,6 @@ dependencies = [
     "httpx-sse>=0.4.0",
     "opentelemetry-api>=1.20.0",
     "python-multipart>=0.0.20",
-    "itsdangerous>=2.2.0",
     "jinja2>=3.1.6",
     "websockets>=15.0.1",
     # Auth
