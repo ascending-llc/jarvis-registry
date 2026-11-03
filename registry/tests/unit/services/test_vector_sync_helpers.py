@@ -16,8 +16,6 @@ from registry.services.vector_sync_helpers import (
 )
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 
-pytestmark = pytest.mark.asyncio
-
 _OWNER = "registry-pod-1"
 
 
