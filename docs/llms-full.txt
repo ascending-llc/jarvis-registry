@@ -2,7 +2,7 @@
 
 > Jarvis Registry is a self-hostable enterprise gateway and registry for governed access to MCP servers, A2A agents, and private AI skills.
 
-Last updated: 2026-10-30T18:57:41Z
+Last updated: 2026-11-03T16:53:28Z
 
 Documentation: https://jarvisregistry.com/
 Index: https://jarvisregistry.com/llms.txt
@@ -31,6 +31,14 @@ Source Markdown: docs/index.md
 Jarvis Registry acts as a **centralized control plane** for tool calling and orchestration between AI clients (copilots, custom chatbots, IDEs, agents) and enterprise MCP servers and skills. Requests are authenticated and checked against configured scopes and resource ACLs before protected resources are returned or invoked. See [Security Control Design](design/security-design.md) for how those controls work together.
 
 Whether you are building a custom chatbot, connecting Claude Code, Codex, GitHub Copilot, Cursor, or VS Code to internal tools, orchestrating fleets of autonomous A2A agents, or federating tools and skills across cloud environments, Jarvis Registry lets your engineers **focus on the user experience** while the platform handles **secure tool discovery, calling, and orchestration** with built-in governance, discoverability, and auditability.
+
+## Evaluate access and private skill distribution
+
+Start with the question your team needs to answer:
+
+- [Is Git enough for our private agent skills?](walkthroughs/git-vs-private-skill-registry.md) Compare source review, per-skill sharing and delivery to coding clients.
+- [Does MCP server access stop an unauthorized caller?](walkthroughs/mcp-access-control.md) Test two users, explicit tool calls and an access change with synthetic data.
+- [How do we import, update and revoke access to a private skill?](walkthroughs/private-skill-lifecycle.md) Follow one two-file skill through Registry and CLI delivery.
 
 ## Private Deployment and Compliance
 
@@ -1225,7 +1233,7 @@ Sign in as an organization Owner or another role permitted to manage connectors.
 4. Review the detected OAuth settings and complete the sign-in setup for your deployment. Keep per-user OAuth authentication enabled rather than selecting **No sign in** or supplying a shared user's token.
 5. Finish adding the connector and review its availability and tool controls for your organization.
 
-**For business users:** Open **Customize > Connectors**, select **Jarvis Registry > Connect**, and sign in with your organization account. Enable it in a conversation through **+ > Connectors**. The organization connector can be used in Claude Desktop without editing local configuration files.
+**For business users:** In a chat, select **+ > Connectors > Jarvis Registry**. Sign in with your organization account if prompted. The organization connector can be used in Claude Desktop without editing local configuration files.
 
 See Anthropic's [custom connectors using remote MCP](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) for current organization roles, authentication options, and client availability.
 
@@ -1239,11 +1247,12 @@ Sign in to the intended ChatGPT workspace as an admin or owner. Enterprise/Edu m
 2. Enter **Jarvis Registry** in **Name**. The icon and description are optional.
 3. Under **Connection**, keep **Server URL** selected and paste your shared HTTPS gateway URL. Set **Authentication** to **OAuth**. Use **Advanced OAuth settings** only if your deployment requires specific client settings or scopes. If your administrators have configured a Secure MCP Tunnel instead, select **Tunnel**.
 4. Review the risk warning, select **I understand and want to continue**, and choose **Create as a plugin**. Complete OAuth sign-in when prompted.
-5. Review the discovered tools and use your workspace's admin controls to approve availability for the intended users. Creating the connection alone does not establish organization-wide access.
+5. Review the discovered tools and use your workspace's admin controls to approve the tools intended for users.
+6. Select **Publish to workspace** (or the equivalent workspace publishing control) and confirm the intended audience. Users can connect only after the integration is published; creating the connection and approving tools alone does not establish organization-wide access.
 
-**For business users:** Open **Plugins**, find the approved **Jarvis Registry** integration, install/connect it, and sign in with your own organization account when prompted. Select it in a new conversation and try a permitted read-only task.
+**For business users:** In a new conversation, type **@** and find and select the approved **Jarvis Registry** plugin or custom MCP server. Sign in with your organization account if prompted, then try a permitted read-only task.
 
-Use **ChatGPT web** for administration and initial validation. Confirm support in your deployed ChatGPT desktop app before directing users there. Older workspaces may show different Apps or publishing controls; use OpenAI's guide below for those variants.
+Use **ChatGPT web** for administration. To validate publishing, open a new conversation, type **@**, select **Jarvis Registry**, and try a permitted read-only task. Confirm support in your deployed ChatGPT desktop app before directing users there. Older workspaces may show different Apps or publishing controls; use OpenAI's guide below for those variants.
 
 See OpenAI's [Connecting custom MCP servers in ChatGPT](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt) for current creation, publishing, network, and plan requirements.
 
@@ -2364,18 +2373,129 @@ When agents run in the same virtual private network as the gateway (for example,
 
 ---
 
+# Walkthroughs: Git or a Private Skill Registry?
+
+Published URL: https://jarvisregistry.com/walkthroughs/git-vs-private-skill-registry/
+Source Markdown: docs/walkthroughs/git-vs-private-skill-registry.md
+
+---
+title: Git repository or private agent skill registry?
+description: Decide when Git is enough for private agent skills and when Jarvis Skill Gateway adds per-skill access and distribution across coding clients.
+---
+
+# Git repository or private agent skill registry?
+
+**Git can be enough when one team reviews and shares the same agent skills through a repository everyone can access. A private skill registry becomes useful when the audience for each skill differs, developers use several coding clients, or the team needs a central place to control future downloads.** Keep Git for source review; add a registry for distribution when those needs arise.
+
+[Jarvis Skill Gateway](../features/skill-gateway.md), part of ASCENDING's Jarvis Registry, provides a private catalog, skill versions and resource access controls. Its CLI synchronizes accessible skills into supported developer directories. It complements your repository review process rather than replacing it.
+
+## Compare the responsibilities
+
+| Team need | Git repository workflow | Git plus Jarvis Skill Gateway |
+| --- | --- | --- |
+| Review a skill change | Review the diff and approve a repository revision using your Git host's controls. | Keep that process, then import the approved revision into Registry. |
+| Choose who can receive one skill | Use repository permissions, repository structure or additional automation. Repository access alone is not a per-skill Registry grant. | Grant access to the individual Registry skill; successful list and content reads require the relevant scope and resource permission. |
+| Deliver skills to several coding clients | Maintain each client's layout and update process yourself. | Use the documented CLI modes for directory delivery; verify loading separately in each client. |
+| Identify the delivered revision | Record the Git commit and track how it reached each developer. | Record the source commit, Registry skill ID and version, then compare the CLI manifest. These identifiers have different meanings. |
+| Remove future access | Remove repository access and account for files already cloned or copied. | Remove all effective Registry grants. A successful CLI sync reconciles the managed copy; independent copies and loaded session content remain. |
+| Authorize tools mentioned by a skill | Configure the referenced tool or service separately. | Do the same. Downloading a skill does not grant MCP or business-system access. |
+
+A registry is an additional service to operate. If repository review and a small, consistent client setup meet your needs, another distribution layer may add more work than value. The [deployment guide](../deployment-guide.md) explains the infrastructure needed for Jarvis Registry.
+
+## Follow one approved change from Git to a coding client
+
+Use one skill with a supporting checklist so an update can be checked in both files:
+
+```text
+skills/
+  release-notes-check/
+    SKILL.md
+    references/
+      checklist.md
+```
+
+1. **Review in Git.** Approve a specific commit using your existing process. Skill Gateway supports Git providers including GitHub and GitLab; the [worked import example](private-skill-lifecycle.md#2-import-an-approved-private-revision) uses GitHub-specific configuration.
+2. **Import into Registry.** For that example, configure `skills` as the container path. Record the job result and resolved commit, then inspect the imported skill and both files. A connected source is not proof of a completed import.
+3. **Share the skill.** Give one test developer access to the imported skill and keep another excluded. Check direct, group, public and source grants.
+4. **Sync to a client directory.** Configure and authenticate the CLI, select its documented directory mode, and sync to an empty disposable project. Check the files and manifest before assessing whether the AI client loaded the skill.
+5. **Repeat after an update.** Import the newly approved Git commit, then sync again. Confirm both files changed and the recorded Registry version matches. Local edits are not pushed back to Git or Registry.
+
+For commands, source fields and expected responses, use the complete [private skill lifecycle walkthrough](private-skill-lifecycle.md). It includes a two-file sample, a second revision and explicit access checks, so this decision guide does not require another parallel setup procedure.
+
+## Example: one source repository, different skill audiences
+
+Suppose a platform team reviews several skills in one private repository. Both engineering teams use that repository, but only one team should receive the release-note skill through Registry. Developers use a mix of Claude Code, Codex and Cursor.
+
+Keep the Registry skill-sync source resource private to its import owner. Give the intended developer a direct grant on the imported release-note skill, then check an excluded developer with the same required API scope. Developers who can already read the Git repository retain that access and can copy its files; this example tests Registry distribution, not secrecy from repository readers. It isolates the per-skill distribution decision without changing the source-review process or granting both teams every imported skill. Check all inherited grants before treating the result as restricted access.
+
+Use the [evaluation record template](examples/skills/registry-evaluation-record.json) to compare the two workflows. It is an editable evidence template, not a Jarvis configuration file or API request. Record each installed version, approved commit, skill ID, Registry version, client directory mode and observed result. Leave untested checks as `not_run`.
+
+Choose the Registry workflow only if that extra access and delivery control is useful enough to operate the service. If everyone should receive the same small skill set and your Git-based delivery already works across clients, retain that simpler workflow.
+
+## Test access removal before adopting the workflow
+
+**Removing access prevents future Registry reads; it does not remotely erase every downloaded copy.** The CLI removes a previously managed skill after it successfully obtains the accessible-skill list and reconciles the local directory. A failed login or unavailable Registry is not a successful revocation check.
+
+For a useful evaluation, test these cases with a harmless skill:
+
+| Case | Result to check |
+| --- | --- |
+| Allowed and excluded developers | Both authenticate, but only the allowed developer can list and read the recorded skill ID. |
+| Approved update | The same skill ID receives the imported revision; both files and the Registry version reach the managed directory. |
+| Access removed | Registry list and content access change; a successful CLI sync removes the managed skill and manifest entry. |
+| Independent copy | A copy saved outside the managed directory remains, showing the limit of local reconciliation. |
+| Another source import | Removed access does not return through a remaining source or group grant. |
+
+The [revocation test](private-skill-lifecycle.md#6-revoke-access-and-check-the-limits) explains source-to-skill grant inheritance. Removing a source grant alone does not remove child grants already copied to imported skills. A remaining source grant can add a missing child grant again on a later import.
+
+## Keep skill distribution separate from MCP authorization
+
+A skill package contains instructions and supporting files. An MCP server exposes tools a client can invoke. A private skill registry controls who can receive the package; an MCP gateway checks access to registered servers and routes permitted requests.
+
+Jarvis Registry supports both capabilities, but their permissions do not substitute for each other. For example, distributing a release-note skill does not authorize a developer to query a company ticket system. Use the [MCP access-control walkthrough](mcp-access-control.md) to test the separate server-access boundary, including an explicit call by a user who knows the server ID and tool name but lacks the server grant.
+
+## Check the implementation details
+
+- [Skill Gateway](../features/skill-gateway.md): private catalog, Git-provider import and resource sharing.
+- [AI Skills CLI](../features/ai-skills-cli.md): installation links, directory modes and client setup.
+- [Skills API](../design/skills-sync-api.md): list/content authentication, versions and skill permissions.
+- [Source sync API](../design/skill-sync-source-api.md): GitHub-specific fields, import containers and job responses.
+- [RBAC and scopes](../design/scopes.md): API capabilities and resource permissions.
+
+---
+
 # Walkthroughs: Test MCP Access with Two Users
 
 Published URL: https://jarvisregistry.com/walkthroughs/mcp-access-control/
 Source Markdown: docs/walkthroughs/mcp-access-control.md
 
-# Validate MCP access with two users and synthetic data
+---
+title: MCP access control with two users
+description: Test MCP server permissions in Jarvis Registry with two users, direct tool calls, access removal and a loopback-only sample server.
+---
 
-Before connecting a business system, check whether your Jarvis Registry deployment stops an unauthorized user from calling a registered MCP server, even when that user knows its server ID and tool name. This walkthrough uses two identities, one harmless tool, and a permission change.
+# MCP access control: test user permissions in Jarvis Registry
+
+**Jarvis Registry checks a caller's role scopes and the registered MCP server's access-control list before its `execute_tool` gateway forwards a call.** Knowing a server ID or tool name does not grant access. This guide shows platform engineers how to compare allowed and denied users, then grant and remove access to the same harmless tool.
+
+The permission boundary here is the **registered server**. Disabling an individual tool is a separate server-wide setting, not a different tool allowlist for each user. The transparent proxy checks server access but does not apply that disabled-tool list.
 
 The outcomes below are **acceptance criteria to validate on your deployment**, not a report of a completed tenant test. The included local probe checks the sample MCP server; it does not test Registry authentication or authorization.
 
 Use the [MCP Gateway guide](../features/mcp-gateway-registry.md) for registration and sharing, and [Registry Endpoint](../features/registry-endpoint.md) for client connection setup. This walkthrough adds a repeatable access check to those workflows.
+
+## MCP permission test at a glance
+
+Use one private test server and two users with the same required gateway scopes. Keep the server owner allowed throughout the test.
+
+| Test | Expected outcome to verify | Detailed steps |
+| --- | --- | --- |
+| Discover and call as the owner | The synthetic tool is visible and returns a fabricated ticket. | [Register the test server](#2-register-and-enable-a-private-test-server) |
+| Call as a user without a server grant | Discovery omits the tool, and an explicit call with its known ID is denied. | [Compare discovery and execution](#3-compare-discovery-and-explicit-execution) |
+| Grant access, then remove all effective grants | The same user's call changes from allowed to denied; the owner still succeeds. | [Change access and retest](#4-grant-bob-access-then-remove-it) |
+| Disable the tool for an accessible server | `execute_tool` denies it for both users; test proxy behavior separately. | [Test server-wide tool disabling](#5-test-server-wide-tool-disabling-separately) |
+
+**A hidden search result is not proof of an execution restriction.** Always attempt the known harmless tool call as the restricted user. Inspect the MCP result's `isError` field, not just HTTP status, and correlate the call with downstream activity when the deployment exposes it.
 
 ## Understand the access boundaries
 
@@ -2555,15 +2675,42 @@ Restore the original sharing and disabled-tool settings, disconnect the test cli
 Published URL: https://jarvisregistry.com/walkthroughs/private-skill-lifecycle/
 Source Markdown: docs/walkthroughs/private-skill-lifecycle.md
 
-# Test a private skill's lifecycle: import, update and revoke
+---
+title: Private agent skill import, updates and access removal
+description: Follow a private agent skill from an approved Git commit into Jarvis Registry, deliver updates to coding clients and test access removal.
+---
 
-Use this walkthrough to check how a private GitHub skill moves into Jarvis Registry, reaches an authorized developer, receives an update, and is removed from the CLI's managed directory after access is revoked.
+# Private agent skills: import, update and revoke access
+
+**Jarvis Skill Gateway separates the Git repository used to review a skill from the private Registry used to share it with developers.** Import an approved revision, grant access to the resulting skill, then use the Jarvis Registry CLI to deliver accessible skills to a developer's managed directory. Updates to this Git-backed skill require another import and CLI sync.
+
+This guide gives platform teams a repeatable check of that workflow using one skill with two files. It follows the approved Git revision, Registry skill ID and version, developer access and local copy through import, update and access removal.
 
 This exercise uses the documented GitHub integration and CLI modes as concrete test paths. Skill Gateway also supports other Git providers, including GitLab, and consumers including Cursor. Those product capabilities do not change the GitHub-specific fields or CLI mode names used below.
 
 Registry controls future access to its copy of a skill. A successful CLI sync reconciles the developer's managed local copy. An access change does not remotely erase downloaded files, independent copies, or material already loaded into an AI client.
 
 The steps below are acceptance checks to run in your configured test environment. They do not assert that a particular deployment or AI client has already passed. For product background, see [Skill Gateway](../features/skill-gateway.md) and [AI Skills CLI](../features/ai-skills-cli.md). For installation and authentication, use the CLI's [setup guide](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/setup.md) and [getting started guide](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/getting-started.md).
+
+## Private skill workflow at a glance
+
+```text
+Reviewed Git revision
+    -> one-way import -> Registry skill ID + version + access grants
+    -> authenticated CLI sync -> developer's managed skill directory
+    -> client loading -> skill available in the selected coding tool
+```
+
+GitHub is the concrete source provider in this example; Skill Gateway also supports GitLab and other Git providers. Repository review, Registry sharing and client loading are separate steps.
+
+| Team question | What to verify | Detailed steps |
+| --- | --- | --- |
+| How do we distribute an approved skill privately? | Only the allowed developer can list and download the imported skill. | [Import the approved revision](#2-import-an-approved-private-revision) and [compare two developers](#3-compare-an-allowed-and-an-excluded-developer) |
+| How do developers receive updates? | Re-import the approved change; CLI sync delivers both revised files and records the Registry version. | [Update and verify both files](#5-update-the-same-skill-and-verify-both-files) |
+| What happens when access is removed? | Registry reads are denied; a subsequent successful sync removes the managed copy. Independent copies remain. | [Revoke access and check the limits](#6-revoke-access-and-check-the-limits) |
+| Is Git alone enough for our team? | Compare repository review with per-skill delivery, access and client setup. | [Git repository or private skill registry?](git-vs-private-skill-registry.md) |
+
+The CLI modes are `claude`, `codex` and `copilot`; a mode selects a directory convention. Cursor is also a supported consumer, but there is no separate `cursor` mode. Use the [current client setup reference](../features/ai-skills-cli.md#consumers-and-cli-modes) and verify loading in your client version.
 
 ## Before you start
 
@@ -12494,6 +12641,7 @@ Release notes for every version of Jarvis Registry.
 
 | Version | Date | Type | Description |
 | ------- | ---- | ---- | ----------- |
+| [asc0.5.17](asc0.5.17.md) | November 02, 2026 | Release | The asc0.5.17 release of Jarvis Registry |
 | [asc0.5.16](asc0.5.16.md) | October 29, 2026 | Release | The asc0.5.16 release of Jarvis Registry |
 | [asc0.5.15](asc0.5.15.md) | October 28, 2026 | Release | The asc0.5.15 release of Jarvis Registry |
 | [asc0.5.14](asc0.5.14.md) | October 08, 2026 | Release | The asc0.5.14 release of Jarvis Registry |
@@ -12512,6 +12660,44 @@ Release notes for every version of Jarvis Registry.
 | [asc0.5.1](asc0.5.1.md) | July 06, 2026 | Release | The asc0.5.1 release of Jarvis Registry |
 | [asc0.3.1](asc0.3.1.md) | May 26, 2026 | Release | ✨ Features |
 | [asc0.2.12](asc0.2.12.md) | May 13, 2025 | Release | JWT security hardening, AgentCore federation auth, workflow refactor, and docs expansion |
+
+---
+
+# Changelog: asc0.5.17
+
+Published URL: https://jarvisregistry.com/changelog/asc0.5.17/
+Source Markdown: docs/changelog/asc0.5.17.md
+
+---
+title: "🚀 Jarvis Registry asc0.5.17"
+description: "The asc0.5.17 release of Jarvis Registry"
+date: 2026-11-02
+tags:
+  - Release
+---
+
+[← Back to changelog](index.md)
+
+# 🚀 Jarvis Registry asc0.5.17
+
+_November 02, 2026_ · [asc0.5.17 on GitHub](https://github.com/ascending-llc/jarvis-registry/releases/tag/asc0.5.17)
+
+---
+
+### 🐛 Bug Fixes
+
+- Fixes Google Workspace group access grants not reaching users first created by Chat; Google users are now matched to groups by email, while Entra users still match by their directory object ID. (#654)
+- Preserves existing embeddings when updating server and agent metadata such as enabled state, tags and runtime version, which previously failed with a 500 error in environments without static AWS keys or silently overwrote the stored vector. (#653)
+- Scopes Google Cloud Identity group lookups to the Workspace customer through a new optional `GOOGLE_CUSTOMER_ID` setting, so logins and group sync no longer fail for users who belong to groups owned by other organizations, and improves logging of Google error details. (#656)
+- Uses URL-mode elicitation only for clients on protocol version 2025-11-25 or later, and includes the consent URL in the model-facing messages so clients such as Codex CLI can show users the consent link. (#657)
+- Fetches a newly registered MCP server's capabilities in the background, so server creation returns immediately instead of timing out and reporting a committed server as failed. (#655)
+
+### 🌍 Documentation
+
+- Reorganizes the documentation, adding a production configuration guide and ChatGPT/Claude custom connector screenshots, and removing the outdated auth and configuration pages. (#658)
+- Updates the production configuration guide. (#659)
+- Adds a script that generates LLM-readable documentation files (`llms.txt` and `llms-full.txt`) from the docs. (#660)
+- Updates the production configuration guide. (#661)
 
 ---
 

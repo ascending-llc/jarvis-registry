@@ -118,6 +118,7 @@ nav:
     - Registry Endpoint: features/registry-endpoint.md
     - Observability: features/observability.md
   - Walkthroughs:
+    - Git or a Private Skill Registry?: walkthroughs/git-vs-private-skill-registry.md
     - Test MCP Access with Two Users: walkthroughs/mcp-access-control.md
     - Private Skill Import, Updates & Access Removal: walkthroughs/private-skill-lifecycle.md
   - Architecture & Design:

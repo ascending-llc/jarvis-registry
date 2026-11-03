@@ -230,7 +230,7 @@ All secrets must be populated **before** deploying the Helm chart.
 
 ## Phase 5 — Registry Helm Chart Deployment
 
-The Registry is deployed as a **single Helm release**  with the release name `jarvis-registry`. 
+The Registry is deployed as a **single Helm release**  with the release name `jarvis-registry`.
 ```
 helm install jarvis-registry oci://ghcr.io/ascending-llc/jarvis-chart/jarvis-registry -n jarvis-registry --create-namespace -f <my-values.yaml>
 ```

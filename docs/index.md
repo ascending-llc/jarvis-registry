@@ -14,6 +14,14 @@ Jarvis Registry acts as a **centralized control plane** for tool calling and orc
 
 Whether you are building a custom chatbot, connecting Claude Code, Codex, GitHub Copilot, Cursor, or VS Code to internal tools, orchestrating fleets of autonomous A2A agents, or federating tools and skills across cloud environments, Jarvis Registry lets your engineers **focus on the user experience** while the platform handles **secure tool discovery, calling, and orchestration** with built-in governance, discoverability, and auditability.
 
+## Evaluate access and private skill distribution
+
+Start with the question your team needs to answer:
+
+- [Is Git enough for our private agent skills?](walkthroughs/git-vs-private-skill-registry.md) Compare source review, per-skill sharing and delivery to coding clients.
+- [Does MCP server access stop an unauthorized caller?](walkthroughs/mcp-access-control.md) Test two users, explicit tool calls and an access change with synthetic data.
+- [How do we import, update and revoke access to a private skill?](walkthroughs/private-skill-lifecycle.md) Follow one two-file skill through Registry and CLI delivery.
+
 ## Private Deployment and Compliance
 
 Jarvis Registry can be deployed in a customer's environment, including private and on-premises deployments. Its authentication, RBAC, resource ACL, and observability capabilities can support a customer's security and compliance controls. A private deployment does not itself grant SOC 2 or another certification; certification applies to the customer's in-scope organization or service and its independently assessed controls.

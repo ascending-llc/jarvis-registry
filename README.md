@@ -24,7 +24,7 @@ It solves one of the hardest problems in enterprise AI: giving AI copilots and a
 | **AI Copilot Integration** | Connect Cursor, Claude Desktop, GitHub Copilot, VS Code, and any MCP-compatible copilot to enterprise tools |
 | **A2A Agent Orchestration** | Register and manage autonomous agents; orchestrator agents coordinate worker agents through the same secure gateway |
 | **Identity & Access Management** | OAuth 2.0/OIDC with Keycloak, Amazon Cognito, and Microsoft Entra ID — no custom auth code needed |
-| **Fine-Grained Access Control** | ACL engine enforces scope-based, role-based permissions down to the individual tool level |
+| **Access Control** | Role scopes and resource ACLs control registered-server access; server-wide tool disabling is a separate gateway setting |
 | **Skill & Context-Based Discovery** | Semantic search over skills, descriptions, and tags so agents and copilots find the right MCP server or A2A agent at runtime |
 | **Audit & Observability** | Full request logging, OpenTelemetry tracing, and Prometheus metrics |
 
@@ -62,6 +62,18 @@ open http://localhost:80
 ```
 
 See the full [Get Started guide](docs/quick-start.md) for detailed instructions.
+
+## Private agent skills and access checks
+
+Jarvis Registry also includes **Skill Gateway**, a private catalog for approved agent skills. Keep source review in your Git provider, import an approved revision, and share the resulting skill through Registry access controls. The Jarvis Registry CLI delivers accessible skills to supported coding-client directories.
+
+| Engineering question | Guide |
+|---|---|
+| Is Git enough, or do we need per-skill sharing and central distribution? | [Git repository or private agent skill registry?](docs/walkthroughs/git-vs-private-skill-registry.md) |
+| Does MCP server access stop a caller who already knows the server ID and tool name? | [MCP access control: test user permissions](docs/walkthroughs/mcp-access-control.md) |
+| How do approved private skills reach developers, receive updates and lose access? | [Private skill import, updates and access removal](docs/walkthroughs/private-skill-lifecycle.md) |
+
+These guides include concrete checks and sample files. Skill delivery is separate from MCP tool authorization; removing Registry access does not erase independent downloaded copies.
 
 ## Documentation
 
