@@ -88,7 +88,7 @@ def test_store_save_then_load_round_trips():
     loaded = store.load(key)
 
     assert loaded is not None
-    assert loaded.clientInfo.name == "vscode"
+    assert loaded.client_info.name == "vscode"
     # Only the three persisted fields are stored.
     assert set(json.loads(redis.store[key])) == {"clientInfo", "capabilities", "protocolVersion"}
 
@@ -300,7 +300,7 @@ def test_get_client_params_at_most_one_get_per_request():
     first = get_client_params(ctx)
     second = get_client_params(ctx)
 
-    assert first is not None and first.clientInfo.name == "vscode"
+    assert first is not None and first.client_info.name == "vscode"
     assert second is first
     assert redis.get_calls == 1
 

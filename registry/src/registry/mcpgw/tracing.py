@@ -10,7 +10,7 @@ from functools import wraps
 from typing import Any, Literal
 
 from a2a.types import DataPart, FilePart, FileWithBytes, FileWithUri, TextPart
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.server.session import ServerSession
 from mcp.types import (
     Annotations,
@@ -47,20 +47,20 @@ _DISCOVERY_OPERATIONS = {
 _TRACER = trace.get_tracer("registry.mcpgw")
 _RAW_PYTHON_BYTES_OMITTED = "[RAW PYTHON BYTES OMITTED]"
 _TRACE_MODEL_FIELDS: dict[type[BaseModel], tuple[str, ...]] = {
-    Annotations: ("audience", "priority"),
-    AudioContent: ("type", "mimeType", "annotations"),
-    BlobResourceContents: ("uri", "mimeType"),
-    CallToolResult: ("content", "structuredContent", "isError"),
+    Annotations: ("audience", "priority", "last_modified"),
+    AudioContent: ("type", "mime_type", "annotations"),
+    BlobResourceContents: ("uri", "mime_type"),
+    CallToolResult: ("content", "structured_content", "is_error"),
     DataPart: ("kind", "data"),
     EmbeddedResource: ("type", "resource", "annotations"),
     FilePart: ("kind", "file"),
     FileWithBytes: ("name", "mime_type"),
     FileWithUri: ("name", "mime_type", "uri"),
-    ImageContent: ("type", "mimeType", "annotations"),
-    ResourceLink: ("type", "name", "title", "uri", "description", "mimeType", "size", "annotations"),
+    ImageContent: ("type", "mime_type", "annotations"),
+    ResourceLink: ("type", "name", "title", "uri", "description", "mime_type", "size", "annotations"),
     TextContent: ("type", "text", "annotations"),
     TextPart: ("kind", "text"),
-    TextResourceContents: ("uri", "mimeType", "text"),
+    TextResourceContents: ("uri", "mime_type", "text"),
 }
 
 
@@ -154,8 +154,8 @@ def _extract_caller_identity(ctx: Context[ServerSession, McpAppContext]) -> dict
 
         client_params = get_client_params(ctx)
         if client_params is not None:
-            identity["mcp_client_name"] = client_params.clientInfo.name
-            identity["mcp_client_version"] = client_params.clientInfo.version
+            identity["mcp_client_name"] = client_params.client_info.name
+            identity["mcp_client_version"] = client_params.client_info.version
 
         return clean_span_attributes(identity)
     except Exception:
@@ -231,7 +231,7 @@ def _set_serialized_attribute(
 
 
 def _record_result(span: Span, result: CallToolResult) -> bool:
-    success = result.isError is not True
+    success = result.is_error is not True
     _set_serialized_attribute(span, "langfuse.observation.output", result)
     if success:
         return True

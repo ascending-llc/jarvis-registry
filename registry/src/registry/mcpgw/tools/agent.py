@@ -12,7 +12,7 @@ from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
 from a2a.utils.parts import get_data_parts, get_file_parts
 from beanie import PydanticObjectId
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.server.session import ServerSession
 from mcp.types import (
     BlobResourceContents,
@@ -22,7 +22,7 @@ from mcp.types import (
     TextContent,
     TextResourceContents,
 )
-from pydantic import AnyUrl, BaseModel, Field
+from pydantic import BaseModel, Field
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -65,7 +65,7 @@ def _file_to_resource(f: FileWithBytes | FileWithUri) -> ImageContent | Embedded
         return EmbeddedResource(
             type="resource",
             resource=BlobResourceContents(
-                uri=AnyUrl(f"urn:a2a:file:{uuid.uuid4().hex}"),
+                uri=f"urn:a2a:file:{uuid.uuid4().hex}",  # mcp 2.x: resource uri is a plain str
                 blob=f.bytes,  # already base64-encoded by the a2a SDK
                 mimeType=mime,
             ),
@@ -74,7 +74,7 @@ def _file_to_resource(f: FileWithBytes | FileWithUri) -> ImageContent | Embedded
         return EmbeddedResource(
             type="resource",
             resource=TextResourceContents(
-                uri=AnyUrl(str(f.uri)),
+                uri=str(f.uri),
                 mimeType=f.mime_type,
                 text=str(f.uri),
             ),

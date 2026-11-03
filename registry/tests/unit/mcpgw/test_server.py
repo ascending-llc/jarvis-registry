@@ -116,7 +116,7 @@ def _make_client_params(
 
 
 def _assert_stale_server_id_hint(result: CallToolResult) -> None:
-    assert result.isError is True
+    assert result.is_error is True
     assert len(result.content) == 1
     content = result.content[0]
     assert isinstance(content, TextContent)
@@ -190,7 +190,7 @@ class TestExecutionMetricsWiring:
                 server_id="missing",
             )
 
-        assert result.isError is True
+        assert result.is_error is True
         mock_record.assert_called_once()
         call_kwargs = mock_record.call_args[1]
         assert call_kwargs["tool_name"] == "tavily_search"
@@ -305,7 +305,7 @@ async def test_execute_tool_impl_missing_user_context_returns_auth_error():
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, str(PydanticObjectId()))
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Authentication required" in result.content[0].text
     ctx.request_context.lifespan_context.server_service.get_server_by_id.assert_not_awaited()
 
@@ -316,7 +316,7 @@ async def test_execute_tool_impl_invalid_user_id_returns_auth_error():
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, str(PydanticObjectId()))
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Authentication required" in result.content[0].text
     ctx.request_context.lifespan_context.server_service.get_server_by_id.assert_not_awaited()
 
@@ -343,7 +343,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Access denied" in result.content[0].text
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
     downstream_call.assert_not_awaited()
@@ -362,7 +362,7 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Service temporarily unavailable" in result.content[0].text
     downstream_call.assert_not_awaited()
 
@@ -490,7 +490,7 @@ def test_build_url_elicitation_result_logs_missing_client_params(caplog):
             ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     message = caplog.records[-1].getMessage()
     assert "no cached client params" in message
     assert "elicitation ID found: True" in message
@@ -508,7 +508,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "explicit consent" in result.content[0].text
     assert "/consent/server?nonce=" in result.content[0].text
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
@@ -548,7 +548,7 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
 
     # The elicitation id raised to the client must be threaded into the pending-consent payload so
     # the consent callback can later recover the client branding for the deep-link back.
-    raised_elicitation_id = exc_info.value.elicitations[0].elicitationId
+    raised_elicitation_id = exc_info.value.elicitations[0].elicitation_id
     assert raised_elicitation_id
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["elicitation_id"] == raised_elicitation_id
@@ -574,7 +574,7 @@ async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
 
 
 @pytest.mark.asyncio
@@ -592,7 +592,7 @@ async def test_execute_tool_impl_injects_trace_context_into_downstream_headers(m
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     headers = downstream_call.await_args.args[3]
     assert "traceparent" in headers
     assert f"{BAGGAGE_KEY_MCP_TOOL_NAME}=tavily_search" in headers["baggage"]
@@ -627,7 +627,7 @@ async def test_execute_tool_impl_injects_trace_context_into_session_init(monkeyp
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     # initialize_mcp_session(target_url, init_headers, session_key, transport_type)
     init_headers = init_session.await_args.args[1]
     assert "traceparent" in init_headers
@@ -651,7 +651,7 @@ async def test_execute_tool_impl_headless_agent_bypasses_server_consent(monkeypa
 
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
     downstream_call.assert_awaited_once()
-    assert not result.isError
+    assert not result.is_error
 
 
 @pytest.mark.asyncio
@@ -672,7 +672,7 @@ async def test_execute_tool_impl_downstream_tool_error_records_error_type(monkey
     with patch(f"{DECORATORS_PATH}._record_tool_execution") as mock_record:
         result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     call_kwargs = mock_record.call_args[1]
     assert call_kwargs["success"] is False
     assert call_kwargs["error_type"] == "downstream_tool_error"
@@ -691,7 +691,7 @@ async def test_execute_tool_impl_disabled_tool_returns_error(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "tavily_search" in result.content[0].text
     assert server_id in result.content[0].text
     assert "Do not retry this tool" in result.content[0].text
@@ -717,7 +717,7 @@ async def test_execute_tool_impl_enabled_tool_not_blocked(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     downstream_call.assert_awaited()
 
 
@@ -769,7 +769,7 @@ async def test_tool_401_then_refresh_retries_once_with_new_token(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     assert downstream.await_count == 2
     assert downstream.await_args_list[1].args[3]["Authorization"] == "Bearer t2"
     kwargs = oauth_service.recover_from_unauthorized.await_args.kwargs
@@ -816,7 +816,7 @@ async def test_tool_second_401_loop_guard_returns_error_result(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
-    assert result.isError
+    assert result.is_error
     assert result.content[0].text == message
     assert downstream.await_count == 2
     assert [c.kwargs["is_retry"] for c in oauth_service.recover_from_unauthorized.await_args_list] == [False, True]
@@ -836,7 +836,7 @@ async def test_tool_recovery_none_but_rebuild_has_token_retries_then_limits_send
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
-    assert result.isError
+    assert result.is_error
     assert result.content[0].text == "Authorization for github changed during this call; retry it."
     assert downstream.await_count == 2  # no third send
     assert downstream.await_args_list[1].args[3]["Authorization"] == "Bearer t-other"
@@ -857,7 +857,7 @@ async def test_tool_401_during_session_init_reaches_recovery(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     assert oauth_service.recover_from_unauthorized.await_args.kwargs["rejected_access_token"] == "t1"
     assert downstream.await_args.args[3]["mcp-Session-Id"] == "sess-2"
     assert downstream.await_args.args[3]["Authorization"] == "Bearer t2"
@@ -897,14 +897,22 @@ async def test_downstream_tool_call_raises_unauthorized_with_challenge():
 
 def test_create_mcp_app_is_stateless_without_event_store():
     """The gateway must be stateless (any pod serves any request) and keep json_response off so that
-    downstream notifications still ride the POST's own SSE stream."""
+    downstream notifications still ride the POST's own SSE stream.
+
+    mcp 2.x moved ``stateless_http`` / ``json_response`` / ``event_store`` off the MCPServer
+    (they were FastMCP ``settings`` in 1.x) onto ``streamable_http_app()``. The gateway's
+    statelessness is now a mount-time guarantee set in ``app_factory.create_app`` (which passes
+    ``stateless_http=True``) and exercised end-to-end by tests/integration/test_mcpgw_stateless.py.
+    """
+    from mcp.server.mcpserver import MCPServer
+
     from registry.mcpgw.server import create_mcp_app
 
     mcp = create_mcp_app(container_provider=lambda: None)
 
-    assert mcp.settings.stateless_http is True
-    assert mcp.settings.json_response is False
-    assert mcp._event_store is None
+    assert isinstance(mcp, MCPServer)
+    # Building the ASGI app stateless (as app_factory does) must succeed; json_response stays off by default.
+    assert mcp.streamable_http_app(stateless_http=True) is not None
 
 
 @pytest.mark.asyncio

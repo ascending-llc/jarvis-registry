@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 _CLIENT_INFO_TTL_SECONDS = 2592000
 
 # Only these fields drive URL-elicitation support and branding; store nothing else from `initialize`.
-_PERSISTED_FIELDS = {"clientInfo", "capabilities", "protocolVersion"}
+_PERSISTED_FIELDS = {"client_info", "capabilities", "protocol_version"}
 
 
 def client_info_key(prefix: str, user_context: UserContextDict, jwt_config: JwtTokenConfig) -> str | None:
@@ -70,7 +70,9 @@ class ClientInfoStore:
     def save(self, key: str, params: InitializeRequestParams) -> None:
         self._redis.set(
             key,
-            params.model_dump_json(include=_PERSISTED_FIELDS),
+            # by_alias keeps the persisted JSON in MCP wire form (camelCase), matching
+            # what load()'s model_validate_json reads and any entries cached pre-upgrade.
+            params.model_dump_json(include=_PERSISTED_FIELDS, by_alias=True),
             ex=_CLIENT_INFO_TTL_SECONDS,
         )
 

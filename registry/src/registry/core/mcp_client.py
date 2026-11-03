@@ -18,11 +18,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import httpx2
 from httpx_sse import EventSource
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError as McpError
 from redis import Redis
 
 from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
@@ -72,6 +73,28 @@ def _flatten_exception_group_messages(error: BaseException) -> list[str]:
             flattened.extend(_flatten_exception_group_messages(nested))
         return flattened
     return [f"{type(error).__name__}: {error}"]
+
+
+class _Httpx2AuthAdapter(httpx2.Auth):
+    """Run an ``httpx.Auth`` flow (e.g. SigV4) on the httpx2 requests mcp 2.x transports send.
+
+    httpx2 rejects ``httpx.Auth`` instances outright; the request/response objects are API-compatible,
+    so delegating the generator flow is enough.
+    """
+
+    def __init__(self, inner: httpx.Auth):
+        self._inner = inner
+        self.requires_request_body = inner.requires_request_body
+        self.requires_response_body = inner.requires_response_body
+
+    def auth_flow(self, request):  # type: ignore[override]
+        return self._inner.auth_flow(request)
+
+
+def _as_httpx2_auth(auth: Any) -> Any:
+    if auth is None or isinstance(auth, httpx2.Auth):
+        return auth
+    return _Httpx2AuthAdapter(auth)
 
 
 def _format_exception_group(error: ExceptionGroup) -> str:
@@ -339,8 +362,27 @@ class InitializeEndpointNotFoundError(Exception):
     """The MCP endpoint answered the initialize request with HTTP 404."""
 
 
+def _first_leaf(eg: BaseExceptionGroup) -> Any:
+    exc: BaseException = eg
+    while isinstance(exc, BaseExceptionGroup):
+        exc = exc.exceptions[0]
+    return exc
+
+
 def _is_sdk_initialize_404(exc: BaseException) -> bool:
     return isinstance(exc, McpError) and exc.error.message == _SDK_SESSION_TERMINATED_MESSAGE
+
+
+async def _raise_for_failed_post(response: httpx2.Response) -> None:
+    """Surface an initialize POST's HTTP 4xx/5xx as ``httpx2.HTTPStatusError``.
+
+    mcp 2.x's streamable-http transport answers a failed POST in-band with a generic
+    ``MCPError`` and drops the status code, so health checks could no longer tell a 401
+    (reachable, needs auth) from a 404/405 (wrong URL/transport). GET (SSE stream) and DELETE
+    (session teardown) are left alone: the SDK tolerates 405 there by design.
+    """
+    if response.request.method == "POST" and response.status_code >= 400:
+        response.raise_for_status()
 
 
 async def initialize_mcp(
@@ -362,7 +404,7 @@ async def initialize_mcp(
         InitializeResult object from MCP library, or None if initialization failed
 
     Raises:
-        httpx.HTTPStatusError: Re-raised to allow caller to inspect HTTP status codes
+        httpx2.HTTPStatusError: Re-raised to allow caller to inspect HTTP status codes
         InitializeEndpointNotFoundError: The streamable-http endpoint returned 404, which the SDK
             reports in-band rather than as an HTTPStatusError
     """
@@ -379,9 +421,11 @@ async def initialize_mcp(
 
     try:
         if transport_type == "streamable-http":
-            # streamable_http_client supports injecting a custom httpx client.
-            async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
-                async with streamable_http_client(url=mcp_url, http_client=http_client) as (read, write, _):
+            # streamable_http_client accepts a custom client; mcp 2.x transports use httpx2.
+            async with httpx2.AsyncClient(
+                headers=headers, timeout=30.0, event_hooks={"response": [_raise_for_failed_post]}
+            ) as http_client:
+                async with streamable_http_client(url=mcp_url, http_client=http_client) as (read, write):
                     async with ClientSession(read, write) as session:
                         # Perform MCP initialization
                         init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
@@ -401,17 +445,19 @@ async def initialize_mcp(
             return None
 
     except ExceptionGroup as eg:
-        # Unwrap ExceptionGroup to extract HTTPStatusError (from asyncio.TaskGroup)
-        for exc in eg.exceptions:
-            if isinstance(exc, httpx.HTTPStatusError):
-                logger.debug(f"HTTP error during MCP initialization for {target_url}: {exc.response.status_code}")
-                raise exc  # Re-raise the unwrapped HTTPStatusError
+        # Unwrap ExceptionGroup to extract HTTPStatusError. The SDK nests its task groups,
+        # so search the whole tree rather than the top level.
+        status_errors = eg.subgroup(lambda e: isinstance(e, httpx2.HTTPStatusError))
+        if status_errors is not None:
+            exc = _first_leaf(status_errors)
+            logger.debug(f"HTTP error during MCP initialization for {target_url}: {exc.response.status_code}")
+            raise exc  # Re-raise the unwrapped HTTPStatusError
         # The SDK nests its task groups, so search the whole tree rather than the top level.
         if eg.subgroup(_is_sdk_initialize_404) is not None:
             raise InitializeEndpointNotFoundError(target_url) from eg
         logger.error(f"MCP initialization failed for {target_url}: ExceptionGroup - {eg}")
         return None
-    except httpx.HTTPStatusError as e:
+    except httpx2.HTTPStatusError as e:
         # Re-raise HTTP errors so caller can inspect status code (e.g., 401 for health checks)
         logger.debug(f"HTTP error during MCP initialization for {target_url}: {e.response.status_code}")
         raise
@@ -473,7 +519,7 @@ async def perform_health_check(
 
     try:
         init_result = await initialize_mcp(target_url=url, headers=headers, transport_type=transport)
-    except httpx.HTTPStatusError as e:
+    except httpx2.HTTPStatusError as e:
         http_status_code = e.response.status_code
         logger.debug(f"HTTP error {http_status_code} during health check for {url}")
     except InitializeEndpointNotFoundError:
@@ -515,15 +561,15 @@ async def perform_health_check(
         return False, "unhealthy: initialization failed", response_time_ms, None
 
     # Check for required fields: protocolVersion and serverInfo
-    if hasattr(init_result, "protocolVersion") and hasattr(init_result, "serverInfo"):
-        remote_server_name = init_result.serverInfo.name if hasattr(init_result.serverInfo, "name") else "unknown"
+    if hasattr(init_result, "protocol_version") and hasattr(init_result, "server_info"):
+        remote_server_name = init_result.server_info.name if hasattr(init_result.server_info, "name") else "unknown"
 
         # Convert capabilities to dict if present (normalize Pydantic models to dicts)
         if hasattr(init_result, "capabilities"):
             init_result.capabilities = _convert_pydantic_to_dict(init_result.capabilities)
 
         logger.info(
-            f"Health check passed for {url}: Initialize handshake successful - {remote_server_name} (protocol: {init_result.protocolVersion})"
+            f"Health check passed for {url}: Initialize handshake successful - {remote_server_name} (protocol: {init_result.protocol_version})"
         )
         return True, "initialize handshake successful", response_time_ms, init_result
     else:
@@ -650,7 +696,8 @@ def _convert_pydantic_to_dict(obj: Any) -> dict:
         Dictionary representation of the object
     """
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        # by_alias keeps MCP wire names (camelCase): mcp 2.x models use snake_case field names.
+        return obj.model_dump(by_alias=True)
     elif hasattr(obj, "__dict__"):
         return dict(obj.__dict__)
     return obj
@@ -822,6 +869,24 @@ async def get_tools_from_server_with_transport(base_url: str, transport: str = "
         return None
 
 
+_MCP_SESSION_ID_HEADER = "mcp-session-id"
+
+
+class _SessionIdRecorder:
+    """Record the server-assigned MCP session id from response headers.
+
+    mcp 1.x's ``streamable_http_client`` yielded a ``get_session_id`` callable; 2.x yields only
+    ``(read, write)``, so the id is captured from the transport's own responses instead.
+    """
+
+    def __init__(self) -> None:
+        self.session_id: str | None = None
+
+    async def __call__(self, response: httpx2.Response) -> None:
+        if self.session_id is None:
+            self.session_id = response.headers.get(_MCP_SESSION_ID_HEADER)
+
+
 async def _is_requires_init(get_session_id) -> bool | None:
     """Return None when the session ID can't be read, so the stored requiresInit is kept."""
     try:
@@ -881,8 +946,14 @@ async def _get_from_streamable_http(
 
     try:
         # Create custom httpx client with headers
-        async with httpx.AsyncClient(headers=headers, timeout=30.0, auth=httpx_auth) as http_client:
-            async with streamable_http_client(url=mcp_url, http_client=http_client) as (read, write, get_session_id):
+        session_ids = _SessionIdRecorder()
+        async with httpx2.AsyncClient(
+            headers=headers,
+            timeout=30.0,
+            auth=_as_httpx2_auth(httpx_auth),
+            event_hooks={"response": [session_ids]},
+        ) as http_client:
+            async with streamable_http_client(url=mcp_url, http_client=http_client) as (read, write):
                 async with ClientSession(read, write) as session:
                     init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
                     tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
@@ -926,7 +997,7 @@ async def _get_from_streamable_http(
                             logger.warning(f"Failed to retrieve prompts from {mcp_url}: {e}")
                             prompt_list = []
 
-                    requires_init = await _is_requires_init(get_session_id)
+                    requires_init = await _is_requires_init(lambda: session_ids.session_id)
                     return MCPServerData(
                         tools=tool_list,
                         resources=resource_list,
@@ -1011,7 +1082,8 @@ async def _get_from_sse(
 
     try:
         # Monkey patch httpx to fix mount path issues (legacy SSE support)
-        original_request = httpx.AsyncClient.request
+        # mcp 2.x's sse_client issues its requests through httpx2.
+        original_request = httpx2.AsyncClient.request
 
         async def patched_request(self, method, url, **kwargs):
             if isinstance(url, str) and MCPClientConfig.ENDPOINT_MESSAGES in url:
@@ -1020,7 +1092,7 @@ async def _get_from_sse(
                 url = normalize_sse_endpoint_url_for_request(str(url))
             return await original_request(self, method, url, **kwargs)
 
-        httpx.AsyncClient.request = patched_request
+        httpx2.AsyncClient.request = patched_request
 
         try:
             # sse_client does not accept http_client; pass headers directly.
@@ -1081,7 +1153,7 @@ async def _get_from_sse(
                         requires_init=requires_init,
                     )
         finally:
-            httpx.AsyncClient.request = original_request
+            httpx2.AsyncClient.request = original_request
 
     except TimeoutError:
         logger.error(f"Timeout connecting to {mcp_server_url}")
@@ -1124,7 +1196,8 @@ def _extract_capabilities(init_result: Any) -> dict | None:
         capabilities_obj = init_result.capabilities
         # Convert to dict if it's a Pydantic model or similar
         if hasattr(capabilities_obj, "model_dump"):
-            capabilities = capabilities_obj.model_dump()
+            # by_alias keeps the stored/API form in MCP wire names (e.g. "listChanged"), as with mcp 1.x.
+            capabilities = capabilities_obj.model_dump(by_alias=True)
         elif hasattr(capabilities_obj, "__dict__"):
             capabilities = capabilities_obj.__dict__
         else:
@@ -1196,7 +1269,7 @@ def _extract_tool_details(tools_response) -> list[dict]:
                 parsed_desc["main"] = "No description available."
 
             # Get inputSchema - properly handle conversion to dict
-            tool_schema = getattr(tool, "inputSchema", {})
+            tool_schema = getattr(tool, "input_schema", {})
 
             # Convert Pydantic model to dict if necessary
             tool_schema = _convert_pydantic_to_dict(tool_schema)
@@ -1227,7 +1300,7 @@ def _extract_resource_details(resources_response) -> list[dict]:
             resource_uri = getattr(resource, "uri", "Unknown URI")
             resource_name = getattr(resource, "name", None)
             resource_desc = getattr(resource, "description", None)
-            resource_mime = getattr(resource, "mimeType", None)
+            resource_mime = getattr(resource, "mime_type", None)
 
             # Get annotations if present
             annotations = getattr(resource, "annotations", None)

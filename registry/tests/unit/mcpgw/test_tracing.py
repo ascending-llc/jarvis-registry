@@ -51,7 +51,7 @@ def _make_ctx():
         }
     )
     # Seed the per-request memo so get_client_params() returns these params without a Redis GET.
-    state.mcp_client_params = SimpleNamespace(clientInfo=Implementation(name="Claude Code", version="1.2.3"))
+    state.mcp_client_params = SimpleNamespace(client_info=Implementation(name="Claude Code", version="1.2.3"))
     request_context = SimpleNamespace(request=SimpleNamespace(state=state))
     return SimpleNamespace(
         request_context=request_context,
@@ -265,7 +265,7 @@ def test_trace_projection_covers_current_protocol_models() -> None:
         Annotations: set(),
         AudioContent: {"data", "meta"},
         BlobResourceContents: {"blob", "meta"},
-        CallToolResult: {"meta"},
+        CallToolResult: {"meta", "result_type"},  # mcp 2.x protocol discriminator, always "complete" here
         DataPart: {"metadata"},
         EmbeddedResource: {"meta"},
         FilePart: {"metadata"},
