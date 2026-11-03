@@ -2,7 +2,6 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
 from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -60,7 +59,7 @@ async def _gateway_session() -> AsyncIterator[tuple[ClientSession, types.Initial
             SimpleNamespace(mcpgw_proxy_client=proxy_client, **{name: object() for name in dependencies}),
         )
         app = gateway.create_gateway_mcp_app(container_provider=lambda: container)
-        server = app._mcp_server
+        server = app._lowlevel_server  # mcp 2.x: FastMCP._mcp_server -> MCPServer._lowlevel_server
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(
                 partial(
@@ -71,7 +70,7 @@ async def _gateway_session() -> AsyncIterator[tuple[ClientSession, types.Initial
                 )
             )
             try:
-                async with ClientSession(*client_streams, read_timeout_seconds=timedelta(seconds=5)) as client:
+                async with ClientSession(*client_streams, read_timeout_seconds=5) as client:
                     initialized = await client.initialize()
                     yield client, initialized
             finally:
@@ -116,7 +115,7 @@ async def test_tools_keep_their_schemas_and_expose_discovery_guidance() -> None:
         for name in ("discover_servers", "discover_agents"):
             tool = tools[name]
             assert "Before claiming" in (tool.description or "")[:250]
-            schema = tool.inputSchema
+            schema = tool.input_schema
             assert set(schema["properties"]) == {"query", "top_n", "type_list"}
             assert not schema.get("required")
             query = schema["properties"]["query"]
@@ -127,7 +126,7 @@ async def test_tools_keep_their_schemas_and_expose_discovery_guidance() -> None:
             assert schema["properties"]["type_list"]["items"]["type"] == "string"
 
             # Protocol schema captured before adding contextual empty-result hints.
-            assert tool.outputSchema == {
+            assert tool.output_schema == {
                 "properties": {
                     "result": {
                         "items": {"additionalProperties": True, "type": "object"},
@@ -141,8 +140,8 @@ async def test_tools_keep_their_schemas_and_expose_discovery_guidance() -> None:
             }
 
         assert "different providers" in tools["discover_servers"].description
-        assert set(tools["execute_tool"].inputSchema["required"]) == {"tool_name", "arguments", "server_id"}
-        assert set(tools["execute_agent"].inputSchema["required"]) == {"agent_id", "message"}
+        assert set(tools["execute_tool"].input_schema["required"]) == {"tool_name", "arguments", "server_id"}
+        assert set(tools["execute_agent"].input_schema["required"]) == {"agent_id", "message"}
 
 
 @pytest.mark.asyncio
