@@ -2917,7 +2917,6 @@ dependencies = [
     { name = "starlette" },
     { name = "typing-extensions" },
     { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -2956,7 +2955,6 @@ requires-dist = [
     { name = "starlette", marker = "python_full_version >= '3.14'", specifier = ">=0.48.0" },
     { name = "typing-extensions", specifier = ">=4.8.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.2" },
-    { name = "websockets", specifier = ">=15.0.1" },
 ]
 
 [[package]]
