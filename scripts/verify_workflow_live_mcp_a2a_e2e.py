@@ -90,13 +90,14 @@ def _make_token(user_id: str) -> str:
     )
     return mint_crud_session_token(
         settings.jwt_token_config,
-        subject="real-e2e-user",
+        subject=user_id,  # session auth requires the MongoDB user id as `sub` (identity_from_claims)
         token_type="access_token",
         expires_in_seconds=3600,
         extra_claims={
             "scope": scopes,
             "user_id": user_id,
             "username": "real-workflow-e2e",
+            "preferred_username": "real-workflow-e2e",
             "groups": ["jarvis-registry-admin"],
         },
     )
