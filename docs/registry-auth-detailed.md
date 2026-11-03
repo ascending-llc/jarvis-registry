@@ -525,129 +525,6 @@ The UI template conditionally renders elements based on user permissions:
 {% endif %}
 ```
 
-### Real-Time WebSocket Integration
-
-The UI includes real-time health status updates via WebSocket connections:
-
-```mermaid
-sequenceDiagram
-    participant UI as Dashboard UI
-    participant WS as WebSocket Connection
-    participant HMS as Health Monitoring Service
-    participant SS as Server Service
-
-    Note over UI,SS: WebSocket Initialization
-    UI->>WS: Connect to /ws/health_status
-    WS->>HMS: Register new connection
-    HMS->>UI: Send initial health status data
-
-    Note over UI,SS: Real-Time Health Updates
-    loop Background Health Checks
-        HMS->>SS: Check server health status
-        SS-->>HMS: Updated health data
-        HMS->>HMS: Compare with previous status
-
-        alt Status Changed
-            HMS->>WS: Broadcast health update
-            WS->>UI: Send updated status
-            UI->>UI: Update service card UI
-        end
-    end
-
-    Note over UI,SS: User-Triggered Actions
-    UI->>SS: Toggle server state
-    SS->>HMS: Immediate health check
-    HMS->>WS: Broadcast status update
-    WS->>UI: Real-time status update
-    UI->>UI: Update toggle switch & status
-```
-
-#### WebSocket Client Implementation
-
-```javascript
-// Real-time health status WebSocket connection
-class HealthStatusManager {
-    constructor() {
-        this.ws = null;
-        this.reconnectInterval = 5000;
-        this.maxReconnectAttempts = 10;
-        this.reconnectAttempts = 0;
-    }
-
-    connect() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/health_status`;
-
-        this.ws = new WebSocket(wsUrl);
-
-        this.ws.onopen = () => {
-            console.log('Health status WebSocket connected');
-            this.reconnectAttempts = 0;
-        };
-
-        this.ws.onmessage = (event) => {
-            try {
-                const healthData = JSON.parse(event.data);
-                this.updateHealthStatusUI(healthData);
-            } catch (error) {
-                console.error('Error parsing health status data:', error);
-            }
-        };
-
-        this.ws.onclose = () => {
-            console.log('Health status WebSocket disconnected');
-            this.attemptReconnect();
-        };
-
-        this.ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-        };
-    }
-
-    updateHealthStatusUI(healthData) {
-        for (const [servicePath, status] of Object.entries(healthData)) {
-            const serviceCard = document.querySelector(`[data-service-path="${servicePath}"]`);
-            if (serviceCard) {
-                // Update health status indicator
-                const statusElement = serviceCard.querySelector('.health-status');
-                if (statusElement) {
-                    statusElement.textContent = status.status;
-                    statusElement.className = `health-status ${status.status.replace(/[^a-zA-Z0-9]/g, '-')}`;
-                }
-
-                // Update tool count
-                const toolCountElement = serviceCard.querySelector('.tool-count');
-                if (toolCountElement) {
-                    toolCountElement.textContent = `${status.num_tools} tools`;
-                }
-
-                // Update timestamp
-                const timestampElement = serviceCard.querySelector('.timestamp');
-                if (timestampElement && status.last_checked_iso) {
-                    timestampElement.textContent = `Last checked: ${status.last_checked_iso}`;
-                }
-            }
-        }
-    }
-
-    attemptReconnect() {
-        if (this.reconnectAttempts < this.maxReconnectAttempts) {
-            this.reconnectAttempts++;
-            console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
-            setTimeout(() => this.connect(), this.reconnectInterval);
-        } else {
-            console.error('Max reconnection attempts reached');
-        }
-    }
-}
-
-// Initialize WebSocket connection when page loads
-document.addEventListener('DOMContentLoaded', () => {
-    const healthManager = new HealthStatusManager();
-    healthManager.connect();
-});
-```
-
 ### Server Management UI Workflows
 
 #### Service Toggle Workflow
@@ -657,8 +534,6 @@ sequenceDiagram
     participant U as User
     participant UI as Dashboard UI
     participant R as Registry Backend
-    participant HMS as Health Monitoring
-    participant WS as WebSocket
 
     U->>UI: Click toggle switch
     UI->>UI: Disable toggle (show loading)
@@ -671,14 +546,8 @@ sequenceDiagram
         UI->>UI: Revert toggle state
     else Sufficient Permissions
         R->>R: Update service state
-        R->>HMS: Trigger immediate health check
-        HMS->>HMS: Perform health check
         R->>UI: 200 OK with new state
         UI->>UI: Update toggle state
-
-        HMS->>WS: Broadcast health update
-        WS->>UI: Real-time status update
-        UI->>UI: Update status indicators
     end
 ```
 
@@ -705,8 +574,7 @@ flowchart TD
 
     CreateServer --> UpdateFAISS[Update FAISS index]
     UpdateFAISS --> UpdateNginx[Regenerate Nginx config]
-    UpdateNginx --> BroadcastUpdate[Broadcast health update]
-    BroadcastUpdate --> Success[Redirect to dashboard]
+    UpdateNginx --> Success[Redirect to dashboard]
 
     ShowError --> End([End])
     ShowValidationErrors --> ShowForm
@@ -720,7 +588,7 @@ flowchart TD
 
     class Success success
     class ShowError,ShowValidationErrors,ShowConflictError error
-    class ShowForm,UserFillsForm,SubmitForm,BackendValidation,CreateServer,UpdateFAISS,UpdateNginx,BroadcastUpdate process
+    class ShowForm,UserFillsForm,SubmitForm,BackendValidation,CreateServer,UpdateFAISS,UpdateNginx process
          class CheckPerms,ValidateForm,ServerExists decision
 ```
 
@@ -1348,67 +1216,6 @@ def enhanced_auth(session: str = Cookie(alias="mcp_gateway_session")) -> Dict[st
     return user_context
 ```
 
-### WebSocket Authentication Handling
-
-#### WebSocket Session Validation
-
-```python
-# registry/health/routes.py
-@router.websocket("/ws/health_status")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint with automatic session validation"""
-    connection_added = False
-    try:
-        # WebSocket cookies are automatically included in handshake
-        # Validate session before accepting connection
-        session_cookie = None
-        for cookie in websocket.cookies:
-            if cookie.name == settings.session_cookie_name:
-                session_cookie = cookie.value
-                break
-
-        if session_cookie:
-            try:
-                # Validate session
-                session_data = signer.loads(
-                    session_cookie,
-                    max_age=settings.session_max_age_seconds
-                )
-                username = session_data.get('username')
-                if username:
-                    logger.info(f"WebSocket connection from authenticated user: {username}")
-                else:
-                    raise ValueError("No username in session")
-            except Exception as e:
-                logger.warning(f"WebSocket authentication failed: {e}")
-                await websocket.close(code=1008, reason="Authentication failed")
-                return
-        else:
-            logger.warning("WebSocket connection without valid session cookie")
-            await websocket.close(code=1008, reason="Authentication required")
-            return
-
-        # Accept connection after successful authentication
-        connection_added = await health_service.add_websocket_connection(websocket)
-        if not connection_added:
-            return  # Connection rejected (server at capacity)
-
-        # Keep connection alive
-        while True:
-            try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-            except asyncio.TimeoutError:
-                await websocket.ping()  # Keep-alive ping
-
-    except WebSocketDisconnect:
-        logger.debug(f"WebSocket client disconnected")
-    except Exception as e:
-        logger.warning(f"WebSocket error: {e}")
-    finally:
-        if connection_added:
-            await health_service.remove_websocket_connection(websocket)
-```
-
 ### Database-Free Architecture
 
 The registry implements a **stateless, file-based architecture** that doesn't require a traditional database:
@@ -1793,47 +1600,6 @@ def enhanced_auth(session: str = None) -> Dict[str, Any]:
 - **User Group Assignment**: Check user group assignments in identity provider (Cognito)
 - **Server Name Mismatch**: Ensure server names in scopes.yml exactly match server definitions
 - **Scope Configuration**: Verify scope definitions reference correct server names
-
-#### 4. WebSocket Authentication Issues
-
-**Issue**: Real-time updates not working, WebSocket connections failing
-
-**Diagnosis**:
-```python
-# Debug WebSocket authentication
-@router.websocket("/ws/health_status")
-async def websocket_endpoint(websocket: WebSocket):
-    logger.info(f"WebSocket connection attempt from: {websocket.client}")
-
-    # Debug cookie extraction
-    session_cookie = None
-    logger.info(f"WebSocket cookies: {list(websocket.cookies.keys())}")
-
-    for cookie_name, cookie_value in websocket.cookies.items():
-        logger.info(f"Cookie: {cookie_name} = {cookie_value[:20]}...")
-        if cookie_name == settings.session_cookie_name:
-            session_cookie = cookie_value
-
-    if not session_cookie:
-        logger.warning("WebSocket connection without session cookie")
-        await websocket.close(code=1008, reason="No session cookie")
-        return
-
-    try:
-        session_data = signer.loads(session_cookie, max_age=settings.session_max_age_seconds)
-        username = session_data.get('username')
-        logger.info(f"WebSocket authenticated for user: {username}")
-        await websocket.accept()
-    except Exception as e:
-        logger.error(f"WebSocket authentication failed: {e}")
-        await websocket.close(code=1008, reason="Authentication failed")
-```
-
-**Common Solutions**:
-- **Browser Cookie Issues**: Check browser developer tools for cookie presence
-- **WebSocket URL**: Verify WebSocket URL scheme (ws:// vs wss://)
-- **Proxy Configuration**: Ensure reverse proxy supports WebSocket upgrades
-- **Firewall Issues**: Check if WebSocket ports are accessible
 
 ### Health Check and Monitoring
 

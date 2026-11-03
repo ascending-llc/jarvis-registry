@@ -524,7 +524,7 @@ def test_all_proxy_router_paths_classify_as_proxy():
 
 @pytest.mark.parametrize(
     "path",
-    ["/api/v1/servers", "/api/v1/agents", "/api/auth/me", "/api/v1/tokens/generate", "/api/health/status"],
+    ["/api/v1/servers", "/api/v1/agents", "/api/auth/me", "/api/v1/tokens/generate", "/api/v1/search"],
 )
 def test_crud_paths_classify_as_non_proxy(path):
     mw = UnifiedAuthMiddleware(FastAPI())

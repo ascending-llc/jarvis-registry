@@ -2897,7 +2897,6 @@ dependencies = [
     { name = "httpx" },
     { name = "httpx-sse" },
     { name = "inflection" },
-    { name = "itsdangerous" },
     { name = "jinja2" },
     { name = "langchain-anthropic" },
     { name = "langchain-mcp-adapters" },
@@ -2918,7 +2917,6 @@ dependencies = [
     { name = "starlette" },
     { name = "typing-extensions" },
     { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -2936,7 +2934,6 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "httpx-sse", specifier = ">=0.4.0" },
     { name = "inflection", specifier = ">=0.5.1" },
-    { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "langchain-anthropic", specifier = ">=0.3.17" },
     { name = "langchain-mcp-adapters", specifier = ">=0.0.11" },
@@ -2958,7 +2955,6 @@ requires-dist = [
     { name = "starlette", marker = "python_full_version >= '3.14'", specifier = ">=0.48.0" },
     { name = "typing-extensions", specifier = ">=4.8.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.2" },
-    { name = "websockets", specifier = ">=15.0.1" },
 ]
 
 [[package]]

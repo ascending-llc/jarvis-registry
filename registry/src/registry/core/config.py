@@ -58,17 +58,6 @@ class Settings(JarvisBaseSettings):
     tool_discovery_mode: str = "external"
     external_vector_search_url: str = "http://localhost:8000/mcp"
 
-    # ==================== Health ====================
-    health_check_interval_seconds: int = 300
-    health_check_timeout_seconds: int = 2
-
-    # ==================== WebSocket ====================
-    max_websocket_connections: int = 100
-    websocket_send_timeout_seconds: float = 2.0
-    websocket_broadcast_interval_ms: int = 10
-    websocket_max_batch_size: int = 20
-    websocket_cache_ttl_seconds: int = 1
-
     # ==================== Well-Known ====================
     enable_wellknown_discovery: bool = True
     wellknown_cache_ttl: int = 300

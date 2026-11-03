@@ -20,7 +20,6 @@ from .api.v1.workflow.control_routes import router as workflow_control_router
 from .api.v1.workflow.schedule_routes import router as workflow_schedule_router
 from .api.v1.workflow.workflow_routes import router as workflow_router
 from .core.config import settings
-from .health.routes import router as health_router
 
 
 def register_routers(app: FastAPI) -> None:
@@ -36,7 +35,6 @@ def register_routers(app: FastAPI) -> None:
         tags=["Workflow Schedule Management V1"],
     )
     app.include_router(search_router, prefix=f"/api/{settings.api_version}", tags=["Semantic Search"])
-    app.include_router(health_router, prefix="/api/health", tags=["Health Monitoring"])
     app.include_router(oauth_router, prefix=f"/api/{settings.api_version}", tags=["MCP  Oauth Management"])
     app.include_router(consent_router, prefix=f"/api/{settings.api_version}", tags=["MCP Consent Management"])
     app.include_router(connection_router, prefix=f"/api/{settings.api_version}", tags=["MCP  Connection Management"])

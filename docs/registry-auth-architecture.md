@@ -323,34 +323,6 @@ The UI dynamically shows/hides elements based on user permissions:
 {% endfor %}
 ```
 
-### WebSocket Integration for Real-Time Updates
-
-The UI includes real-time health status updates via WebSocket:
-
-```javascript
-// Health status WebSocket connection
-const ws = new WebSocket('ws://localhost:7860/ws/health_status');
-
-ws.onmessage = function(event) {
-    const healthData = JSON.parse(event.data);
-    updateHealthStatusUI(healthData);
-};
-
-function updateHealthStatusUI(healthData) {
-    for (const [servicePath, status] of Object.entries(healthData)) {
-        const card = document.querySelector(`[data-service-path="${servicePath}"]`);
-        if (card) {
-            const statusElement = card.querySelector('.health-status');
-            statusElement.textContent = status.status;
-            statusElement.className = `health-status ${status.status}`;
-
-            const toolCount = card.querySelector('.tool-count');
-            toolCount.textContent = `${status.num_tools} tools`;
-        }
-    }
-}
-```
-
 ## Authorization & Permissions
 
 ### Permission Model Overview
@@ -646,25 +618,6 @@ graph LR
     class Cognito,SAML,Custom provider
 ```
 
-### WebSocket Authentication
-
-The registry includes real-time features via WebSocket with authentication:
-
-```python
-# registry/health/routes.py
-@router.websocket("/ws/health_status")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint with authentication"""
-    # WebSocket authentication is handled differently
-    # since cookies are automatically included in WebSocket handshake
-    try:
-        await health_service.add_websocket_connection(websocket)
-        while True:
-            await websocket.receive_text()  # Keep alive
-    except WebSocketDisconnect:
-        await health_service.remove_websocket_connection(websocket)
-```
-
 ## Configuration
 
 ### Environment Variables
@@ -795,26 +748,6 @@ def debug_user_permissions(user_context: dict):
 - Verify group mappings in `auth_server/scopes.yml`
 - Check user group assignments in identity provider
 - Ensure scope configuration matches server names exactly
-
-#### 4. WebSocket Authentication Issues
-
-**Issue**: Real-time updates not working
-```python
-# Debug WebSocket connections
-@router.websocket("/ws/health_status")
-async def websocket_endpoint(websocket: WebSocket):
-    logger.info(f"WebSocket connection from: {websocket.client}")
-    try:
-        await websocket.accept()
-        logger.info("WebSocket connection accepted")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-```
-
-**Solutions**:
-- Check browser console for WebSocket errors
-- Verify WebSocket URL scheme (ws:// vs wss://)
-- Ensure firewall/proxy allows WebSocket connections
 
 ### Logging and Debugging
 

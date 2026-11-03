@@ -42,7 +42,6 @@ OPENAPI_TAGS = [
         "name": "Semantic Search",
         "description": "Vector-based semantic search for agents. Requires JWT Bearer token authentication.",
     },
-    {"name": "Health Monitoring", "description": "Service health check endpoints"},
     {
         "name": "Skills Sync",
         "description": "Bearer-authenticated skill metadata and content sync endpoints.",
