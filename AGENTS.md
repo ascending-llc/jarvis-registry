@@ -130,6 +130,7 @@ Frontend (from `frontend/`): `npm start` (Vite dev server), `npm run build`, `np
 
 ### Running tests
 - **Agents may run tests** without being asked. Suites print one summary line per workspace (e.g. `N passed in T s`); failures still print in full.
+- **Keep passing runs quiet**: a passing run should print only the summary line. If your change adds a warning, or you see one in a workspace you touched, fix the cause in the test or code. Add a targeted `filterwarnings` entry in `pytest.ini` only for third-party warnings you can't fix, and give it a reason comment. Never ignore a whole warning category.
 - **Scope**: run the narrowest scope while iterating, and the touched workspace's full suite before declaring done. If you touched `registry-pkgs`, run `uv run poe test-all` from the repo root, since every other Python workspace depends on it. If you expect many failures, use `--maxfail=N` first.
 - **Commands**: from the workspace directory (e.g. `cd registry`), run `uv run poe test`, or `uv run pytest <path>` for one file or case. Options come from `pytest.ini`; don't pass other flags beyond `--maxfail`.
 
