@@ -58,7 +58,7 @@ const getSortKey = (skill: SkillMetadata, column: SkillSortColumn): string | num
     case 'source':
       return getSkillSourceDisplay(skill.origin).label;
     case 'author':
-      return skill.authorName?.trim() ? skill.authorName : null;
+      return skill.authorName?.trim() || null;
     case 'updatedAt':
       return getUpdatedTimestamp(skill.updatedAt);
   }
