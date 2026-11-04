@@ -51,7 +51,6 @@
       "last 1 safari version"
     ]
   },
-  "proxy": "http://localhost:7860",
   "devDependencies": {
     "@biomejs/biome": "2.3.10",
     "@eslint/js": "^9.9.0",
@@ -68,10 +67,5 @@
     "typescript-eslint": "^8.0.1",
     "vite": "^7.2.2",
     "vitest": "^4.1.11"
-  },
-  "overrides": {
-    "nth-check": "^2.1.1",
-    "webpack-dev-server": "^5.2.1",
-    "resolve-url-loader": "^5.0.0"
   }
 }
