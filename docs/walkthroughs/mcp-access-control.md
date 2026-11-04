@@ -1,10 +1,30 @@
-# Validate MCP access with two users and synthetic data
+---
+title: MCP access control with two users
+description: Test MCP server permissions in Jarvis Registry with two users, direct tool calls, access removal and a loopback-only sample server.
+---
 
-Before connecting a business system, check whether your Jarvis Registry deployment stops an unauthorized user from calling a registered MCP server, even when that user knows its server ID and tool name. This walkthrough uses two identities, one harmless tool, and a permission change.
+# MCP access control: test user permissions in Jarvis Registry
+
+**Jarvis Registry checks a caller's role scopes and the registered MCP server's access-control list before its `execute_tool` gateway forwards a call.** Knowing a server ID or tool name does not grant access. This guide shows platform engineers how to compare allowed and denied users, then grant and remove access to the same harmless tool.
+
+The permission boundary here is the **registered server**. Disabling an individual tool is a separate server-wide setting, not a different tool allowlist for each user. The transparent proxy checks server access but does not apply that disabled-tool list.
 
 The outcomes below are **acceptance criteria to validate on your deployment**, not a report of a completed tenant test. The included local probe checks the sample MCP server; it does not test Registry authentication or authorization.
 
 Use the [MCP Gateway guide](../features/mcp-gateway-registry.md) for registration and sharing, and [Registry Endpoint](../features/registry-endpoint.md) for client connection setup. This walkthrough adds a repeatable access check to those workflows.
+
+## MCP permission test at a glance
+
+Use one private test server and two users with the same required gateway scopes. Keep the server owner allowed throughout the test.
+
+| Test | Expected outcome to verify | Detailed steps |
+| --- | --- | --- |
+| Discover and call as the owner | The synthetic tool is visible and returns a fabricated ticket. | [Register the test server](#2-register-and-enable-a-private-test-server) |
+| Call as a user without a server grant | Discovery omits the tool, and an explicit call with its known ID is denied. | [Compare discovery and execution](#3-compare-discovery-and-explicit-execution) |
+| Grant access, then remove all effective grants | The same user's call changes from allowed to denied; the owner still succeeds. | [Change access and retest](#4-grant-bob-access-then-remove-it) |
+| Disable the tool for an accessible server | `execute_tool` denies it for both users; test proxy behavior separately. | [Test server-wide tool disabling](#5-test-server-wide-tool-disabling-separately) |
+
+**A hidden search result is not proof of an execution restriction.** Always attempt the known harmless tool call as the restricted user. Inspect the MCP result's `isError` field, not just HTTP status, and correlate the call with downstream activity when the deployment exposes it.
 
 ## Understand the access boundaries
 

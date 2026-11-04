@@ -1,12 +1,39 @@
-# Test a private skill's lifecycle: import, update and revoke
+---
+title: Private agent skill import, updates and access removal
+description: Follow a private agent skill from an approved Git commit into Jarvis Registry, deliver updates to coding clients and test access removal.
+---
 
-Use this walkthrough to check how a private GitHub skill moves into Jarvis Registry, reaches an authorized developer, receives an update, and is removed from the CLI's managed directory after access is revoked.
+# Private agent skills: import, update and revoke access
+
+**Jarvis Skill Gateway separates the Git repository used to review a skill from the private Registry used to share it with developers.** Import an approved revision, grant access to the resulting skill, then use the Jarvis Registry CLI to deliver accessible skills to a developer's managed directory. Updates to this Git-backed skill require another import and CLI sync.
+
+This guide gives platform teams a repeatable check of that workflow using one skill with two files. It follows the approved Git revision, Registry skill ID and version, developer access and local copy through import, update and access removal.
 
 This exercise uses the documented GitHub integration and CLI modes as concrete test paths. Skill Gateway also supports other Git providers, including GitLab, and consumers including Cursor. Those product capabilities do not change the GitHub-specific fields or CLI mode names used below.
 
 Registry controls future access to its copy of a skill. A successful CLI sync reconciles the developer's managed local copy. An access change does not remotely erase downloaded files, independent copies, or material already loaded into an AI client.
 
 The steps below are acceptance checks to run in your configured test environment. They do not assert that a particular deployment or AI client has already passed. For product background, see [Skill Gateway](../features/skill-gateway.md) and [AI Skills CLI](../features/ai-skills-cli.md). For installation and authentication, use the CLI's [setup guide](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/setup.md) and [getting started guide](https://github.com/ascending-llc/jarvis-registry-cli/blob/main/docs/getting-started.md).
+
+## Private skill workflow at a glance
+
+```text
+Reviewed Git revision
+    -> one-way import -> Registry skill ID + version + access grants
+    -> authenticated CLI sync -> developer's managed skill directory
+    -> client loading -> skill available in the selected coding tool
+```
+
+GitHub is the concrete source provider in this example; Skill Gateway also supports GitLab and other Git providers. Repository review, Registry sharing and client loading are separate steps.
+
+| Team question | What to verify | Detailed steps |
+| --- | --- | --- |
+| How do we distribute an approved skill privately? | Only the allowed developer can list and download the imported skill. | [Import the approved revision](#2-import-an-approved-private-revision) and [compare two developers](#3-compare-an-allowed-and-an-excluded-developer) |
+| How do developers receive updates? | Re-import the approved change; CLI sync delivers both revised files and records the Registry version. | [Update and verify both files](#5-update-the-same-skill-and-verify-both-files) |
+| What happens when access is removed? | Registry reads are denied; a subsequent successful sync removes the managed copy. Independent copies remain. | [Revoke access and check the limits](#6-revoke-access-and-check-the-limits) |
+| Is Git alone enough for our team? | Compare repository review with per-skill delivery, access and client setup. | [Git repository or private skill registry?](git-vs-private-skill-registry.md) |
+
+The CLI modes are `claude`, `codex` and `copilot`; a mode selects a directory convention. Cursor is also a supported consumer, but there is no separate `cursor` mode. Use the [current client setup reference](../features/ai-skills-cli.md#consumers-and-cli-modes) and verify loading in your client version.
 
 ## Before you start
 

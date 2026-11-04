@@ -1,0 +1,72 @@
+{
+  "record_type": "Private skill distribution evaluation; not an API request",
+  "cli_version": "",
+  "source_commit_before": "",
+  "source_commit_after": "",
+  "skill_id": "",
+  "client": "",
+  "client_version": "",
+  "cli_mode": "",
+  "project_directory": "Disposable project only; no credentials or personal paths in shared records",
+  "checks": [
+    {
+      "check": "allowed_developer_list_and_content",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    },
+    {
+      "check": "excluded_developer_list_and_content",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    },
+    {
+      "check": "initial_two_file_delivery",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    },
+    {
+      "check": "client_loading",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    },
+    {
+      "check": "approved_update_both_files_and_manifest",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    },
+    {
+      "check": "registry_read_denied_after_grant_removal",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    },
+    {
+      "check": "successful_sync_removes_managed_copy",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    },
+    {
+      "check": "independent_copy_remains",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    },
+    {
+      "check": "later_import_does_not_restore_access",
+      "status": "not_run",
+      "observed_result": "",
+      "sanitized_evidence_reference": ""
+    }
+  ],
+  "decision": "not_evaluated",
+  "reason": "",
+  "registry_software_version": "",
+  "skill_registry_version_before": "",
+  "skill_registry_version_after": ""
+}
