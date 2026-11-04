@@ -2,7 +2,7 @@
 
 > Jarvis Registry is a self-hostable enterprise gateway and registry for governed access to MCP servers, A2A agents, and private AI skills.
 
-Last updated: 2026-10-30T18:57:41Z
+Last updated: 2026-11-03T16:50:59Z
 
 Use the guides below for deployment, developer clients, business chatbot integrations, identity, access control, and operations. Capabilities depend on deployment configuration and the connected platform. Private deployment does not itself confer compliance certification.
 
@@ -37,8 +37,9 @@ Use the guides below for deployment, developer clients, business chatbot integra
 
 ## Walkthroughs
 
-- [Test MCP Access with Two Users](https://jarvisregistry.com/walkthroughs/mcp-access-control/): Before connecting a business system, check whether your Jarvis Registry deployment stops an unauthorized user from calling a registered MCP server, even when that user knows its server ID and tool name. This walkthrough uses two...
-- [Private Skill Import, Updates & Access Removal](https://jarvisregistry.com/walkthroughs/private-skill-lifecycle/): Use this walkthrough to check how a private GitHub skill moves into Jarvis Registry, reaches an authorized developer, receives an update, and is removed from the CLI's managed directory after access is revoked.
+- [Git or a Private Skill Registry?](https://jarvisregistry.com/walkthroughs/git-vs-private-skill-registry/): Decide when Git is enough for private agent skills and when Jarvis Skill Gateway adds per-skill access and distribution across coding clients.
+- [Test MCP Access with Two Users](https://jarvisregistry.com/walkthroughs/mcp-access-control/): Test MCP server permissions in Jarvis Registry with two users, direct tool calls, access removal and a loopback-only sample server.
+- [Private Skill Import, Updates & Access Removal](https://jarvisregistry.com/walkthroughs/private-skill-lifecycle/): Follow a private agent skill from an approved Git commit into Jarvis Registry, deliver updates to coding clients and test access removal.
 
 ## Architecture & Design
 
@@ -88,6 +89,7 @@ Use the guides below for deployment, developer clients, business chatbot integra
 ## Changelog
 
 - [Overview](https://jarvisregistry.com/changelog/): Release notes for every version of Jarvis Registry.
+- [asc0.5.17](https://jarvisregistry.com/changelog/asc0.5.17/): The asc0.5.17 release of Jarvis Registry
 - [asc0.5.16](https://jarvisregistry.com/changelog/asc0.5.16/): The asc0.5.16 release of Jarvis Registry
 - [asc0.5.15](https://jarvisregistry.com/changelog/asc0.5.15/): The asc0.5.15 release of Jarvis Registry
 - [asc0.5.14](https://jarvisregistry.com/changelog/asc0.5.14/): The asc0.5.14 release of Jarvis Registry
