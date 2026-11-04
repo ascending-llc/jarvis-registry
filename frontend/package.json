@@ -35,6 +35,8 @@
     "serve": "vite preview",
     "test": "vitest run",
     "format": "biome check --write",
+    "lint": "biome ci .",
+    "typecheck": "tsc --noEmit -p .",
     "rebuild:package-lock": "rm -rf node_modules package-lock.json && npm install"
   },
   "browserslist": {

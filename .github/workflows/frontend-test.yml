@@ -27,6 +27,16 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Lint and format check (Biome)
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Type check (tsc)
+        if: ${{ !cancelled() }}
+        working-directory: frontend
+        run: npm run typecheck
+
       - name: Run unit tests
+        if: ${{ !cancelled() }}
         working-directory: frontend
         run: npm run test
