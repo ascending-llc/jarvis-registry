@@ -34,7 +34,8 @@ type SkillContentPanelProps = {
 };
 
 type FileLoadState =
-  | { status: 'idle' | 'loading' }
+  | { status: 'idle' }
+  | { status: 'loading' }
   | { status: 'loaded'; data: SkillFileContent }
   | { status: 'error'; message: string };
 

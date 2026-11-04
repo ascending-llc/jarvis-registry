@@ -182,7 +182,7 @@ const _parseInitialInput = (
     const key = field.key.trim();
     if (!key && !field.value.trim()) continue;
     if (!key) return { value: null, error: 'Each initial input field needs a key' };
-    if (Object.prototype.hasOwnProperty.call(result, key)) {
+    if (Object.hasOwn(result, key)) {
       return { value: null, error: `Initial input key "${key}" is duplicated` };
     }
     result[key] = _parseInputFieldValue(field.value);

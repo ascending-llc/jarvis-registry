@@ -117,10 +117,7 @@ export const StepObjectiveEditor: React.FC<StepObjectiveEditorProps> = ({ value,
                         MD
                       </div>
                       <div>
-                        <Dialog.Title
-                          as='h3'
-                          className='text-[15px] font-medium text-[var(--jarvis-text-strong)]'
-                        >
+                        <Dialog.Title as='h3' className='text-[15px] font-medium text-[var(--jarvis-text-strong)]'>
                           Step objective
                         </Dialog.Title>
                         <p className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>Markdown source</p>

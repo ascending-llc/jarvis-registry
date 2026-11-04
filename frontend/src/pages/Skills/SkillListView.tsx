@@ -1,4 +1,13 @@
-import { ArrowPathIcon, DocumentTextIcon, PlusIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
+import {
+  ArrowDownIcon,
+  ArrowPathIcon,
+  ArrowUpIcon,
+  ChevronUpDownIcon,
+  DocumentTextIcon,
+  PlusIcon,
+  ShareIcon,
+  TrashIcon,
+} from '@heroicons/react/24/outline';
 import type React from 'react';
 
 import IconButton from '@/components/IconButton';
@@ -6,9 +15,12 @@ import type { SkillMetadata } from '@/services/skill/type';
 
 import SkillSourceChip from './SkillSourceChip';
 import { getSkillDisplayName } from './skillDraft';
+import type { SkillSort, SkillSortColumn } from './skillListQuery';
 
 type SkillListViewProps = {
   skills: SkillMetadata[];
+  sort: SkillSort;
+  onSortChange: (column: SkillSortColumn) => void;
   loading: boolean;
   refreshing: boolean;
   error: string | null;
@@ -20,6 +32,13 @@ type SkillListViewProps = {
   onShare: (skill: SkillMetadata) => void;
   onDelete: (skill: SkillMetadata) => void;
 };
+
+const SORT_HEADERS: { column: SkillSortColumn; label: string }[] = [
+  { column: 'name', label: 'Skill' },
+  { column: 'source', label: 'Source' },
+  { column: 'author', label: 'Author' },
+  { column: 'updatedAt', label: 'Last updated' },
+];
 
 const UPDATED_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'numeric',
@@ -35,6 +54,8 @@ const formatUpdatedDate = (updatedAt?: string | null): string => {
 
 const SkillListView: React.FC<SkillListViewProps> = ({
   skills,
+  sort,
+  onSortChange,
   loading,
   refreshing,
   error,
@@ -82,10 +103,35 @@ const SkillListView: React.FC<SkillListViewProps> = ({
     <div className='min-h-0 flex-1 overflow-x-auto'>
       <div className='grid min-w-[640px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border)] px-1 py-2.5 text-[13px] text-[var(--jarvis-muted)]'>
         <div className='grid min-w-0 grid-cols-[2fr_1fr_1fr_1fr] gap-3'>
-          <span>Skill</span>
-          <span>Source</span>
-          <span>Author</span>
-          <span>Last updated</span>
+          {SORT_HEADERS.map(({ column, label }) => {
+            const active = sort.column === column;
+            const ascending = sort.direction === 'asc';
+            const DirectionIcon = ascending ? ArrowUpIcon : ArrowDownIcon;
+            return (
+              <button
+                key={column}
+                type='button'
+                onClick={() => onSortChange(column)}
+                aria-label={
+                  active
+                    ? `${label}, sorted ${ascending ? 'ascending' : 'descending'}. Click to sort ${ascending ? 'descending' : 'ascending'}.`
+                    : `Sort by ${label}`
+                }
+                className={`flex items-center gap-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--jarvis-primary)] ${active ? 'text-[var(--jarvis-text)]' : ''}`}
+              >
+                {label}
+                {active ? (
+                  <DirectionIcon
+                    className='h-3 w-3 flex-shrink-0'
+                    aria-hidden='true'
+                    data-testid={`sort-direction-icon-${sort.direction}`}
+                  />
+                ) : (
+                  <ChevronUpDownIcon className='h-3 w-3 flex-shrink-0 text-[var(--jarvis-muted)]' aria-hidden='true' />
+                )}
+              </button>
+            );
+          })}
         </div>
         <span className='sr-only'>Actions</span>
       </div>
@@ -156,7 +202,9 @@ const SkillListView: React.FC<SkillListViewProps> = ({
               <span className='flex min-w-0'>
                 <SkillSourceChip origin={skill.origin} />
               </span>
-              <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>{skill.authorName || '—'}</span>
+              <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>
+                {skill.authorName?.trim() || '—'}
+              </span>
               <span className='text-[13.5px] text-[var(--jarvis-muted)]'>{formatUpdatedDate(skill.updatedAt)}</span>
             </button>
             <span className='flex items-center justify-end gap-0.5 pr-1'>

@@ -17,7 +17,7 @@ interface UseWorkflowDraftGuardOptions {
 
 const NEW_WORKFLOW_KEY = '__new_workflow__';
 
-const _matchesResource = (workflow: Partial<Workflow> | null, resourceKey?: string): boolean => {
+const _matchesResource = (workflow: Partial<Workflow> | null, resourceKey?: string): workflow is Partial<Workflow> => {
   if (!workflow) return false;
   if (resourceKey) return workflow.id === resourceKey;
   return workflow.id === undefined;

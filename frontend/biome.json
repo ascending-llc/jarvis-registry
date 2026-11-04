@@ -14,7 +14,7 @@
     }
   },
   "files": {
-    "includes": ["**", "!**/docs", "!**/assets", "!**/public"]
+    "includes": ["**", "!**/docs", "!**/assets", "!**/public", "!**/build"]
   },
   "formatter": {
     "enabled": true,

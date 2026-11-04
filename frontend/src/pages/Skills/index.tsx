@@ -28,6 +28,7 @@ import {
   updateSkillMarkdownMetadata,
   validateDraft,
 } from './skillDraft';
+import { DEFAULT_SKILL_SORT, getNextSkillSort, matchesSkillSearch, type SkillSort, sortSkills } from './skillListQuery';
 import type { EditorMode, SkillDraft, SkillPageError, SkillStatusFilter } from './types';
 
 const getRequestError = (error: unknown): RequestErrorPayload => {
@@ -58,12 +59,6 @@ const toPageError = (error: unknown): SkillPageError => {
   return { kind: 'generic', message: getRequestErrorMessage(error, 'Failed to load skill.') };
 };
 
-const getUpdatedTimestamp = (updatedAt?: string | null): number => {
-  if (!updatedAt) return 0;
-  const timestamp = new Date(updatedAt).getTime();
-  return Number.isNaN(timestamp) ? 0 : timestamp;
-};
-
 const removeSkillDeletePermission = (skill: SkillMetadata): SkillMetadata => {
   if (!skill.permissions) return skill;
   return {
@@ -83,6 +78,7 @@ const SkillsPage: React.FC = () => {
   const isList = !skillId && !isCreate;
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [sort, setSort] = useState<SkillSort>(DEFAULT_SKILL_SORT);
   const [statusFilter, setStatusFilter] = useState<SkillStatusFilter>('all');
 
   const [snapshot, setSnapshot] = useState<SkillDraft | null>(null);
@@ -161,16 +157,15 @@ const SkillsPage: React.FC = () => {
   }, [isCreate, loadSkillDetail, skillId, user?.username]);
 
   const filteredSkills = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLocaleLowerCase();
-    return skills
+    const visibleSkills = skills
       .filter(skill => {
         if (statusFilter === 'enabled' && !skill.enabled) return false;
         if (statusFilter === 'disabled' && skill.enabled) return false;
-        if (!normalizedSearch) return true;
-        return getSkillDisplayName(skill).toLocaleLowerCase().includes(normalizedSearch);
+        return true;
       })
-      .sort((left, right) => getUpdatedTimestamp(right.updatedAt) - getUpdatedTimestamp(left.updatedAt));
-  }, [searchTerm, skills, statusFilter]);
+      .filter(skill => matchesSkillSearch(skill, searchTerm));
+    return sortSkills(visibleSkills, sort);
+  }, [searchTerm, skills, statusFilter, sort]);
 
   const navigateToList = () => navigate(APP_ROUTES.skills);
   const navigateToCreate = () => navigate(`${APP_ROUTES.skills}?create=true`);
@@ -409,6 +404,8 @@ const SkillsPage: React.FC = () => {
       {isList ? (
         <SkillListView
           skills={filteredSkills}
+          sort={sort}
+          onSortChange={column => setSort(current => getNextSkillSort(current, column))}
           loading={skillLoading}
           refreshing={refreshing}
           error={skillError}
