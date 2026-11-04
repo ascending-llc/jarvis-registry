@@ -198,7 +198,9 @@ const SkillListView: React.FC<SkillListViewProps> = ({
               <span className='flex min-w-0'>
                 <SkillSourceChip origin={skill.origin} />
               </span>
-              <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>{skill.authorName?.trim() || '—'}</span>
+              <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>
+                {skill.authorName?.trim() || '—'}
+              </span>
               <span className='text-[13.5px] text-[var(--jarvis-muted)]'>{formatUpdatedDate(skill.updatedAt)}</span>
             </button>
             <span className='flex items-center justify-end gap-0.5 pr-1'>

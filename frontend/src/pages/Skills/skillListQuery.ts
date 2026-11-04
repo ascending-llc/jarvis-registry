@@ -19,11 +19,7 @@ export const SKILL_SORT_FIRST_DIRECTION: Record<SkillSortColumn, SkillSortDirect
 export const getNextSkillSort = (current: SkillSort, clicked: SkillSortColumn): SkillSort => ({
   column: clicked,
   direction:
-    current.column === clicked
-      ? current.direction === 'asc'
-        ? 'desc'
-        : 'asc'
-      : SKILL_SORT_FIRST_DIRECTION[clicked],
+    current.column === clicked ? (current.direction === 'asc' ? 'desc' : 'asc') : SKILL_SORT_FIRST_DIRECTION[clicked],
 });
 
 export const matchesSkillSearch = (skill: SkillMetadata, searchTerm: string): boolean => {

@@ -28,13 +28,7 @@ import {
   updateSkillMarkdownMetadata,
   validateDraft,
 } from './skillDraft';
-import {
-  DEFAULT_SKILL_SORT,
-  getNextSkillSort,
-  matchesSkillSearch,
-  type SkillSort,
-  sortSkills,
-} from './skillListQuery';
+import { DEFAULT_SKILL_SORT, getNextSkillSort, matchesSkillSearch, type SkillSort, sortSkills } from './skillListQuery';
 import type { EditorMode, SkillDraft, SkillPageError, SkillStatusFilter } from './types';
 
 const getRequestError = (error: unknown): RequestErrorPayload => {
