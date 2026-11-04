@@ -121,7 +121,11 @@ const SkillListView: React.FC<SkillListViewProps> = ({
               >
                 {label}
                 {active ? (
-                  <DirectionIcon className='h-3 w-3 flex-shrink-0' aria-hidden='true' />
+                  <DirectionIcon
+                    className='h-3 w-3 flex-shrink-0'
+                    aria-hidden='true'
+                    data-testid={`sort-direction-icon-${sort.direction}`}
+                  />
                 ) : (
                   <ChevronUpDownIcon className='h-3 w-3 flex-shrink-0 text-[var(--jarvis-muted)]' aria-hidden='true' />
                 )}
