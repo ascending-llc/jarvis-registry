@@ -3,11 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 
 import { AuthPageLayout } from '@/components/auth/AuthPageLayout';
 import ConsentPrompt from '@/components/consent/ConsentPrompt';
-import {
-  type ConsentContext,
-  type ConsentDecisionResponse,
-  DEEP_LINK_BRANDS,
-} from '@/services/consent';
+import { type ConsentContext, type ConsentDecisionResponse, DEEP_LINK_BRANDS } from '@/services/consent';
 
 interface ResourceConsentPageProps {
   getConsentContext: (nonce: string) => Promise<ConsentContext>;

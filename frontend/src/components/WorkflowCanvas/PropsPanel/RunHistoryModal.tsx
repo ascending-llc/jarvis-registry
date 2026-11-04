@@ -50,9 +50,7 @@ const RunHistoryModal: React.FC<RunHistoryModalProps> = ({ isOpen, runEntry, onC
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  const isError = runEntry
-    ? runEntry.err !== undefined || (activeTab === 'out' && runEntry.status === 'fail')
-    : false;
+  const isError = runEntry ? runEntry.err !== undefined || (activeTab === 'out' && runEntry.status === 'fail') : false;
 
   const { codeHtml, size } = useMemo(() => {
     const data = activeTab === 'in' ? runEntry?.input : isError ? runEntry?.err : runEntry?.output;
