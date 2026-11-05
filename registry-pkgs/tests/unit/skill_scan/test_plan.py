@@ -1,0 +1,157 @@
+from unittest.mock import AsyncMock
+
+import pytest
+from beanie import PydanticObjectId
+
+from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
+from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
+from registry_pkgs.models.skill_scan_result import ScanLLMInfo, SkillScanResult
+from registry_pkgs.models.skill_scan_toolset import SkillScanToolDescriptor
+from registry_pkgs.skill_scan import plan
+
+
+def _bedrock_source(source_id: PydanticObjectId, *, mode=ModelSourceMode.CHAT, deleted=False) -> ModelSource:
+    # model_construct bypasses Beanie's __init__ collection check, keeping this a unit test.
+    src = ModelSource.model_construct(
+        displayName="scan",
+        mode=mode,
+        providerConfig=AwsBedrockModelConfig(
+            awsRegion="us-east-1", modelIdOrArn="anthropic.claude-x", baseModelId="anthropic.claude-x"
+        ),
+        deletedAt=None,
+    )
+    src.id = source_id
+    if deleted:
+        from datetime import UTC, datetime
+
+        src.deletedAt = datetime.now(UTC)
+    return src
+
+
+def test_compose_tool_fingerprint_sensitivity():
+    llm = ScanLLMInfo(modelSourceId=PydanticObjectId(), providerType=ModelSourceProviderType.AWS_BEDROCK, modelId="m")
+    base = plan.compose_tool_fingerprint("static", llm)
+    assert plan.compose_tool_fingerprint("static", llm) == base  # stable
+    assert plan.compose_tool_fingerprint("other", llm) != base  # static part
+    other_source = ScanLLMInfo(
+        modelSourceId=PydanticObjectId(), providerType=ModelSourceProviderType.AWS_BEDROCK, modelId="m"
+    )
+    assert plan.compose_tool_fingerprint("static", other_source) != base  # modelSourceId
+    other_model = ScanLLMInfo(
+        modelSourceId=llm.modelSourceId, providerType=ModelSourceProviderType.AWS_BEDROCK, modelId="m2"
+    )
+    assert plan.compose_tool_fingerprint("static", other_model) != base  # modelId
+    assert plan.compose_tool_fingerprint("static", None) != base  # no llm
+
+
+def test_scan_llm_info_per_provider():
+    bedrock_id = PydanticObjectId()
+    info = plan.scan_llm_info(_bedrock_source(bedrock_id))
+    assert info is not None and info.modelId == "anthropic.claude-x" and info.modelSourceId == bedrock_id
+
+    azure = ModelSource.model_construct(
+        displayName="scan",
+        mode=ModelSourceMode.CHAT,
+        providerConfig=AzureOpenAIModelConfig(
+            endpoint="https://x.openai.azure.com",
+            deploymentName="gpt-x-deploy",
+            baseModelId="gpt-4o",
+            apiVersion="2024-10-21",
+        ),
+    )
+    azure.id = PydanticObjectId()
+    assert plan.scan_llm_info(azure).modelId == "gpt-x-deploy"
+
+    assert plan.scan_llm_info(None) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_prefers_scan_source(monkeypatch):
+    scan_id, default_id = PydanticObjectId(), PydanticObjectId()
+    selection = type("Sel", (), {"skillScanModelSourceId": scan_id, "defaultWorkflowModelSourceId": default_id})()
+    monkeypatch.setattr(plan, "get_model_gateway_selection", AsyncMock(return_value=selection))
+    get = AsyncMock(return_value=_bedrock_source(scan_id))
+    monkeypatch.setattr(plan.ModelSource, "get", get)
+
+    result = await plan.resolve_skill_scan_model_source()
+    assert result is not None
+    get.assert_awaited_once_with(scan_id)
+
+
+@pytest.mark.asyncio
+async def test_resolve_falls_back_to_workflow_default(monkeypatch):
+    default_id = PydanticObjectId()
+    selection = type("Sel", (), {"skillScanModelSourceId": None, "defaultWorkflowModelSourceId": default_id})()
+    monkeypatch.setattr(plan, "get_model_gateway_selection", AsyncMock(return_value=selection))
+    get = AsyncMock(return_value=_bedrock_source(default_id))
+    monkeypatch.setattr(plan.ModelSource, "get", get)
+
+    await plan.resolve_skill_scan_model_source()
+    get.assert_awaited_once_with(default_id)
+
+
+@pytest.mark.asyncio
+async def test_resolve_none_when_soft_deleted(monkeypatch):
+    sid = PydanticObjectId()
+    selection = type("Sel", (), {"skillScanModelSourceId": sid, "defaultWorkflowModelSourceId": None})()
+    monkeypatch.setattr(plan, "get_model_gateway_selection", AsyncMock(return_value=selection))
+    monkeypatch.setattr(plan.ModelSource, "get", AsyncMock(return_value=_bedrock_source(sid, deleted=True)))
+    assert await plan.resolve_skill_scan_model_source() is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_none_when_not_chat_mode(monkeypatch):
+    sid = PydanticObjectId()
+    selection = type("Sel", (), {"skillScanModelSourceId": sid, "defaultWorkflowModelSourceId": None})()
+    monkeypatch.setattr(plan, "get_model_gateway_selection", AsyncMock(return_value=selection))
+    monkeypatch.setattr(
+        plan.ModelSource, "get", AsyncMock(return_value=_bedrock_source(sid, mode=ModelSourceMode.EMBEDDING))
+    )
+    assert await plan.resolve_skill_scan_model_source() is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_none_when_nothing_configured(monkeypatch):
+    selection = type("Sel", (), {"skillScanModelSourceId": None, "defaultWorkflowModelSourceId": None})()
+    monkeypatch.setattr(plan, "get_model_gateway_selection", AsyncMock(return_value=selection))
+    assert await plan.resolve_skill_scan_model_source() is None
+
+
+@pytest.mark.asyncio
+async def test_tools_needing_scan_omits_done(monkeypatch):
+    class _Cursor:
+        def __init__(self, docs):
+            self._docs = docs
+
+        def __aiter__(self):
+            async def gen():
+                for d in self._docs:
+                    yield d
+
+            return gen()
+
+    class _Coll:
+        def find(self, *a, **k):
+            return _Cursor([{"toolFingerprint": "fp1"}])  # only cisco is done
+
+    monkeypatch.setattr(SkillScanResult, "get_pymongo_collection", staticmethod(lambda: _Coll()))
+    needing = await plan.tools_needing_scan(PydanticObjectId(), "sha256:d", {"cisco": "fp1", "spector": "fp2"})
+    assert needing == ["spector"]
+
+
+@pytest.mark.asyncio
+async def test_current_tool_fingerprints_composes_per_tool(monkeypatch):
+    toolset = type(
+        "TS", (), {"tools": [SkillScanToolDescriptor(tool="cisco", toolVersion="1", staticFingerprint="s1")]}
+    )()
+    monkeypatch.setattr(plan.SkillScanToolset, "get", AsyncMock(return_value=toolset))
+    monkeypatch.setattr(plan, "resolve_skill_scan_model_source", AsyncMock(return_value=None))  # no LLM configured
+
+    fingerprints = await plan.current_tool_fingerprints()
+    assert fingerprints == {"cisco": plan.compose_tool_fingerprint("s1", None)}
+
+
+@pytest.mark.asyncio
+async def test_current_tool_fingerprints_none_without_toolset(monkeypatch):
+    monkeypatch.setattr(plan.SkillScanToolset, "get", AsyncMock(return_value=None))
+    assert await plan.current_tool_fingerprints() is None
