@@ -21,6 +21,7 @@ from registry_pkgs.models import ExtendedSkillFile as SkillFile
 from registry_pkgs.models import PrincipalType, SkillSource, SkillSyncSource
 from registry_pkgs.models.enums import RoleBits, SkillSyncSourceStatus
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_skill_file import REGISTRY_SKILL_FILE_SOURCE
 from registry_pkgs.oauth.user_service import UserService
 
 from ..constants import (
@@ -28,7 +29,6 @@ from ..constants import (
     MAX_SKILL_FILE_RELATIVE_PATH_LENGTH,
     MAX_SKILL_FILE_SIZE,
     MAX_SKILL_FILES_TOTAL_SIZE,
-    REGISTRY_SKILL_FILE_SOURCE,
     RESERVED_SKILL_FILE_NAMES,
 )
 from ..models.skill_frontmatter import (

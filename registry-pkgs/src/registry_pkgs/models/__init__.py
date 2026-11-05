@@ -36,6 +36,9 @@ from .federation_sync_job import FederationSyncJob
 from .leader_lease import LeaderLease
 from .model_gateway_selection import ModelGatewaySelection
 from .model_source import ModelSource
+from .skill_scan_job import SkillScanJob, SkillScanSummary, SkillScanToolSummary
+from .skill_scan_result import ScanFinding, ScanLLMInfo, ScanUsage, SkillScanResult
+from .skill_scan_toolset import SKILL_SCAN_TOOLSET_ID, SkillScanToolDescriptor, SkillScanToolset
 from .skill_sync_job import SkillSyncJob
 from .skill_sync_source import SkillSyncSource
 from .token_type import TokenType
@@ -59,6 +62,16 @@ __all__ = [
     "LeaderLease",
     "ModelGatewaySelection",
     "ModelSource",
+    "ScanFinding",
+    "ScanLLMInfo",
+    "ScanUsage",
+    "SkillScanJob",
+    "SkillScanResult",
+    "SkillScanSummary",
+    "SkillScanToolSummary",
+    "SkillScanToolset",
+    "SkillScanToolDescriptor",
+    "SKILL_SCAN_TOOLSET_ID",
     "SkillSyncJob",
     "SkillSyncSource",
     "RegistryAccessRole",

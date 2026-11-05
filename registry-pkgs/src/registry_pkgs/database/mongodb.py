@@ -30,6 +30,9 @@ from ..models import (
     NodeRun,
     RegistryAccessRole,
     RegistryAclEntry,
+    SkillScanJob,
+    SkillScanResult,
+    SkillScanToolset,
     SkillSyncJob,
     SkillSyncSource,
     Token,
@@ -66,6 +69,9 @@ _DOCUMENT_MODELS: list[type[Document]] = [
     FederationSyncJob,
     SkillSyncSource,
     SkillSyncJob,
+    SkillScanJob,
+    SkillScanResult,
+    SkillScanToolset,
     WorkflowDefinition,
     WorkflowRun,
     WorkflowSchedule,
@@ -194,6 +200,9 @@ class MongoDB:
                 "FederationSyncJob": FederationSyncJob,
                 "SkillSyncSource": SkillSyncSource,
                 "SkillSyncJob": SkillSyncJob,
+                "SkillScanJob": SkillScanJob,
+                "SkillScanResult": SkillScanResult,
+                "SkillScanToolset": SkillScanToolset,
                 "ExtendedSkill": ExtendedSkill,
                 "ExtendedSkillFile": ExtendedSkillFile,
             }
@@ -209,6 +218,9 @@ class MongoDB:
             FederationSyncJob.model_rebuild(_types_namespace=rebuild_namespace)
             SkillSyncSource.model_rebuild(_types_namespace=rebuild_namespace)
             SkillSyncJob.model_rebuild(_types_namespace=rebuild_namespace)
+            SkillScanJob.model_rebuild(_types_namespace=rebuild_namespace)
+            SkillScanResult.model_rebuild(_types_namespace=rebuild_namespace)
+            SkillScanToolset.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedSkill.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedSkillFile.model_rebuild(_types_namespace=rebuild_namespace)
 
