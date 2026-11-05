@@ -19,6 +19,9 @@ dependencies = [
 
 [tool.uv.workspace]
 members = ["registry-pkgs", "registry", "auth-server", "workflow-worker"]
+# scripts/spike pins mcp v2 (the AS-1962 research spike); the repo is on mcp v1.
+# A workspace shares one lockfile, so spike must stay a standalone project, not a member.
+exclude = ["scripts/spike"]
 
 [tool.uv.sources]
 registry-pkgs = { workspace = true }
