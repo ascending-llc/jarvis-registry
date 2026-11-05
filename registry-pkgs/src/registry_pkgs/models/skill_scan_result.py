@@ -36,6 +36,9 @@ class ScanFinding(BaseModel):
     remediation: str | None = None
     confidence: float | None = None  # 0..1 when the tool reports one
 
+    # Re-run the capping validator on assignment too, so no caller can exceed the caps.
+    model_config = ConfigDict(validate_assignment=True)
+
     @model_validator(mode="after")
     def _cap_snippet(self) -> "ScanFinding":
         if self.snippet is not None and len(self.snippet) > MAX_FINDING_SNIPPET_CHARS:
@@ -97,4 +100,5 @@ class SkillScanResult(Document):
     async def update_timestamps(self) -> None:
         self.updatedAt = datetime.now(UTC)
 
-    model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
+    # validate_assignment re-runs the capping validator when a field is assigned after construction.
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True, validate_assignment=True)
