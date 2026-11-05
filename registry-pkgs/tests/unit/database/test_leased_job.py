@@ -170,6 +170,27 @@ async def test_transition_or_raise_raises_on_miss():
         await repo.transition_or_raise(_lease(), {"status": "done"})
 
 
+async def test_transition_extra_filter_is_merged_into_fence():
+    collection = MagicMock()
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
+    repo = _repo(collection)
+    lease = _lease()
+
+    assert await repo.transition(lease, {"status": "done"}, extra_filter={"rerequested": False}) is True
+    fence = collection.update_one.await_args.args[0]
+    assert fence["_id"] == lease.doc_id
+    assert fence["leaseToken"] == lease.token
+    assert fence["rerequested"] is False
+
+
+async def test_transition_extra_filter_miss_returns_false():
+    collection = MagicMock()
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=0, modified_count=0))
+    repo = _repo(collection)
+
+    assert await repo.transition(_lease(), {"status": "done"}, extra_filter={"rerequested": False}) is False
+
+
 async def test_transition_release_clears_lease_fields():
     collection = MagicMock()
     collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
