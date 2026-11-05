@@ -1,3 +1,7 @@
+# REGISTRY_SKILL_FILE_SOURCE lives in registry-pkgs so the skill-scan worker can use it too; re-export it
+# here so its users in skill_service.py and skill_sync_apply_service.py keep importing it from registry.constants.
+from registry_pkgs.models.extended_skill_file import REGISTRY_SKILL_FILE_SOURCE  # noqa: F401
+
 MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 
@@ -11,9 +15,6 @@ MAX_SKILL_FILES_TOTAL_SIZE = 10 * 1024 * 1024
 MAX_SKILL_FILE_COUNT = 200
 MAX_SKILL_FILE_RELATIVE_PATH_LENGTH = 512
 RESERVED_SKILL_FILE_NAMES = frozenset({"skill.md"})
-# SkillFile.source for files whose bytes Registry stores inline in `body` (created in Registry or by GitHub
-# skill sync). Any other source was written by Jarvis Chat, whose file storage Registry cannot read.
-REGISTRY_SKILL_FILE_SOURCE = "registry-inline"
 
 
 class DownstreamOAuthConstants:

@@ -650,3 +650,69 @@ class FederationJobStateMachine:
         }:
             raise ValueError(f"Federation job in status '{status}' cannot transition to failed")
         return FederationJobStatus.FAILED
+
+
+# ======================================================================================
+# Skill security scanning
+# ======================================================================================
+
+
+class SkillScanJobStatus(StrEnum):
+    PENDING = "pending"
+    SCANNING = "scanning"
+    DONE = "done"
+    FAILED = "failed"  # job-level: attempts exhausted (crash / lease loss), not a tool failure
+
+
+class SkillScanTriggerType(StrEnum):
+    AUTO = "auto"  # Registry content write
+    MANUAL = "manual"  # POST /skills/{id}/scan
+
+
+class SkillScanResultStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class SkillScanStatusReason(StrEnum):
+    LLM_UNAVAILABLE = "llm_unavailable"  # no LLM configured/usable for this tool
+    LLM_FAILED = "llm_failed"  # LLM configured but its pass failed
+    LLM_SKIPPED_SIZE_LIMIT = "llm_skipped_size_limit"  # orchestrator ran the tool without LLM
+    ANALYSIS_INCOMPLETE = "analysis_incomplete"  # tool reports partial coverage
+    CHAT_SUPPORTING_FILES_UNSUPPORTED = "chat_supporting_files_unsupported"
+    TOOL_ERROR = "tool_error"
+    TIMEOUT = "timeout"
+    PARSE_ERROR = "parse_error"
+
+
+class ScanSeverity(StrEnum):
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    INFO = "info"
+
+
+class ScanFindingCategory(StrEnum):
+    PROMPT_INJECTION = "prompt_injection"
+    DATA_EXFILTRATION = "data_exfiltration"
+    COMMAND_EXECUTION = "command_execution"
+    CREDENTIAL_ACCESS = "credential_access"
+    OBFUSCATION = "obfuscation"
+    SUPPLY_CHAIN = "supply_chain"
+    EXCESSIVE_PERMISSIONS = "excessive_permissions"
+    HARMFUL_CONTENT = "harmful_content"
+    SOCIAL_ENGINEERING = "social_engineering"
+    OTHER = "other"
+
+
+# "max severity" is computed one way everywhere via this rank (critical highest, info lowest).
+SCAN_SEVERITY_RANK: dict[ScanSeverity, int] = {
+    ScanSeverity.CRITICAL: 4,
+    ScanSeverity.HIGH: 3,
+    ScanSeverity.MEDIUM: 2,
+    ScanSeverity.LOW: 1,
+    ScanSeverity.INFO: 0,
+}

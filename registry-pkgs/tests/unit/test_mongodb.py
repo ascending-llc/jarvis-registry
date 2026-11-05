@@ -246,6 +246,9 @@ class TestMongoDBConnection:
             assert "FederationSyncJob" in model_names
             assert "SkillSyncSource" in model_names
             assert "SkillSyncJob" in model_names
+            assert "SkillScanJob" in model_names
+            assert "SkillScanResult" in model_names
+            assert "SkillScanToolset" in model_names
 
             # Every model's collection is ensured after Beanie is initialized
             mock_ensure_collections.assert_awaited_once_with(mock_db, document_models)
