@@ -76,10 +76,12 @@ async def test_two_enqueues_leave_one_pending_job(mongo):
 
 async def test_enqueue_in_aborted_transaction_leaves_no_job(mongo):
     skill_id = PydanticObjectId()
-    with pytest.raises(_Rollback):
-        async with mongo.start_session() as session, session.start_transaction():
+    try:
+        async with mongo.start_session() as session, await session.start_transaction():
             await enqueue_skill_scan(skill_id, trigger=SkillScanTriggerType.AUTO, requested_by=None, session=session)
             raise _Rollback()
+    except _Rollback:
+        pass
     assert await _jobs().count_documents({"skillId": skill_id}) == 0
 
 
@@ -144,10 +146,12 @@ async def test_delete_skill_scan_state_commits_and_aborts(mongo):
     )
 
     # Aborted transaction deletes nothing.
-    with pytest.raises(_Rollback):
-        async with mongo.start_session() as session, session.start_transaction():
+    try:
+        async with mongo.start_session() as session, await session.start_transaction():
             await delete_skill_scan_state(skill_id, session=session)
             raise _Rollback()
+    except _Rollback:
+        pass
     assert await _jobs().count_documents({"skillId": skill_id}) == 1
     assert await SkillScanResult.get_pymongo_collection().count_documents({"skillId": skill_id}) == 1
 

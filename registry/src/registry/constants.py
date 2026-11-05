@@ -1,7 +1,3 @@
-# REGISTRY_SKILL_FILE_SOURCE lives in registry-pkgs so the skill-scan worker can use it too; re-export it
-# here so its users in skill_service.py and skill_sync_apply_service.py keep importing it from registry.constants.
-from registry_pkgs.models.extended_skill_file import REGISTRY_SKILL_FILE_SOURCE  # noqa: F401
-
 MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 

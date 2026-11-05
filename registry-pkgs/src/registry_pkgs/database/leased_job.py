@@ -273,7 +273,11 @@ class LeasedRepository[D: Document]:
         update: dict[str, Any] = {"$set": sets}
         if unset:
             update["$unset"] = dict.fromkeys(unset, "")
-        fence = {**self._fence(lease), **(extra_filter or {})}
+        # $and rather than a flat merge so an extra_filter key can never shadow (and thus weaken) a
+        # lease-fence predicate; both clauses always apply.
+        fence = self._fence(lease)
+        if extra_filter:
+            fence = {"$and": [fence, extra_filter]}
         result = await self._collection.update_one(fence, update, session=session)
         return result.matched_count == 1
 

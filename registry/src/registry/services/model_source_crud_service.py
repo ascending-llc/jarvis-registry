@@ -213,6 +213,7 @@ class ModelSourceCrudService:
         if selection is not None and object_id in (
             selection.defaultWorkflowModelSourceId,
             selection.embeddingModelSourceId,
+            selection.skillScanModelSourceId,
         ):
             return True
         # The selection changes only at commit, so also protect a pending reindex's target from

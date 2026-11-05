@@ -41,6 +41,13 @@ def test_compose_tool_fingerprint_sensitivity():
         modelSourceId=llm.modelSourceId, providerType=ModelSourceProviderType.AWS_BEDROCK, modelId="m2"
     )
     assert plan.compose_tool_fingerprint("static", other_model) != base  # modelId
+    other_config = ScanLLMInfo(
+        modelSourceId=llm.modelSourceId,
+        providerType=ModelSourceProviderType.AWS_BEDROCK,
+        modelId="m",
+        configDigest="deadbeef",
+    )
+    assert plan.compose_tool_fingerprint("static", other_config) != base  # configDigest
     assert plan.compose_tool_fingerprint("static", None) != base  # no llm
 
 
@@ -49,18 +56,34 @@ def test_scan_llm_info_per_provider():
     info = plan.scan_llm_info(_bedrock_source(bedrock_id))
     assert info is not None and info.modelId == "anthropic.claude-x" and info.modelSourceId == bedrock_id
 
-    azure = ModelSource.model_construct(
-        displayName="scan",
-        mode=ModelSourceMode.CHAT,
-        providerConfig=AzureOpenAIModelConfig(
-            endpoint="https://x.openai.azure.com",
-            deploymentName="gpt-x-deploy",
-            baseModelId="gpt-4o",
-            apiVersion="2024-10-21",
-        ),
-    )
-    azure.id = PydanticObjectId()
-    assert plan.scan_llm_info(azure).modelId == "gpt-x-deploy"
+    def _azure(endpoint: str, *, api_key: str | None = None) -> ModelSource:
+        src = ModelSource.model_construct(
+            displayName="scan",
+            mode=ModelSourceMode.CHAT,
+            providerConfig=AzureOpenAIModelConfig(
+                endpoint=endpoint,
+                deploymentName="gpt-x-deploy",
+                baseModelId="gpt-4o",
+                apiVersion="2024-10-21",
+                apiKeyEncrypted=api_key,
+            ),
+        )
+        src.id = azure_id
+        return src
+
+    azure_id = PydanticObjectId()
+    azure = _azure("https://x.openai.azure.com")
+    azure_info = plan.scan_llm_info(azure)
+    assert azure_info.modelId == "gpt-x-deploy"
+    azure_fp = plan.compose_tool_fingerprint("s", azure_info)
+
+    # Same source id and deployment name, endpoint changed in place -> new fingerprint (no stale reuse).
+    moved = plan.scan_llm_info(_azure("https://y.openai.azure.com"))
+    assert plan.compose_tool_fingerprint("s", moved) != azure_fp
+
+    # Rotating only the secret api key must NOT change the fingerprint.
+    rekeyed = plan.scan_llm_info(_azure("https://x.openai.azure.com", api_key="rotated"))
+    assert plan.compose_tool_fingerprint("s", rekeyed) == azure_fp
 
     assert plan.scan_llm_info(None) is None
 

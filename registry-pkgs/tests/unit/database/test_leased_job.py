@@ -170,7 +170,7 @@ async def test_transition_or_raise_raises_on_miss():
         await repo.transition_or_raise(_lease(), {"status": "done"})
 
 
-async def test_transition_extra_filter_is_merged_into_fence():
+async def test_transition_extra_filter_is_anded_with_fence():
     collection = MagicMock()
     collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
     repo = _repo(collection)
@@ -178,9 +178,24 @@ async def test_transition_extra_filter_is_merged_into_fence():
 
     assert await repo.transition(lease, {"status": "done"}, extra_filter={"rerequested": False}) is True
     fence = collection.update_one.await_args.args[0]
-    assert fence["_id"] == lease.doc_id
-    assert fence["leaseToken"] == lease.token
-    assert fence["rerequested"] is False
+    lease_clause, extra_clause = fence["$and"]
+    assert lease_clause["_id"] == lease.doc_id
+    assert lease_clause["leaseToken"] == lease.token
+    assert extra_clause == {"rerequested": False}
+
+
+async def test_transition_extra_filter_cannot_weaken_fence():
+    # An extra_filter key that collides with a fence predicate must not shadow it: both clauses apply.
+    collection = MagicMock()
+    collection.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1, modified_count=1))
+    repo = _repo(collection)
+    lease = _lease()
+
+    await repo.transition(lease, {"status": "done"}, extra_filter={"leaseExpiresAt": {"$exists": True}})
+    lease_clause, extra_clause = collection.update_one.await_args.args[0]["$and"]
+    # The lease's deadline check survives intact; the extra_filter's clause is separate.
+    assert "$gt" in lease_clause["leaseExpiresAt"]
+    assert extra_clause == {"leaseExpiresAt": {"$exists": True}}
 
 
 async def test_transition_extra_filter_miss_returns_false():

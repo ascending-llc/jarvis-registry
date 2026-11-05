@@ -47,6 +47,10 @@ class ScanLLMInfo(BaseModel):
     modelSourceId: PydanticObjectId
     providerType: ModelSourceProviderType
     modelId: str  # modelIdOrArn (Bedrock) or deploymentName (Azure)
+    # sha256 hex of the non-secret provider config (endpoint, region, apiVersion, ...), so an in-place
+    # edit that keeps the same source id and model id but points at a different resource still produces a
+    # new tool fingerprint. None when no model is configured. See skill_scan.plan.compose_tool_fingerprint.
+    configDigest: str | None = None
 
 
 class ScanUsage(BaseModel):

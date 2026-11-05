@@ -6,6 +6,7 @@ fingerprint with status ``partial``.
 """
 
 import hashlib
+import json
 
 from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
@@ -18,6 +19,16 @@ from ..models.skill_scan_result import ScanLLMInfo, SkillScanResult
 from ..models.skill_scan_toolset import SKILL_SCAN_TOOLSET_ID, SkillScanToolset
 
 _DONE_STATUSES = (SkillScanResultStatus.SUCCEEDED.value, SkillScanResultStatus.SKIPPED.value)
+
+# Config fields that are secrets, not model identity: excluded from the fingerprint so a key rotation
+# does not invalidate caches, and so no secret enters a fingerprint digest.
+_SECRET_CONFIG_FIELDS = frozenset({"apiKeyEncrypted"})
+
+
+def _provider_config_digest(config: AwsBedrockModelConfig | AzureOpenAIModelConfig) -> str:
+    """sha256 of the non-secret provider config, so any change to which resource/model is served invalidates caches."""
+    data = config.model_dump(mode="json", exclude=_SECRET_CONFIG_FIELDS)
+    return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 async def resolve_skill_scan_model_source() -> ModelSource | None:
@@ -48,14 +59,20 @@ def scan_llm_info(source: ModelSource | None) -> ScanLLMInfo | None:
         model_id = config.deploymentName
     else:  # pragma: no cover — discriminated union is exhaustive
         return None
-    return ScanLLMInfo(modelSourceId=source.id, providerType=config.providerType, modelId=model_id)
+    return ScanLLMInfo(
+        modelSourceId=source.id,
+        providerType=config.providerType,
+        modelId=model_id,
+        configDigest=_provider_config_digest(config),
+    )
 
 
 def compose_tool_fingerprint(static_fingerprint: str, llm: ScanLLMInfo | None) -> str:
     """Combine an adapter's static fingerprint with the configured LLM so a model change invalidates caches."""
     model_source_id = str(llm.modelSourceId) if llm else "-"
     model_id = llm.modelId if llm else "-"
-    raw = f"{static_fingerprint}|{model_source_id}|{model_id}"
+    config_digest = (llm.configDigest or "-") if llm else "-"
+    raw = f"{static_fingerprint}|{model_source_id}|{model_id}|{config_digest}"
     return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
