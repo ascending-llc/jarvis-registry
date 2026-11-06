@@ -122,6 +122,7 @@ class ModelSourceDeleteResponse(BaseModel):
 class ModelGatewaySelectionResponse(BaseModel):
     defaultWorkflowModelSourceId: str | None = None
     embeddingModelSourceId: str | None = None
+    skillScanModelSourceId: str | None = None
 
 
 class EmbeddingReindexJobResponse(BaseModel):
@@ -149,6 +150,10 @@ class EmbeddingReindexJobListResponse(BaseModel):
 
 class SetDefaultWorkflowModelRequest(BaseModel):
     modelSourceId: str
+
+
+class SetSkillScanModelRequest(BaseModel):
+    modelSourceId: str | None = None  # null clears the slot (falls back to the workflow default)
 
 
 class SetEmbeddingModelRequest(BaseModel):

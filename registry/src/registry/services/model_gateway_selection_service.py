@@ -43,6 +43,27 @@ class ModelGatewaySelectionService:
             updated_by=updated_by,
         )
 
+    async def set_skill_scan_model(
+        self,
+        model_source_id: str | None,
+        *,
+        updated_by: str | None,
+    ) -> ModelGatewaySelection:
+        """Set (or clear, with ``None``) the model used for skill security scanning.
+
+        A non-null id must point at a live CHAT ModelSource, as the workflow default does; ``None``
+        clears the slot so scanning falls back to ``defaultWorkflowModelSourceId``.
+        """
+        source_id = None
+        if model_source_id is not None:
+            source = await self._require_model_source(model_source_id, ModelSourceMode.CHAT)
+            source_id = source.id
+        return await set_model_gateway_selection(
+            "skillScanModelSourceId",
+            source_id,
+            updated_by=updated_by,
+        )
+
     async def resolve_embedding_model_source(self, model_source_id: str) -> ModelSource:
         """Validate the id points at a live EMBEDDING ModelSource and return it.
 
