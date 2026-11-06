@@ -371,3 +371,26 @@ class TestGetScopeDescription:
         result = get_scope_description("servers-read")
 
         assert result == "View registered MCP servers, their tools, and connection status."
+
+
+class TestBundledSkillScanScopes:
+    """AS-1982: the shipped scopes.yml exposes the new scan/model routes under the right scopes."""
+
+    @staticmethod
+    def _actions(reset_scopes_cache, scope_name: str) -> list[tuple[str, str]]:
+        config = scopes.load_scopes_config()
+        return [(a["method"], a["endpoint"]) for a in config[scope_name]["actions"]]
+
+    def test_get_skill_scan_is_in_skills_read(self, reset_scopes_cache):
+        assert ("GET", "/skills/{skill_id}/scan") in self._actions(reset_scopes_cache, "skills-read")
+
+    def test_request_skill_scan_is_in_skills_write(self, reset_scopes_cache):
+        assert ("POST", "/skills/{skill_id}/scan") in self._actions(reset_scopes_cache, "skills-write")
+
+    def test_set_skill_scan_model_is_in_models_write(self, reset_scopes_cache):
+        actions = self._actions(reset_scopes_cache, "models-write")
+        assert ("PUT", "/model-gateway/selection/skill-scan-model") in actions
+
+    def test_scan_routes_not_in_the_opposite_scope(self, reset_scopes_cache):
+        # read-only users can GET but not POST the scan.
+        assert ("POST", "/skills/{skill_id}/scan") not in self._actions(reset_scopes_cache, "skills-read")
