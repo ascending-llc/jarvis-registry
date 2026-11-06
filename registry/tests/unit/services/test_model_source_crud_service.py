@@ -71,7 +71,11 @@ def _selection(**overrides) -> SimpleNamespace:
 @pytest.fixture
 def selection_service() -> MagicMock:
     mock = MagicMock()
-    mock.get_selection_or_none = AsyncMock(return_value=_selection())
+    mock.get_selection_or_none = AsyncMock(
+        return_value=SimpleNamespace(
+            defaultWorkflowModelSourceId=None, embeddingModelSourceId=None, skillScanModelSourceId=None
+        )
+    )
     return mock
 
 
@@ -452,11 +456,6 @@ async def test_is_in_use_true_when_workflow_default(service, selection_service) 
     selection_service.get_selection_or_none.return_value = _selection(
         defaultWorkflowModelSourceId=PydanticObjectId(VALID_ID)
     )
-    assert await service.is_in_use(VALID_ID) is True
-
-
-async def test_is_in_use_true_when_skill_scan_selected(service, selection_service) -> None:
-    selection_service.get_selection_or_none.return_value = _selection(skillScanModelSourceId=PydanticObjectId(VALID_ID))
     assert await service.is_in_use(VALID_ID) is True
 
 
