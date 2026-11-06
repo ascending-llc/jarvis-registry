@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 
-type IDE = 'vscode' | 'cursor' | 'cline' | 'claude-code';
+type IDE = 'vscode' | 'cursor' | 'cline' | 'claude-code' | 'codex';
 
 interface ServerConfigModalProps {
   server?: ServerInfo;
@@ -21,7 +21,7 @@ interface IDEOption {
   label: string;
   hint: string;
   filePath: string;
-  rootKey: 'servers' | 'mcpServers';
+  rootKey: 'servers' | 'mcpServers' | 'mcp_servers';
 }
 
 const IDE_OPTIONS: IDEOption[] = [
@@ -53,9 +53,17 @@ const IDE_OPTIONS: IDEOption[] = [
     filePath: '.claude.json',
     rootKey: 'mcpServers',
   },
+  {
+    id: 'codex',
+    label: 'Codex',
+    hint: 'Configuration optimized for Codex MCP settings',
+    filePath: '~/.codex/config.toml',
+    rootKey: 'mcp_servers',
+  },
 ];
 
 const REGISTRY_SERVER_NAME = 'jarvis-registry';
+const toTomlString = (value: string): string => JSON.stringify(value).replaceAll('\u007f', '\\u007f');
 const joinUrlPath = (...segments: string[]) =>
   segments
     .map(segment => segment.replace(/^\/+|\/+$/g, ''))
@@ -98,7 +106,11 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
   const isDirectConnect = configScope !== 'registry';
   const configReady = !isDirectConnect || userId !== '';
 
-  const generateMCPConfig = useCallback(() => {
+  const configText = useMemo(() => {
+    if (!configReady) {
+      return '';
+    }
+
     const currentUrl = new URL(window.location.origin);
     const basePath = getBasePath();
     const normalizedPath = server?.path || '';
@@ -107,20 +119,24 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
         ? `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/mcpgw/mcp')}`
         : `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/server', userId, normalizedPath)}`;
 
-    return {
-      [selectedOption.rootKey]: {
-        [serverName]: {
-          type: 'http',
-          url,
+    if (selectedOption.rootKey === 'mcp_servers') {
+      const serverKey = /^[A-Za-z0-9_-]+$/.test(serverName) ? serverName : toTomlString(serverName);
+      return `[mcp_servers.${serverKey}]\nurl = ${toTomlString(url)}`;
+    }
+
+    return JSON.stringify(
+      {
+        [selectedOption.rootKey]: {
+          [serverName]: {
+            type: 'http',
+            url,
+          },
         },
       },
-    };
-  }, [configScope, selectedOption.rootKey, server?.path, serverName, userId]);
-
-  const configText = useMemo(
-    () => (configReady ? JSON.stringify(generateMCPConfig(), null, 2) : ''),
-    [configReady, generateMCPConfig],
-  );
+      null,
+      2,
+    );
+  }, [configReady, configScope, selectedOption.rootKey, server?.path, serverName, userId]);
 
   const copyConfigToClipboard = useCallback(async () => {
     if (!configReady) {

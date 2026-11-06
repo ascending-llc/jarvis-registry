@@ -154,3 +154,12 @@ def test_materialize_rejects_unreadable_file(tmp_path):
     root = tmp_path / "skill"
     with pytest.raises(SkillNotScannableError):
         materialize_skill(_skill(), [_file("a.py", None, source="chat-storage")], root)
+
+
+@pytest.mark.parametrize("paths", [["a", "a/b"], ["a/b", "a"]])
+def test_materialize_rejects_file_directory_collision(tmp_path, paths):
+    # Each path is valid alone, but "a" can't be both a file and a directory on disk.
+    root = tmp_path / "skill"
+    with pytest.raises(SkillNotScannableError) as exc_info:
+        materialize_skill(_skill(), [_file(p, b"x") for p in paths], root)
+    assert isinstance(exc_info.value.__cause__, OSError)

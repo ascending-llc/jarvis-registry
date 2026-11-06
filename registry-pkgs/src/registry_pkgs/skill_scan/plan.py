@@ -20,14 +20,17 @@ from ..models.skill_scan_toolset import SKILL_SCAN_TOOLSET_ID, SkillScanToolset
 
 _DONE_STATUSES = (SkillScanResultStatus.SUCCEEDED.value, SkillScanResultStatus.SKIPPED.value)
 
-# Config fields that are secrets, not model identity: excluded from the fingerprint so a key rotation
-# does not invalidate caches, and so no secret enters a fingerprint digest.
-_SECRET_CONFIG_FIELDS = frozenset({"apiKeyEncrypted"})
+# Allowlist of the provider-config fields that decide which deployment serves the scan model. Only these
+# enter the fingerprint: a new config field (a credential, or a metadata-only field such as baseModelId)
+# never changes fingerprints or leaks into a digest until someone adds it here on purpose.
+_BEDROCK_IDENTITY_FIELDS = frozenset({"providerType", "awsRegion", "modelIdOrArn"})
+_AZURE_IDENTITY_FIELDS = frozenset({"providerType", "endpoint", "deploymentName", "apiVersion"})
 
 
 def _provider_config_digest(config: AwsBedrockModelConfig | AzureOpenAIModelConfig) -> str:
-    """sha256 of the non-secret provider config, so any change to which resource/model is served invalidates caches."""
-    data = config.model_dump(mode="json", exclude=_SECRET_CONFIG_FIELDS)
+    """sha256 of the provider's identity fields, so pointing a source at a different deployment invalidates caches."""
+    fields = _BEDROCK_IDENTITY_FIELDS if isinstance(config, AwsBedrockModelConfig) else _AZURE_IDENTITY_FIELDS
+    data = config.model_dump(mode="json", include=set(fields))
     return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 

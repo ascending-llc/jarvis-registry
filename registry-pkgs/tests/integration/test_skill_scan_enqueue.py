@@ -98,14 +98,15 @@ async def test_enqueue_on_scanning_job_only_sets_rerequested(mongo):
     assert job["leaseOwner"] == "owner"
 
 
-async def test_enqueue_on_done_job_resets_it(mongo):
+@pytest.mark.parametrize("terminal_status", ["done", "failed"])
+async def test_enqueue_on_terminal_job_resets_it(mongo, terminal_status):
     skill_id = PydanticObjectId()
     now = datetime.now(UTC)
     await _jobs().insert_one(
         {
             "_id": PydanticObjectId(),
             "skillId": skill_id,
-            "status": "done",
+            "status": terminal_status,
             "rerequested": True,
             "attemptCount": 3,
             "errorCode": "boom",

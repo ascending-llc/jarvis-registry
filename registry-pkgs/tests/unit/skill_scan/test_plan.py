@@ -85,7 +85,25 @@ def test_scan_llm_info_per_provider():
     rekeyed = plan.scan_llm_info(_azure("https://x.openai.azure.com", api_key="rotated"))
     assert plan.compose_tool_fingerprint("s", rekeyed) == azure_fp
 
+    # Editing a metadata-only field (baseModelId) must NOT change the fingerprint: it is not on the allowlist.
+    relabelled = _azure("https://x.openai.azure.com")
+    relabelled.providerConfig = relabelled.providerConfig.model_copy(update={"baseModelId": "gpt-4o-mini"})
+    assert plan.compose_tool_fingerprint("s", plan.scan_llm_info(relabelled)) == azure_fp
+
     assert plan.scan_llm_info(None) is None
+
+
+def test_bedrock_config_digest_uses_identity_fields_only():
+    sid = PydanticObjectId()
+    base = plan.scan_llm_info(_bedrock_source(sid))
+
+    moved = _bedrock_source(sid)
+    moved.providerConfig = moved.providerConfig.model_copy(update={"awsRegion": "eu-west-1"})
+    assert plan.scan_llm_info(moved).configDigest != base.configDigest  # region is identity
+
+    relabelled = _bedrock_source(sid)
+    relabelled.providerConfig = relabelled.providerConfig.model_copy(update={"baseModelId": "anthropic.other"})
+    assert plan.scan_llm_info(relabelled).configDigest == base.configDigest  # metadata only
 
 
 @pytest.mark.asyncio

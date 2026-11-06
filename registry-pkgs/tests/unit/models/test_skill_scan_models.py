@@ -60,6 +60,16 @@ def test_result_error_message_is_capped():
     assert len(result.errorMessage) == MAX_ERROR_MESSAGE_CHARS
 
 
+def test_caps_apply_on_assignment():
+    finding = _finding()
+    finding.snippet = "x" * 2000
+    assert len(finding.snippet) == MAX_FINDING_SNIPPET_CHARS
+    result = _result()
+    with patch.object(SkillScanResult, "get_settings", return_value=DocumentSettings()):
+        result.errorMessage = "e" * 3000
+    assert len(result.errorMessage) == MAX_ERROR_MESSAGE_CHARS
+
+
 def test_short_values_are_untouched():
     finding = _finding(snippet="short")
     assert finding.snippet == "short"

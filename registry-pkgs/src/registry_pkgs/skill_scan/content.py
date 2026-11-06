@@ -112,7 +112,13 @@ def materialize_skill(skill: ExtendedSkill, files: Sequence[ExtendedSkillFile], 
             raise SkillNotScannableError(f"file is not readable by Registry: {file.relativePath!r}")
         _validate_relative_path(file.relativePath, root)
         target = root / file.relativePath
-        target.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
         assert file.body is not None  # noqa: S101 — is_readable_file guarantees it; narrows the type
-        target.write_bytes(file.body)
-        target.chmod(_FILE_MODE)
+        try:
+            target.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+            target.write_bytes(file.body)
+            target.chmod(_FILE_MODE)
+        except OSError as e:
+            # Each path is valid alone, but the set may not fit on disk: e.g. files "a" and "a/b" need "a"
+            # to be both a file and a directory. That is a property of the skill's content, not a worker
+            # fault, so it must not be retried as an internal error.
+            raise SkillNotScannableError(f"cannot write file path {file.relativePath!r}: {e.strerror}") from e

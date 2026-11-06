@@ -25,9 +25,16 @@ async def enqueue_skill_scan(
 
     Lease fields and ``summary`` are never touched.
 
+    ``rerequested`` is a promise to the requester: whoever ends a SCANNING job must honour it. Every exit
+    from SCANNING (``done``, and ``failed`` on the last attempt or by the exhausted-job reaper) must, when
+    ``rerequested`` is true, go to PENDING with ``attemptCount`` 0 and ``rerequested`` false instead, using
+    ``LeasedRepository.transition(..., extra_filter={"rerequested": ...})`` so the check is atomic. Otherwise a
+    request that arrives during the last attempt is silently dropped.
+
     The ``skill_scan_jobs`` unique index on ``skillId`` means two concurrent transactions enqueuing the same
-    skill before its job exists will collide (one aborts with a WriteConflict). The caller's transaction must
-    therefore be retried on TransientTransactionError / WriteConflict, as the skill write paths already are.
+    skill before its job exists will collide (one aborts with a WriteConflict). The caller must handle that
+    WriteConflict: retry the transaction (e.g. ``with_transaction``, as skill sync does) or surface it as 409
+    (as ``skill_service`` does for its other write conflicts).
     """
     scanning = {"$eq": ["$status", "scanning"]}
     pipeline = [
