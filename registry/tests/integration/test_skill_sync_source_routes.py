@@ -138,6 +138,8 @@ def skill_sync_route_context():
     oauth_service = MagicMock()
     oauth_service.create_authorization_url = AsyncMock()
     oauth_service.resolve_source_id = AsyncMock()
+    oauth_service.resolve_completed_source_id = AsyncMock(return_value=None)
+    oauth_service.exchange_callback = AsyncMock(return_value=USER_ID)
     oauth_service.create_authorization_url.return_value = "https://github.com/login/oauth/authorize?state=test"
     oauth_service.resolve_source_id.return_value = str(source.id)
     acl_service = MagicMock()
@@ -442,6 +444,61 @@ def test_oauth_initiate_and_callback_send_identical_redirect_uri(skill_sync_rout
     initiate_uri = ctx.oauth_service.create_authorization_url.call_args.kwargs["redirect_uri"]
     callback_uri = ctx.oauth_service.exchange_callback.call_args.kwargs["redirect_uri"]
     assert initiate_uri == callback_uri
+
+
+@pytest.mark.parametrize("params", [{"code": "new"}, {"error": "access_denied"}, {}])
+def test_oauth_completed_replay_redirects_without_exchanging_tokens(skill_sync_route_context, params) -> None:
+    ctx = skill_sync_route_context
+    ctx.oauth_service.resolve_source_id.side_effect = ValueError("Consumed flow")
+    ctx.oauth_service.resolve_completed_source_id.return_value = str(ctx.source.id)
+
+    response = ctx.client.get(
+        "/skill-sync-sources/oauth/callback", params={"state": "state", **params}, follow_redirects=False
+    )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"{settings.registry_client_url}/skill-sync-sources/{ctx.source.id}"
+    ctx.oauth_service.resolve_completed_source_id.assert_awaited_once_with("state")
+    ctx.oauth_service.exchange_callback.assert_not_awaited()
+    ctx.source_service.get_source.assert_not_awaited()
+
+
+def test_oauth_unknown_state_remains_invalid_callback(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.oauth_service.resolve_source_id.side_effect = ValueError("Unknown flow")
+
+    response = ctx.client.get("/skill-sync-sources/oauth/callback?code=new&state=garbage", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"{settings.registry_client_url}/skill-sync-sources?error=invalid_callback"
+    ctx.oauth_service.resolve_completed_source_id.assert_awaited_once_with("garbage")
+    ctx.oauth_service.exchange_callback.assert_not_awaited()
+
+
+def test_oauth_missing_state_does_not_read_completed_marker(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+
+    response = ctx.client.get("/skill-sync-sources/oauth/callback?code=new", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"{settings.registry_client_url}/skill-sync-sources?error=invalid_callback"
+    ctx.oauth_service.resolve_source_id.assert_not_awaited()
+    ctx.oauth_service.resolve_completed_source_id.assert_not_awaited()
+    ctx.oauth_service.exchange_callback.assert_not_awaited()
+
+
+def test_oauth_failed_first_exchange_remains_auth_failed(skill_sync_route_context) -> None:
+    ctx = skill_sync_route_context
+    ctx.oauth_service.exchange_callback.side_effect = ValueError("Token exchange failed")
+
+    response = ctx.client.get("/skill-sync-sources/oauth/callback?code=bad&state=state", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == (
+        f"{settings.registry_client_url}/skill-sync-sources/{ctx.source.id}?error=auth_failed"
+    )
+    ctx.oauth_service.resolve_completed_source_id.assert_not_awaited()
+    ctx.oauth_service.exchange_callback.assert_awaited_once()
 
 
 def test_oauth_callback_path_on_registered_app() -> None:

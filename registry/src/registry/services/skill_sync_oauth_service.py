@@ -1,8 +1,13 @@
+import asyncio
+import hashlib
+import logging
 import secrets
 from urllib.parse import urlencode
 
 import httpx
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
+from redis import Redis
+from redis.exceptions import RedisError
 
 from registry.utils.crypto_utils import decrypt_value
 from registry_pkgs.models.skill_sync_source import SkillSyncSource
@@ -11,8 +16,12 @@ from registry_pkgs.oauth.schemas import OAuthTokens
 
 from .skill_sync_token_service import SkillSyncTokenService
 
+logger = logging.getLogger(__name__)
+
 _GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 _GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
+_COMPLETED_FLOW_MARKER_KEY = "{prefix}:skill_sync:oauth_completed:{flow_id}"
+_COMPLETED_FLOW_MARKER_TTL_SECONDS = 86400
 
 
 class SkillSyncOAuthService:
@@ -22,10 +31,14 @@ class SkillSyncOAuthService:
         flow_state_manager: FlowStateManager,
         token_service: SkillSyncTokenService,
         http_client: httpx.AsyncClient,
+        redis_client: Redis,
+        redis_key_prefix: str,
     ) -> None:
         self._flow_state_manager = flow_state_manager
         self._token_service = token_service
         self._http_client = http_client
+        self._redis_client = redis_client
+        self._redis_key_prefix = redis_key_prefix
 
     async def create_authorization_url(
         self,
@@ -75,6 +88,27 @@ class SkillSyncOAuthService:
             raise ValueError("OAuth state does not reference a known flow")
         return flow.server_id
 
+    async def resolve_completed_source_id(self, state: str) -> str | None:
+        try:
+            decoded = self._flow_state_manager.decode_state(state)
+        except ValueError:
+            return None
+
+        key = _COMPLETED_FLOW_MARKER_KEY.format(prefix=self._redis_key_prefix, flow_id=decoded["flow_id"])
+        try:
+            marker = await asyncio.to_thread(self._redis_client.get, key)
+        except RedisError:
+            logger.warning("Failed to read GitHub OAuth completed-flow marker")
+            return None
+
+        if not marker:
+            return None
+        stored_hash, separator, source_id = marker.partition(":")
+        state_hash = hashlib.sha256(state.encode()).hexdigest()
+        if separator and source_id and secrets.compare_digest(stored_hash, state_hash):
+            return source_id
+        return None
+
     async def exchange_callback(
         self,
         *,
@@ -104,4 +138,12 @@ class SkillSyncOAuthService:
             raise ValueError(payload.get("error_description") or "GitHub OAuth token exchange failed")
         tokens = OAuthTokens(**payload)
         await self._token_service.store_tokens(user_id=flow.user_id, source_id=source.id, tokens=tokens)
+
+        key = _COMPLETED_FLOW_MARKER_KEY.format(prefix=self._redis_key_prefix, flow_id=decoded["flow_id"])
+        marker = f"{hashlib.sha256(state.encode()).hexdigest()}:{flow.server_id}"
+        try:
+            await asyncio.to_thread(self._redis_client.set, key, marker, ex=_COMPLETED_FLOW_MARKER_TTL_SECONDS)
+        except RedisError:
+            # 令牌已保存；完成标记只用于识别后续重放，写入失败不应使本次授权失败。
+            logger.warning("Failed to write GitHub OAuth completed-flow marker")
         return flow.user_id
