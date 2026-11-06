@@ -12,7 +12,7 @@ Usage:
     # Run all scenarios against the demo environment:
     uv run python scripts/test_mcp_direct.py \\
         --registry-url https://jarvis-demo.ascendingdc.com/gateway \\
-        --token "$REGISTRY_TOKEN"
+        --session-token "$REGISTRY_SESSION_TOKEN"
 
     # Run a single scenario:
     uv run python scripts/test_mcp_direct.py --scenario 1
@@ -23,7 +23,7 @@ Usage:
 
 Environment variables (overridden by CLI flags):
     REGISTRY_URL       Base URL (default http://localhost:8000)
-    REGISTRY_TOKEN     Bearer token for API auth
+    REGISTRY_SESSION_TOKEN CRUD-session token for Registry API auth
     MCP_EXECUTOR_KEY   MCP server name (default: Mcp1ForFederationTesting)
     A2A_EXECUTOR_KEY   A2A agent name (default: echo-a2a)
     WORKFLOW_TIMEOUT   Per-scenario poll timeout in seconds (default: 120)
@@ -39,12 +39,17 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+SESSION_COOKIE_NAME = "jarvis_registry_session"
+CSRF_COOKIE_NAME = "jarvis_registry_csrf"
+CSRF_HEADER_NAME = "X-Jarvis-CSRF"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -277,12 +282,15 @@ async def _run_scenario(
     a2a_key: str,
     timeout: float,
     keep: bool,
+    model_source_id: str | None,
 ) -> ScenarioResult:
     label, node_builder = SCENARIOS[scenario_id]
     result = ScenarioResult(name=f"Scenario {scenario_id}: {label}", passed=False)
     log.info("━━ %s ━━", result.name)
 
     nodes = node_builder(mcp_key, a2a_key)
+    if model_source_id:
+        _apply_model_source_to_mcp_nodes(nodes, mcp_key, model_source_id)
     t0 = time.monotonic()
 
     try:
@@ -368,6 +376,16 @@ async def _run_scenario(
     return result
 
 
+def _apply_model_source_to_mcp_nodes(nodes: list[dict], mcp_key: str, model_source_id: str) -> None:
+    """Apply a temporary chat-model override only to MCP workflow steps."""
+    for node in nodes:
+        if node.get("nodeType") == "step" and node.get("executorKey") == mcp_key:
+            node["modelSourceId"] = model_source_id
+        children = node.get("children")
+        if isinstance(children, list):
+            _apply_model_source_to_mcp_nodes(children, mcp_key, model_source_id)
+
+
 def _print_report(results: list[ScenarioResult]) -> None:
     print("\n" + "═" * 70)
     print("  AS-1741 MCP Direct-Connect — Test Report")
@@ -404,9 +422,16 @@ def _parse_args() -> argparse.Namespace:
         help="Registry base URL (default: $REGISTRY_URL or http://localhost:8000)",
     )
     p.add_argument(
+        "--session-token",
         "--token",
-        default=os.getenv("REGISTRY_TOKEN", ""),
-        help="Bearer token for API auth (default: $REGISTRY_TOKEN)",
+        dest="session_token",
+        default=os.getenv("REGISTRY_SESSION_TOKEN", os.getenv("REGISTRY_TOKEN", "")),
+        help="CRUD-session token or full Cookie header for Registry API auth (default: $REGISTRY_SESSION_TOKEN)",
+    )
+    p.add_argument(
+        "--csrf-token",
+        default=os.getenv("REGISTRY_CSRF_TOKEN", ""),
+        help="Paired CSRF token for the session (default: $REGISTRY_CSRF_TOKEN or local derivation)",
     )
     p.add_argument(
         "--mcp-key",
@@ -417,6 +442,11 @@ def _parse_args() -> argparse.Namespace:
         "--a2a-key",
         default=os.getenv("A2A_EXECUTOR_KEY", "echo-a2a"),
         help="A2A agent executor key",
+    )
+    p.add_argument(
+        "--model-source-id",
+        default=os.getenv("WORKFLOW_MODEL_SOURCE_ID"),
+        help="Optional chat ModelSource override for MCP steps (does not change the Registry default)",
     )
     p.add_argument(
         "--scenario",
@@ -443,16 +473,45 @@ def _parse_args() -> argparse.Namespace:
 async def main() -> int:
     args = _parse_args()
 
-    if not args.token:
-        log.error("No token provided. Set REGISTRY_TOKEN or use --token.")
+    if not args.session_token:
+        log.error("No CRUD-session token provided. Set REGISTRY_SESSION_TOKEN or use --session-token.")
         return 1
 
-    headers = {"Authorization": f"Bearer {args.token}"}
+    session_token = args.session_token
+    csrf_token = args.csrf_token
+    if f"{SESSION_COOKIE_NAME}=" in session_token:
+        cookies = SimpleCookie()
+        try:
+            cookies.load(session_token)
+        except CookieError:
+            log.error("REGISTRY_SESSION_TOKEN contains an invalid Cookie header.")
+            return 1
+        session_cookie = cookies.get(SESSION_COOKIE_NAME)
+        csrf_cookie = cookies.get(CSRF_COOKIE_NAME)
+        if session_cookie is None:
+            log.error("Cookie header does not contain the Registry session cookie.")
+            return 1
+        session_token = session_cookie.value
+        if not csrf_token and csrf_cookie is not None:
+            csrf_token = csrf_cookie.value
+    if not csrf_token:
+        # Local CSRF derivation genuinely needs the backend signing secret; import it lazily so
+        # callers that pass their own CSRF token (or a full Cookie header) never require it.
+        from registry.utils.csrf import compute_csrf_token
+
+        csrf_token = compute_csrf_token(session_token)
+
+    headers = {
+        "Cookie": f"{SESSION_COOKIE_NAME}={session_token}",
+        CSRF_HEADER_NAME: csrf_token,
+    }
     scenarios_to_run = args.scenario or sorted(SCENARIOS.keys())
 
     log.info("Registry URL : %s", args.registry_url)
     log.info("MCP server   : %s", args.mcp_key)
     log.info("A2A agent    : %s", args.a2a_key)
+    if args.model_source_id:
+        log.info("MCP model    : %s", args.model_source_id)
     log.info("Scenarios    : %s", scenarios_to_run)
     log.info("Timeout      : %.0fs per scenario", args.timeout)
     print()
@@ -469,6 +528,7 @@ async def main() -> int:
                 a2a_key=args.a2a_key,
                 timeout=args.timeout,
                 keep=args.keep,
+                model_source_id=args.model_source_id,
             )
             results.append(result)
             print()

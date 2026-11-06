@@ -40,6 +40,8 @@ import logging
 import math
 from datetime import UTC, datetime
 
+from agno.exceptions import RunCancelledException
+from agno.run import RunContext
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
@@ -70,8 +72,13 @@ PAUSE_POLL_INTERVAL: float = 2.0
 MONGO_POLL_EVERY_N: int = 30
 
 
-class WorkflowCancelledError(Exception):
-    """Raised when a workflow run is cancelled by a user directive or timeout."""
+class WorkflowCancelledError(RunCancelledException):
+    """Raised when a workflow run is cancelled by a user directive or timeout.
+
+    Subclasses agno's ``RunCancelledException`` so agno treats it as a cancellation: agno v3 persists
+    any *other* step exception as an errored run (the syncer then writes FAILED, and first-terminal-wins
+    would reject the runner's later CANCELLED) before re-raising, and only skips that for cancellations.
+    """
 
 
 def with_control(
@@ -111,7 +118,7 @@ def with_control(
         backoff_base = 1.0
         backoff_cap = 60.0
 
-    async def wrapped(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+    async def wrapped(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
         for attempt in range(max_attempts):
             # 1. Check for a pending directive before starting the attempt
             cancel_reason = await _check_and_handle_directive(
@@ -143,8 +150,11 @@ def with_control(
             )  # 1-based, matches NodeRun.attempt
             token = context_api.attach(ctx)
             try:
-                result: StepOutput = await executor(step_input, session_state)
-            except WorkflowCancelledError:
+                result: StepOutput = await executor(step_input, run_context)
+            except RunCancelledException:
+                # Our WorkflowCancelledError and any cancellation agno raises from inside the
+                # step (it re-raises RunCancelledException rather than retrying). Propagate as a
+                # cancel; never swallow it into a failed StepOutput that would then be retried.
                 raise
             except Exception as exc:
                 logger.exception("[run=%s] step %r executor raised", run_id, node_name)

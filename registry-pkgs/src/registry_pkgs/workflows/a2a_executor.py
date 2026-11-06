@@ -14,6 +14,7 @@ from a2a.utils.parts import get_data_parts, get_file_parts
 from agno.agent import Agent
 from agno.media import Audio, File, Image, Video
 from agno.models.base import Model
+from agno.run import RunContext
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 
@@ -306,7 +307,7 @@ def make_a2a_executor(
         headers_provider: Optional shared headers provider.
     """
 
-    async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
+    async def executor(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
         raise_if_iam_unsupported(agent)
         result = await call_a2a(
             agent,
@@ -348,7 +349,7 @@ def make_a2a_pool_executor(
         headers_provider:     Optional shared headers provider.
 
     Returns:
-        An async callable that accepts ``(StepInput, session_state)`` and
+        An async callable that accepts ``(StepInput, run_context)`` and
         returns a ``StepOutput``.
     """
     selector_agent = Agent(
@@ -361,9 +362,9 @@ def make_a2a_pool_executor(
         ],
     )
 
-    async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
+    async def executor(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
         task = build_prompt(step_input)
-        state = session_state if session_state is not None else {}
+        state = run_context.session_state if run_context is not None and run_context.session_state is not None else {}
         cache_key = f"a2a_target_{node_name}"
 
         selected_path: str | None = state.get(cache_key)

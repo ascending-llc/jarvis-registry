@@ -452,6 +452,45 @@ class TestExecute:
         w.write.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_consumed_cancellation_closes_dangling_node_run(self, monkeypatch: pytest.MonkeyPatch):
+        """agno v3 consumes a mid-run cancel and RETURNS a cancelled result (no raise),
+        so _handle_run_output — not the except-based _finalize_cancel — must close a
+        NodeRun left RUNNING by an attempt abandoned during retry backoff."""
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            pending_requirements=[],
+            finished_at=None,
+        )
+
+        async def sync_cancelled_status() -> None:
+            # The syncer already persisted CANCELLED — the exact case where the old
+            # code hit `if run.status in TERMINAL_RUN_STATUSES: return` and skipped cleanup.
+            run_doc.status = WorkflowRunStatus.CANCELLED
+
+        run_doc.sync = AsyncMock(side_effect=sync_cancelled_status)
+        result = WorkflowRunOutput(content="Workflow cancelled by user", status=RunStatus.cancelled, step_results=[])
+
+        dangling = SimpleNamespace(
+            node_id="retried-node",
+            status=NodeRunStatus.RUNNING,
+            error=None,
+            finished_at=None,
+            save=AsyncMock(),
+        )
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *a, **k: _AsyncIter([dangling]))
+        monkeypatch.setattr(runner, "agno_acancel_run", AsyncMock())
+
+        w = _writer()
+        await _make_runner()._handle_run_output(run_doc, result, w)
+
+        assert dangling.status == NodeRunStatus.CANCELLED
+        assert dangling.error == "Workflow cancelled by user"
+        dangling.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_successful_output_review_still_transitions_to_awaiting_approval(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -864,21 +903,31 @@ class TestStoppedFailureFallback:
         self,
         stale_run: SimpleNamespace,
         cancellation_source: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # Either way the run ends CANCELLED, never FAILED from the stopped step.
+        monkeypatch.setattr(runner, "agno_acancel_run", AsyncMock())
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *a, **k: _AsyncIter([]))
         if cancellation_source == "database":
+            # Syncer already persisted CANCELLED; agno's return still looked like a stop.
             stale_run.status = WorkflowRunStatus.CANCELLED
         result = WorkflowRunOutput(
             status=RunStatus.cancelled if cancellation_source == "agno" else RunStatus.paused,
             step_results=[StepOutput(step_name="fetch", success=False, stop=True, error="auth error")],
         )
-        original_status = stale_run.status
 
         w = _writer()
         await _make_runner()._handle_run_output(stale_run, result, w)
 
-        assert stale_run.status == original_status
-        assert stale_run.error_summary is None
-        w.write.assert_not_awaited()
+        assert stale_run.status == WorkflowRunStatus.CANCELLED
+        if cancellation_source == "database":
+            # Already terminal before _handle_run_output ran → no write, no overwrite.
+            w.write.assert_not_awaited()
+        else:
+            # agno consumed the cancel and returned it: _handle_run_output must finalize.
+            w.write.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_fallback_save_error_propagates_without_publishing_approval(

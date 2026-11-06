@@ -4,6 +4,7 @@ import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
+from agno.run import RunContext
 from agno.workflow import (
     Condition,
     Loop,
@@ -15,7 +16,7 @@ from agno.workflow import (
     Steps,
     Workflow,
 )
-from agno.workflow.step import OnError, StepExecutor
+from agno.workflow.step import StepExecutor
 from agno.workflow.types import HumanReview
 from beanie import PydanticObjectId
 
@@ -153,11 +154,12 @@ def _with_input_capture(
 ) -> StepExecutor:
     """Wrap a step executor so NodeRun.input_snapshot can be persisted later."""
 
-    async def _capturing(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+    async def _capturing(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
+        session_state = run_context.session_state if run_context is not None else None
         if session_state is not None:
             snapshots = session_state.setdefault(NODE_INPUT_SNAPSHOTS_KEY, {})
             snapshots[node.id] = _serialize_step_input(step_input)
-        return await executor(step_input, session_state)
+        return await executor(step_input, run_context)
 
     return _capturing
 
@@ -195,7 +197,7 @@ def _with_intention_data(
         name: node_by_name[name].step_objective or "" for name in dependency_node_names if name in node_by_name
     }
 
-    async def _wrapped(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+    async def _wrapped(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
         enriched = copy.copy(step_input)
         enriched.additional_data = {
             **(step_input.additional_data or {}),
@@ -205,7 +207,7 @@ def _with_intention_data(
             ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES: dependency_objectives,
             ADDITIONAL_DATA_INITIAL_INPUT: initial_input,
         }
-        return await executor(enriched, session_state)
+        return await executor(enriched, run_context)
 
     _wrapped.__name__ = f"intention_wrapper({node.name})"
     return _wrapped
@@ -323,7 +325,8 @@ def compile_workflow(
         """
         media = media_from_snapshot(data)
 
-        async def _injected(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+        async def _injected(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
+            session_state = run_context.session_state if run_context is not None else None
             if session_state is not None:
                 state_updates = data.get("session_state")
                 if state_updates:
@@ -342,6 +345,9 @@ def compile_workflow(
     def _build(node: WorkflowNode) -> Any:
 
         human_review = _to_agno_human_review(node.human_review)
+        # agno v3's Condition/Loop/Router __post_init__ dereference human_review without a
+        # None guard, so only pass it when we actually have one (None = use agno's default).
+        hr: dict[str, Any] = {"human_review": human_review} if human_review is not None else {}
         if node.node_type == WorkflowNodeType.STEP:
             lookup_key = f"{POOL_KEY_PREFIX}{node.id}" if node.a2a_pool else node.id
 
@@ -392,7 +398,7 @@ def compile_workflow(
             return Step(
                 name=node.name,
                 executor=executor,
-                human_review=human_review,
+                **hr,
                 **step_kwargs(node.step_config),
             )
 
@@ -408,7 +414,7 @@ def compile_workflow(
                 evaluator=node.condition_cel,
                 else_steps=false_branch,
                 name=node.name,
-                human_review=human_review,
+                **hr,
             )
 
         if node.node_type == WorkflowNodeType.LOOP:
@@ -418,7 +424,7 @@ def compile_workflow(
                 name=node.name,
                 max_iterations=node.loop_config.max_iterations,  # type: ignore[union-attr]
                 end_condition=end_cond,
-                human_review=human_review,
+                **hr,
             )
 
         if node.node_type == WorkflowNodeType.ROUTER:
@@ -429,7 +435,7 @@ def compile_workflow(
                 choices=compiled_choices,
                 selector=node.condition_cel,
                 name=node.name,
-                human_review=human_review,
+                **hr,
             )
 
         raise ValueError(f"Unknown node_type: {node.node_type!r}")
@@ -453,18 +459,20 @@ def step_kwargs(cfg: StepConfig | None) -> dict[str, Any]:
 
     When ``on_error == "retry"`` the retry loop is fully managed by the
     ``with_control`` wrapper, so agno receives ``max_retries=0`` and
-    ``on_error=fail`` — agno must not interfere with our backoff logic.
+    fail-fast (``skip_on_failure=False``) — agno must not interfere with our backoff.
+
+    Note: agno v3 dropped the Step ``on_error`` argument; ``skip_on_failure`` alone
+    encodes skip-vs-fail (True = skip a failed step, False = fail the run).
     """
     if cfg is None:
-        return {"max_retries": 0, "skip_on_failure": False, "on_error": OnError.fail}
+        return {"max_retries": 0, "skip_on_failure": False}
     if cfg.on_error == "retry":
         # Retries are handled by the executor wrapper; tell agno to treat a
         # (wrapper-level) failure as a normal step failure without extra retries.
-        return {"max_retries": 0, "skip_on_failure": False, "on_error": OnError.fail}
+        return {"max_retries": 0, "skip_on_failure": False}
     return {
         "max_retries": cfg.max_retries,
         "skip_on_failure": cfg.on_error == "skip",
-        "on_error": OnError.skip if cfg.on_error == "skip" else OnError.fail,
     }
 
 

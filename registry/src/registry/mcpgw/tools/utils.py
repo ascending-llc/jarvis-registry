@@ -12,11 +12,10 @@ from uuid import UUID
 
 from bson import ObjectId
 from httpx_sse import ServerSentEvent
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.server.session import ServerSession
 from mcp.shared.exceptions import UrlElicitationRequiredError
-from mcp.shared.session import RequestId
-from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
+from mcp.shared.message import RequestId
 from mcp.types import (
     LATEST_PROTOCOL_VERSION,
     CallToolResult,
@@ -33,6 +32,7 @@ from mcp.types import (
     TextContent,
     ToolListChangedNotification,
 )
+from mcp_types.version import SUPPORTED_PROTOCOL_VERSIONS
 from pydantic import ValidationError
 
 from registry_pkgs.core.exceptions import InternalServerException
@@ -118,7 +118,7 @@ def _support_url_elicitation(client_params: InitializeRequestParams | None) -> b
         return False
 
     # Safe as a string comparison: the negotiated value is always a YYYY-MM-DD revision from the SDK's list.
-    return _negotiated_protocol_version(client_params.protocolVersion) >= _URL_ELICITATION_MIN_PROTOCOL_VERSION
+    return _negotiated_protocol_version(client_params.protocol_version) >= _URL_ELICITATION_MIN_PROTOCOL_VERSION
 
 
 def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata:
@@ -126,7 +126,7 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     if client_params is None:
         return {"client_branding": ClientBranding.UNRECOGNIZED}
 
-    name = client_params.clientInfo.name.strip().lower()
+    name = client_params.client_info.name.strip().lower()
     if name == "visual studio code":
         branding = ClientBranding.VSCODE
     elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
@@ -174,9 +174,9 @@ def _build_url_elicitation_result(
         logger.info(
             "Not using URL mode elicitation (client %r %r, requested protocol version %r, declared url: %s, "
             "elicitation ID found: %s). Sending back a tool call result with the URL.",
-            client_params.clientInfo.name,
-            client_params.clientInfo.version,
-            client_params.protocolVersion,
+            client_params.client_info.name,
+            client_params.client_info.version,
+            client_params.protocol_version,
             elicitation is not None and elicitation.url is not None,
             elicitation_id is not None,
         )

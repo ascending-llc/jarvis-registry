@@ -2,12 +2,12 @@ import logging
 from collections.abc import Callable
 from typing import Annotated, Any
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.session import ServerSession
 from mcp.types import CallToolResult, TextContent
 from pydantic import Field
 
-from registry_pkgs.core.exceptions import InternalServerException
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
 
 from ...auth.dependencies import UserContextDict
@@ -47,9 +47,11 @@ async def _run_search(
         logger.info("✅ Found %d result(s) for query='%s'", len(entities), query)
         return entities
 
-    except Exception:
+    except Exception as e:
         logger.exception("Vector search failed (type_list=%s, query='%s')", type_list, query)
-        raise InternalServerException("entity discovery failed")
+        # mcp 2.x surfaces a ToolError's message to the caller as CallToolResult(is_error=True);
+        # a plain exception would be wrapped as a generic "Error executing tool" instead.
+        raise ToolError("entity discovery failed") from e
 
 
 def _empty_discovery_result(

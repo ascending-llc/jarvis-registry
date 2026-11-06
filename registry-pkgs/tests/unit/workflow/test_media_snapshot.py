@@ -45,6 +45,7 @@ class TestSerializeStepOutputMedia:
             files=[
                 File(
                     content='{"k": 1}',
+                    id="meta.json",
                     mime_type="application/json",
                     filename="meta.json",
                     name="meta.json",
@@ -55,7 +56,9 @@ class TestSerializeStepOutputMedia:
         assert snapshot["images"] == [{"id": "x.png", "url": "https://cdn/x.png", "mime_type": "image/png"}]
         assert snapshot["videos"] == [{"id": "v.mp4", "mime_type": "video/mp4"}]
         assert snapshot["audio"] == [{"id": "a.wav", "mime_type": "audio/wav", "transcript": "hello"}]
-        assert snapshot["files"] == [{"mime_type": "application/json", "filename": "meta.json", "name": "meta.json"}]
+        assert snapshot["files"] == [
+            {"id": "meta.json", "mime_type": "application/json", "filename": "meta.json", "name": "meta.json"}
+        ]
 
     def test_file_size_kept_as_number(self):
         file = File(id="f", filename="f.bin", size=1234)

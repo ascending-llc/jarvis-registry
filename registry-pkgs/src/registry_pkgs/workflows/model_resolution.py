@@ -19,11 +19,15 @@ logger = logging.getLogger(__name__)
 
 AzureAdTokenProvider = Callable[[], str]
 _BEDROCK_APPLICATION_INFERENCE_PROFILE = ":application-inference-profile/"
+_BEDROCK_INFERENCE_PROFILE = ":inference-profile/"
 
 
 def _bedrock_model_id(model_id_or_arn: str) -> str:
-    """Return the LiteLLM route for a Bedrock model or application inference profile."""
-    route = "bedrock/converse/" if _BEDROCK_APPLICATION_INFERENCE_PROFILE in model_id_or_arn else "bedrock/"
+    """Return the LiteLLM route for a Bedrock model or inference profile ARN."""
+    is_inference_profile = any(
+        marker in model_id_or_arn for marker in (_BEDROCK_APPLICATION_INFERENCE_PROFILE, _BEDROCK_INFERENCE_PROFILE)
+    )
+    route = "bedrock/converse/" if is_inference_profile else "bedrock/"
     return f"{route}{model_id_or_arn}"
 
 

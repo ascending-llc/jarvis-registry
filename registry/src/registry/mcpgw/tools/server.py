@@ -15,9 +15,9 @@ from uuid import uuid4
 
 from beanie import PydanticObjectId
 from httpx_sse import EventSource
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.server.session import ServerSession
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError as McpError
 from mcp.types import (
     CallToolResult,
     EmbeddedResource,
@@ -27,7 +27,6 @@ from mcp.types import (
 )
 from opentelemetry import baggage
 from pydantic import Field
-from pydantic.networks import AnyUrl
 
 from registry_pkgs.core.exceptions import (
     ConsentRequiredException,
@@ -117,7 +116,7 @@ async def _downstream_tool_call(
     so url, request body, and request headers must be passed in explicitly.
 
     Args:
-        ctx: The mcp.server.fastmcp.Context object that can be DI'ed into a tool call handler function.
+        ctx: The mcp.server.mcpserver.Context object that can be DI'ed into a tool call handler function.
         url: Downstream MCP URL
         body: The raw JSON-RPC request body for the tool call
         headers: All HTTP headers for the tool call POST request
@@ -381,7 +380,7 @@ async def execute_tool_impl(
     Execute a specific downstream MCP tool.
 
     Args:
-        ctx: The mcp.server.fastmcp.Context object that can be DI'ed into a tool call handler function.
+        ctx: The mcp.server.mcpserver.Context object that can be DI'ed into a tool call handler function.
         tool_name: Resolved tool name to send to MCP server (e.g., 'tavily_search')
         arguments: Tool-specific arguments as key-value pairs
         server_id: Server ID from discovery (e.g., '6972e222755441652c23090f')
@@ -559,12 +558,12 @@ async def execute_tool_impl(
                     f"code {error_data.code}, messsage: {error_data.message}, data: {str(error_data.data)}"
                 )
 
-                raise McpError(error_data)
+                raise McpError(error_data.code, error_data.message, error_data.data)
             elif "result" in resp_obj:
                 result = CallToolResult.model_validate(resp_obj["result"])
-                if result.isError:
+                if result.is_error:
                     metrics_ctx.set_error_type("downstream_tool_error")
-                metrics_ctx.set_success(not result.isError)
+                metrics_ctx.set_success(not result.is_error)
                 return result
             else:
                 raise MisimplementedSpecException("Downstream MCP did not return a JSONRPCResponse message.")
@@ -674,7 +673,7 @@ async def read_resource_impl(
                     EmbeddedResource(
                         type="resource",
                         resource=TextResourceContents(
-                            uri=AnyUrl(resource_uri),
+                            uri=resource_uri,
                             text='{"results": [{"title": "AI News", "snippet": "Latest AI developments..."}]}',
                             mimeType="application/json",
                             _meta=get_meta_field(True, server_id, server.path),
@@ -682,7 +681,7 @@ async def read_resource_impl(
                     )
                 ]
             )
-            metrics_ctx.set_success(not result.isError)
+            metrics_ctx.set_success(not result.is_error)
             return result
 
         except Exception:
@@ -710,7 +709,7 @@ async def execute_prompt_impl(
         server_id: Server ID from discovery
         prompt_name: Name of the prompt to execute
         arguments: Optional prompt arguments
-        ctx: FastMCP context with user auth
+        ctx: MCPServer context with user auth
 
     Returns:
         Prompt messages ready for LLM consumption
@@ -789,7 +788,7 @@ async def execute_prompt_impl(
                     ],
                 },
             )
-            metrics_ctx.set_success(not result.isError)
+            metrics_ctx.set_success(not result.is_error)
             return result
 
         except Exception:

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agno.run import RunContext
 from agno.workflow import Step, StepInput, StepOutput, Workflow
 from openinference.instrumentation import TraceConfig
 from openinference.instrumentation.agno import AgnoInstrumentor
@@ -303,8 +304,8 @@ async def test_real_agno_workflow_spans_are_nested_and_receive_langfuse_attribut
         ),
     )
 
-    async def executor(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
-        del step_input, session_state
+    async def executor(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
+        del step_input, run_context
         return StepOutput(content="done", success=True)
 
     @trace_workflow_run

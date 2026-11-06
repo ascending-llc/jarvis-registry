@@ -6,13 +6,12 @@ import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import httpx
+import httpx2
 import pytest
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp.server.fastmcp.server import Settings
-from synthetic_mcp_server import build_server, valid_port
+from synthetic_mcp_server import HOST, HTTP_OPTIONS, build_http_app, build_server, valid_port
 
 
 @pytest.mark.parametrize("port", ["1024", "8879", "65535"])
@@ -31,12 +30,10 @@ def test_valid_port_rejects_noninteger() -> None:
         valid_port("not-a-port")
 
 
-def test_server_is_loopback_only_and_restores_sdk_settings() -> None:
-    previous = Settings.model_config.get("env_file")
-    app = build_server(8879)
-    assert app.settings.host == "127.0.0.1"
-    assert app.settings.port == 8879
-    assert Settings.model_config.get("env_file") == previous
+def test_server_is_loopback_only_and_stateless() -> None:
+    assert HOST == "127.0.0.1"
+    assert HTTP_OPTIONS == {"json_response": True, "stateless_http": True}
+    assert build_http_app(build_server()) is not None
 
 
 @asynccontextmanager
@@ -45,8 +42,7 @@ async def real_mcp_client() -> AsyncIterator[ClientSession]:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
-    app = build_server(port)
-    server = uvicorn.Server(uvicorn.Config(app.streamable_http_app(), host="127.0.0.1", port=port, log_level="error"))
+    server = uvicorn.Server(uvicorn.Config(build_http_app(build_server()), host=HOST, port=port, log_level="error"))
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
         async with asyncio.timeout(5):
@@ -55,12 +51,8 @@ async def real_mcp_client() -> AsyncIterator[ClientSession]:
                     await task
                     raise RuntimeError("Fixture exited before startup")
                 await asyncio.sleep(0.01)
-        async with httpx.AsyncClient(trust_env=False, timeout=5) as http_client:
-            async with streamable_http_client(f"http://127.0.0.1:{port}/mcp", http_client=http_client) as (
-                read,
-                write,
-                _,
-            ):
+        async with httpx2.AsyncClient(trust_env=False, timeout=5) as http_client:
+            async with streamable_http_client(f"http://{HOST}:{port}/mcp", http_client=http_client) as (read, write):
                 async with ClientSession(read, write) as client:
                     await client.initialize()
                     yield client
@@ -78,25 +70,25 @@ async def test_real_http_discovery_and_input_schema() -> None:
         response = await client.list_tools()
         assert [tool.name for tool in response.tools] == ["lookup_synthetic_ticket"]
         tool = response.tools[0]
-        assert tool.inputSchema["required"] == ["ticket_id"]
-        assert tool.inputSchema["properties"]["ticket_id"]["type"] == "string"
-        assert tool.annotations.readOnlyHint is True
-        assert tool.annotations.destructiveHint is False
+        assert tool.input_schema["required"] == ["ticket_id"]
+        assert tool.input_schema["properties"]["ticket_id"]["type"] == "string"
+        assert tool.annotations.read_only_hint is True
+        assert tool.annotations.destructive_hint is False
 
 
 @pytest.mark.asyncio
 async def test_real_http_success_returns_only_fabricated_record() -> None:
     async with real_mcp_client() as client:
         result = await client.call_tool("lookup_synthetic_ticket", {"ticket_id": "SYNTHETIC-1"})
-        assert result.isError is False
-        assert result.structuredContent == {"ticket_id": "SYNTHETIC-1", "status": "open", "synthetic": True}
+        assert result.is_error is False
+        assert result.structured_content == {"ticket_id": "SYNTHETIC-1", "status": "open", "synthetic": True}
 
 
 @pytest.mark.asyncio
 async def test_real_http_unknown_id_returns_tool_error() -> None:
     async with real_mcp_client() as client:
         result = await client.call_tool("lookup_synthetic_ticket", {"ticket_id": "OTHER-1"})
-        assert result.isError is True
+        assert result.is_error is True
         assert "Only SYNTHETIC-1 is supported" in result.content[0].text
 
 
@@ -104,5 +96,5 @@ async def test_real_http_unknown_id_returns_tool_error() -> None:
 async def test_real_http_missing_required_argument_returns_tool_error() -> None:
     async with real_mcp_client() as client:
         result = await client.call_tool("lookup_synthetic_ticket", {})
-        assert result.isError is True
+        assert result.is_error is True
         assert "ticket_id" in result.content[0].text

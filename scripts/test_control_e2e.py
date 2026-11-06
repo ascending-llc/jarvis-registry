@@ -38,6 +38,7 @@ from beanie import PydanticObjectId
 
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+from agno.run import RunContext
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from bedrock_model import resolve_bedrock_model_id
@@ -96,7 +97,7 @@ class MockWorkflowRunner(WorkflowRunner):
         duration = self._step_duration
 
         def _make_executor(key: str) -> StepExecutor:
-            async def mock(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+            async def mock(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
                 logger.debug("Mock executor %r: sleeping %.1fs ...", key, duration)
                 await asyncio.sleep(duration)
                 logger.debug("Mock executor %r: done", key)

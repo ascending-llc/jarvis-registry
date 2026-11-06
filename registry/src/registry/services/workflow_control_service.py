@@ -329,30 +329,113 @@ class WorkflowControlService:
     async def send_cancel(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
         """Cancel a RUNNING / PAUSED / AWAITING_APPROVAL workflow run.
 
-        Dual-signal design:
-        1. ``WorkflowRun.pending_directive = CANCEL`` (durable truth source).
-        2. ``DirectiveQueue.put(CANCEL)`` (in-process fast path for wait-loop).
-        3. ``agno.run.cancel.acancel_run(run_id)`` — routes through
-           ``MongoBackedCancellationManager`` which ALSO writes ``pending_directive=CANCEL``
-           so any agno-internal code path that calls ``raise_if_cancelled`` also sees it.
-
-        The triple-redundancy protects against #7929 (agno acontinue_run +
-        external_execution bypasses raise_if_cancelled) and ensures the wait-loop
-        wrapper has a safety net.
+        Routes by the run's current state:
+        - already armed for cancel → idempotent no-op (repairs a terminal run's open NodeRuns),
+          see :meth:`_repair_cancelled_run`;
+        - ``AWAITING_APPROVAL`` → finalize directly (no executor to signal),
+          see :meth:`_finalize_awaiting_approval_cancel`;
+        - live (``RUNNING`` / ``PAUSED``) → arm + signal the executor,
+          see :meth:`_signal_live_run_cancel`.
 
         Idempotent: cancelling an already-cancelled run returns 200.
         """
+        # 1. Load the run (404s if it is unknown or not under this definition).
         run = await self._load_run(workflow_definition_id, run_id)
-        # Idempotency is intentionally before state validation here (unlike pause/resume): cancelling
-        # a run that already has CANCEL pending — including a terminal run that kept a stale CANCEL —
-        # is a harmless no-op, so returning 200 is the documented contract rather than a 4xx.
-        if run.pending_directive == WorkflowDirective.CANCEL:
+
+        # 2. Already terminal-cancelled → idempotent, whatever the pending_directive: the control
+        #    wrapper clears CANCEL when it acks it, so a finished cancel is usually CANCELLED with
+        #    pending_directive=None. Repair any NodeRuns the original cancel left open.
+        if run.status == WorkflowRunStatus.CANCELLED:
+            return await self._repair_cancelled_run(run)
+
+        # 2b. Armed for cancel but not yet terminal → nothing new to signal. AWAITING_APPROVAL is
+        #     the exception: it is still unfinalized, so it falls through to step 4 to be finalized.
+        if run.pending_directive == WorkflowDirective.CANCEL and run.status != WorkflowRunStatus.AWAITING_APPROVAL:
             return run
+
+        # 3. Validate the CANCEL transition up front (raises 4xx for a finished/non-cancellable run).
         new_status = _apply(run, WorkflowDirective.CANCEL)
 
+        # 4. AWAITING_APPROVAL has no executor coroutine to consume a queued directive, so finalize
+        #    it directly instead of signalling.
+        if run.status == WorkflowRunStatus.AWAITING_APPROVAL:
+            finalized = await self._finalize_awaiting_approval_cancel(run, new_status)
+            if finalized is not None:
+                return finalized
+
+            # 4a. A continuation resumed the run before our guarded write landed. Re-read and
+            #     re-route on the winning state.
+            run = await self._reload_run(PydanticObjectId(run.id))
+            # 4b. It finished cancelling already → repair open nodes, independent of pending_directive
+            #     (the wrapper clears CANCEL on ack). Still armed but not terminal → leave its state.
+            if run.status == WorkflowRunStatus.CANCELLED:
+                return await self._repair_cancelled_run(run)
+            if run.pending_directive == WorkflowDirective.CANCEL:
+                return run
+            # 4c. Not resumed to a live state → the caller's view is stale.
+            if run.status not in {WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED}:
+                raise HTTPException(status_code=409, detail="Run state changed concurrently; refresh and retry")
+            # 4d. Genuinely live again → re-validate and fall through to step 6.
+            new_status = _apply(run, WorkflowDirective.CANCEL)
+
+        # 5. Cancel is already the run's state (e.g. a CANCELLED run no longer flagged for cancel):
+        #    nothing to transition, so return it unchanged rather than re-arming.
         if new_status == run.status:
             return run
 
+        # 6. Live run (RUNNING / PAUSED): arm the directive and signal the executor.
+        return await self._signal_live_run_cancel(run, run_id)
+
+    async def _repair_cancelled_run(self, run: WorkflowRun) -> WorkflowRun:
+        """Close any NodeRuns left open under an already-CANCELLED run, then reload it.
+
+        Covers a re-cancel of a run whose terminal write landed but whose node records were
+        not all finalized (e.g. a partial failure during the original cancel).
+        """
+        await self._cancel_open_node_runs(
+            run.id,
+            finished_at=run.finished_at or datetime.now(UTC),
+            error=run.error_summary or "Workflow cancelled by user",
+        )
+        return await self._reload_run(PydanticObjectId(run.id))
+
+    async def _finalize_awaiting_approval_cancel(
+        self, run: WorkflowRun, new_status: WorkflowRunStatus
+    ) -> WorkflowRun | None:
+        """Finalize an AWAITING_APPROVAL run as cancelled with a status-guarded write.
+
+        Returns the finalized run, or ``None`` when a concurrent continuation claimed the run
+        first (the caller then re-reads and routes it as a live run).
+        """
+        finished_at = datetime.now(UTC)
+        error_summary = "Workflow cancelled by user"
+        result = await WorkflowRun.get_pymongo_collection().update_one(
+            {"_id": run.id, "status": WorkflowRunStatus.AWAITING_APPROVAL.value},
+            {
+                "$set": {
+                    "status": new_status.value,
+                    "pending_directive": WorkflowDirective.CANCEL.value,
+                    "pending_requirements": [],
+                    "error_summary": error_summary,
+                    "finished_at": finished_at,
+                }
+            },
+        )
+        if not result.modified_count:
+            return None
+        await self._cancel_open_node_runs(run.id, finished_at=finished_at, error=error_summary)
+        logger.info("WorkflowRun %s cancelled while awaiting approval", run.id)
+        return await self._reload_run(PydanticObjectId(run.id))
+
+    async def _signal_live_run_cancel(self, run: WorkflowRun, run_id: str) -> WorkflowRun:
+        """Arm ``pending_directive=CANCEL`` on a live run, then wake the executor.
+
+        - The guarded Mongo write is the durable truth source; it also serves as the
+          compare-and-set that resolves races (0 rows modified ⇒ reload and decide).
+        - ``DirectiveQueue.put`` is the in-process fast path for the wait-loop wrapper.
+        - ``agno_acancel_run`` bridges to agno so an in-flight agno path
+          (continue_run / external_execution / streaming) also sees the cancel (see #7929).
+        """
         result = await WorkflowRun.get_pymongo_collection().update_one(
             {
                 "_id": run.id,
@@ -363,21 +446,48 @@ class WorkflowControlService:
         )
         if result.modified_count == 0:
             run = await self._reload_run(PydanticObjectId(run.id))
+            if run.status == WorkflowRunStatus.CANCELLED:
+                return await self._repair_cancelled_run(run)  # finished cancelling concurrently — idempotent
             if run.pending_directive == WorkflowDirective.CANCEL:
                 return run  # another request already armed cancel — idempotent
             raise HTTPException(status_code=409, detail="Run state changed concurrently; refresh and retry")
-        self._queue.put(run_id, WorkflowDirective.CANCEL)
 
-        # Reverse-bridge to agno's cancellation manager so any in-flight agno code
-        # path (continue_run, external_execution, streaming) also flips.
+        self._queue.put(run_id, WorkflowDirective.CANCEL)
         try:
             await agno_acancel_run(run_id)
         except Exception as exc:
             logger.warning("WorkflowRun %s: agno acancel_run bridge failed: %s", run_id, exc)
 
         logger.info("WorkflowRun %s cancel requested", run_id)
-
         return await self._reload_run(PydanticObjectId(run.id))
+
+    @staticmethod
+    async def _cancel_open_node_runs(
+        workflow_run_id: PydanticObjectId,
+        *,
+        finished_at: datetime,
+        error: str = "Workflow cancelled by user",
+    ) -> None:
+        """Idempotently close open node records for a cancelled workflow run."""
+        await NodeRun.get_pymongo_collection().update_many(
+            {
+                "workflow_run_id": workflow_run_id,
+                "status": {
+                    "$in": [
+                        NodeRunStatus.PENDING.value,
+                        NodeRunStatus.RUNNING.value,
+                        NodeRunStatus.AWAITING_APPROVAL.value,
+                    ]
+                },
+            },
+            {
+                "$set": {
+                    "status": NodeRunStatus.CANCELLED.value,
+                    "error": error,
+                    "finished_at": finished_at,
+                }
+            },
+        )
 
     async def send_retry(
         self,

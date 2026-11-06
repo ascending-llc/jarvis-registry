@@ -51,6 +51,7 @@ from typing import Any
 import httpx
 from agno.exceptions import RunCancelledException
 from agno.models.base import Model
+from agno.run.base import RunStatus
 from agno.run.cancel import acancel_run as agno_acancel_run
 from agno.run.workflow import WorkflowRunOutput
 from beanie import PydanticObjectId
@@ -567,6 +568,16 @@ class WorkflowRunner:
             await run.sync()
         except DocumentNotFound:
             logger.warning("[run=%s] sync() skipped — document deleted before reload", run.id)
+            return
+
+        # agno v3 consumes a mid-run cancellation and RETURNS a cancelled result
+        # instead of re-raising, so the except-based _finalize_cancel in _execute /
+        # _continue never fires. Run the same cleanup here: the terminal write is a
+        # no-op if the syncer already wrote CANCELLED, but _finalize_dangling_node_runs
+        # still closes a NodeRun left RUNNING by an attempt abandoned mid-retry-backoff.
+        if getattr(result, "status", None) == RunStatus.cancelled:
+            reason = getattr(result, "content", None) or "Workflow cancelled"
+            await self._finalize_cancel(run, RunCancelledException(reason), writer)
             return
 
         # agno checks post-execution output review before StepOutput.stop. A

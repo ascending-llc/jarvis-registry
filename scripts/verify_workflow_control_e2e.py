@@ -47,6 +47,7 @@ import traceback
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from agno.run import RunContext
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
@@ -240,7 +241,7 @@ class MockRunner(WorkflowRunner):
         keyed_nodes = [node for node in all_nodes if node.executor_key]
 
         def make(key: str) -> StepExecutor:
-            async def mock(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+            async def mock(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
                 await asyncio.sleep(0.05)
                 # Echo prior step content + any HITL user_input so downstream nodes
                 # (and the persisted NodeRun.output_snapshot) can verify propagation.
@@ -294,7 +295,7 @@ class FailingMockRunner(WorkflowRunner):
         keyed_nodes = [node for node in all_nodes if node.executor_key]
 
         def make(key: str) -> StepExecutor:
-            async def mock(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+            async def mock(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
                 await asyncio.sleep(0.01)
                 self.attempts[key] = self.attempts.get(key, 0) + 1
                 if self.attempts[key] <= self._fail_counts.get(key, 0):
@@ -1548,7 +1549,7 @@ class GatedMockRunner(WorkflowRunner):
         keyed_nodes = [n for n in flatten_workflow_nodes(definition.nodes) if n.executor_key]
 
         def make(key: str) -> StepExecutor:
-            async def mock(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+            async def mock(step_input: StepInput, run_context: RunContext | None = None) -> StepOutput:
                 await self._gate.wait()  # hold the run in RUNNING until the test releases it
                 return StepOutput(content=f"{key}:OK", success=True)
 

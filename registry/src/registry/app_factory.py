@@ -13,11 +13,12 @@ from fastapi.staticfiles import StaticFiles
 from .core.config import settings
 from .core.exception_handler import register_validation_exception_handler
 from .mcpgw.core.client_info_store import ClientInfoCaptureMiddleware, ClientInfoStore
+from .mcpgw.server import build_transport_security_settings
 from .middleware import CSRFMiddleware, ScopePermissionMiddleware, UnifiedAuthMiddleware
 from .routers import register_routers
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     from .container import RegistryContainer
     from .mcpgw.core.types import McpAppContext
@@ -52,7 +53,7 @@ OPENAPI_TAGS = [
 def create_app(
     *,
     lifespan,
-    gateway_mcp_app: FastMCP[McpAppContext],
+    gateway_mcp_app: MCPServer[McpAppContext],
     container_provider: Callable[[], RegistryContainer | None],
 ) -> FastAPI:
     """Create and configure the FastAPI application."""
@@ -78,7 +79,15 @@ def create_app(
         container = container_provider()
         return container.client_info_store if container is not None else None
 
-    mcp_asgi_app = ClientInfoCaptureMiddleware(gateway_mcp_app.streamable_http_app(), _client_info_store)
+    # mcp 2.x: stateless_http (so any pod serves any request — no session affinity) and
+    # transport_security moved from the MCPServer constructor to streamable_http_app().
+    mcp_asgi_app = ClientInfoCaptureMiddleware(
+        gateway_mcp_app.streamable_http_app(
+            stateless_http=True,
+            transport_security=build_transport_security_settings(),
+        ),
+        _client_info_store,
+    )
     app.mount("/proxy/mcpgw", mcp_asgi_app)
     register_routers(app)
     app.openapi = _customize_openapi(app)  # type: ignore[method-assign]  # FastAPI recommendation

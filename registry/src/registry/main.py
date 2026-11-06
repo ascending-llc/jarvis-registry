@@ -26,7 +26,7 @@ from .core.vector_backend import resolve_vector_backend_config
 from .mcpgw import create_gateway_mcp_app
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
     from redis import Redis
 
     from registry_pkgs.vector.client import DatabaseClient
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 app: FastAPI
 
-gateway_mcp_app: FastMCP[McpAppContext]
+gateway_mcp_app: MCPServer[McpAppContext]
 
 
 def _get_current_container() -> RegistryContainer | None:

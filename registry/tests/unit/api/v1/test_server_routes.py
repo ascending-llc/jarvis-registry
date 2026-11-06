@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from registry.api.v1.server import server_routes
 from registry.api.v1.server.server_routes import create_server, delete_server, update_server
 from registry.schemas.server_api_schemas import (
+    ServerConnectionTestRequest,
     ServerCreateRequest,
     ServerUpdateRequest,
     convert_to_detail,
@@ -131,6 +132,26 @@ async def test_create_server_route_creates_acl_entry(
             mock_created_server, sample_user_context["user_id"]
         )
         assert events == ["create", "grant", "transaction_exit", "session_exit", "schedule", "response"]
+
+
+@pytest.mark.asyncio
+async def test_check_server_connection_returns_protocol_version_from_mcp_2_result():
+    init_result = SimpleNamespace(
+        server_info=SimpleNamespace(name="synthetic-server"),
+        protocol_version="2025-11-25",
+        capabilities={},
+    )
+    with patch(
+        "registry.api.v1.server.server_routes.perform_health_check",
+        new=AsyncMock(return_value=(True, "initialize handshake successful", 7, init_result)),
+    ):
+        result = await server_routes.check_server_connection(
+            ServerConnectionTestRequest(url="https://mcp.example.test/mcp", transport="streamable-http")
+        )
+
+    assert result.success is True
+    assert result.serverName == "synthetic-server"
+    assert result.protocolVersion == "2025-11-25"
 
 
 @pytest.mark.asyncio

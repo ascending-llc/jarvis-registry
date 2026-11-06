@@ -4,10 +4,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 
 from registry.mcpgw.tools.search import _run_search
-from registry_pkgs.core.exceptions import InternalServerException
 
 
 def _make_ctx(search_entities: AsyncMock) -> MagicMock:
@@ -27,7 +27,7 @@ async def test_run_search_other_error_reports_generic() -> None:
     search_entities = AsyncMock(side_effect=RuntimeError("boom"))
     ctx = _make_ctx(search_entities)
 
-    with pytest.raises(InternalServerException) as excinfo:
+    with pytest.raises(ToolError) as excinfo:
         await _run_search(ctx, "q", 3, "hybrid", ["tool"], "mcp")
 
     assert "entity discovery failed" in str(excinfo.value)
@@ -53,41 +53,37 @@ async def _call_tool_e2e(
     tool_name: str, search_entities: AsyncMock, arguments: dict[str, Any] | None = None
 ) -> CallToolResult:
     import mcp.types as types
-    from mcp.server.fastmcp import FastMCP
-    from mcp.server.lowlevel.server import request_ctx
-    from mcp.shared.context import RequestContext
+    from mcp.server.context import ServerRequestContext
+    from mcp.server.mcpserver import MCPServer
 
     from registry.mcpgw.tools import search as search_tools
 
-    mcp = FastMCP("test-mcpgw-search")
+    # mcp 2.x: FastMCP -> MCPServer, and the lowlevel dispatch no longer uses a request_ctx
+    # contextvar — handlers take (ServerRequestContext, params) directly. _handle_call_tool
+    # performs the same exception -> CallToolResult(is_error=True) conversion we assert on.
+    mcp = MCPServer("test-mcpgw-search")
     for name, fn in search_tools.get_tools():
         mcp.tool(name=name)(fn)
-    handler = mcp._mcp_server.request_handlers[types.CallToolRequest]
 
     lifespan = SimpleNamespace(search_service=SimpleNamespace(search_entities=search_entities))
     request = SimpleNamespace(state=SimpleNamespace(user={"user_id": "user-probe"}))
-    rc = RequestContext(
-        request_id=1,
-        meta=None,
+    params = types.CallToolRequestParams(
+        name=tool_name,
+        arguments=arguments if arguments is not None else {"query": "x", "top_n": 3},
+    )
+    ctx = ServerRequestContext(
         session=MagicMock(),
         lifespan_context=lifespan,
-        experimental=None,
+        protocol_version=types.LATEST_PROTOCOL_VERSION,
+        method="tools/call",
+        params=params,
+        request_id=1,
+        meta=None,
         request=request,
         close_sse_stream=None,
         close_standalone_sse_stream=None,
     )
-    token = request_ctx.set(rc)
-    try:
-        req = types.CallToolRequest(
-            method="tools/call",
-            params=types.CallToolRequestParams(
-                name=tool_name,
-                arguments=arguments if arguments is not None else {"query": "x", "top_n": 3},
-            ),
-        )
-        return (await handler(req)).root
-    finally:
-        request_ctx.reset(token)
+    return await mcp._handle_call_tool(ctx, params)
 
 
 @pytest.mark.asyncio
@@ -97,7 +93,7 @@ async def test_discover_tool_reports_generic_error_for_other_failures(tool_name:
 
     result = await _call_tool_e2e(tool_name, search_entities)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "entity discovery failed" in result.content[0].text
 
 
@@ -111,8 +107,8 @@ async def test_discover_tool_empty_results_are_not_errors(tool_name: str, other_
 
     result = await _call_tool_e2e(tool_name, search_entities)
 
-    assert result.isError is False
-    assert result.structuredContent == {"result": []}
+    assert result.is_error is False
+    assert result.structured_content == {"result": []}
     assert len(result.content) == 1
     content = result.content[0]
     assert isinstance(content, TextContent)
@@ -131,8 +127,8 @@ async def test_discover_tool_empty_results_are_not_errors(tool_name: str, other_
 
 async def _empty_hint(tool_name: str, arguments: dict[str, Any]) -> str:
     result = await _call_tool_e2e(tool_name, AsyncMock(return_value={"results": []}), arguments)
-    assert result.isError is False
-    assert result.structuredContent == {"result": []}
+    assert result.is_error is False
+    assert result.structured_content == {"result": []}
     content = result.content[0]
     assert isinstance(content, TextContent)
     return content.text
@@ -205,8 +201,8 @@ async def test_discover_tool_preserves_nonempty_structured_results(tool_name: st
 
     result = await _call_tool_e2e(tool_name, search_entities)
 
-    assert result.isError is False
-    assert result.structuredContent == {"result": [entity]}
+    assert result.is_error is False
+    assert result.structured_content == {"result": [entity]}
     assert len(result.content) == 1
     content = result.content[0]
     assert isinstance(content, TextContent)

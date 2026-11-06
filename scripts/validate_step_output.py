@@ -31,9 +31,10 @@ from a2a.types import Message, Task
 from agno.media import File, Image
 from agno.workflow import StepInput, StepOutput
 
+from registry_pkgs.core.config import WorkflowPromptSettings
 from registry_pkgs.workflows.a2a_client import A2ACallResult
 from registry_pkgs.workflows.a2a_executor import _a2a_result_to_step_output
-from registry_pkgs.workflows.helpers import build_prompt, step_output_to_prompt_text
+from registry_pkgs.workflows.helpers import build_prompt
 from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
     ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES,
@@ -250,18 +251,23 @@ def check_prompt_media_summary() -> None:
 
 def check_prompt_truncation() -> None:
     print("[9] Prompt summary: long text and JSON previews are truncated")
-    long_text = "T" * 20_000
-    long_json = '{"data": "' + "J" * 20_000 + '"}'
+    max_prompt_chars = WorkflowPromptSettings().workflow_prompt_max_chars
+    long_text = "T" * (max_prompt_chars + 1)
+    long_json = '{"data": "' + "J" * (max_prompt_chars + 1) + '"}'
     prev = StepOutput(
         step_name="Upstream",
         content=long_text,
         files=[File(content=long_json, mime_type="application/json", filename="big.json", name="big.json")],
         success=True,
     )
-    summary = step_output_to_prompt_text(prev)
-    _check("content truncated", "T" * 8001 not in summary and "[truncated:" in summary)
-    _check("json preview truncated", "J" * 8001 not in summary)
-    _check("summary bounded", len(summary) < 20_000, f"len={len(summary)}")
+    prompt = _prompt_for(prev)
+    _check("content truncated", long_text not in prompt and "[truncated:" in prompt)
+    _check("json preview truncated", long_json not in prompt)
+    _check(
+        "prompt bounded",
+        len(prompt) <= max_prompt_chars + 80,
+        f"len={len(prompt)}, max={max_prompt_chars}",
+    )
 
 
 def check_prompt_code_fence_safety() -> None:
@@ -273,8 +279,11 @@ def check_prompt_code_fence_safety() -> None:
     )
     prompt = _prompt_for(prev)
     _check("fence content rendered", "print('hi')" in prompt)
-    _check("fence carried as indented block", "  ```python" in prompt)
-    _check("prompt sections intact", prompt.startswith("**IMPORTANT:") and "Current Step Inputs:" in prompt)
+    _check("fence carried verbatim", "```python\nprint('hi')\n```" in prompt)
+    _check(
+        "prompt sections intact",
+        prompt.startswith("# Step Objective") and '# Current Step Inputs\n\n## "Upstream"' in prompt,
+    )
 
 
 def check_prompt_failed_dependency() -> None:

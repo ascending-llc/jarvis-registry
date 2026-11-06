@@ -13,8 +13,8 @@ from registry.services import workflow_control_service as wcs
 from registry.services.background_task_tracker import TrackerShutdownError
 from registry.services.workflow_control_service import WorkflowControlService
 from registry_pkgs.core.scope_groups import SCOPE_GROUP_OBJECT_ID_FIELDS
-from registry_pkgs.models.enums import RequirementResolution, WorkflowDirective, WorkflowRunStatus
-from registry_pkgs.models.workflow import WorkflowNode
+from registry_pkgs.models.enums import NodeRunStatus, RequirementResolution, WorkflowDirective, WorkflowRunStatus
+from registry_pkgs.models.workflow import NodeRun, WorkflowNode
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.run_lease import workflow_run_lease_repository
 
@@ -91,6 +91,148 @@ async def test_send_cancel_concurrent_cancel_is_idempotent_on_reload(monkeypatch
     result = await service.send_cancel("wf-1", str(run_id))
 
     assert result is reloaded  # 200, idempotent
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_live_run_finished_cancelling_on_reload_is_idempotent(monkeypatch: pytest.MonkeyPatch):
+    """A double-clicked cancel: the first request armed CANCEL, the wrapper acked it (clearing the
+    directive) and the run reached CANCELLED. The second request's arm CAS misses; the reload shows
+    CANCELLED with pending_directive=None, which must repair open nodes and return 200 — not 409."""
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    workflow_collection = AsyncMock()
+    workflow_collection.update_one.return_value = SimpleNamespace(modified_count=0)  # arm CAS misses
+    node_collection = AsyncMock()
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: workflow_collection))
+    monkeypatch.setattr(NodeRun, "get_pymongo_collection", classmethod(lambda cls: node_collection))
+    cancelled = SimpleNamespace(
+        id=run_id,
+        status=WorkflowRunStatus.CANCELLED,
+        pending_directive=None,  # the wrapper cleared CANCEL when it acked it
+        finished_at=datetime.now(UTC),
+        error_summary="Workflow cancelled by user",
+    )
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=cancelled))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_cancel("wf-1", str(run_id))
+
+    assert result is cancelled  # 200 idempotent, not 409
+    node_collection.update_many.assert_awaited_once()  # open nodes repaired
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_directive", [None, WorkflowDirective.CANCEL])
+async def test_send_cancel_awaiting_approval_finalizes_run_and_open_nodes(
+    monkeypatch: pytest.MonkeyPatch, pending_directive: WorkflowDirective | None
+):
+    run_id = PydanticObjectId()
+    run = SimpleNamespace(
+        id=run_id,
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        pending_directive=pending_directive,
+    )
+    workflow_collection = AsyncMock()
+    workflow_collection.update_one.return_value = SimpleNamespace(modified_count=1)
+    node_collection = AsyncMock()
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: workflow_collection))
+    monkeypatch.setattr(NodeRun, "get_pymongo_collection", classmethod(lambda cls: node_collection))
+    final_run = SimpleNamespace(id=run_id, status=WorkflowRunStatus.CANCELLED)
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=final_run))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_cancel("wf-1", str(run_id))
+
+    assert result is final_run
+    workflow_filter, workflow_update = workflow_collection.update_one.await_args.args
+    assert workflow_filter == {"_id": run_id, "status": WorkflowRunStatus.AWAITING_APPROVAL.value}
+    assert workflow_update["$set"]["status"] == WorkflowRunStatus.CANCELLED.value
+    assert workflow_update["$set"]["pending_directive"] == WorkflowDirective.CANCEL.value
+    assert workflow_update["$set"]["pending_requirements"] == []
+    assert workflow_update["$set"]["finished_at"] is not None
+    node_filter, node_update = node_collection.update_many.await_args.args
+    assert node_filter == {
+        "workflow_run_id": run_id,
+        "status": {
+            "$in": [
+                NodeRunStatus.PENDING.value,
+                NodeRunStatus.RUNNING.value,
+                NodeRunStatus.AWAITING_APPROVAL.value,
+            ]
+        },
+    }
+    assert node_update["$set"]["status"] == NodeRunStatus.CANCELLED.value
+    assert node_update["$set"]["finished_at"] == workflow_update["$set"]["finished_at"]
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_repairs_open_nodes_for_already_cancelled_run(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    finished_at = datetime.now(UTC)
+    run = SimpleNamespace(
+        id=run_id,
+        status=WorkflowRunStatus.CANCELLED,
+        pending_directive=WorkflowDirective.CANCEL,
+        finished_at=finished_at,
+        error_summary="Workflow cancelled by user",
+    )
+    workflow_collection = AsyncMock()
+    node_collection = AsyncMock()
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: workflow_collection))
+    monkeypatch.setattr(NodeRun, "get_pymongo_collection", classmethod(lambda cls: node_collection))
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=run))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=run)
+
+    result = await service.send_cancel("wf-1", str(run_id))
+
+    assert result is run
+    workflow_collection.update_one.assert_not_awaited()
+    node_filter, node_update = node_collection.update_many.await_args.args
+    assert node_filter["workflow_run_id"] == run_id
+    assert node_update["$set"] == {
+        "status": NodeRunStatus.CANCELLED.value,
+        "error": "Workflow cancelled by user",
+        "finished_at": finished_at,
+    }
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_retry_repairs_nodes_after_partial_failure(monkeypatch: pytest.MonkeyPatch):
+    run_id = PydanticObjectId()
+    waiting_run = SimpleNamespace(
+        id=run_id,
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        pending_directive=None,
+    )
+    finished_at = datetime.now(UTC)
+    cancelled_run = SimpleNamespace(
+        id=run_id,
+        status=WorkflowRunStatus.CANCELLED,
+        pending_directive=WorkflowDirective.CANCEL,
+        finished_at=finished_at,
+        error_summary="Workflow cancelled by user",
+    )
+    workflow_collection = AsyncMock()
+    workflow_collection.update_one.return_value = SimpleNamespace(modified_count=1)
+    node_collection = AsyncMock()
+    node_collection.update_many.side_effect = [RuntimeError("temporary Mongo failure"), None]
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: workflow_collection))
+    monkeypatch.setattr(NodeRun, "get_pymongo_collection", classmethod(lambda cls: node_collection))
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=cancelled_run))
+    service = _control_service()
+    service._load_run = AsyncMock(side_effect=[waiting_run, cancelled_run])
+
+    with pytest.raises(RuntimeError, match="temporary Mongo failure"):
+        await service.send_cancel("wf-1", str(run_id))
+
+    result = await service.send_cancel("wf-1", str(run_id))
+
+    assert result is cancelled_run
+    workflow_collection.update_one.assert_awaited_once()
+    assert node_collection.update_many.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1237,3 +1379,95 @@ async def test_trigger_resume_does_not_mask_unrelated_runtime_error_as_shutdown(
 
     with pytest.raises(RuntimeError, match="group lookup failed"):
         await service._trigger_resume(run)
+
+
+# --- send_cancel: AWAITING_APPROVAL finalize loses the race to a continuation (step 4a–4d) ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled_directive", [WorkflowDirective.CANCEL, None])
+async def test_send_cancel_awaiting_lost_race_then_continuation_already_cancelled(
+    monkeypatch: pytest.MonkeyPatch, cancelled_directive: WorkflowDirective | None
+):
+    """Finalize CAS misses (a continuation moved the run); the winner already cancelled it,
+    so send_cancel only repairs that run's open NodeRuns. This must hold even when the control
+    wrapper has already cleared the CANCEL directive (pending_directive=None) — otherwise the
+    reload falls through to the conflict check and returns a spurious 409 for a cancel that
+    actually succeeded."""
+    run_id = PydanticObjectId()
+    finished_at = datetime.now(UTC)
+    awaiting = SimpleNamespace(id=run_id, status=WorkflowRunStatus.AWAITING_APPROVAL, pending_directive=None)
+    cancelled = SimpleNamespace(
+        id=run_id,
+        status=WorkflowRunStatus.CANCELLED,
+        pending_directive=cancelled_directive,
+        finished_at=finished_at,
+        error_summary="Workflow cancelled by user",
+    )
+    workflow_collection = AsyncMock()
+    workflow_collection.update_one.return_value = SimpleNamespace(modified_count=0)  # finalize CAS loses
+    node_collection = AsyncMock()
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: workflow_collection))
+    monkeypatch.setattr(NodeRun, "get_pymongo_collection", classmethod(lambda cls: node_collection))
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=cancelled))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=awaiting)
+
+    result = await service.send_cancel("wf-1", str(run_id))
+
+    assert result is cancelled
+    assert workflow_collection.update_one.await_count == 1  # only the finalize CAS; no live re-arm
+    node_filter, node_update = node_collection.update_many.await_args.args
+    assert node_filter["workflow_run_id"] == run_id
+    assert node_update["$set"]["finished_at"] == finished_at
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_awaiting_lost_race_then_resumed_live_is_signalled(monkeypatch: pytest.MonkeyPatch):
+    """Finalize CAS misses because a continuation resumed the run to RUNNING; send_cancel falls
+    through to the live path, arms the directive, and signals the executor."""
+    run_id = PydanticObjectId()
+    awaiting = SimpleNamespace(id=run_id, status=WorkflowRunStatus.AWAITING_APPROVAL, pending_directive=None)
+    running = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None)
+    final = SimpleNamespace(id=run_id, status=WorkflowRunStatus.RUNNING, pending_directive=WorkflowDirective.CANCEL)
+    workflow_collection = AsyncMock()
+    # 1st update_one = finalize CAS (miss); 2nd = live arm CAS (hit).
+    workflow_collection.update_one.side_effect = [
+        SimpleNamespace(modified_count=0),
+        SimpleNamespace(modified_count=1),
+    ]
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: workflow_collection))
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(side_effect=[running, final]))
+    bridge = AsyncMock()
+    monkeypatch.setattr(wcs, "agno_acancel_run", bridge)
+    service = _control_service()
+    service._queue.put = Mock()
+    service._load_run = AsyncMock(return_value=awaiting)
+
+    result = await service.send_cancel("wf-1", str(run_id))
+
+    assert result is final
+    assert workflow_collection.update_one.await_count == 2
+    service._queue.put.assert_called_once_with(str(run_id), WorkflowDirective.CANCEL)
+    bridge.assert_awaited_once_with(str(run_id))
+
+
+@pytest.mark.asyncio
+async def test_send_cancel_awaiting_lost_race_then_terminal_conflict_409(monkeypatch: pytest.MonkeyPatch):
+    """Finalize CAS misses and the run is now a non-cancellable terminal state with no cancel
+    pending: the caller's view is stale, so send_cancel surfaces 409."""
+    run_id = PydanticObjectId()
+    awaiting = SimpleNamespace(id=run_id, status=WorkflowRunStatus.AWAITING_APPROVAL, pending_directive=None)
+    completed = SimpleNamespace(id=run_id, status=WorkflowRunStatus.COMPLETED, pending_directive=None)
+    workflow_collection = AsyncMock()
+    workflow_collection.update_one.return_value = SimpleNamespace(modified_count=0)  # finalize CAS loses
+    monkeypatch.setattr(wcs.WorkflowRun, "get_pymongo_collection", classmethod(lambda cls: workflow_collection))
+    monkeypatch.setattr(wcs.WorkflowRun, "get", AsyncMock(return_value=completed))
+    service = _control_service()
+    service._load_run = AsyncMock(return_value=awaiting)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.send_cancel("wf-1", str(run_id))
+
+    assert exc.value.status_code == 409
+    assert workflow_collection.update_one.await_count == 1  # no live re-arm after the conflict

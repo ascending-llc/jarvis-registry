@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import inspect
-import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic_settings.exceptions import IncompleteFieldDefinitionWarning
 
 from ..core.config import settings
 from .core.types import McpAppContext
@@ -27,21 +25,21 @@ Errors, denied access and unavailable services are not empty results or proof of
 If no match, refine or survey; check both discovery types when unclear. Avoid repeated identical searches; report no match after these fallbacks. Rediscover stale IDs. Limit execution retries to 2 per request, then report the outcome."""
 
 
-def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> FastMCP[McpAppContext]:
+def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> MCPServer[McpAppContext]:
     """
-    Factory function to create a stateless FastMCP application instance.
+    Factory function to create a stateless MCPServer application instance.
 
     Returns:
-        Configured FastMCP application instance
+        Configured MCPServer application instance
     """
 
-    # Stateless FastMCP enters the lifespan on every request, so it must not open or close per-request
+    # Stateless MCPServer enters the lifespan on every request, so it must not open or close per-request
     # resources: the proxy client lives on the container, and the assembled context is cached here and
     # yielded unchanged on every entry.
     cached_context: McpAppContext | None = None
 
     @asynccontextmanager
-    async def mcp_lifespan(server: FastMCP) -> AsyncIterator[McpAppContext]:
+    async def mcp_lifespan(server: MCPServer) -> AsyncIterator[McpAppContext]:
         """Assemble the MCP app context once from container references and yield it on every entry."""
         nonlocal cached_context
         if cached_context is None:
@@ -66,41 +64,33 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
             )
         yield cached_context
 
-    # Configure transport security settings from environment variables
-    transport_security_settings = TransportSecuritySettings(
+    # mcp 2.x: stateless_http / transport_security are no longer MCPServer constructor
+    # args — they move to streamable_http_app() at the ASGI mount site (see app_factory
+    # and build_transport_security_settings()).
+    mcp = MCPServer(
+        "JarvisRegistry",
+        lifespan=mcp_lifespan,
+        instructions=_SYSTEM_INSTRUCTIONS,
+    )
+
+    return mcp
+
+
+def build_transport_security_settings() -> TransportSecuritySettings:
+    """Transport-security settings from env, for streamable_http_app() (mcp 2.x).
+
+    In mcp 1.x these were a MCPServer constructor arg; in 2.x the ASGI mount site
+    owns them, so the mount (app_factory) builds and passes them.
+    """
+    return TransportSecuritySettings(
         enable_dns_rebinding_protection=settings.mcpgw_enable_dns_rebinding_protection,
         allowed_hosts=[host.strip() for host in settings.mcpgw_allowed_hosts.split(",") if host.strip()],
         allowed_origins=[origin.strip() for origin in settings.mcpgw_allowed_origins.split(",") if origin.strip()],
     )
 
-    # mcp's FastMCP Settings (a pydantic-settings BaseSettings) has a `lifespan` field whose
-    # forward reference to `FastMCP` itself is never resolved via model_rebuild() — an upstream
-    # bug unfixed in the 1.x line as of mcp 1.29.0, only removed in the breaking v2 rewrite.
-    # Suppressed locally (not via a global filter) because some of our other dependencies
-    # (e.g. weaviate) call warnings.simplefilter("default") on import, which resets the global
-    # filter list and would silently defeat a suppression registered earlier at import time.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="Field 'lifespan' has an incomplete definition",
-            category=IncompleteFieldDefinitionWarning,
-        )
-        mcp = FastMCP(
-            "JarvisRegistry",
-            lifespan=mcp_lifespan,
-            # Stateless so any pod can serve any request (no process-local session affinity). Leave
-            # json_response at its False default: downstream progress/log/list-changed notifications are
-            # forwarded on the POST's own SSE stream via related_request_id, which the JSON path drops.
-            stateless_http=True,
-            instructions=_SYSTEM_INSTRUCTIONS,
-            transport_security=transport_security_settings,
-        )
 
-    return mcp
-
-
-def create_gateway_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> FastMCP[McpAppContext]:
-    """Create the FastMCP app and register its tools."""
+def create_gateway_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> MCPServer[McpAppContext]:
+    """Create the MCPServer app and register its tools."""
     mcp = create_mcp_app(container_provider=container_provider)
     register_tools(mcp)
     return mcp
@@ -111,12 +101,12 @@ def create_gateway_mcp_app(*, container_provider: Callable[[], RegistryContainer
 # ============================================================================
 
 
-def register_tools(mcp: FastMCP) -> None:
+def register_tools(mcp: MCPServer) -> None:
     """
     Register all tools for the MCP application.
 
     Args:
-        mcp: FastMCP application instance
+        mcp: MCPServer application instance
     """
     for module in (search, agent, server):
         for tool_name, tool_func in module.get_tools():

@@ -6,10 +6,14 @@ import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
+import httpx2
 import pytest
 
 from registry.core.mcp_client import (
     MCPServerData,
+    _extract_capabilities,
+    _extract_prompt_details,
+    _extract_resource_details,
     _get_from_sse,
     _get_from_streamable_http,
     _is_requires_init,
@@ -608,7 +612,7 @@ class TestMCPClient:
         tool = Mock()
         tool.name = "test_tool"
         tool.description = "Test tool description"
-        tool.inputSchema = {"type": "object", "properties": {"query": {"type": "string"}}}
+        tool.input_schema = {"type": "object", "properties": {"query": {"type": "string"}}}
 
         response = Mock()
         response.tools = [tool]
@@ -647,7 +651,7 @@ class TestMCPClient:
 
             # Mock streamable_http_client context manager
             mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock(), Mock()))
+            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock()))  # mcp 2.x yields (read, write)
             mock_client.return_value = mock_context
 
             with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
@@ -680,7 +684,7 @@ class TestMCPClient:
             mock_session.list_prompts = AsyncMock(return_value=Mock(prompts=[]))
 
             mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock(), Mock()))
+            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock()))  # mcp 2.x yields (read, write)
             mock_client.return_value = mock_context
 
             with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
@@ -873,7 +877,7 @@ class TestMCPClient:
             mock_session.list_prompts = AsyncMock(return_value=Mock(prompts=[]))
 
             mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock(), Mock()))
+            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock()))  # mcp 2.x yields (read, write)
             mock_client.return_value = mock_context
 
             with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
@@ -943,9 +947,9 @@ class TestPerformHealthCheck:
     def mock_init_result(self):
         """Create mock MCP initialize result."""
         mock_result = Mock()
-        mock_result.protocolVersion = "2024-11-05"
-        mock_result.serverInfo = Mock()
-        mock_result.serverInfo.name = "test-server"
+        mock_result.protocol_version = "2024-11-05"
+        mock_result.server_info = Mock()
+        mock_result.server_info.name = "test-server"
         # Simulate Pydantic model that will be converted to dict
         mock_capabilities = Mock()
         mock_capabilities.model_dump = Mock(return_value={"tools": {}})
@@ -1014,13 +1018,14 @@ class TestPerformHealthCheck:
         Drives the real mcp client over a mock transport: for streamable-http the SDK reports a 404
         in-band as "Session terminated" rather than raising HTTPStatusError.
         """
-        real_async_client = httpx.AsyncClient
+        # mcp 2.x transports (streamable-http and sse) issue requests through httpx2.
+        real_async_client = httpx2.AsyncClient
 
         def async_client_with_status(*args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(status_code))
+            kwargs["transport"] = httpx2.MockTransport(lambda request: httpx2.Response(status_code))
             return real_async_client(*args, **kwargs)
 
-        with patch("httpx.AsyncClient", new=async_client_with_status):
+        with patch("httpx2.AsyncClient", new=async_client_with_status):
             is_healthy, status, _, init_result = await perform_health_check("https://example.com/v1/sse", transport)
 
         assert is_healthy is False
@@ -1031,10 +1036,9 @@ class TestPerformHealthCheck:
     @pytest.mark.asyncio
     async def test_initialize_mcp_does_not_treat_other_mcp_errors_as_404(self):
         """Only the SDK's in-band 404 maps to InitializeEndpointNotFoundError."""
-        from mcp.shared.exceptions import McpError
-        from mcp.types import ErrorData
+        from mcp.shared.exceptions import MCPError
 
-        error = ExceptionGroup("tg", [McpError(ErrorData(code=-32602, message="Unsupported protocol version"))])
+        error = ExceptionGroup("tg", [MCPError(code=-32602, message="Unsupported protocol version")])
 
         with patch("registry.core.mcp_client.streamable_http_client", side_effect=error):
             assert await initialize_mcp("https://example.com/mcp", transport_type="streamable-http") is None
@@ -1083,7 +1087,7 @@ class TestPerformHealthCheck:
         mock_response.status_code = 401
 
         # Create HTTPStatusError with 401
-        error_401 = httpx.HTTPStatusError("401 Unauthorized", request=Mock(), response=mock_response)
+        error_401 = httpx2.HTTPStatusError("401 Unauthorized", request=Mock(), response=mock_response)
 
         # Mock initialize_mcp to raise HTTPStatusError directly (already unwrapped)
         with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(side_effect=error_401)):
@@ -1104,7 +1108,7 @@ class TestPerformHealthCheck:
         mock_response.status_code = 401
 
         # Create HTTPStatusError with 401 (direct, not wrapped)
-        error_401 = httpx.HTTPStatusError("401 Unauthorized", request=Mock(), response=mock_response)
+        error_401 = httpx2.HTTPStatusError("401 Unauthorized", request=Mock(), response=mock_response)
 
         # Mock initialize_mcp to raise direct HTTPStatusError
         with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(side_effect=error_401)):
@@ -1125,7 +1129,7 @@ class TestPerformHealthCheck:
         mock_response.status_code = 403
 
         # Create HTTPStatusError with 403
-        error_403 = httpx.HTTPStatusError("403 Forbidden", request=Mock(), response=mock_response)
+        error_403 = httpx2.HTTPStatusError("403 Forbidden", request=Mock(), response=mock_response)
 
         # Mock initialize_mcp to raise HTTPStatusError
         with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(side_effect=error_403)):
@@ -1225,3 +1229,60 @@ class TestInitializeMcpSessionUnauthorized:
 
         with self._patch_client(handler), patch("registry.core.mcp_client._clear_session"):
             assert await _initialize_mcp_session("https://mcp.example.com/mcp", {}, "u:s") is None
+
+
+@pytest.mark.unit
+@pytest.mark.core
+class TestMcpModelExtractionKeepsWireNames:
+    """mcp 2.x models use snake_case field names; stored/API dicts must keep MCP wire names."""
+
+    def test_capabilities_keep_camel_case_list_changed(self) -> None:
+        from mcp import types
+
+        init = types.InitializeResult(
+            protocolVersion="2025-11-25",
+            capabilities=types.ServerCapabilities(
+                prompts=types.PromptsCapability(listChanged=True),
+                resources=types.ResourcesCapability(subscribe=False, listChanged=True),
+                tools=types.ToolsCapability(listChanged=True),
+            ),
+            serverInfo=types.Implementation(name="s", version="1"),
+        )
+
+        caps = _extract_capabilities(init)
+
+        assert caps["tools"] == {"listChanged": True}
+        assert caps["resources"] == {"subscribe": False, "listChanged": True}
+        assert "list_changed" not in str(caps)
+
+    def test_resource_details_keep_mime_type_and_annotation_wire_names(self) -> None:
+        from mcp import types
+
+        response = types.ListResourcesResult(
+            resources=[
+                types.Resource(
+                    uri="file:///a.txt",
+                    name="a",
+                    mimeType="text/plain",
+                    annotations=types.Annotations(audience=["user"], priority=0.5),
+                )
+            ]
+        )
+
+        [detail] = _extract_resource_details(response)
+
+        assert detail["mimeType"] == "text/plain"
+        assert detail["annotations"]["audience"] == ["user"]
+        assert "lastModified" in detail["annotations"]
+
+    def test_prompt_argument_dicts_use_wire_names(self) -> None:
+        from mcp import types
+
+        response = types.ListPromptsResult(
+            prompts=[types.Prompt(name="p", arguments=[types.PromptArgument(name="q", required=True)])]
+        )
+
+        [detail] = _extract_prompt_details(response)
+
+        assert detail["arguments"][0]["name"] == "q"
+        assert detail["arguments"][0]["required"] is True
