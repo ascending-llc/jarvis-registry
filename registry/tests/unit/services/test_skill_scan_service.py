@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException
+from pymongo.errors import DuplicateKeyError
 
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.services.skill_scan_service import SkillScanService, _result_outdated, _scan_status
@@ -219,6 +220,34 @@ async def test_request_scan_returns_202_and_enqueues_manual(
     mock_enqueue.assert_awaited_once()
     assert mock_enqueue.await_args.kwargs["trigger"] == SkillScanTriggerType.MANUAL
     assert mock_enqueue.await_args.kwargs["requested_by"] == _USER_ID
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_scan_service.enqueue_skill_scan", new_callable=AsyncMock)
+@patch("registry.services.skill_scan_service.tools_needing_scan", new_callable=AsyncMock)
+@patch("registry.services.skill_scan_service.current_tool_fingerprints", new_callable=AsyncMock)
+@patch("registry.services.skill_scan_service.compute_content_digest", return_value=_DIGEST)
+@patch("registry.services.skill_scan_service.SkillScanJob")
+@patch("registry.services.skill_scan_service.SkillFile")
+@patch("registry.services.skill_scan_service.Skill")
+async def test_request_scan_treats_concurrent_duplicate_as_queued(
+    mock_skill_cls, mock_file_cls, mock_job_cls, _digest, mock_fps, mock_needing, mock_enqueue
+):
+    # A concurrent request inserts the job first; skillId is unique, so enqueue raises
+    # DuplicateKeyError. That collision is the queued outcome we wanted, not a 500.
+    skill = _skill()
+    mock_skill_cls.find_one = AsyncMock(return_value=skill)
+    files_q = MagicMock()
+    files_q.to_list = AsyncMock(return_value=[])
+    mock_file_cls.find.return_value = files_q
+    mock_job_cls.find_one = AsyncMock(return_value=None)
+    mock_fps.return_value = None  # no toolset -> always queue
+    mock_enqueue.side_effect = DuplicateKeyError("E11000 duplicate key")
+
+    _resp, queued = await SkillScanService(_acl()).request_scan(skill.id, _USER_ID)
+
+    assert queued is True
+    mock_enqueue.assert_awaited_once()
 
 
 @pytest.mark.asyncio

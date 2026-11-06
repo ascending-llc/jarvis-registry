@@ -422,7 +422,7 @@ def test_scopes_config_grants_are_correct() -> None:
 
 
 # -----------------------------
-# AS-1982: PUT /model-gateway/selection/skill-scan-model
+# PUT /model-gateway/selection/skill-scan-model
 # -----------------------------
 
 

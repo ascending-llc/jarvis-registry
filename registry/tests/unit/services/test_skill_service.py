@@ -1380,7 +1380,7 @@ async def test_resolve_origins_invalid_object_id_skipped(acl_service, user_servi
 
 
 # -----------------------------
-# AS-1982: enqueue_skill_scan / delete_skill_scan_state wiring
+# enqueue_skill_scan / delete_skill_scan_state wiring
 # -----------------------------
 
 

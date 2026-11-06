@@ -374,7 +374,7 @@ class TestGetScopeDescription:
 
 
 class TestBundledSkillScanScopes:
-    """AS-1982: the shipped scopes.yml exposes the new scan/model routes under the right scopes."""
+    """The shipped scopes.yml exposes the new scan/model routes under the right scopes."""
 
     @staticmethod
     def _actions(reset_scopes_cache, scope_name: str) -> list[tuple[str, str]]:
