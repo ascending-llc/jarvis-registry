@@ -61,6 +61,7 @@ from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.search.base import VectorSearchService
 from .services.search.service import SearchService
 from .services.server_service import ServerServiceV1
+from .services.skill_scan_service import SkillScanService
 from .services.skill_service import SkillService
 from .services.skill_sync_apply_service import SkillSyncApplyService
 from .services.skill_sync_discovery_service import SkillSyncDiscoveryService
@@ -213,6 +214,10 @@ class RegistryContainer:
     @cached_property
     def skill_service(self) -> SkillService:
         return SkillService(acl_service=self.acl_service, user_service=self.user_service)
+
+    @cached_property
+    def skill_scan_service(self) -> SkillScanService:
+        return SkillScanService(acl_service=self.acl_service)
 
     @cached_property
     def token_service(self) -> TokenService:
