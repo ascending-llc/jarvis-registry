@@ -446,7 +446,7 @@ def test_delete_skill_file_missing_returns_404(skill_app):
 
 
 # -----------------------------
-# AS-1982: scan routes + list scanSummary
+# scan routes + list scanSummary
 # -----------------------------
 
 

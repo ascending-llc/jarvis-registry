@@ -124,7 +124,7 @@ async def test_soft_deleted_source_treated_as_missing(service, monkeypatch) -> N
 
 
 # -----------------------------
-# AS-1982: set_skill_scan_model
+# set_skill_scan_model
 # -----------------------------
 
 

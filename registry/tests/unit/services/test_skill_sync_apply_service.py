@@ -691,7 +691,7 @@ def test_text_detection_checks_full_payload_not_just_prefix():
 
 
 # -----------------------------
-# AS-1982: enqueue / delete scan state in the GitHub-sync write paths
+# enqueue / delete scan state in the GitHub-sync write paths
 # -----------------------------
 
 

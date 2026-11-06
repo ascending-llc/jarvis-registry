@@ -9,6 +9,7 @@ import logging
 
 from beanie import PydanticObjectId
 from fastapi import HTTPException, status
+from pymongo.errors import DuplicateKeyError
 
 from registry_pkgs.models import ExtendedSkill as Skill
 from registry_pkgs.models import ExtendedSkillFile as SkillFile
@@ -74,9 +75,7 @@ class SkillScanService:
             resource_id=skill_id,
             required_permission="VIEW",
         )
-        job = await SkillScanJob.find_one({"skillId": skill_id})
-        fingerprints = await current_tool_fingerprints()
-        return await self._build_response(skill, job, fingerprints)
+        return await self._scan_response(skill)
 
     async def request_scan(self, skill_id: PydanticObjectId, user_id: str | None) -> tuple[SkillScanResponse, bool]:
         """Returns (response, queued). queued False -> route answers 200, True -> 202."""
@@ -94,14 +93,25 @@ class SkillScanService:
         # for the current digest, there is nothing to run. When none is published, always queue so
         # the scan runs once a scanner is deployed.
         if fingerprints is not None and not await tools_needing_scan(skill_id, digest, fingerprints):
-            return await self.get_scan(skill_id, user_id), False
-        await enqueue_skill_scan(
-            skill_id,
-            trigger=SkillScanTriggerType.MANUAL,
-            requested_by=str(user_id),
-            session=None,
-        )
-        return await self.get_scan(skill_id, user_id), True
+            return await self._scan_response(skill), False
+        try:
+            await enqueue_skill_scan(
+                skill_id,
+                trigger=SkillScanTriggerType.MANUAL,
+                requested_by=str(user_id),
+                session=None,
+            )
+        except DuplicateKeyError:
+            # A concurrent request created the job first (skillId is unique) — that is the
+            # queued outcome we wanted, so treat it as success rather than a 500.
+            pass
+        return await self._scan_response(skill), True
+
+    async def _scan_response(self, skill: Skill) -> SkillScanResponse:
+        """Build the scan response for an already-fetched, already-authorized skill."""
+        job = await SkillScanJob.find_one({"skillId": skill.id})
+        fingerprints = await current_tool_fingerprints()
+        return await self._build_response(skill, job, fingerprints)
 
     async def summaries_for(self, skills: list[Skill]) -> dict[PydanticObjectId, SkillScanBriefResponse]:
         """One skill_scan_jobs query plus one current_tool_fingerprints() for the whole page."""
