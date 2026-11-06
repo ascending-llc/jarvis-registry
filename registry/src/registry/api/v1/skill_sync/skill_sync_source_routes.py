@@ -512,7 +512,9 @@ async def skill_sync_oauth_callback(
         try:
             resolved_source_id = await oauth_service.resolve_source_id(state)
         except ValueError:
-            resolved_source_id = None
+            completed_source_id = await oauth_service.resolve_completed_source_id(state)
+            if completed_source_id is not None:
+                return RedirectResponse(f"{settings.registry_client_url}/skill-sync-sources/{completed_source_id}")
 
     if resolved_source_id is None:
         return RedirectResponse(generic_error_redirect)
