@@ -18,7 +18,11 @@ from registry_pkgs.models.enums import SkillScanJobStatus, SkillScanTriggerType
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.skill_scan.content import compute_content_digest
 from registry_pkgs.skill_scan.enqueue import enqueue_skill_scan
-from registry_pkgs.skill_scan.plan import current_tool_fingerprints, tools_needing_scan
+from registry_pkgs.skill_scan.plan import (
+    current_tool_fingerprints,
+    delete_skill_scan_state,
+    tools_needing_scan,
+)
 
 from ..schemas.skill_api_schemas import (
     SkillScanBriefResponse,
@@ -105,6 +109,12 @@ class SkillScanService:
             # A concurrent request created the job first (skillId is unique) — that is the
             # queued outcome we wanted, so treat it as success rather than a 500.
             pass
+        if await Skill.find_one({"_id": skill_id}) is None:
+            # A delete_skill transaction committed between our checks and this non-transactional
+            # upsert; the upsert may have resurrected an orphan job for the now-deleted skill, so
+            # drop the scan state again and report the skill as gone rather than leave the orphan.
+            await delete_skill_scan_state(skill_id, session=None)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill not found")
         return await self._scan_response(skill), True
 
     async def _scan_response(self, skill: Skill) -> SkillScanResponse:
@@ -150,7 +160,16 @@ class SkillScanService:
         summary = job.summary if job is not None else None
         results: list[SkillScanToolResultResponse] = []
         if summary is not None:
-            raw = await SkillScanResult.find({"skillId": skill.id, "contentDigest": summary.contentDigest}).to_list()
+            # Scoped to the summary's fingerprints: a rescan after a scanner/model change writes new
+            # rows (the unique key is skillId+contentDigest+toolFingerprint) without replacing the old
+            # ones, so an unscoped query would return stale duplicates and spurious outdatedTool.
+            raw = await SkillScanResult.find(
+                {
+                    "skillId": skill.id,
+                    "contentDigest": summary.contentDigest,
+                    "toolFingerprint": {"$in": [t.toolFingerprint for t in summary.tools]},
+                }
+            ).to_list()
             raw.sort(key=lambda r: r.tool)
             results = [self._tool_result(r, fingerprints) for r in raw]
         return SkillScanResponse(

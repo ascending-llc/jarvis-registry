@@ -803,33 +803,54 @@ class SkillService:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="A skill with this name already exists"
             ) from e
+        except OperationFailure as e:
+            # The in-transaction enqueue writes skill_scan_jobs, so a concurrent heartbeat or manual
+            # scan can abort this edit with a WriteConflict; surface it as a retryable 409 like the
+            # file write paths, not a generic 500.
+            if _is_write_conflict(e):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Skill was modified concurrently; please retry",
+                ) from e
+            raise
 
         return skill, await self._list_skill_files(skill_id), permissions
 
     async def delete_skill(self, skill_id: PydanticObjectId, user_id: str | None) -> None:
         skill = await self._get_existing_skill(skill_id)
-        async with MongoDB.get_client().start_session() as mongo_session:
-            async with await mongo_session.start_transaction():
-                await self.acl_service.check_user_permission(
-                    user_id=_require_user_id(user_id),
-                    resource_type=RegistryResourceType.SKILL.value,
-                    resource_id=skill_id,
-                    required_permission="DELETE",
-                    session=mongo_session,
-                )
-                if not skill.createdByRegistry:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="Only skills created in Registry can be deleted from Registry",
+        try:
+            async with MongoDB.get_client().start_session() as mongo_session:
+                async with await mongo_session.start_transaction():
+                    await self.acl_service.check_user_permission(
+                        user_id=_require_user_id(user_id),
+                        resource_type=RegistryResourceType.SKILL.value,
+                        resource_id=skill_id,
+                        required_permission="DELETE",
+                        session=mongo_session,
                     )
-                await SkillFile.find({"skillId": skill_id}).delete(session=mongo_session)
-                await delete_skill_scan_state(skill_id, session=mongo_session)
-                await skill.delete(session=mongo_session)
-                await self.acl_service.delete_acl_entries_for_resource(
-                    resource_type=RegistryResourceType.SKILL.value,
-                    resource_id=skill_id,
-                    session=mongo_session,
-                )
+                    if not skill.createdByRegistry:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Only skills created in Registry can be deleted from Registry",
+                        )
+                    await SkillFile.find({"skillId": skill_id}).delete(session=mongo_session)
+                    await delete_skill_scan_state(skill_id, session=mongo_session)
+                    await skill.delete(session=mongo_session)
+                    await self.acl_service.delete_acl_entries_for_resource(
+                        resource_type=RegistryResourceType.SKILL.value,
+                        resource_id=skill_id,
+                        session=mongo_session,
+                    )
+        except OperationFailure as e:
+            # delete_skill_scan_state writes skill_scan_jobs, so a concurrent heartbeat or manual scan
+            # can abort this deletion with a WriteConflict; surface it as a retryable 409 like the
+            # other skill write paths, not a generic 500.
+            if _is_write_conflict(e):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Skill was modified concurrently; please retry",
+                ) from e
+            raise
 
     async def toggle_skill(
         self,
