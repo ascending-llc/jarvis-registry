@@ -19,10 +19,12 @@ from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedSkill as Skill
 from registry_pkgs.models import ExtendedSkillFile as SkillFile
 from registry_pkgs.models import PrincipalType, SkillSource, SkillSyncSource
-from registry_pkgs.models.enums import RoleBits, SkillSyncSourceStatus
+from registry_pkgs.models.enums import RoleBits, SkillScanTriggerType, SkillSyncSourceStatus
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_skill_file import REGISTRY_SKILL_FILE_SOURCE
 from registry_pkgs.oauth.user_service import UserService
+from registry_pkgs.skill_scan.enqueue import enqueue_skill_scan
+from registry_pkgs.skill_scan.plan import delete_skill_scan_state
 
 from ..constants import (
     MAX_SKILL_FILE_COUNT,
@@ -561,6 +563,12 @@ class SkillService:
                         perm_bits=RoleBits.OWNER,
                         session=mongo_session,
                     )
+                    await enqueue_skill_scan(
+                        skill.id,
+                        trigger=SkillScanTriggerType.AUTO,
+                        requested_by=str(object_user_id),
+                        session=mongo_session,
+                    )
         except DuplicateKeyError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="A skill with this name already exists"
@@ -638,6 +646,12 @@ class SkillService:
                     skill.version += 1
                     skill.updatedAt = now
                     await skill.save(session=mongo_session)
+                    await enqueue_skill_scan(
+                        skill_id,
+                        trigger=SkillScanTriggerType.AUTO,
+                        requested_by=str(object_user_id),
+                        session=mongo_session,
+                    )
         except OperationFailure as e:
             if _is_write_conflict(e):
                 raise HTTPException(
@@ -689,6 +703,12 @@ class SkillService:
                     skill.version += 1
                     skill.updatedAt = now
                     await skill.save(session=mongo_session)
+                    await enqueue_skill_scan(
+                        skill_id,
+                        trigger=SkillScanTriggerType.AUTO,
+                        requested_by=str(object_user_id),
+                        session=mongo_session,
+                    )
         except OperationFailure as e:
             if _is_write_conflict(e):
                 raise HTTPException(
@@ -773,6 +793,12 @@ class SkillService:
                     skill.version += 1
                     skill.updatedAt = datetime.now(UTC)
                     await skill.save(session=mongo_session)
+                    await enqueue_skill_scan(
+                        skill_id,
+                        trigger=SkillScanTriggerType.AUTO,
+                        requested_by=str(object_user_id),
+                        session=mongo_session,
+                    )
         except DuplicateKeyError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="A skill with this name already exists"
@@ -797,6 +823,7 @@ class SkillService:
                         detail="Only skills created in Registry can be deleted from Registry",
                     )
                 await SkillFile.find({"skillId": skill_id}).delete(session=mongo_session)
+                await delete_skill_scan_state(skill_id, session=mongo_session)
                 await skill.delete(session=mongo_session)
                 await self.acl_service.delete_acl_entries_for_resource(
                     resource_type=RegistryResourceType.SKILL.value,
