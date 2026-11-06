@@ -12,7 +12,12 @@ from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedSkill as Skill
 from registry_pkgs.models import ExtendedSkillFile as SkillFile
 from registry_pkgs.models import PrincipalType, SkillSource
-from registry_pkgs.models.enums import RoleBits, SkillSyncSkillErrorCode, SkillSyncSkillErrorPhase
+from registry_pkgs.models.enums import (
+    RoleBits,
+    SkillScanTriggerType,
+    SkillSyncSkillErrorCode,
+    SkillSyncSkillErrorPhase,
+)
 from registry_pkgs.models.extended_access_role import RegistryAccessRole, RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.extended_skill_file import REGISTRY_SKILL_FILE_SOURCE
@@ -24,6 +29,8 @@ from registry_pkgs.models.skill_sync_job import (
 )
 from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSourceStats
 from registry_pkgs.oauth.user_service import UserService
+from registry_pkgs.skill_scan.enqueue import enqueue_skill_scan
+from registry_pkgs.skill_scan.plan import delete_skill_scan_state
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
@@ -314,6 +321,7 @@ class SkillSyncApplyService:
 
         async def _delete(session: AsyncClientSession) -> int:
             result = await SkillFile.find({"skillId": skill.id}).delete(session=session)
+            await delete_skill_scan_state(skill.id, session=session)
             await skill.delete(session=session)
             await self._acl_service.delete_acl_entries_for_resource(
                 resource_type=RegistryResourceType.SKILL.value,
@@ -365,6 +373,12 @@ class SkillSyncApplyService:
                 )
                 skill = existing
             file_counts = await self._sync_skill_files(skill.id, discovered, now, session=session)
+            await enqueue_skill_scan(
+                skill.id,
+                trigger=SkillScanTriggerType.AUTO,
+                requested_by=None,
+                session=session,
+            )
             return existing is None, file_counts
 
         async with MongoDB.get_client().start_session() as session:

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException
+from pymongo.errors import OperationFailure
 
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.skill_api_schemas import (
@@ -22,7 +23,7 @@ from registry.services.skill_service import (
     _validate_relative_path,
 )
 from registry_pkgs.models import SkillSource
-from registry_pkgs.models.enums import SkillSyncSourceStatus
+from registry_pkgs.models.enums import SkillScanTriggerType, SkillSyncSourceStatus
 
 _USER_ID = "000000000000000000000001"
 _OTHER_USER_ID = "000000000000000000000002"
@@ -64,6 +65,19 @@ def _configure_transaction(mock_mongodb: MagicMock) -> MagicMock:
     client.start_session.return_value = _async_context(session)
     mock_mongodb.get_client.return_value = client
     return session
+
+
+@pytest.fixture(autouse=True)
+def _stub_scan_helpers():
+    """Default: no-op the scan enqueue/cleanup so write-path tests don't touch the real scan models.
+
+    Tests that assert on these calls patch them explicitly, which overrides this stub for their scope.
+    """
+    with (
+        patch("registry.services.skill_service.enqueue_skill_scan", new=AsyncMock()),
+        patch("registry.services.skill_service.delete_skill_scan_state", new=AsyncMock()),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -1364,3 +1378,145 @@ async def test_resolve_origins_invalid_object_id_skipped(acl_service, user_servi
     find.assert_not_called()
     assert result[skill.id].kind == "external_provider"
     assert result[skill.id].provider.name is None
+
+
+# -----------------------------
+# enqueue_skill_scan / delete_skill_scan_state wiring
+# -----------------------------
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.enqueue_skill_scan", new_callable=AsyncMock)
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.Skill")
+async def test_create_skill_enqueues_auto_scan(mock_skill_cls, mock_mongodb, mock_enqueue, acl_service, user_service):
+    skill = _make_skill()
+    skill.insert = AsyncMock()
+    mock_skill_cls.return_value = skill
+    mock_skill_cls.find_one = AsyncMock(return_value=None)
+    session = _configure_transaction(mock_mongodb)
+
+    await SkillService(acl_service, user_service).create_skill(
+        SkillCreateRequest(name="test-skill", description="description"), _USER_ID, "Token User"
+    )
+
+    mock_enqueue.assert_awaited_once()
+    assert mock_enqueue.await_args.args[0] == skill.id
+    assert mock_enqueue.await_args.kwargs["trigger"] == SkillScanTriggerType.AUTO
+    assert mock_enqueue.await_args.kwargs["requested_by"] == _USER_ID
+    assert mock_enqueue.await_args.kwargs["session"] is session
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.enqueue_skill_scan", new_callable=AsyncMock)
+@patch("registry.services.skill_service.MongoDB")
+async def test_update_skill_enqueues_auto_scan(mock_mongodb, mock_enqueue, acl_service, user_service):
+    skill = _make_skill()
+    session = _configure_transaction(mock_mongodb)
+    service = SkillService(acl_service, user_service)
+    service._get_existing_skill = AsyncMock(return_value=skill)
+    service._list_skill_files = AsyncMock(return_value=[])
+
+    await service.update_skill(skill.id, SkillUpdateRequest(description="Updated"), _USER_ID)
+
+    mock_enqueue.assert_awaited_once()
+    assert mock_enqueue.await_args.args[0] == skill.id
+    assert mock_enqueue.await_args.kwargs["trigger"] == SkillScanTriggerType.AUTO
+    assert mock_enqueue.await_args.kwargs["session"] is session
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.enqueue_skill_scan", new_callable=AsyncMock)
+@patch("registry.services.skill_service.MongoDB")
+async def test_update_skill_write_conflict_returns_409(mock_mongodb, mock_enqueue, acl_service, user_service):
+    # The in-transaction enqueue writes skill_scan_jobs; a concurrent heartbeat/manual scan aborts the
+    # edit with a WriteConflict, which must surface as a retryable 409, not a generic 500.
+    skill = _make_skill()
+    _configure_transaction(mock_mongodb)
+    mock_enqueue.side_effect = OperationFailure("WriteConflict", code=112)
+    service = SkillService(acl_service, user_service)
+    service._get_existing_skill = AsyncMock(return_value=skill)
+    service._list_skill_files = AsyncMock(return_value=[])
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_skill(skill.id, SkillUpdateRequest(description="Updated"), _USER_ID)
+
+    assert exc.value.status_code == 409
+    assert "concurrent" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.enqueue_skill_scan", new_callable=AsyncMock)
+@patch("registry.services.skill_service.MongoDB")
+async def test_update_skill_noop_does_not_enqueue(mock_mongodb, mock_enqueue, acl_service, user_service):
+    skill = _make_skill()
+    _configure_transaction(mock_mongodb)
+    service = SkillService(acl_service, user_service)
+    service._get_existing_skill = AsyncMock(return_value=skill)
+    service._list_skill_files = AsyncMock(return_value=[])
+
+    await service.update_skill(skill.id, SkillUpdateRequest(), _USER_ID)
+
+    mock_enqueue.assert_not_awaited()
+    skill.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.enqueue_skill_scan", new_callable=AsyncMock)
+async def test_toggle_skill_does_not_enqueue(mock_enqueue, acl_service, user_service):
+    skill = _make_skill()
+    service = SkillService(acl_service, user_service)
+    service._get_existing_skill = AsyncMock(return_value=skill)
+
+    await service.toggle_skill(skill.id, False, _USER_ID)
+
+    mock_enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.delete_skill_scan_state", new_callable=AsyncMock)
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+async def test_delete_skill_deletes_scan_state(
+    mock_skillfile_cls, mock_mongodb, mock_delete_state, acl_service, user_service
+):
+    skill = _make_skill()
+    skill.delete = AsyncMock()
+    session = _configure_transaction(mock_mongodb)
+    delete_query = MagicMock()
+    delete_query.delete = AsyncMock()
+    mock_skillfile_cls.find.return_value = delete_query
+    service = SkillService(acl_service, user_service)
+    service._get_existing_skill = AsyncMock(return_value=skill)
+
+    await service.delete_skill(skill.id, _USER_ID)
+
+    mock_delete_state.assert_awaited_once_with(skill.id, session=session)
+    skill.delete.assert_awaited_once_with(session=session)
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_service.delete_skill_scan_state", new_callable=AsyncMock)
+@patch("registry.services.skill_service.MongoDB")
+@patch("registry.services.skill_service.SkillFile")
+async def test_delete_skill_write_conflict_returns_409(
+    mock_skillfile_cls, mock_mongodb, mock_delete_state, acl_service, user_service
+):
+    # delete_skill_scan_state writes skill_scan_jobs; a concurrent heartbeat/manual scan aborts the
+    # deletion with a WriteConflict, which must surface as a retryable 409, not a generic 500.
+    from pymongo.errors import OperationFailure
+
+    skill = _make_skill()
+    _configure_transaction(mock_mongodb)
+    delete_query = MagicMock()
+    delete_query.delete = AsyncMock()
+    mock_skillfile_cls.find.return_value = delete_query
+    mock_delete_state.side_effect = OperationFailure("WriteConflict", code=112)
+    service = SkillService(acl_service, user_service)
+    service._get_existing_skill = AsyncMock(return_value=skill)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.delete_skill(skill.id, _USER_ID)
+
+    assert exc.value.status_code == 409
+    assert "concurrent" in exc.value.detail.lower()
