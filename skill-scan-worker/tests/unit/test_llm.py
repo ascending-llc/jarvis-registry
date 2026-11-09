@@ -1,5 +1,8 @@
+import logging
+
 import pytest
 from beanie import PydanticObjectId
+from skill_scan_worker import llm as llm_module
 from skill_scan_worker.config import settings
 from skill_scan_worker.llm import resolve_llm
 
@@ -68,7 +71,23 @@ async def test_azure_without_key_uses_workload_identity() -> None:
     assert resolved.azure_api_key is None
 
 
-async def test_decryption_failure_yields_none() -> None:
+async def test_decryption_failure_yields_none_and_warns_without_the_value(caplog, monkeypatch) -> None:
+    encrypted = encrypt_value("super-secret-key", encryption_key=settings.encryption_key)
+
+    def _fail(*_args, **_kwargs):
+        raise Exception("Failed to decrypt value")  # decrypt_value raises a plain Exception
+
+    monkeypatch.setattr(llm_module, "decrypt_value", _fail)
+    with caplog.at_level(logging.WARNING, logger="skill_scan_worker.llm"):
+        assert await resolve_llm(_azure(encrypted)) is None
+
+    warnings = [r for r in caplog.records if r.name == "skill_scan_worker.llm" and r.levelno == logging.WARNING]
+    assert warnings
+    assert "super-secret-key" not in caplog.text
+    assert encrypted not in caplog.text
+
+
+async def test_malformed_ciphertext_yields_none() -> None:
     # "zz:zz" splits into two parts, so decrypt_value tries bytes.fromhex("zz") and raises.
     assert await resolve_llm(_azure("zz:zz")) is None
 
