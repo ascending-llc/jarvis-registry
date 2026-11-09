@@ -14,17 +14,11 @@ from registry_pkgs.core.crypto_utils import decrypt_value
 from registry_pkgs.database.model_gateway_selection_repository import get_model_gateway_selection
 from registry_pkgs.models.enums import ModelSourceMode
 from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
+from registry_pkgs.workflows.bedrock_ids import bedrock_litellm_model_id
 
 logger = logging.getLogger(__name__)
 
 AzureAdTokenProvider = Callable[[], str]
-_BEDROCK_APPLICATION_INFERENCE_PROFILE = ":application-inference-profile/"
-
-
-def _bedrock_model_id(model_id_or_arn: str) -> str:
-    """Return the LiteLLM route for a Bedrock model or application inference profile."""
-    route = "bedrock/converse/" if _BEDROCK_APPLICATION_INFERENCE_PROFILE in model_id_or_arn else "bedrock/"
-    return f"{route}{model_id_or_arn}"
 
 
 def _bedrock_request_params(aws_region: str) -> dict[str, Any]:
@@ -81,7 +75,7 @@ class AzureModelCredential:
 
 def build_legacy_bedrock_model(model_id: str, aws_region: str) -> Model:
     """Build the Settings-based fallback used before a workflow ModelSource is selected."""
-    return _litellm_model(_bedrock_model_id(model_id), _bedrock_request_params(aws_region))
+    return _litellm_model(bedrock_litellm_model_id(model_id), _bedrock_request_params(aws_region))
 
 
 def get_litellm_model_info(model: str) -> dict[str, Any]:
@@ -98,7 +92,7 @@ def build_agno_model(
     """Build the agno Model for one ModelSource. No client/connection is constructed here."""
     config = model_source.providerConfig
     if isinstance(config, AwsBedrockModelConfig):
-        return _litellm_model(_bedrock_model_id(config.modelIdOrArn), _bedrock_request_params(config.awsRegion))
+        return _litellm_model(bedrock_litellm_model_id(config.modelIdOrArn), _bedrock_request_params(config.awsRegion))
     if isinstance(config, AzureOpenAIModelConfig):
         request_params: dict[str, Any] = {"api_version": config.apiVersion}
         api_key: str | None = None
