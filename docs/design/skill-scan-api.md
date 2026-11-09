@@ -82,8 +82,19 @@ Two different `detail` shapes appear, depending on the route:
 - **Scope failures** (missing scope, enforced by middleware before the handler) always return
   the plain string `{"detail": "Insufficient permissions"}`.
 
-**Frontend rule:** `detail` may be a string or an object. Render
-`typeof detail === "string" ? detail : detail.message`.
+- **`422`** (FastAPI request validation) returns an **array** of validation errors as `detail`.
+  A 422 means the client sent a bad request (a malformed `skill_id`, or a missing body key).
+
+**Frontend rule:** `detail` may be a string, an `{error, message}` object or (on `422`) an array.
+Render:
+
+```ts
+typeof detail === "string"
+  ? detail
+  : Array.isArray(detail)
+    ? "Invalid request"
+    : detail.message;
+```
 
 ---
 
