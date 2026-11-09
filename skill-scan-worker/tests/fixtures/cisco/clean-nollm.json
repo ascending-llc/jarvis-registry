@@ -1,0 +1,20 @@
+{
+  "max_severity": "info",
+  "is_safe": true,
+  "analyzers_used": ["behavioral", "osv"],
+  "analyzers_failed": [],
+  "findings": [
+    {
+      "rule_id": "OSV_INFO_010",
+      "severity": "info",
+      "category": "policy_violation",
+      "title": "No declared dependencies to check",
+      "description": "The skill ships no lockfile; nothing to look up.",
+      "file_path": "SKILL.md",
+      "line_number": 1,
+      "snippet": "",
+      "remediation": null,
+      "metadata": {}
+    }
+  ]
+}

