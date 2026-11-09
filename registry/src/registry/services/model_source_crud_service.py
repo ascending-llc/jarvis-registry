@@ -245,17 +245,30 @@ class ModelSourceCrudService:
         new_config: StoredProviderConfig,
         old_config: StoredProviderConfig,
     ) -> StoredProviderConfig:
-        """Carry over the stored Azure / first-party key when an update omits a new one."""
+        """Carry over the stored Azure / first-party key when an update omits a new one.
+
+        The key is carried over only while the host it is sent to stays the same (Azure ``endpoint``,
+        first-party ``baseUrl``). Otherwise an editor who never knew the key could redirect it to a host
+        they chose.
+        """
         if (
             isinstance(new_config, AzureOpenAIModelConfig)
             and new_config.apiKeyEncrypted is None
             and isinstance(old_config, AzureOpenAIModelConfig)
             and old_config.apiKeyEncrypted
         ):
+            if new_config.endpoint != old_config.endpoint:
+                # The Azure key is optional, so silently dropping it would flip the source to Workload
+                # Identity (and break it for embedding, which needs a key). Make the editor re-enter it.
+                raise HTTPException(
+                    http_status.HTTP_400_BAD_REQUEST,
+                    detail=create_error_detail(
+                        ErrorCode.INVALID_REQUEST,
+                        "Re-enter the API key when changing the endpoint of an Azure OpenAI model source "
+                        "that has a stored key.",
+                    ),
+                )
             new_config.apiKeyEncrypted = old_config.apiKeyEncrypted
-        # Same carry-over for a first-party source keeping its provider type and baseUrl. A changed
-        # baseUrl must not inherit the key: that would send the stored key to a host the editor chose
-        # without ever knowing the key.
         if (
             isinstance(new_config, FirstPartyModelConfig)
             and new_config.apiKeyEncrypted is None

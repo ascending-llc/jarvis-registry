@@ -222,11 +222,12 @@ live [`metadata`](#model-metadata) resolved from `litellm.get_model_info()` and 
 Partial update — only the fields present in the body are changed (`displayName`,
 `description`, `tags`, `mode`, `providerConfig`).
 
-**Credential handling:** `providerConfig` is replaced as a whole when supplied. For an Azure
-config, if `apiKey` is **omitted**, the previously stored encrypted key is **preserved**; if a
-new `apiKey` is supplied, it is re-encrypted. A first-party (Anthropic / OpenAI) key is preserved
-the same way only when `providerType` **and** `baseUrl` are unchanged; changing either requires a
-new `apiKey` (`400` otherwise), so the stored key is never sent to a host the editor chose.
+**Credential handling:** `providerConfig` is replaced as a whole when supplied. If `apiKey` is
+**omitted**, the previously stored encrypted key is **preserved**, but only while the provider
+type and the host it is sent to are unchanged (Azure `endpoint`, first-party `baseUrl`). Changing
+the host of a source that has a stored key requires a new `apiKey` (`400` otherwise), so the
+stored key is never sent to a host the editor chose; switching provider type drops the old key.
+A supplied `apiKey` is re-encrypted.
 (Omitting `providerConfig` entirely leaves the stored config and key untouched.)
 
 **Active embedding source:** on the source backing the active embedding selection, a change that

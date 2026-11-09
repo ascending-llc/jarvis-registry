@@ -319,6 +319,51 @@ async def test_update_azure_config_with_new_key_reencrypts(service) -> None:
     assert is_encrypted(enc)
 
 
+def _azure_update(endpoint: str, api_key: str | None = None) -> AzureOpenAIModelConfigInput:
+    return AzureOpenAIModelConfigInput(
+        endpoint=endpoint, deploymentName="d", baseModelId="gpt-4o", apiVersion="2024-10-21", apiKey=api_key
+    )
+
+
+async def test_update_azure_endpoint_change_without_key_raises_400(service) -> None:
+    """A changed endpoint must not inherit the stored key, or it would be sent to the new host."""
+    source = _azure_source(PydanticObjectId(), endpoint="https://old.openai.azure.com")
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(
+            source, {"providerConfig": _azure_update("https://new.openai.azure.com")}, updated_by="admin"
+        )
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
+async def test_update_azure_endpoint_change_with_new_key_succeeds(service) -> None:
+    source = _azure_source(PydanticObjectId(), endpoint="https://old.openai.azure.com")
+
+    await service.update_source(
+        source, {"providerConfig": _azure_update("https://new.openai.azure.com", "new-key")}, updated_by="admin"
+    )
+
+    assert source.providerConfig.endpoint == "https://new.openai.azure.com"
+    assert is_encrypted(source.providerConfig.apiKeyEncrypted)
+    assert source.providerConfig.apiKeyEncrypted != "iv:existing-cipher"
+    source.save.assert_awaited_once()
+
+
+async def test_update_azure_endpoint_change_without_stored_key_succeeds(service) -> None:
+    """A Workload Identity source has no key to redirect, so its endpoint may change freely."""
+    source = _azure_source(PydanticObjectId(), endpoint="https://old.openai.azure.com")
+    source.providerConfig.apiKeyEncrypted = None
+
+    await service.update_source(
+        source, {"providerConfig": _azure_update("https://new.openai.azure.com")}, updated_by="admin"
+    )
+
+    assert source.providerConfig.endpoint == "https://new.openai.azure.com"
+    assert source.providerConfig.apiKeyEncrypted is None
+    source.save.assert_awaited_once()
+
+
 async def test_update_openai_config_without_key_preserves_stored_secret(service) -> None:
     """Omitting apiKey on a first-party update must keep the stored encrypted key (AS-1952)."""
     source = SimpleNamespace(

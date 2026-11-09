@@ -129,6 +129,7 @@ const AzureFields: React.FC<ProviderFieldsProps> = ({ form, errors, hasStoredApi
           ? 'Embedding selection requires an API key; Workload Identity is not supported on that path.'
           : 'Jarvis uses Workload Identity first. A supplied key is encrypted and used as fallback.'
       }
+      error={errors.apiKey}
     />
   </div>
 );
@@ -188,7 +189,7 @@ const ProviderFields: React.FC<ProviderFieldsProps> = props => {
   return <DirectProviderFields {...props} />;
 };
 
-const validateForm = (form: ModelFormState, hasStoredApiKey: boolean): ModelFormErrors => {
+const validateForm = (form: ModelFormState, hasStoredApiKey: boolean, storedKeyDropped: boolean): ModelFormErrors => {
   const errors: ModelFormErrors = {};
   if (!form.displayName.trim()) errors.displayName = 'Display name is required';
   else if (form.displayName.trim().length > 128) errors.displayName = 'Display name must be 128 characters or fewer';
@@ -202,6 +203,7 @@ const validateForm = (form: ModelFormState, hasStoredApiKey: boolean): ModelForm
     else if (!/^https:\/\//i.test(form.endpoint)) errors.endpoint = 'Endpoint must start with https://';
     if (!form.deploymentName.trim()) errors.deploymentName = 'Deployment name is required';
     if (!form.apiVersion.trim()) errors.apiVersion = 'API version is required';
+    if (storedKeyDropped && !form.apiKey.trim()) errors.apiKey = 'Re-enter the API key when changing the endpoint';
   } else {
     if (!hasStoredApiKey && !form.apiKey.trim()) errors.apiKey = 'API key is required';
     if (form.baseUrl.trim() && !/^https:\/\//i.test(form.baseUrl)) errors.baseUrl = 'Base URL must start with https://';
@@ -251,7 +253,7 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
   };
 
   const handleSubmit = () => {
-    const nextErrors = validateForm(form, storedKeyApplies);
+    const nextErrors = validateForm(form, storedKeyApplies, storedKeyDropped);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length === 0) onSubmit(form);
   };
@@ -260,13 +262,14 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
     value: provider.value,
     label: `${provider.label} — ${provider.auth}`,
   }));
-  // The stored key belongs to the original provider (and, for first-party, its base URL); the backend
-  // drops it when either changes, so a new key is required then.
-  const isFirstParty = form.providerType === 'openai' || form.providerType === 'anthropic';
-  const storedKeyApplies =
-    hasStoredApiKey &&
-    form.providerType === initialForm.providerType &&
-    (!isFirstParty || form.baseUrl.trim() === initialForm.baseUrl.trim());
+  // The stored key belongs to the original provider and the host it is sent to (Azure endpoint,
+  // first-party base URL); the backend won't carry it over when either changes, so a new key is required.
+  const hostField = form.providerType === 'azure_openai' ? 'endpoint' : 'baseUrl';
+  const hostUnchanged = form[hostField].trim() === initialForm[hostField].trim();
+  const sameProvider = form.providerType === initialForm.providerType;
+  const storedKeyApplies = hasStoredApiKey && sameProvider && hostUnchanged;
+  // Same provider, but the host moved: the key must be re-entered even where it is otherwise optional (Azure).
+  const storedKeyDropped = hasStoredApiKey && sameProvider && !hostUnchanged;
   const providerSupported = isBackendSupportedProvider(form.providerType);
   const pageTitle = editing
     ? initialForm.displayName
