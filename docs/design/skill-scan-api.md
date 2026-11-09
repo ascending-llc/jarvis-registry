@@ -505,11 +505,14 @@ completed yet.
 
 ### 3.4 `PUT /model-gateway/selection/skill-scan-model`
 
-Set the ModelSource (mode `chat`) used as the LLM for skill scanning. A `null` `modelSourceId`
-clears the slot, so scanning falls back to the default workflow model.
+Set the ModelSource used as the LLM for skill scanning. It must be a `chat` source whose
+`providerType` is `aws_bedrock` or `azure_openai`. A `null` `modelSourceId` clears the slot (see
+[Fallback when the slot is empty](#fallback-when-the-slot-is-empty)).
 
 - **Scope:** `models-write`  ·  no skill ACL  ·  **Success:** `200`
-- Request body: [`SetSkillScanModelRequest`](#setskillscanmodelrequest).
+- Request body: [`SetSkillScanModelRequest`](#setskillscanmodelrequest). `modelSourceId` is
+  **required**: send an explicit `null` to clear the slot. Omitting the key returns `422`; it does
+  not clear the slot.
 - Response body: [`ModelGatewaySelectionResponse`](#modelgatewayselectionresponse).
 
 Set it:
@@ -518,7 +521,7 @@ Set it:
 { "modelSourceId": "0000000000000000000000c1" }
 ```
 
-Clear it (fall back to the workflow default):
+Clear it:
 
 ```json
 { "modelSourceId": null }
@@ -538,10 +541,31 @@ Response:
 
 | Status | When | `detail` |
 |---|---|---|
+| `401` | Not authenticated | string, e.g. `"Not authenticated"` |
 | `403` | Missing `models-write` scope | `"Insufficient permissions"` (plain string, from middleware) |
 | `404` | ModelSource unknown or soft-deleted | `{"error": "not_found", "message": "..."}` |
-| `409` | ModelSource is not a `chat` source | `{"error": "conflict", "message": "..."}` |
+| `409` | ModelSource is not a `chat` source (e.g. an `embedding` source), **or** is a `chat` source whose `providerType` is not `aws_bedrock` / `azure_openai` (i.e. `anthropic` or `openai`) | `{"error": "conflict", "message": "..."}` |
+| `422` | Body is missing the `modelSourceId` key (or is otherwise malformed) | FastAPI validation error array |
 | `500` | Unexpected failure | `{"error": "internal_error", "message": "Internal server error"}` |
+
+#### Frontend note: the scan-model picker
+
+- **List only `chat` sources whose `providerType` is `aws_bedrock` or `azure_openai`**
+  (`SKILL_SCAN_PROVIDER_TYPES` in `frontend/src/pages/Models/constants.ts`). Skill content must
+  stay in the client's own cloud account (AS-1980 D7), so first-party `anthropic` / `openai`
+  sources are never used for scanning. The backend rejects them with `409`.
+
+#### Fallback when the slot is empty
+
+When `skillScanModelSourceId` is `null`, scanning uses `defaultWorkflowModelSourceId` **only if**
+that default is a live `chat` source on `aws_bedrock` or `azure_openai`. Otherwise scans run
+**without an LLM**, and LLM-backed tools report `status: "partial"` with
+`statusReason: "llm_unavailable"`.
+
+**Show this fallback state next to the picker** when the slot is empty:
+
+- the default is Bedrock or Azure: "Using the default workflow model (`<name>`)".
+- the default is unset or is `anthropic` / `openai`: "No scan model: scans run without an LLM".
 
 ---
 
@@ -558,8 +582,9 @@ existing two pointers. Scope `models-read`.
 }
 ```
 
-`skillScanModelSourceId: null` means no dedicated scan model is set; scanning uses
-`defaultWorkflowModelSourceId`.
+`skillScanModelSourceId: null` means no dedicated scan model is set. Scanning then uses
+`defaultWorkflowModelSourceId` only if it is Bedrock or Azure, and otherwise runs without an LLM
+(see [Fallback when the slot is empty](#fallback-when-the-slot-is-empty)).
 
 ---
 
@@ -669,7 +694,7 @@ Body of `PUT /model-gateway/selection/skill-scan-model`.
 
 | Field | Type | Nullable | Meaning |
 |---|---|---|---|
-| `modelSourceId` | string | yes | ModelSource id to use for scanning; `null` (the default) clears the slot. |
+| `modelSourceId` | string | yes | **Required key.** ModelSource id to use for scanning; an explicit `null` clears the slot. Omitting the key returns `422`. |
 
 ### ModelGatewaySelectionResponse
 
@@ -677,9 +702,9 @@ Body of `GET /model-gateway/selection` and the three selection setters.
 
 | Field | Type | Nullable | Meaning |
 |---|---|---|---|
-| `defaultWorkflowModelSourceId` | string | yes | Default chat/workflow model. Scanning falls back to this. |
+| `defaultWorkflowModelSourceId` | string | yes | Default chat/workflow model. Scanning falls back to this only if it is Bedrock or Azure. |
 | `embeddingModelSourceId` | string | yes | Embedding model (unrelated to scanning). |
-| `skillScanModelSourceId` | string | yes | Dedicated scan model; `null` means "use the workflow default". |
+| `skillScanModelSourceId` | string | yes | Dedicated scan model. `null` means "use the workflow default if it is Bedrock or Azure, otherwise scan without an LLM". |
 
 ---
 
