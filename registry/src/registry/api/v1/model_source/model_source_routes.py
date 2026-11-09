@@ -364,7 +364,7 @@ async def set_default_workflow_model(
     response_model=ModelGatewaySelectionResponse,
     description="Set the ModelSource (mode CHAT) used for skill security scanning. A null modelSourceId "
     "clears the slot, so scanning falls back to the default workflow model. Returns 404 if the source is "
-    "unknown or soft-deleted, 409 if it is not a CHAT source.",
+    "unknown or soft-deleted, 409 if it is not a CHAT source or its provider is not AWS Bedrock or Azure OpenAI.",
 )
 @track_registry_operation("set_skill_scan_model", resource_type="model_gateway_selection")
 async def set_skill_scan_model(
