@@ -308,7 +308,9 @@ async def create_agent(
         async with MongoDB.get_client().start_session() as mongo_session:
             async with await mongo_session.start_transaction():
                 # Create agent
-                agent = await a2a_agent_service.create_agent(data=data, user_id=user_id, session=mongo_session)
+                agent, vector_plan = await a2a_agent_service.create_agent(
+                    data=data, user_id=user_id, session=mongo_session
+                )
 
                 # Grant OWNER permission to creator
                 await acl_service.grant_permission(
@@ -320,6 +322,8 @@ async def create_agent(
                     session=mongo_session,
                 )
 
+        # Schedule the vector sync only after the transaction has committed (see update_agent's return).
+        a2a_agent_service.schedule_vector_sync(vector_plan)
         logger.info(f"Granted user {user_id} OWNER permissions for agent {agent.id}")
 
         permissions = ResourcePermissions(
@@ -393,8 +397,13 @@ async def update_agent(
                 )
 
                 # Update agent
-                agent = await a2a_agent_service.update_agent(agent_id=agent_id, data=data, session=mongo_session)
+                agent, vector_plan = await a2a_agent_service.update_agent(
+                    agent_id=agent_id, data=data, session=mongo_session
+                )
 
+        # Schedule the vector sync only after the transaction has committed, so the immediate task
+        # never lands before the marker it must clear and a rolled-back update leaves no stale vectors.
+        a2a_agent_service.schedule_vector_sync(vector_plan)
         return convert_to_detail(agent, acl_permission=permissions)
 
     except EmbeddingReindexInProgressException as exc:
@@ -463,7 +472,7 @@ async def delete_agent(
                 )
 
                 # Delete agent
-                await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
+                agent_name = await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
 
                 # Delete all associated ACL permission records
                 deleted_count = await acl_service.delete_acl_entries_for_resource(
@@ -472,7 +481,11 @@ async def delete_agent(
                     session=mongo_session,
                 )
                 logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
-                return None  # 204 No Content
+
+        # Remove vectors only after the transaction has committed, so a rolled-back delete (an ACL
+        # or commit failure) leaves the vectors in place. A lost delete leaves an orphan for the sweep.
+        a2a_agent_service.schedule_vector_delete(agent_id, agent_name)
+        return None  # 204 No Content
 
     except EmbeddingReindexInProgressException as exc:
         raise reindex_in_progress_error() from exc

@@ -222,6 +222,17 @@ class ExtendedMCPServer(MCPServer):
         description="SHA-256 of vectorized page_content; used to skip re-embedding when content is unchanged",
     )
 
+    vectorSyncPendingAt: datetime | None = Field(
+        default=None,
+        description="Set in the same write as a vector-relevant change; means Weaviate may not reflect this "
+        "document yet. Cleared only by a successful sync, compare-and-clear on this exact value. "
+        "Registry-owned; the reconciler heals documents whose marker is still set.",
+    )
+    vectorSyncAttempts: int = Field(
+        default=0,
+        description="Reconciler retry count for this pending marker; reset to 0 on every new vector-relevant write.",
+    )
+
     registryDisabledTools: list[str] = Field(
         default_factory=list,
         description="Downstream tool names (mcpToolName) disabled by this server's OWNER. All tools are enabled by default.",
@@ -247,6 +258,8 @@ class ExtendedMCPServer(MCPServer):
                 unique=True,
                 partialFilterExpression={"path": {"$type": "string"}},
             ),
+            # Registry-owned field (see the note above); the reconciler scans by it.
+            IndexModel([("vectorSyncPendingAt", 1)], sparse=True),
         ]
 
     @property

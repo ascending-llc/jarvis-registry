@@ -367,6 +367,7 @@ class UnifiedAuthMiddleware:
             auth_method="jwt",
             provider="jwt",
             auth_source=MANAGED_AGENT_AUTH_SOURCE,
+            jti=claims.get("jti"),
         )
 
     async def _try_session_auth(self, request: Request) -> UserContextDict | None:
@@ -429,6 +430,7 @@ class UnifiedAuthMiddleware:
         auth_source: str,
         client_id: str,
         user_id: str | None = None,
+        jti: str | None = None,
     ) -> UserContextDict:
         """
         Construct the complete user context (from the original enhanced_auth logic).
@@ -442,6 +444,7 @@ class UnifiedAuthMiddleware:
             "auth_method": auth_method,
             "provider": provider,
             "auth_source": auth_source,
+            "jti": jti,
         }
         logger.debug(f"User context for {username}: {user_context}")
         return user_context

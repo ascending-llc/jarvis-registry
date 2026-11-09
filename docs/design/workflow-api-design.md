@@ -128,6 +128,7 @@ node type does not use them. This lets clients access any field without null che
       "position": { "x": 80, "y": 220 },
       "executorKey": "data-validator",
       "a2aPool": [],
+      "modelSourceId": "000000000000000000000001",
       "stepConfig": {
         "maxRetries": 3,
         "onError": "retry",
@@ -397,6 +398,7 @@ node type does not use them. This lets clients access any field without null che
     - `y` (optional, number): Node y coordinate (default: 0)
   - `executorKey` (optional for `step` nodes, string): MCP tool name or A2A agent name (required if `a2aPool` is not provided)
   - `a2aPool` (optional for `step` nodes, array): A2A agent pool (max 5 agents, alternative to `executorKey`)
+  - `modelSourceId` (optional for `step` nodes, string): Id of a chat `ModelSource` to use as this node's model. Must reference a `ModelSource` with `mode=chat` that is not soft-deleted, otherwise the request returns `400`. When omitted, the node falls back to `defaultWorkflowModelSourceId` (from `GET /model-gateway/selection`), then to the legacy Settings model. **Takes effect only on MCP nodes and A2A-pool nodes** (the tool-calling LLM / the pool's selector LLM respectively); a node that resolves to a single direct A2A agent **ignores it** — that agent runs its own model server-side. Rejected on non-step nodes.
   - `stepObjective` (required for `step` nodes, string): Plain-language statement of what this individual step must accomplish. Rendered at the top of the executor prompt; rejected on non-step nodes.
   - `stepConfig` (optional for `step` nodes, object): Step-level retry and error handling configuration
     - `maxRetries` (optional, number): Maximum number of retries (default: 0, min: 0)
@@ -453,7 +455,7 @@ node type does not use them. This lets clients access any field without null che
 - This two-step process (create → enable) ensures workflows are reviewed and verified before execution
 
 **Error**:
-- `400` Validation error (invalid node structure, duplicate node names anywhere in the workflow, missing `stepObjective` on a step node, `stepObjective` set on a non-step node, unknown `executorKey`, unresolvable `a2aPool` agent path, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
+- `400` Validation error (invalid node structure, duplicate node names anywhere in the workflow, missing `stepObjective` on a step node, `stepObjective` set on a non-step node, unknown `executorKey`, unresolvable `a2aPool` agent path, unknown `modelSourceId` or a `modelSourceId` whose `ModelSource` is not `mode=chat`, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
 - `500` Internal server error
 
 ---
@@ -616,7 +618,7 @@ node type does not use them. This lets clients access any field without null che
 ```
 
 **Error**:
-- `400` Validation error or invalid workflow ID (invalid node structure, duplicate node names anywhere in the workflow, missing `stepObjective` on a step node, `stepObjective` set on a non-step node, unknown `executorKey`, unresolvable `a2aPool` agent path, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
+- `400` Validation error or invalid workflow ID (invalid node structure, duplicate node names anywhere in the workflow, missing `stepObjective` on a step node, `stepObjective` set on a non-step node, unknown `executorKey`, unresolvable `a2aPool` agent path, unknown `modelSourceId` or a `modelSourceId` whose `ModelSource` is not `mode=chat`, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
 - `404` Workflow not found
 - `500` Internal server error
 

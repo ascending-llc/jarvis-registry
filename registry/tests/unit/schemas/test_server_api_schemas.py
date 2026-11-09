@@ -88,3 +88,31 @@ def test_no_client_secret_anywhere(convert) -> None:
 @pytest.mark.parametrize("convert", [convert_to_list_item, convert_to_detail])
 def test_oauth_metadata_none_without_registry_oauth(convert) -> None:
     assert convert(_server(None)).oauthMetadata is None
+
+
+def _apikey_server() -> SimpleNamespace:
+    """A server whose config.apiKey is stored in snake_case (post-AS-1953)."""
+    server = _server(None)
+    server.config = {
+        "url": "https://mcp.example.com",
+        "apiKey": {
+            "source": "admin",
+            "authorization_type": "custom",
+            "custom_header": "Authorization",
+            "key": "ApiKey plaintext-secret",
+        },
+    }
+    return server
+
+
+@pytest.mark.parametrize("convert", [convert_to_list_item, convert_to_detail])
+def test_apikey_returned_camel_case_and_masked(convert) -> None:
+    """Snake_case stored apiKey is returned camelCase, with the key masked."""
+    api_key = convert(_apikey_server()).apiKey
+
+    assert api_key["authorizationType"] == "custom"
+    assert api_key["customHeader"] == "Authorization"
+    assert "authorization_type" not in api_key
+    assert "custom_header" not in api_key
+    assert api_key["key"].startswith("************")
+    assert api_key["key"].endswith("secret")

@@ -103,8 +103,9 @@ nav:
   - Get Started:
     - Quick Start: quick-start.md
     - Generate Secrets: generate-secrets.md
-    - Production Deployment: deployment-guide.md
-    - Configuration: configuration.md
+    - Production Deployment:
+      - Overview: deployment-guide.md
+      - Configuration: production-configuration.md
   - Core Features:
     - IDP Integration: features/auth-server.md
     - MCPServer Gateway & Registry: features/mcp-gateway-registry.md
@@ -116,6 +117,10 @@ nav:
     - Workflow Orchestration: features/workflow-orchestration.md
     - Registry Endpoint: features/registry-endpoint.md
     - Observability: features/observability.md
+  - Walkthroughs:
+    - Git or a Private Skill Registry?: walkthroughs/git-vs-private-skill-registry.md
+    - Test MCP Access with Two Users: walkthroughs/mcp-access-control.md
+    - Private Skill Import, Updates & Access Removal: walkthroughs/private-skill-lifecycle.md
   - Architecture & Design:
     - Security Control Design: design/security-design.md
     - RBAC & Scopes: design/scopes.md
@@ -160,6 +165,9 @@ nav:
       - Measure AI Agent ROI: explore-agentic/playbooks/ai-agent-roi.md
   - Changelog:
     - Overview: changelog/index.md
+    - asc0.5.17: changelog/asc0.5.17.md
+    - asc0.5.16: changelog/asc0.5.16.md
+    - asc0.5.15: changelog/asc0.5.15.md
     - asc0.5.14: changelog/asc0.5.14.md
     - asc0.5.13: changelog/asc0.5.13.md
     - asc0.5.12: changelog/asc0.5.12.md

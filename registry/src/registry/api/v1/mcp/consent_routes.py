@@ -14,7 +14,6 @@ from registry_pkgs.oauth.schemas import ConsentScopeDisplay, DownstreamConsentCo
 
 from ....auth.dependencies import CurrentUser
 from ....constants import DownstreamOAuthConstants
-from ....core.session_store import SessionStore
 from ....deps import (
     get_a2a_agent_service,
     get_consent_store,
@@ -22,7 +21,6 @@ from ....deps import (
     get_oauth_state_store,
     get_pending_consent_store,
     get_server_service,
-    get_session_store,
 )
 from ....services.a2a_agent_service import A2AAgentService
 from ....services.oauth.downstream_device_service import (
@@ -37,7 +35,7 @@ from ....services.server_service import ServerServiceV1
 from .oauth_router import (
     _DOWNSTREAM_ERROR_FLOW_TYPE,
     _build_downstream_authorize_redirect,
-    _notify_elicitation_complete,
+    _client_branding_from_meta,
 )
 
 logger = logging.getLogger(__name__)
@@ -247,7 +245,6 @@ async def approve_server_consent(
     user_context: CurrentUser,
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-    session_store: SessionStore = Depends(get_session_store),
 ) -> dict[str, str | None]:
     try:
         # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
@@ -262,10 +259,10 @@ async def approve_server_consent(
         pending = consumed
         consent_store.grant_server_consent(pending["user_id"], pending["client_id"], pending["server_path"])
 
-        # Best-effort: Mode 1 (mcpgw) pending records carry elicitation_id/client_branding so the
-        # paused MCP session can be notified and the frontend can deep-link back. Mode 2
-        # (direct-connect) records have no such session to notify, so this is a no-op for them.
-        client_branding = await _notify_elicitation_complete(pending, session_store)
+        # Mode 1 (mcpgw) pending records carry elicitation_id/client_branding so the frontend can
+        # deep-link the user back to their AI app. Mode 2 (direct-connect) records carry no
+        # elicitation_id, so branding is None for them.
+        client_branding = _client_branding_from_meta(pending)
         return {"status": "ok", "client_branding": client_branding}
     except HTTPException:
         raise
@@ -311,7 +308,6 @@ async def approve_agent_consent(
     user_context: CurrentUser,
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-    session_store: SessionStore = Depends(get_session_store),
 ) -> dict[str, str | None]:
     try:
         pending = _peek_regular_consent(pending_store, body.nonce)
@@ -324,7 +320,7 @@ async def approve_agent_consent(
         pending = consumed
         consent_store.grant_agent_consent(pending["user_id"], pending["client_id"], pending["agent_path"])
 
-        client_branding = await _notify_elicitation_complete(pending, session_store)
+        client_branding = _client_branding_from_meta(pending)
         return {"status": "ok", "client_branding": client_branding}
     except HTTPException:
         raise
@@ -337,7 +333,6 @@ async def _deny_consent(
     nonce: str,
     user_context: CurrentUser,
     pending_store: PendingConsentStore,
-    session_store: SessionStore,
     *,
     log_tag: str,
     store: DownstreamOAuthStoreProtocol | None = None,
@@ -346,8 +341,7 @@ async def _deny_consent(
 
     The pending record is proactively removed and no consent is granted. Device-flow denials are
     additionally persisted on the device code so the polling client immediately receives
-    ``access_denied``; other consent flows record nothing new and are gated again on retry. A live
-    MCP session is still notified that the out-of-band step concluded.
+    ``access_denied``; other consent flows record nothing new and are gated again on retry.
     """
     try:
         # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
@@ -363,7 +357,7 @@ async def _deny_consent(
         if pending.get("flow_type") == "device" and store is not None:
             if not mark_device_denied(pending["device_code"], store):
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-        client_branding = await _notify_elicitation_complete(pending, session_store)
+        client_branding = _client_branding_from_meta(pending)
         return {"status": "denied", "client_branding": client_branding}
     except HTTPException:
         raise
@@ -377,14 +371,12 @@ async def deny_downstream_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-    session_store: SessionStore = Depends(get_session_store),
     store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
 ) -> dict[str, str | None]:
     return await _deny_consent(
         body.nonce,
         user_context,
         pending_store,
-        session_store,
         log_tag="Downstream Consent",
         store=store,
     )
@@ -467,9 +459,8 @@ async def deny_server_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-    session_store: SessionStore = Depends(get_session_store),
 ) -> dict[str, str | None]:
-    return await _deny_consent(body.nonce, user_context, pending_store, session_store, log_tag="Server Consent")
+    return await _deny_consent(body.nonce, user_context, pending_store, log_tag="Server Consent")
 
 
 @router.post("/consent/agent/deny")
@@ -477,6 +468,5 @@ async def deny_agent_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-    session_store: SessionStore = Depends(get_session_store),
 ) -> dict[str, str | None]:
-    return await _deny_consent(body.nonce, user_context, pending_store, session_store, log_tag="Agent Consent")
+    return await _deny_consent(body.nonce, user_context, pending_store, log_tag="Agent Consent")

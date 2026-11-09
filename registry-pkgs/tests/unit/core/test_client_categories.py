@@ -70,6 +70,7 @@ def cfg() -> JwtTokenConfig:
         (_HEADLESS_AGENT_CLIENT_ID, ClientCategory.HEADLESS_AGENT),
         ("user-generated", ClientCategory.USER_GENERATED),
         ("jarvis-registry-cli", ClientCategory.REGISTRY_CLI),
+        ("jarvis-registry-claude-desktop", ClientCategory.CLAUDE_DESKTOP),
         ("mcp-client-abc", ClientCategory.MCP_DCR),
         ("mcp-client-", ClientCategory.MCP_DCR),
         ("a2a-client-xyz", ClientCategory.A2A_DCR),
@@ -78,7 +79,7 @@ def cfg() -> JwtTokenConfig:
         ("", ClientCategory.UNKNOWN),
     ],
 )
-def test_resolve_client_category(cfg, client_id, expected):
+def test_resolve_client_category(cfg: JwtTokenConfig, client_id: str, expected: ClientCategory) -> None:
     assert resolve_client_category(client_id, cfg) == expected
 
 
@@ -107,9 +108,10 @@ def test_user_generated_ceiling_equals_all():
         (ClientCategory.A2A_DCR, frozenset({"a2a-proxy-ops"})),
         (ClientCategory.HEADLESS_AGENT, frozenset({"mcp-proxy-ops", "a2a-proxy-ops"})),
         (ClientCategory.REGISTRY_CLI, frozenset({"skills-read"})),
+        (ClientCategory.CLAUDE_DESKTOP, frozenset({"mcp-proxy-ops"})),
     ],
 )
-def test_fixed_category_ceilings(category, expected):
+def test_fixed_category_ceilings(category: ClientCategory, expected: frozenset[str]) -> None:
     assert get_builtin_max_scopes(category, _ALL_SCOPES) == expected
 
 
@@ -133,13 +135,26 @@ def test_dcr_client_policy(category, prefix, default_scope):
     )
 
 
-def test_registry_cli_policy_is_public_device_client():
-    policy = get_client_policy(ClientCategory.REGISTRY_CLI)
+@pytest.mark.parametrize(
+    "category, allowed_grant_types, default_scope",
+    [
+        (ClientCategory.REGISTRY_CLI, (DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE), "skills-read"),
+        (
+            ClientCategory.CLAUDE_DESKTOP,
+            (AUTHORIZATION_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE),
+            "mcp-proxy-ops",
+        ),
+    ],
+)
+def test_static_client_policy_is_public(
+    category: ClientCategory, allowed_grant_types: tuple[str, ...], default_scope: str
+) -> None:
+    policy = get_client_policy(category)
 
     assert policy is not None
-    assert policy.allowed_grant_types == (DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE)
+    assert policy.allowed_grant_types == allowed_grant_types
     assert policy.token_endpoint_auth_method == "none"
-    assert policy.default_scope == "skills-read"
+    assert policy.default_scope == default_scope
 
 
 def test_category_without_protocol_policy_returns_none():
@@ -157,12 +172,13 @@ def test_category_without_protocol_policy_returns_none():
         (_HEADLESS_AGENT_CLIENT_ID, frozenset({"mcp-proxy-ops", "a2a-proxy-ops"})),
         ("user-generated", _ALL_SCOPES),
         ("jarvis-registry-cli", frozenset({"skills-read"})),
+        ("jarvis-registry-claude-desktop", frozenset({"mcp-proxy-ops"})),
         ("mcp-client-abc", frozenset({"mcp-proxy-ops"})),
         ("a2a-client-xyz", frozenset({"a2a-proxy-ops"})),
         ("totally-unknown", frozenset()),
     ],
 )
-def test_get_client_max_scopes(cfg, client_id, expected):
+def test_get_client_max_scopes(cfg: JwtTokenConfig, client_id: str, expected: frozenset[str]) -> None:
     assert get_client_max_scopes(client_id, cfg) == expected
 
 

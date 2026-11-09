@@ -88,3 +88,30 @@ Notes:
 - `retry-vector-sync` does not rerun federation discovery or create a new federation job.
 - `retry-vector-sync` reads the current MongoDB state and re-syncs existing MCP/A2A resources into the vector database.
 - Running `retry-vector-sync` multiple times should converge to the same final vector state.
+
+## Diagnose Google group resolution
+
+`diagnose_google_groups.py` makes the same Cloud Identity group lookup auth-server makes at Google
+login, with the same service account and `GOOGLE_CUSTOMER_ID`, and prints Google's full error body when
+it fails. For each group returned, it prints the scope group it grants and the group's
+`owner: customers/C…`, which is the value for `GOOGLE_CUSTOMER_ID`. Pass a working and a failing account
+together to compare them.
+
+Inside the auth-server pod, which already has the settings in its environment:
+
+```bash
+kubectl exec -i <auth-server-pod> -- python - working-user@example.com failing-user@example.com \
+    < scripts/diagnose_google_groups.py
+```
+
+Locally, from the repository root, with the settings in an env file copied from
+`scripts/diagnose_google_groups.env.example` (`.env.*` files are gitignored):
+
+```bash
+uv run python scripts/diagnose_google_groups.py --env-file scripts/.env.google-groups \
+    working-user@example.com failing-user@example.com
+```
+
+`--customer-id C0xxxxxxx` overrides `GOOGLE_CUSTOMER_ID`, e.g. to test an ID before adding it to the
+secret. Exit codes: `0` every lookup succeeded, `1` any lookup failed, `2` configuration error (missing
+or malformed service account key or customer ID).

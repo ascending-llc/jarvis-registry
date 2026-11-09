@@ -66,12 +66,20 @@ class _StubModelSource:
         self.insert = AsyncMock()
 
 
+def _selection(**overrides) -> SimpleNamespace:
+    """A ModelGatewaySelection stand-in: every model-source slot None unless overridden."""
+    slots = {
+        "defaultWorkflowModelSourceId": None,
+        "embeddingModelSourceId": None,
+        "skillScanModelSourceId": None,
+    }
+    return SimpleNamespace(**{**slots, **overrides})
+
+
 @pytest.fixture
 def selection_service() -> MagicMock:
     mock = MagicMock()
-    mock.get_selection_or_none = AsyncMock(
-        return_value=SimpleNamespace(defaultWorkflowModelSourceId=None, embeddingModelSourceId=None)
-    )
+    mock.get_selection_or_none = AsyncMock(return_value=_selection())
     return mock
 
 
@@ -510,9 +518,7 @@ def _azure_source(sid, *, endpoint="https://acme.openai.azure.com", deployment="
 
 
 def _mark_active(selection_service, sid) -> None:
-    selection_service.get_selection_or_none.return_value = SimpleNamespace(
-        defaultWorkflowModelSourceId=None, embeddingModelSourceId=sid
-    )
+    selection_service.get_selection_or_none.return_value = _selection(embeddingModelSourceId=sid)
 
 
 async def test_update_active_source_rejects_bedrock_model_change(service, selection_service) -> None:
@@ -662,9 +668,7 @@ async def test_update_active_source_allows_base_model_id_only_change(service, se
 async def test_update_rejects_mode_change_when_in_use(service, selection_service) -> None:
     sid = PydanticObjectId(VALID_ID)
     source = SimpleNamespace(id=sid, mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())
-    selection_service.get_selection_or_none.return_value = SimpleNamespace(
-        defaultWorkflowModelSourceId=sid, embeddingModelSourceId=None
-    )
+    selection_service.get_selection_or_none.return_value = _selection(defaultWorkflowModelSourceId=sid)
     with pytest.raises(ValueError, match="in use"):
         await service.update_source(source, {"mode": ModelSourceMode.EMBEDDING}, updated_by="admin")
     source.save.assert_not_called()
@@ -678,34 +682,32 @@ async def test_update_allows_mode_change_when_not_in_use(service, selection_serv
         updatedBy=None,
         save=AsyncMock(),
     )
-    selection_service.get_selection_or_none.return_value = SimpleNamespace(
-        defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
-    )
+    selection_service.get_selection_or_none.return_value = _selection()
     await service.update_source(source, {"mode": ModelSourceMode.EMBEDDING}, updated_by="admin")
     assert source.mode == ModelSourceMode.EMBEDDING
     source.save.assert_awaited_once()
 
 
 async def test_is_in_use_true_when_workflow_default(service, selection_service) -> None:
-    selection_service.get_selection_or_none.return_value = SimpleNamespace(
-        defaultWorkflowModelSourceId=PydanticObjectId(VALID_ID),
-        embeddingModelSourceId=None,
+    selection_service.get_selection_or_none.return_value = _selection(
+        defaultWorkflowModelSourceId=PydanticObjectId(VALID_ID)
     )
     assert await service.is_in_use(VALID_ID) is True
 
 
+async def test_is_in_use_true_when_skill_scan_selected(service, selection_service) -> None:
+    selection_service.get_selection_or_none.return_value = _selection(skillScanModelSourceId=PydanticObjectId(VALID_ID))
+    assert await service.is_in_use(VALID_ID) is True
+
+
 async def test_is_in_use_false_when_unreferenced(service, selection_service) -> None:
-    selection_service.get_selection_or_none.return_value = SimpleNamespace(
-        defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
-    )
+    selection_service.get_selection_or_none.return_value = _selection()
     assert await service.is_in_use(VALID_ID) is False
 
 
 async def test_is_in_use_true_for_active_reindex_target(service, selection_service, monkeypatch) -> None:
     # A pending reindex's target can't be deleted mid-sweep, even before it commits.
-    selection_service.get_selection_or_none.return_value = SimpleNamespace(
-        defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
-    )
+    selection_service.get_selection_or_none.return_value = _selection()
     monkeypatch.setattr(
         crud_module,
         "get_active_embedding_reindex_job",
@@ -715,9 +717,7 @@ async def test_is_in_use_true_for_active_reindex_target(service, selection_servi
 
 
 async def test_is_in_use_true_when_workflow_node_references_source(service, selection_service, monkeypatch) -> None:
-    selection_service.get_selection_or_none.return_value = SimpleNamespace(
-        defaultWorkflowModelSourceId=None, embeddingModelSourceId=None
-    )
+    selection_service.get_selection_or_none.return_value = _selection()
     definition = SimpleNamespace(
         nodes=[WorkflowNode(name="step", executor_key="tool", model_source_id=VALID_ID, step_objective="run")]
     )
@@ -728,10 +728,7 @@ async def test_is_in_use_true_when_workflow_node_references_source(service, sele
 
 async def test_is_in_use_normalizes_workflow_model_source_id(service, selection_service, monkeypatch) -> None:
     source_id = "abcdefabcdefabcdefabcdef"
-    selection_service.get_selection_or_none.return_value = SimpleNamespace(
-        defaultWorkflowModelSourceId=None,
-        embeddingModelSourceId=None,
-    )
+    selection_service.get_selection_or_none.return_value = _selection()
     definition = SimpleNamespace(
         nodes=[
             WorkflowNode(

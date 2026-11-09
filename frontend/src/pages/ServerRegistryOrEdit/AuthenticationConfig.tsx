@@ -5,7 +5,7 @@ import FormFields from '@/components/FormFields';
 import { getBasePath } from '@/config';
 import SERVICES from '@/services';
 import Request from '@/services/request';
-import type { AuthenticationConfig as AuthConfigType } from './types';
+import type { ApiKeyHeaderFormat, AuthenticationConfig as AuthConfigType } from './types';
 
 interface AuthenticationConfigProps {
   config: AuthConfigType;
@@ -19,6 +19,13 @@ interface AuthenticationConfigProps {
 }
 
 const DISCOVER_CANCEL_KEY = 'discoverOAuthEndpoints';
+
+const API_KEY_HINTS: Record<ApiKeyHeaderFormat, string> = {
+  bearer: 'Sent as "Authorization: Bearer <key>".',
+  basic: 'Sent as "Authorization: Basic <key>". The key is base64-encoded if it isn\'t already.',
+  custom:
+    'Sent as "<Custom Header Name>: <key>", exactly as entered. Enter the full header value, including any scheme prefix (e.g. "ApiKey abc123").',
+};
 
 const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
   config,
@@ -96,12 +103,22 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
   };
 
   const handleTypeChange = (type: AuthConfigType['type']) => {
-    const nextConfig = { ...config, type };
+    const nextConfig: AuthConfigType =
+      type === 'apiKey'
+        ? {
+            ...config,
+            type,
+            source: config.source ?? 'admin',
+            authorizationType: config.authorizationType ?? 'bearer',
+          }
+        : { ...config, type };
     onChange(nextConfig);
     if (type === 'oauth' && !isReadOnly && mcpUrl && !config.authorizationUrl && !config.tokenUrl) {
       handleGetDiscover(nextConfig);
     }
   };
+
+  const headerFormat = config.authorizationType || 'bearer';
 
   const cleanPath = path?.replace(/\/+$/, '') || '';
   const serverPath = cleanPath && !cleanPath.startsWith('/') ? `/${cleanPath}` : cleanPath;
@@ -161,7 +178,7 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
                     setIsApiKeyDirty(true);
                     updateConfig({ key: e.target.value });
                   }}
-                  helperText='Leave empty if using OAuth or no authentication'
+                  helperText={API_KEY_HINTS[headerFormat]}
                   error={errors.key}
                 />
               )}
@@ -169,7 +186,7 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
               <div>
                 <FormFields.RadioGroupField
                   label='Header Format'
-                  value={config.authorizationType || 'bearer'}
+                  value={headerFormat}
                   onChange={val => updateConfig({ authorizationType: val })}
                   options={[
                     { label: 'Bearer', value: 'bearer' },

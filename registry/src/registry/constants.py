@@ -11,9 +11,6 @@ MAX_SKILL_FILES_TOTAL_SIZE = 10 * 1024 * 1024
 MAX_SKILL_FILE_COUNT = 200
 MAX_SKILL_FILE_RELATIVE_PATH_LENGTH = 512
 RESERVED_SKILL_FILE_NAMES = frozenset({"skill.md"})
-# SkillFile.source for files whose bytes Registry stores inline in `body` (created in Registry or by GitHub
-# skill sync). Any other source was written by Jarvis Chat, whose file storage Registry cannot read.
-REGISTRY_SKILL_FILE_SOURCE = "registry-inline"
 
 
 class DownstreamOAuthConstants:
@@ -47,3 +44,10 @@ GENERATED_TOKEN_NO_GRANTABLE_SCOPES_DETAIL = (
     'None of your scopes can be granted to a token of type "{purpose}", so no token was generated. '
     "This token type only accepts: {allowed}."
 )
+
+# What repairs a post-commit task the background-task tracker refused at shutdown, logged so a skipped
+# write is traceable: the reconciler heals a sync's pending marker; the orphan sweep removes a skipped
+# delete's vectors; a refresh fetches a new server's skipped capabilities.
+VECTOR_SYNC_SKIPPED_FALLBACK = "the reconciler will heal it"
+VECTOR_DELETE_SKIPPED_FALLBACK = "the orphan sweep will remove its vectors"
+REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK = "refresh the server to fetch its capabilities"

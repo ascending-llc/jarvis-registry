@@ -254,8 +254,15 @@ class LeasedRepository[D: Document]:
         unset: list[str] | None = None,
         release: bool = False,
         session: AsyncClientSession | None = None,
+        extra_filter: dict[str, Any] | None = None,
     ) -> bool:
-        """Apply ``set_fields`` only while this token owns the document; ``release`` clears the lease."""
+        """Apply ``set_fields`` only while this token owns the document; ``release`` clears the lease.
+
+        ``extra_filter`` is merged into the lease fence, so a transition can also require a non-lease
+        condition (e.g. ``{"rerequested": False}``) and still be atomic with the fence. A ``False``
+        return then means either the lease was lost or the extra condition did not hold; callers that
+        must tell them apart follow up with ``assert_owned``.
+        """
         now = datetime.now(UTC)
         f = self._fields
         sets: dict[str, Any] = {**set_fields, f.updated_at: now}
@@ -266,7 +273,12 @@ class LeasedRepository[D: Document]:
         update: dict[str, Any] = {"$set": sets}
         if unset:
             update["$unset"] = dict.fromkeys(unset, "")
-        result = await self._collection.update_one(self._fence(lease), update, session=session)
+        # $and rather than a flat merge so an extra_filter key can never shadow (and thus weaken) a
+        # lease-fence predicate; both clauses always apply.
+        fence = self._fence(lease)
+        if extra_filter:
+            fence = {"$and": [fence, extra_filter]}
+        result = await self._collection.update_one(fence, update, session=session)
         return result.matched_count == 1
 
     async def transition_or_raise(
@@ -277,9 +289,12 @@ class LeasedRepository[D: Document]:
         unset: list[str] | None = None,
         release: bool = False,
         session: AsyncClientSession | None = None,
+        extra_filter: dict[str, Any] | None = None,
     ) -> None:
         """Like ``transition`` but raise ``LeaseLostError`` when nothing matched."""
-        if not await self.transition(lease, set_fields, unset=unset, release=release, session=session):
+        if not await self.transition(
+            lease, set_fields, unset=unset, release=release, session=session, extra_filter=extra_filter
+        ):
             raise LeaseLostError(f"lost lease for {self._spec.document.__name__} {lease.doc_id}")
 
     async def assert_owned(self, lease: Lease) -> None:

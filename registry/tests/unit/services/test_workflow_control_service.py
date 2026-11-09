@@ -343,7 +343,11 @@ async def test_refresh_triggering_auth_context_uses_current_groups_not_persisted
     monkeypatch.setattr(
         wcs.User,
         "get",
-        AsyncMock(return_value=SimpleNamespace(username="alice-current", idOnTheSource="source-user-1")),
+        AsyncMock(
+            return_value=SimpleNamespace(
+                username="alice-current", provider="openid", email=None, idOnTheSource="source-user-1"
+            )
+        ),
     )
     monkeypatch.setattr(
         wcs.ExtendedGroup,
@@ -378,6 +382,53 @@ async def test_refresh_triggering_auth_context_uses_current_groups_not_persisted
 
 
 @pytest.mark.asyncio
+async def test_refresh_triggering_auth_context_google_user_resolves_by_email(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A Chat-created Google user (no idOnTheSource) builds groups from groups keyed by their email."""
+    run = SimpleNamespace(
+        triggering_user_id="666666666666666666666666",
+        triggering_username="ada",
+        triggering_scopes=["workflows-read"],
+        triggering_client_id="client-1",
+    )
+    monkeypatch.setattr(
+        wcs.User,
+        "get",
+        AsyncMock(
+            return_value=SimpleNamespace(username="ada", provider="google", email="ada@example.com", idOnTheSource=None)
+        ),
+    )
+    captured: dict = {}
+
+    def _find(query):
+        captured["query"] = query
+        return SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        name="g",
+                        source="google",
+                        email="jarvis-registry-user@example.com",
+                        idOnTheSource=None,
+                    )
+                ]
+            )
+        )
+
+    monkeypatch.setattr(wcs.settings, "google_allowed_hd", "example.com")
+    monkeypatch.setattr(wcs.ExtendedGroup, "find", _find)
+    monkeypatch.setattr(wcs, "_scope_groups_from_current_groups", MagicMock(return_value=["jarvis-registry-user"]))
+    monkeypatch.setattr(wcs, "map_groups_to_scopes", MagicMock(return_value=["workflows-read"]))
+
+    ctx = await wcs._refresh_triggering_auth_context(run)
+
+    assert captured["query"] == {"memberIds": "ada@example.com"}
+    assert ctx["groups"] == ["jarvis-registry-user"]
+    assert ctx["scopes"] == ["workflows-read"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("source", "source_id", "email", "grants_admin"),
     [
@@ -407,7 +458,11 @@ async def test_workflow_resume_grants_scopes_only_from_trusted_group_identity(
     if source_id == "configured":
         source_id = wcs.settings.jarvis_registry_admin_group_object_id.upper()
     group = SimpleNamespace(name="jarvis-registry-admin", source=source, idOnTheSource=source_id, email=email)
-    monkeypatch.setattr(wcs.User, "get", AsyncMock(return_value=SimpleNamespace(username="user", idOnTheSource="oid")))
+    monkeypatch.setattr(
+        wcs.User,
+        "get",
+        AsyncMock(return_value=SimpleNamespace(username="user", provider="openid", email=None, idOnTheSource="oid")),
+    )
     monkeypatch.setattr(
         wcs.ExtendedGroup, "find", lambda query: SimpleNamespace(to_list=AsyncMock(return_value=[group]))
     )
@@ -516,7 +571,11 @@ async def test_refresh_triggering_auth_context_does_not_reuse_different_approver
     monkeypatch.setattr(
         wcs.User,
         "get",
-        AsyncMock(return_value=SimpleNamespace(username="current-trigger-user", idOnTheSource=None)),
+        AsyncMock(
+            return_value=SimpleNamespace(
+                username="current-trigger-user", provider="openid", email=None, idOnTheSource=None
+            )
+        ),
     )
     effective_scopes = MagicMock(return_value=["must-not-be-used"])
     monkeypatch.setattr(wcs, "effective_scopes_from_context", effective_scopes)

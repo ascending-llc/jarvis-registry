@@ -514,7 +514,7 @@ print(f'Groups {groups} mapped to scopes: {scopes}')
 
 ## Related Documentation
 
-- [Main Authentication Guide](auth.md) - Overview of the authentication architecture
+- [IDP Integration](features/auth-server.md) - Overview of the authentication architecture
 - [Scopes Configuration](../auth_server/scopes.yml) - Detailed scope and permission definitions
 - [Environment Template](../.env.template) - Complete environment configuration template
 - [Agent Implementation](../agents/agent.py) - Reference agent implementation

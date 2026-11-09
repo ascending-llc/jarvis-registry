@@ -11,7 +11,6 @@ ODM Schema:
 - updatedAt: datetime (auto-generated)
 """
 
-import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -20,6 +19,7 @@ from typing import Any
 from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 
+from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
@@ -36,6 +36,11 @@ from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.user_service import UserService
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
+from ..constants import (
+    REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK,
+    VECTOR_DELETE_SKIPPED_FALLBACK,
+    VECTOR_SYNC_SKIPPED_FALLBACK,
+)
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.server_api_schemas import (
     ServerCreateRequest,
@@ -45,7 +50,9 @@ from ..utils.crypto_utils import encrypt_auth_fields
 from ..utils.mcp_headers import build_complete_headers_for_server
 from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title
+from .background_task_tracker import BackgroundTaskTracker, TrackerShutdownError
 from .embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, raise_if_reindex_active
+from .vector_sync_helpers import VectorSyncBusyError, VectorSyncPlan, sync_pending_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -55,32 +62,6 @@ def _extract_config_field(server: ExtendedMCPServer, field: str, default: Any = 
     if not server or not server.config:
         return default
     return server.config.get(field, default)
-
-
-def _build_server_info_for_mcp_client(config: dict[str, Any], tags: list[str]) -> dict[str, Any]:
-    """
-    Build server_info dictionary for MCP client operations.
-
-    Args:
-        config: Server config dictionary
-        tags: Server tags list
-
-    Returns:
-        server_info dictionary with type, tags, headers, and apiKey (if present)
-    """
-    server_info = {
-        "type": config.get("type", "streamable-http"),
-        "tags": tags or [],
-    }
-
-    # Add optional fields if present
-    if "headers" in config:
-        server_info["headers"] = config["headers"]
-
-    if "apiKey" in config:
-        server_info["apiKey"] = config["apiKey"]
-
-    return server_info
 
 
 def _get_current_utc_time() -> datetime:
@@ -196,7 +177,7 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
         config["oauth"] = convert_dict_keys_to_snake(config["oauth"])
     elif data.apiKey is not None:
         # When only apiKey is provided, store it
-        config["apiKey"] = data.apiKey
+        config["apiKey"] = convert_dict_keys_to_snake(data.apiKey)
 
     # Always set enabled to False during registration (regardless of frontend input)
     config["enabled"] = False
@@ -257,6 +238,8 @@ def _update_config_from_request(
 
             # Only save if not None and not empty
             if apikey_update:
+                apikey_update = convert_dict_keys_to_snake(apikey_update)
+                existing_apikey = convert_dict_keys_to_snake(existing_apikey)
                 if isinstance(existing_apikey, dict) and isinstance(apikey_update, dict):
                     existing_apikey.update(apikey_update)
                     config["apiKey"] = existing_apikey
@@ -321,6 +304,8 @@ class ServerServiceV1:
         oauth_service: Any,
         mcp_server_repo: MCPServerRepository,
         embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
+        background_task_tracker: BackgroundTaskTracker | None = None,
+        lease_owner: str = "registry-unowned",
     ):
         """Initialize server service with search index manager."""
         self.mcp_server_repo = mcp_server_repo
@@ -328,6 +313,8 @@ class ServerServiceV1:
         self.token_service = token_service
         self.oauth_service = oauth_service
         self._embedding_maintenance_watcher = embedding_maintenance_watcher
+        self._task_tracker = background_task_tracker
+        self._lease_owner = lease_owner
         logger.info("ServerServiceV1 initialized with search index manager")
 
     async def list_servers(
@@ -465,7 +452,9 @@ class ServerServiceV1:
             Created server document
 
         Raises:
-            ValueError: If path+url combination already exists, server_name already exists, or tags contain duplicates (case-insensitive)
+            ValueError: If path+url combination or server_name already exists,
+                tags contain duplicates (case-insensitive), or the health check fails.
+            Other exceptions propagate; the caller's transaction rolls back the insert.
         """
         # Guard first: block the Mongo write below when a reindex is in progress.
         raise_if_reindex_active(self._embedding_maintenance_watcher)
@@ -532,9 +521,9 @@ class ServerServiceV1:
         await server.insert(session=session)
         logger.info(f"Created server: {server.serverName} (ID: {server.id}, Path: {data.path})")
 
-        # Perform health check and tool retrieval after registration
+        # Perform the required health check within the caller's transaction.
         if data.url and not skip_post_registration_checks:
-            logger.info(f"Performing post-registration health check and tool retrieval for {server.serverName}")
+            logger.info(f"Performing post-registration health check for {server.serverName}")
 
             try:
                 # 1. Health check - REQUIRED
@@ -566,51 +555,13 @@ class ServerServiceV1:
                 # Update server with health check results (root-level field)
                 server.lastConnected = _get_current_utc_time()
 
-                # 2. Retrieve capabilities (but skip tools - they will be fetched on-demand)
-                logger.info(f"Retrieving capabilities for {server.serverName} (skipping tools)")
-
-                # Initialize empty toolFunctions and tools (will be populated on first use)
+                # Tools are populated when the server is enabled.
                 config["toolFunctions"] = {}
                 config["tools"] = ""
 
-                # Try to get capabilities only
-                try:
-                    # Build server_info dict for mcp_client
-                    server_info = _build_server_info_for_mcp_client(config, server.tags)
-
-                    from registry.core.mcp_client import (
-                        get_tools_and_capabilities_from_server,
-                    )
-
-                    # Get tools, resources, prompts, and capabilities (we'll only use capabilities for now)
-                    result = await get_tools_and_capabilities_from_server(
-                        data.url,
-                        server_info,
-                        include_resources=True,
-                        include_prompts=True,
-                    )
-
-                    # Save capabilities if retrieved successfully
-                    if result.capabilities:
-                        config["capabilities"] = json.dumps(result.capabilities)
-                        logger.info(f"Saved capabilities for {server.serverName}: {config['capabilities']}")
-                    else:
-                        config["capabilities"] = "{}"
-                        logger.warning(f"No capabilities retrieved for {server.serverName}, using empty JSON")
-
-                    # Store resources and prompts (empty lists if not retrieved)
-                    config["resources"] = result.resources or []
-                    config["prompts"] = result.prompts or []
-                    logger.info(
-                        f"Saved {len(result.resources or [])} resources and {len(result.prompts or [])} prompts for {server.serverName}"
-                    )
-
-                except Exception as e:
-                    # If capabilities retrieval fails, just use empty capabilities
-                    config["capabilities"] = "{}"
-                    logger.warning(f"Failed to retrieve capabilities for {server.serverName}: {e}")
-
-                logger.info(f"Server {server.serverName} registered successfully. Tools will be fetched on-demand.")
+                logger.info(
+                    f"Server {server.serverName} passed registration checks. Tools will be fetched when enabled."
+                )
 
                 # Update numTools at root level (0 since tools not fetched yet)
                 server.numTools = 0
@@ -622,46 +573,156 @@ class ServerServiceV1:
                 # Re-raise ValueError (our validation errors)
                 raise
             except Exception as e:
-                # Unexpected error during health check or tool retrieval
                 logger.error(
-                    "Unexpected error during post-registration health check and tool "
-                    "retrieval for server %s (ID: %s, Path: %s): %s",
+                    "Unexpected error during post-registration checks for server %s (ID: %s, Path: %s): %s",
                     server.serverName,
                     server.id,
                     server.path,
                     str(e),
                     exc_info=True,
                 )
-                await server.delete(session=session)
+                raise
         return server
 
-    def _schedule_vector_sync(self, server: ExtendedMCPServer, old_hash: str | None) -> None:
-        """Schedule a rebuild for changed content or a metadata sync with a document-count check."""
+    def schedule_registration_capabilities(self, server: ExtendedMCPServer, user_id: str) -> None:
+        """Fetch a committed registration's capabilities in the background, so upstream latency never delays the 201.
+
+        The task works on a copy, because discovery mutates ``config`` while the route serializes the original.
+        """
+        self._spawn_background_task(
+            self.fetch_registration_capabilities(server.model_copy(deep=True), user_id),
+            f"registration-capabilities-server-{server.id}",
+            fallback=REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK,
+        )
+
+    async def fetch_registration_capabilities(self, server: ExtendedMCPServer, user_id: str) -> None:
+        """Best-effort capability discovery for a committed registration; never raises.
+
+        Writes only the fetched fields with a targeted ``$set``: the creator already has the server ID, so a
+        whole-document save could revert a concurrent enable or edit, or re-insert a server deleted mid-fetch.
+        """
+        if not server.config.get("url"):
+            return
+
+        if server.mcp_auth_mode is McpAuthMode.OAUTH:
+            logger.info(
+                "Skipping registration capabilities fetch for OAuth server %s; authorize and refresh to fetch capabilities",
+                server.id,
+            )
+            return
+
+        try:
+            _, resources, prompts, capabilities, error_msg = await self.retrieve_from_server(
+                server,
+                include_capabilities=True,
+                include_resources=True,
+                include_prompts=True,
+                user_id=user_id,
+            )
+            if error_msg is not None:
+                logger.warning("Registration capabilities fetch failed for %s: %s", server.id, error_msg)
+                return
+
+            # The fetch can outlast the create route's reindex check, so check again before writing.
+            raise_if_reindex_active(self._embedding_maintenance_watcher)
+
+            fields: dict[str, Any] = {
+                "config.capabilities": json.dumps(capabilities),
+                "config.resources": resources or [],
+                "config.prompts": prompts or [],
+                # A query update skips the model's save hooks, and the reindex watermark reads updatedAt.
+                "updatedAt": _get_current_utc_time(),
+            }
+            # Discovery sets requiresInit only when the upstream reported it.
+            if "requiresInit" in server.config:
+                fields["config.requiresInit"] = server.config["requiresInit"]
+
+            result = await ExtendedMCPServer.find_one({"_id": server.id}).update({"$set": fields})
+            if result.matched_count == 0:
+                logger.info("Server %s was deleted before its registration capabilities were stored", server.id)
+        except EmbeddingReindexInProgressException:
+            logger.info(
+                "Skipping registration capabilities write for %s during an embedding reindex; %s",
+                server.id,
+                REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK,
+            )
+        except Exception:
+            logger.warning("Registration capabilities fetch failed for %s", server.id, exc_info=True)
+
+    @staticmethod
+    def _mark_vector_sync_pending(server: ExtendedMCPServer) -> datetime:
+        """Stamp the pending marker so it commits atomically with the change, and reset the backoff.
+
+        Returns the marker value to carry in the :class:`VectorSyncPlan` for compare-and-clear. Callers
+        must set this *before* the ``save()``/``insert()`` that persists the change.
+        """
+        marker = datetime.now(UTC)
+        server.vectorSyncPendingAt = marker
+        server.vectorSyncAttempts = 0
+        return marker
+
+    def _spawn_background_task(self, coro: Any, name: str, *, fallback: str = VECTOR_SYNC_SKIPPED_FALLBACK) -> None:
+        """Spawn a post-commit task through the tracker; tolerate shutdown, and an unwired tracker in tests.
+
+        After shutdown the spawn is refused — the Mongo write has already committed, so the request
+        must still succeed. ``fallback`` names what repairs the skipped work: the reconciler heals a
+        sync's marker that stays set, the orphan sweep removes a skipped delete's vectors, and a refresh
+        fetches skipped registration capabilities.
+        """
+        if self._task_tracker is None:
+            coro.close()
+            logger.warning("No background task tracker wired for %s; %s", name, fallback)
+            return
+        try:
+            self._task_tracker.spawn(coro, name=name)
+        except TrackerShutdownError:
+            logger.info("Background task %s not scheduled (shutting down); %s", name, fallback)
+
+    def schedule_vector_sync(self, plan: VectorSyncPlan) -> None:
+        """Run the immediate Weaviate sync for a committed write, tracked and marker-clearing.
+
+        On success the pending marker is compare-and-cleared on its exact value; on failure (a raised
+        exception, including a failed result dict from the shared helper) it is logged at ``warning``
+        and left for the reconciler. Transactional writes call this only after the commit (see the
+        route layer); non-transactional writes call it from the service.
+        """
         if self.mcp_server_repo is None:
             return
-        if server.vectorContentHash != old_hash:
+        server = plan.doc
 
-            async def _sync_task(s: ExtendedMCPServer = server) -> None:
-                try:
-                    result = await self.mcp_server_repo.sync_to_vector_db(s, is_delete=True)
-                    logger.debug("Vector sync result for server %s: %s", s.id, result)
-                except Exception as e:
-                    logger.error("Vector sync failed for server %s: %s", s.id, e, exc_info=True)
+        async def _sync_task() -> None:
+            try:
+                await sync_pending_vectors(
+                    ExtendedMCPServer, self.mcp_server_repo, server.id, owner=self._lease_owner, plan=plan
+                )
+            except VectorSyncBusyError:
+                logger.info("Vector sync already running for %s; pending work remains queued", server.id)
+            except Exception:
+                logger.warning(
+                    "Vector sync failed for server %s; marker left for the reconciler", server.id, exc_info=True
+                )
 
-            asyncio.create_task(_sync_task())
-        else:
-            metadata = server.mutable_metadata()
+        self._spawn_background_task(_sync_task(), f"vector-sync-server-{server.id}")
 
-            async def _metadata_task(s: ExtendedMCPServer = server) -> None:
-                try:
-                    result = await self.mcp_server_repo.sync_entity_metadata(
-                        s, metadata, reload=lambda: ExtendedMCPServer.get(s.id)
-                    )
-                    logger.debug("Vector metadata update result for server %s: %s", s.id, result)
-                except Exception as e:
-                    logger.error("Vector metadata update failed for server %s: %s", s.id, e, exc_info=True)
+    def schedule_vector_delete(self, entity_id: str, name: str | None = None) -> None:
+        """Remove an MCP server's Weaviate docs, tracked, after its Mongo delete commits.
 
-            asyncio.create_task(_metadata_task())
+        Called by the route only once the delete transaction has committed, so a rolled-back delete
+        removes no vectors. A lost, refused or failed delete leaves an orphan, which the orphan sweep
+        removes. Failures are logged at ``warning`` and never surfaced to the request.
+        """
+        if self.mcp_server_repo is None:
+            return
+
+        async def _delete_task() -> None:
+            try:
+                await self.mcp_server_repo.delete_by_server_id(entity_id, name)
+            except Exception:
+                logger.warning("Vector delete failed for server %s", entity_id, exc_info=True)
+
+        self._spawn_background_task(
+            _delete_task(), f"vector-delete-server-{entity_id}", fallback=VECTOR_DELETE_SKIPPED_FALLBACK
+        )
 
     async def update_server(
         self,
@@ -669,7 +730,7 @@ class ServerServiceV1:
         data: ServerUpdateRequest,
         user_id: str | None = None,
         session: AsyncClientSession | None = None,
-    ) -> ExtendedMCPServer:
+    ) -> tuple[ExtendedMCPServer, VectorSyncPlan]:
         """
         Update a server.
 
@@ -679,7 +740,10 @@ class ServerServiceV1:
             user_id: Current user's ID (kept for compatibility but not used)
 
         Returns:
-            Updated server document
+            ``(updated server, vector-sync plan)``. The caller schedules the plan with
+            ``schedule_vector_sync`` **after** its transaction commits, so the immediate task never
+            lands before the marker it must clear (a pre-commit task would re-embed, and a rolled-back
+            update would leave uncleared vectors). The marker is already set in the same ``save()``.
 
         Raises:
             ValueError: If server not found
@@ -695,6 +759,7 @@ class ServerServiceV1:
         # Get current config
         config = server.config or {}
         previous_url = config.get("url")
+        previous_type = config.get("type", "streamable-http")
 
         # Check for duplicate tags if tags are being updated
         if data.tags is not None:
@@ -710,6 +775,8 @@ class ServerServiceV1:
 
         # Update config with MCP-specific values only
         updated_config = _update_config_from_request(config, data, server_name=server.serverName)
+        if updated_config.get("url") != previous_url or updated_config.get("type", "streamable-http") != previous_type:
+            updated_config.pop("requiresInit", None)
 
         # Encrypt sensitive authentication fields if they were updated
         if data.oauth is not None or data.apiKey is not None:
@@ -723,6 +790,8 @@ class ServerServiceV1:
         server.config = updated_config
 
         old_hash = server.vectorContentHash
+        had_pending_sync = server.vectorSyncPendingAt is not None
+        marker = self._mark_vector_sync_pending(server)
         await server.save(session=session)
 
         if updated_config.get("url") != previous_url or server.mcp_auth_mode is not McpAuthMode.OAUTH:
@@ -733,17 +802,21 @@ class ServerServiceV1:
             )
             server.registryOAuth = None
 
-        self._schedule_vector_sync(server, old_hash)
-        return server
+        # Hash is recomputed by the save hook, so compare post-save to pick the full-resync branch.
+        plan = VectorSyncPlan(
+            doc=server, marker=marker, full_resync=had_pending_sync or server.vectorContentHash != old_hash
+        )
+        return server, plan
 
     async def delete_server(
         self,
         server_id: str,
         user_id: str | None = None,
         session: AsyncClientSession | None = None,
-    ) -> None:
+    ) -> str:
         """
-        Delete a server.
+        Delete a server. Returns the server name so the route can schedule the vector delete
+        after the transaction commits.
 
         Args:
             server_id: Server document ID
@@ -765,10 +838,11 @@ class ServerServiceV1:
         if not server:
             raise ValueError("Server not found")
 
-        # Remove from vector DB before deleting from MongoDB (background task)
-        asyncio.create_task(self.mcp_server_repo.delete_by_server_id(server_id, server.serverName))
+        # The vector delete is scheduled by the route after the transaction commits, so a rolled-back
+        # delete (ACL or commit failure) removes no vectors. A lost delete leaves an orphan for the sweep.
         await server.delete(session=session)
         logger.info(f"Deleted server: {server.serverName} (ID: {server.id})")
+        return server.serverName
 
     async def _fetch_and_update_tools(
         self,
@@ -883,15 +957,19 @@ class ServerServiceV1:
                 raise ValueError("Failed to fetch tools from server. Server remains disabled.")
 
         old_hash = server.vectorContentHash
+        had_pending_sync = server.vectorSyncPendingAt is not None
+        marker = self._mark_vector_sync_pending(server)
         await server.save()
         logger.info(f"Toggled server {server.serverName} (ID: {server.id}) enabled to {enabled}")
 
-        # When enabling, always force a full sync — Weaviate may be empty even if the
-        # content hash hasn't changed (e.g. after a collection reset or a previous failed sync).
-        if enabled:
-            self._schedule_vector_sync(server, old_hash=None)
-        else:
-            self._schedule_vector_sync(server, old_hash)
+        # When enabling, always force a full sync — Weaviate may be empty even if the content hash
+        # hasn't changed (e.g. after a collection reset or a previous failed sync). Toggle is not in a
+        # route transaction, so schedule from here.
+        effective_old_hash = None if enabled else old_hash
+        plan = VectorSyncPlan(
+            doc=server, marker=marker, full_resync=had_pending_sync or server.vectorContentHash != effective_old_hash
+        )
+        self.schedule_vector_sync(plan)
         return server
 
     async def get_server_tools(
@@ -948,37 +1026,40 @@ class ServerServiceV1:
         if new_disabled == previous_disabled:
             return server
 
+        had_pending_sync = server.vectorSyncPendingAt is not None
         server.registryDisabledTools = sorted(new_disabled)
+        marker = self._mark_vector_sync_pending(server)
         await server.save()
 
-        self._schedule_tool_enabled_sync(server, new_disabled, previous_disabled)
+        self._schedule_tool_enabled_sync(
+            VectorSyncPlan(doc=server, marker=marker, full_resync=had_pending_sync),
+            new_disabled,
+            previous_disabled,
+        )
         return server
 
     def _schedule_tool_enabled_sync(
         self,
-        server: ExtendedMCPServer,
+        plan: VectorSyncPlan,
         new_disabled: set[str],
         previous_disabled: set[str],
     ) -> None:
-        """Schedule a tool_enabled patch, or a rebuild if the flipped tools' doc count differs.
+        """Queue tool deltas through the same entity lease as all other vector writes.
 
-        Fire-and-forget, matching _schedule_vector_sync: MongoDB is
-        authoritative, so a failed or slow vector patch must not block or fail the caller's write.
+        Existing pending work promotes this plan to a full rebuild. If the marker changes before
+        execution, the coordinator also rebuilds instead of applying obsolete deltas.
         """
-        if self.mcp_server_repo is None:
-            return
-        tool_names = sorted(new_disabled ^ previous_disabled)
-
-        async def _sync_task(s: ExtendedMCPServer = server) -> None:
-            try:
-                result = await self.mcp_server_repo.sync_tools_enabled(
-                    s, tool_names, reload=lambda: ExtendedMCPServer.get(s.id)
-                )
-                logger.debug("tool_enabled metadata sync result for server %s: %s", s.id, result)
-            except Exception as e:
-                logger.error("tool_enabled metadata sync failed for server %s: %s", s.id, e, exc_info=True)
-
-        asyncio.create_task(_sync_task())
+        self.schedule_vector_sync(
+            VectorSyncPlan(
+                doc=plan.doc,
+                marker=plan.marker,
+                full_resync=plan.full_resync,
+                tool_updates=(
+                    (tuple(sorted(new_disabled - previous_disabled)), False),
+                    (tuple(sorted(previous_disabled - new_disabled)), True),
+                ),
+            )
+        )
 
     @track_tool_discovery
     async def retrieve_from_server(
@@ -1079,7 +1160,8 @@ class ServerServiceV1:
                 include_resources=include_resources,
                 include_prompts=include_prompts,
             )
-            server.config["requiresInit"] = bool(result.requires_init)
+            if result.requires_init is not None:
+                server.config["requiresInit"] = result.requires_init
 
             if include_capabilities:
                 if result.tools is None or result.capabilities is None:
@@ -1242,7 +1324,7 @@ class ServerServiceV1:
 
             # Drop disabled-tool names that no longer exist downstream. When this prunes anything,
             # the tool set itself changed, so page_content (hence vectorContentHash) changed too, and
-            # the _schedule_vector_sync call below already takes the full-rebuild branch.
+            # the vector-sync plan built below already takes the full-rebuild branch.
             known_tool_names = {td.get("mcpToolName", key) for key, td in tool_functions.items()}
             server.registryDisabledTools = [t for t in (server.registryDisabledTools or []) if t in known_tool_names]
 
@@ -1263,8 +1345,13 @@ class ServerServiceV1:
 
         server.config = config
         old_hash = server.vectorContentHash
+        had_pending_sync = server.vectorSyncPendingAt is not None
+        marker = self._mark_vector_sync_pending(server)
         await server.save()
-        self._schedule_vector_sync(server, old_hash)
+        plan = VectorSyncPlan(
+            doc=server, marker=marker, full_resync=had_pending_sync or server.vectorContentHash != old_hash
+        )
+        self.schedule_vector_sync(plan)
 
         # Return capabilities refresh result
         return {

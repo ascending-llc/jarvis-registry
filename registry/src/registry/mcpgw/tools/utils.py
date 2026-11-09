@@ -16,7 +16,9 @@ from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
 from mcp.shared.exceptions import UrlElicitationRequiredError
 from mcp.shared.session import RequestId
+from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import (
+    LATEST_PROTOCOL_VERSION,
     CallToolResult,
     CancelledNotification,
     ElicitCompleteNotification,
@@ -43,6 +45,9 @@ from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
 
+# The MCP revision that introduced URL mode elicitation (SEP-1036), with the `url` capability and -32042.
+_URL_ELICITATION_MIN_PROTOCOL_VERSION = "2025-11-25"
+
 
 def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContext]) -> UserContextDict | None:
     try:
@@ -57,8 +62,49 @@ def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContex
     return user_context
 
 
+def get_client_params(ctx: Context[ServerSession, McpAppContext]) -> InitializeRequestParams | None:
+    """Load this request's cached client ``initialize`` params, at most one Redis GET per request.
+
+    In stateless mode the client params no longer live on ``ctx.session``; they are cached in Redis by
+    ``ClientInfoCaptureMiddleware`` and read back here. The result is memoized on
+    ``request.state.mcp_client_params``. Returns ``None`` when the client sent no cacheable
+    ``initialize`` (missing/empty key) or the entry is absent — callers then fall back to a plain-text
+    URL and ``UNRECOGNIZED`` branding, exactly as before the gateway went stateless.
+    """
+    request = ctx.request_context.request
+    if request is None:
+        return None
+    try:
+        return request.state.mcp_client_params
+    except AttributeError:
+        pass
+
+    params: InitializeRequestParams | None = None
+    user_context = _extract_authenticated_user_context(ctx)
+    if user_context is not None:
+        key = ctx.request_context.lifespan_context.client_info_store.key_for(user_context)
+        if key is not None:
+            params = ctx.request_context.lifespan_context.client_info_store.load(key)
+
+    request.state.mcp_client_params = params
+    return params
+
+
+def _negotiated_protocol_version(requested: str | int) -> str:
+    """Return the protocol version the session speaks, given the version the client requested.
+
+    Mirrors the SDK's negotiation in ``ServerSession._received_request``: a supported version is echoed
+    back, anything else (including future or unknown versions) resolves to ``LATEST_PROTOCOL_VERSION``.
+    """
+    return requested if requested in SUPPORTED_PROTOCOL_VERSIONS else LATEST_PROTOCOL_VERSION
+
+
 def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
-    """Return whether an MCP client supports URL-mode elicitation, based only on its declared capability.
+    """Return whether an MCP client supports URL-mode elicitation.
+
+    URL mode requires both the declared `url` elicitation capability and a negotiated protocol version
+    that defines it. Codex (`codex-mcp-client`) declares `url` on 2025-06-18 and does not handle -32042,
+    so it gets the fallback `CallToolResult`.
 
     There are deliberately no per-client overrides keyed on clientInfo.name. Claude Code CLI and Claude
     Desktop's Chat mode both identify as "claude-code" (observed October 2026), but Claude Desktop hangs
@@ -68,21 +114,17 @@ def _support_url_elicitation(client_params: InitializeRequestParams | None) -> b
         return False
 
     elicitation = client_params.capabilities.elicitation
-    if elicitation is None:
+    if elicitation is None or elicitation.url is None:
         return False
 
-    return elicitation.url is not None
+    # Safe as a string comparison: the negotiated value is always a YYYY-MM-DD revision from the SDK's list.
+    return _negotiated_protocol_version(client_params.protocolVersion) >= _URL_ELICITATION_MIN_PROTOCOL_VERSION
 
 
 def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata:
-    """Build consent state metadata, including client branding and notification support."""
-    notify_elicitation_complete = _support_url_elicitation(client_params)
-
+    """Build consent state metadata carrying the client branding for deep-link-back."""
     if client_params is None:
-        return {
-            "client_branding": ClientBranding.UNRECOGNIZED,
-            "notify_elicitation_complete": notify_elicitation_complete,
-        }
+        return {"client_branding": ClientBranding.UNRECOGNIZED}
 
     name = client_params.clientInfo.name.strip().lower()
     if name == "visual studio code":
@@ -92,10 +134,7 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     else:
         branding = ClientBranding.UNRECOGNIZED
 
-    return {
-        "client_branding": branding,
-        "notify_elicitation_complete": notify_elicitation_complete,
-    }
+    return {"client_branding": branding}
 
 
 def _build_url_elicitation_result(
@@ -109,12 +148,12 @@ def _build_url_elicitation_result(
     """Build a URL elicitation response or fallback result for unsupported clients."""
     if elicitation_id is None:
         elicitation_id = parse_elicitation_id(auth_url)
-    if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
-        message = llm_template.format("provided URL")
+    client_params = get_client_params(ctx)
+    llm_message = llm_template.format(f"URL `{auth_url}`")
+    if elicitation_id is not None and _support_url_elicitation(client_params):
         logger.info("sending back the URL mode elicitation error response with ID %s.", elicitation_id)
-        ctx.request_context.lifespan_context.session_store.append(elicitation_id, ctx.session)
         raise UrlElicitationRequiredError(
-            message=message,
+            message=llm_message,
             elicitations=[
                 ElicitRequestURLParams(
                     elicitationId=elicitation_id,
@@ -124,9 +163,25 @@ def _build_url_elicitation_result(
             ],
         )
 
-    logger.info("Client doesn't support URL mode elicitation. Sending back a tool call result with the URL.")
+    if client_params is None:
+        logger.info(
+            "Not using URL mode elicitation (no cached client params, elicitation ID found: %s). "
+            "Sending back a tool call result with the URL.",
+            elicitation_id is not None,
+        )
+    else:
+        elicitation = client_params.capabilities.elicitation
+        logger.info(
+            "Not using URL mode elicitation (client %r %r, requested protocol version %r, declared url: %s, "
+            "elicitation ID found: %s). Sending back a tool call result with the URL.",
+            client_params.clientInfo.name,
+            client_params.clientInfo.version,
+            client_params.protocolVersion,
+            elicitation is not None and elicitation.url is not None,
+            elicitation_id is not None,
+        )
     return CallToolResult(
-        content=[TextContent(type="text", text=llm_template.format(f"URL `{auth_url}`"))],
+        content=[TextContent(type="text", text=llm_message)],
         isError=True,
     )
 
@@ -164,6 +219,10 @@ async def forward_notification(session: ServerSession, obj: dict, *, related_req
 
         return
 
+    # The notification models keep extra fields, so a leftover "jsonrpc" key would be passed twice when the SDK
+    # wraps the notification in a JSONRPCNotification. Every downstream SSE notification carries it.
+    obj = {key: value for key, value in obj.items() if key != "jsonrpc"}
+
     try:
         match obj["method"]:
             case NotificationMethod.CANCELLED:
@@ -196,7 +255,7 @@ async def forward_notification(session: ServerSession, obj: dict, *, related_req
     try:
         await session.send_notification(notification, related_request_id)
     except Exception:
-        logger.error(f"encountered error while scheduling notification-forwarding to client: {str}")
+        logger.exception("encountered error while scheduling notification-forwarding to client")
 
         return
 

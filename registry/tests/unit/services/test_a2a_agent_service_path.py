@@ -19,6 +19,8 @@ def agent_document() -> SimpleNamespace:
         wellKnown=None,
         updatedAt=None,
         vectorContentHash="old-hash",
+        vectorSyncPendingAt=None,
+        vectorSyncAttempts=0,
     )
     agent.save = AsyncMock(return_value=None)
     return agent
@@ -107,7 +109,7 @@ async def test_update_agent_normalizes_path_before_saving(monkeypatch, agent_doc
     monkeypatch.setattr(A2AAgent, "find_one", find_one)
 
     request = AgentUpdateRequest(path="/Team A/CRM Agent v2")
-    result = await service.update_agent(str(agent_document.id), request)
+    result, _plan = await service.update_agent(str(agent_document.id), request)
 
     assert result.path == "team-a-crm-agent-v2"
     find_one.assert_awaited_once_with(

@@ -1,10 +1,5 @@
 import { Dialog, Transition } from '@headlessui/react';
-import {
-  ArrowPathIcon,
-  CheckCircleIcon,
-  ExclamationTriangleIcon,
-  XMarkIcon,
-} from '@heroicons/react/24/outline';
+import { ArrowPathIcon, CheckCircleIcon, ExclamationTriangleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -76,8 +71,7 @@ const _applyPollResults = (rows: ReauthRows, results: PollResult[]): ReauthRows 
   return nextRows;
 };
 
-const _hasUnresolvedRows = (rows: ReauthRows): boolean =>
-  Object.values(rows).some(row => row.state !== 'resolved');
+const _hasUnresolvedRows = (rows: ReauthRows): boolean => Object.values(rows).some(row => row.state !== 'resolved');
 
 const _getPollableRows = (rows: ReauthRows): ReauthRow[] =>
   Object.values(rows).filter(row => row.state !== 'resolved' && row.state !== 'refreshing');

@@ -10,11 +10,11 @@ from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepos
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from ...core.mcp_client import MCPClientService
-from ...core.session_store import SessionStore
 from ...services.access_control_service import ACLService
 from ...services.federation.a2a_client_registry import A2AClientRegistry
 from ...services.search.service import SearchService
 from ...services.server_service import ServerServiceV1
+from .client_info_store import ClientInfoStore
 
 
 @dataclass
@@ -29,7 +29,7 @@ class McpAppContext:
     search_service: SearchService
     mcp_client_service: MCPClientService
     oauth_service: MCPOAuthService
-    session_store: SessionStore
+    client_info_store: ClientInfoStore
     redis_client: Redis
     jwt_signing_config: JwtSigningConfig
     acl_service: ACLService

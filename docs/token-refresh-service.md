@@ -431,10 +431,10 @@ The token refresher service provides these internal methods:
 
 ## Related Documentation
 
-- [Authentication Guide](auth.md) - OAuth setup and configuration
+- [IDP Integration](features/auth-server.md) - Identity provider setup and authentication
 - [JWT Token Vending](jwt-token-vending.md) - Token generation and management
 - [AI Coding Assistants Setup](ai-coding-assistants-setup.md) - Client configuration
-- [Configuration Reference](configuration.md) - Environment variables and settings
+- [Production Configuration Reference](production-configuration.md) - Environment variables and settings
 
 ## Support
 

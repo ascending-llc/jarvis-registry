@@ -2,13 +2,11 @@ import logging
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
-from itsdangerous import URLSafeTimedSerializer
 
 from registry_pkgs.core.scopes import map_groups_to_scopes
 from registry_pkgs.types import UserContextDict
 
 from ..constants import MANAGED_AGENT_AUTH_SOURCE
-from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +37,6 @@ def get_current_user(request: Request) -> UserContextDict:
 # FastAPI extracts the `user` attribute (typed as UserContextDict) of the current request and pass it to the parameter.
 # Since it's Python 3.12, we use the new type statement instead of typing.TypeAlias
 type CurrentUser = Annotated[UserContextDict, Depends(get_current_user)]
-
-
-def build_signer():
-    return URLSafeTimedSerializer(settings.secret_key)
 
 
 def effective_scopes_from_context(user_context: UserContextDict) -> list[str]:

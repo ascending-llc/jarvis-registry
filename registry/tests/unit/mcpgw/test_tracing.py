@@ -50,12 +50,12 @@ def _make_ctx():
             "auth_source": "jwt_auth",
         }
     )
+    # Seed the per-request memo so get_client_params() returns these params without a Redis GET.
+    state.mcp_client_params = SimpleNamespace(clientInfo=Implementation(name="Claude Code", version="1.2.3"))
     request_context = SimpleNamespace(request=SimpleNamespace(state=state))
-    client_params = SimpleNamespace(clientInfo=Implementation(name="Claude Code", version="1.2.3"))
     return SimpleNamespace(
         request_context=request_context,
         request_id="request-123",
-        session=SimpleNamespace(client_params=client_params),
     )
 
 
@@ -380,9 +380,9 @@ async def test_tool_trace_omits_unavailable_caller_attributes() -> None:
             "auth_source": None,
         }
     )
+    # No cached client params: an unauthenticated caller (user_id=None) yields no client-info attrs.
     ctx = SimpleNamespace(
         request_context=SimpleNamespace(request=SimpleNamespace(state=state)),
-        session=SimpleNamespace(client_params=SimpleNamespace(clientInfo=SimpleNamespace(name="", version=None))),
     )
 
     @trace_tool_execution

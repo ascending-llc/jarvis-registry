@@ -296,7 +296,7 @@ async def test_provision_populates_chat_compatible_fields(users: MemoryUsers, pr
     else:
         assert stored["provider"] == "google"
         assert stored["googleId"] == "subject-1"
-        assert stored["idOnTheSource"] == "ada@example.com"
+        assert "idOnTheSource" not in stored
         assert "openidId" not in stored and "openidIssuer" not in stored
 
 
@@ -463,6 +463,36 @@ async def test_google_email_link_fills_only_google_identity(users: MemoryUsers) 
     result = await IdentityService().resolve_or_provision(identity(provider="google", object_id=None))
     assert result.id == existing["_id"]
     assert users.documents == [{**existing, "googleId": "subject-1"}]
+
+
+async def test_google_login_blocked_when_current_email_held_by_another_user(users: MemoryUsers) -> None:
+    # Google groups key off users.email; a stale email could sync another user's groups.
+    existing = user(provider="google", googleId="subject-1", email="old@example.com")
+    owner = user(provider="google", email="ada@example.com")
+    users.documents = [existing, owner]
+    with pytest.raises(IdentityConflictError, match="google_email_not_persisted"):
+        await IdentityService().resolve_or_provision(identity(provider="google"))
+    assert users.documents[0]["email"] == "old@example.com"
+
+
+async def test_google_login_blocked_when_email_lost_update_race(users: MemoryUsers) -> None:
+    existing = user(provider="google", googleId="subject-1", email="old@example.com")
+    owner = user(provider="google", email="ada@example.com")
+    users.documents = [existing]
+    users.before_update = lambda: users.documents.append(owner)
+    with pytest.raises(IdentityConflictError, match="google_email_not_persisted"):
+        await IdentityService().resolve_or_provision(identity(provider="google"))
+    assert users.documents[0]["email"] == "old@example.com"
+
+
+async def test_google_login_updates_changed_email_when_free(users: MemoryUsers) -> None:
+    # Guard must not over-block: a legitimate Google email change with no conflict persists and signs in.
+    existing = user(provider="google", googleId="subject-1", email="old@example.com")
+    users.documents = [existing]
+    result = await IdentityService().resolve_or_provision(identity(provider="google"))
+    assert result.id == existing["_id"]
+    assert result.email == "ada@example.com"
+    assert users.documents[0]["email"] == "ada@example.com"
 
 
 async def test_google_subject_cannot_match_local_provider(users: MemoryUsers) -> None:

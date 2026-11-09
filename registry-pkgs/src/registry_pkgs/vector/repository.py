@@ -312,65 +312,6 @@ class Repository[T: VectorStorable]:
             logger.error(f"Delete by filter failed: {e}", exc_info=True)
             raise RepositoryError("Failed to delete by filter") from e
 
-    def batch_update_by_filter(self, filters: Any, update_data: dict[str, Any], limit: int = 1000) -> int:
-        """
-        Batch update instances matching filter conditions.
-
-        Intelligently detects if only metadata fields are being updated
-        to avoid unnecessary re-vectorization.
-
-        Args:
-            filters: Filter conditions
-            update_data: Dictionary of fields to update
-            limit: Maximum number of instances to update
-
-        Returns:
-            Number of updated instances
-        """
-        try:
-            # Check if only safe metadata fields are being updated
-            # Safe metadata fields that can be updated without re-vectorization
-            safe_fields = {"scope", "enabled", "tags"}
-            update_fields = set(update_data.keys())
-
-            if update_fields.issubset(safe_fields):
-                # Metadata-only batch update (fast path)
-                logger.info(f"Batch metadata-only update for {self.model_class.__name__}")
-
-                if hasattr(self.adapter, "batch_update_properties"):
-                    # Get matching instances to extract IDs
-                    instances = self.filter(filters=filters, limit=limit)
-                    if not instances:
-                        logger.info("No documents found matching filters")
-                        return 0
-
-                    doc_ids = [str(inst.id) for inst in instances]
-
-                    return self._write_adapter.batch_update_properties(
-                        doc_ids=doc_ids, properties=update_data, collection_name=self.collection
-                    )
-
-            # Full update with re-vectorization (slow path)
-            logger.info(f"Batch full update with re-vectorization for {self.model_class.__name__}")
-            instances = self.filter(filters=filters, limit=limit)
-
-            if not instances:
-                logger.info("No documents found matching filters")
-                return 0
-
-            # Apply updates to instances
-            for inst in instances:
-                for key, value in update_data.items():
-                    setattr(inst, key, value)
-
-            # Bulk save updated instances
-            result = self.bulk_save(instances)
-            return result.successful
-
-        except Exception as e:
-            logger.error(f"Batch update by filter failed: {e}", exc_info=True)
-            return 0
-
     # ========================================
     # Search Operations
     # ========================================
@@ -506,7 +447,6 @@ class Repository[T: VectorStorable]:
     adelete = async_wrapper(delete)
     abulk_save = async_wrapper(bulk_save)
     adelete_by_filter = async_wrapper(delete_by_filter)
-    abatch_update_by_filter = async_wrapper(batch_update_by_filter)
     asearch = async_wrapper(search)
     afilter = async_wrapper(filter)
     asearch_with_rerank = async_wrapper(search_with_rerank)

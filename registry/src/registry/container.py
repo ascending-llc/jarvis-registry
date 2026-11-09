@@ -34,8 +34,7 @@ from registry_pkgs.workflows.schedule_repository import WorkflowScheduleReposito
 from .auth.dependencies import effective_scopes_from_context
 from .core.a2a_proxy import A2AProxyClientRegistry
 from .core.mcp_client import MCPClientService
-from .core.session_store import SessionStore
-from .health.service import HealthMonitoringService
+from .mcpgw.core.client_info_store import ClientInfoStore
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.background_task_tracker import BackgroundTaskTracker
@@ -73,6 +72,8 @@ from .services.skill_sync_oauth_service import SkillSyncOAuthService
 from .services.skill_sync_service import SkillSyncService
 from .services.skill_sync_source_crud_service import SkillSyncSourceCrudService
 from .services.skill_sync_token_service import SkillSyncTokenService
+from .services.vector_orphan_sweeper import VectorOrphanSweeper
+from .services.vector_sync_reconciler import VectorSyncReconciler
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_run_launcher import WorkflowRunLauncher
 from .services.workflow_schedule_service import WorkflowScheduleService
@@ -124,8 +125,13 @@ class RegistryContainer:
         return MCPClientService(redis_client=self.redis_client)
 
     @cached_property
-    def session_store(self) -> SessionStore:
-        return SessionStore()
+    def client_info_store(self) -> ClientInfoStore:
+        """Redis cache of MCP clients' `initialize` params, for the stateless gateway."""
+        return ClientInfoStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.redis_key_prefix,
+            jwt_config=self.settings.jwt_token_config,
+        )
 
     @cached_property
     def vector_service(self) -> VectorSearchService:
@@ -159,10 +165,6 @@ class RegistryContainer:
         )
 
     @cached_property
-    def health_service(self) -> HealthMonitoringService:
-        return HealthMonitoringService(server_service=self.server_service, mcp_client_service=self.mcp_client_service)
-
-    @cached_property
     def federation_service(self) -> FederationService:
         return FederationService()
 
@@ -182,7 +184,9 @@ class RegistryContainer:
 
     @cached_property
     def cloud_identity_client(self) -> CloudIdentityGroupsClient:
-        return CloudIdentityGroupsClient(self.settings.google_service_account_key_json)
+        return CloudIdentityGroupsClient(
+            self.settings.google_service_account_key_json, customer_id=self.settings.google_customer_id
+        )
 
     @cached_property
     def google_group_directory_client(self) -> GoogleGroupDirectoryClient:
@@ -296,6 +300,8 @@ class RegistryContainer:
             oauth_service=self.oauth_service,
             mcp_server_repo=self.mcp_server_repo,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            background_task_tracker=self.background_task_tracker,
+            lease_owner=self.lease_owner,
         )
 
     @cached_property
@@ -305,6 +311,8 @@ class RegistryContainer:
             jwt_config=self.settings.jwt_signing_config,
             azure_client_cache=self.azure_foundry_client_cache,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            background_task_tracker=self.background_task_tracker,
+            lease_owner=self.lease_owner,
         )
 
     @cached_property
@@ -433,7 +441,23 @@ class RegistryContainer:
 
     @cached_property
     def mcp_proxy_client(self) -> httpx.AsyncClient:
-        """Shared httpx client for MCP proxy connection pooling."""
+        """Shared httpx client for the direct-proxy `/proxy/{server}` routes and skill-sync's GitHub/OAuth calls."""
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=60.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+
+    @cached_property
+    def mcpgw_proxy_client(self) -> httpx.AsyncClient:
+        """Long-lived httpx client for the stateless MCP gateway's downstream proxy calls.
+
+        In stateless mode the FastMCP lifespan is entered on every request, so this must live on the
+        container (not be opened per-lifespan-entry) to keep keep-alive pooling across requests.
+
+        Deliberately separate from `mcp_proxy_client` despite identical settings, so the gateway's traffic
+        and the direct-proxy/skill-sync traffic keep isolated pools and can't starve each other.
+        """
         return httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, read=60.0),
             follow_redirects=True,
@@ -533,6 +557,24 @@ class RegistryContainer:
         )
 
     @cached_property
+    def vector_sync_reconciler(self) -> VectorSyncReconciler:
+        return VectorSyncReconciler(
+            mcp_server_repo=self.mcp_server_repo,
+            a2a_agent_repo=self.a2a_agent_repo,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            lease_owner=self.lease_owner,
+        )
+
+    @cached_property
+    def vector_orphan_sweeper(self) -> VectorOrphanSweeper:
+        return VectorOrphanSweeper(
+            mcp_server_repo=self.mcp_server_repo,
+            a2a_agent_repo=self.a2a_agent_repo,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            lease_owner=self.lease_owner,
+        )
+
+    @cached_property
     def skill_sync_token_service(self) -> SkillSyncTokenService:
         return SkillSyncTokenService(self.mcp_proxy_client)
 
@@ -587,9 +629,6 @@ class RegistryContainer:
             logger.warning("Vector search service not initialized - index update skipped")
             logger.info("App will continue without vector search features")
 
-        logger.info("Initializing health monitoring service...")
-        await self.health_service.initialize()
-
         logger.info("Initializing MCP service (OAuth flow state storage)...")
         await self.mcp_service.initialize()
 
@@ -612,6 +651,12 @@ class RegistryContainer:
         logger.info("Starting embedding reindex job runner...")
         await self.embedding_reindex_job_runner.start()
 
+        logger.info("Starting vector sync reconciler...")
+        await self.vector_sync_reconciler.start()
+
+        logger.info("Starting vector orphan sweeper...")
+        await self.vector_orphan_sweeper.start()
+
         logger.info("Starting lease reaper...")
         await self.lease_reaper.start()
 
@@ -621,11 +666,13 @@ class RegistryContainer:
         await self.lease_reaper.shutdown()
         await self.skill_sync_job_runner.shutdown()
         await self.embedding_reindex_job_runner.shutdown()
+        await self.vector_sync_reconciler.shutdown()
+        await self.vector_orphan_sweeper.shutdown()
         await self.embedding_maintenance_watcher.shutdown()
         # Cancel and finalize all tracked background runs (replaces the cluster-wide shutdown sweep).
         await self.background_task_tracker.shutdown()
-        await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
+        await self.mcpgw_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()
         await self.a2a_client_registry.close()
         self.azure_model_credential.close()

@@ -9,6 +9,8 @@ MODEL_GATEWAY_SELECTION_ID = PydanticObjectId("000000000000000000000001")
 class ModelGatewaySelection(Document):
     defaultWorkflowModelSourceId: PydanticObjectId | None = None
     embeddingModelSourceId: PydanticObjectId | None = None
+    # Model used for skill security scanning
+    skillScanModelSourceId: PydanticObjectId | None = None
     # Active Weaviate generation (None == legacy base collections). Written with embeddingModelSourceId
     # only by commit_embedding_generation, so every pod follows the (model, generation) pair atomically.
     embeddingCollectionGeneration: str | None = None

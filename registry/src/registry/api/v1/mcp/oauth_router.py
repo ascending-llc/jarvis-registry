@@ -9,7 +9,6 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from bson import ObjectId
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from mcp.server.session import ServerSession
 from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
@@ -43,7 +42,6 @@ from ....auth.dependencies import CurrentUser
 from ....constants import DownstreamOAuthConstants
 from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
-from ....core.session_store import SessionStore
 from ....deps import (
     get_consent_store,
     get_mcp_service,
@@ -51,7 +49,6 @@ from ....deps import (
     get_pending_consent_store,
     get_redis_client,
     get_server_service,
-    get_session_store,
     get_token_service,
 )
 from ....schemas.common_api_schemas import (
@@ -203,41 +200,21 @@ async def initiate_oauth_flow(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
-async def _notify_elicitation_complete(
-    meta: dict[str, Any] | None,
-    session_store: SessionStore,
-) -> ClientBranding | None:
-    """Best-effort ``elicitation/complete`` notification for mcpgw-initiated flows.
+def _client_branding_from_meta(meta: dict[str, Any] | None) -> ClientBranding | None:
+    """Return the client branding carried in a flow's ``meta`` bag, used to deep-link the user back to
+    their AI app after an out-of-band OAuth/consent step.
 
-    ``meta`` is the ``{elicitation_id, client_branding, notify_elicitation_complete}`` bag carried
-    by whichever flow raised the URL mode elicitation (OAuth-expired flow state's ``meta``, or the
-    server-consent flow's pending-consent payload) — shared so both callers get identical
-    notify/deep-link behavior instead of duplicating it.
+    ``meta`` is the ``{elicitation_id, client_branding, ...}`` bag carried by whichever flow raised the
+    URL mode elicitation (OAuth-expired flow state's ``meta``, or the server-consent flow's
+    pending-consent payload). Returns None when ``meta`` is falsy or lacks ``elicitation_id``.
 
-    Returns the client branding carried in ``meta`` (used to deep-link the user back to their AI
-    app), or None. Never raises.
+    The stateless gateway holds no live session, so no ``elicitation/complete`` notification is sent;
+    the client retries the tool call by hand after authorizing. A pre-deploy ``meta`` that still carries
+    the dropped notification-flag key is accepted and ignored.
     """
     if not meta or "elicitation_id" not in meta:
         return None
-
-    client_branding: ClientBranding | None = meta.get("client_branding")
-    try:
-        elicitation_id = meta["elicitation_id"]
-        if not meta["notify_elicitation_complete"]:
-            # Client connected via the dynamic catch-all route; no live session to notify.
-            logger.info("MCP client connected via dynamic catch-all route. Not sending elicitation/complete.")
-            return client_branding
-
-        session: ServerSession | None = session_store.pop(elicitation_id)
-        if session is None:
-            logger.warning(f"could not find session object for elicitation_id {elicitation_id}")
-            return client_branding
-
-        await session.send_elicit_complete(elicitation_id)
-        logger.info(f"scheduled elicitation/complete notification for elicitation_id {elicitation_id}")
-    except Exception:
-        logger.exception("failed to send elicitation/complete notification to client.")
-    return client_branding
+    return meta.get("client_branding")
 
 
 def _build_downstream_client_redirect(
@@ -356,7 +333,6 @@ async def oauth_callback(
     state: str | None = Query(None, description="State parameter (format: flow_id##security_token)"),
     error: str | None = Query(None, description="OAuth error message"),
     mcp_service: MCPService = Depends(get_mcp_service),
-    session_store: SessionStore = Depends(get_session_store),
     redis_client: Redis = Depends(get_redis_client),
     store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
 ) -> RedirectResponse:
@@ -437,7 +413,7 @@ async def oauth_callback(
         flow = await flow_manager.get_flow(flow_id)
 
         # 5. Reconnect/notification are best effort; device-state finalization is required.
-        client_branding = await _notify_elicitation_complete(state_dict.get("meta"), session_store)
+        client_branding = _client_branding_from_meta(state_dict.get("meta"))
 
         _mark_completed_device_flow_approved(flow, store)
 

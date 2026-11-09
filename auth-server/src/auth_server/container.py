@@ -72,7 +72,9 @@ class AuthContainer:
 
     @cached_property
     def cloud_identity_client(self) -> CloudIdentityGroupsClient:
-        return CloudIdentityGroupsClient(self._settings.google_service_account_key_json)
+        return CloudIdentityGroupsClient(
+            self._settings.google_service_account_key_json, customer_id=self._settings.google_customer_id
+        )
 
     @cache
     def get_provider_config(self, provider: AllowedProvider) -> AuthProviderConfig | EntraConfig:

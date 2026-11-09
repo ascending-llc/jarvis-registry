@@ -183,8 +183,8 @@ class ACLService:
         """Return MongoDB Group _id values for every group the user belongs to.
 
         Raises on DB error — callers are responsible for deciding whether to
-        propagate or absorb the failure. Returns [] for local users with no
-        idOnTheSource.
+        propagate or absorb the failure. Returns [] for users with no
+        group-member key.
         """
         try:
             return await resolve_group_ids_for_user(user_id, session=session)

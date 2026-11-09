@@ -1,7 +1,10 @@
+import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mcp.types import CallToolResult, TextContent
 
 from registry.mcpgw.tools.search import _run_search
 from registry_pkgs.core.exceptions import InternalServerException
@@ -46,7 +49,9 @@ async def test_run_search_success_returns_results() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock):
+async def _call_tool_e2e(
+    tool_name: str, search_entities: AsyncMock, arguments: dict[str, Any] | None = None
+) -> CallToolResult:
     import mcp.types as types
     from mcp.server.fastmcp import FastMCP
     from mcp.server.lowlevel.server import request_ctx
@@ -77,7 +82,7 @@ async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock):
             method="tools/call",
             params=types.CallToolRequestParams(
                 name=tool_name,
-                arguments={"query": "x", "top_n": 3, "type_list": ["tool"]},
+                arguments=arguments if arguments is not None else {"query": "x", "top_n": 3},
             ),
         )
         return (await handler(req)).root
@@ -86,10 +91,124 @@ async def _call_tool_e2e(tool_name: str, search_entities: AsyncMock):
 
 
 @pytest.mark.asyncio
-async def test_discover_tool_reports_generic_error_for_other_failures():
+@pytest.mark.parametrize("tool_name", ["discover_servers", "discover_agents"])
+async def test_discover_tool_reports_generic_error_for_other_failures(tool_name: str) -> None:
     search_entities = AsyncMock(side_effect=RuntimeError("boom"))
 
-    result = await _call_tool_e2e("discover_servers", search_entities)
+    result = await _call_tool_e2e(tool_name, search_entities)
 
     assert result.isError is True
     assert "entity discovery failed" in result.content[0].text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "other_tool"),
+    [("discover_servers", "discover_agents"), ("discover_agents", "discover_servers")],
+)
+async def test_discover_tool_empty_results_are_not_errors(tool_name: str, other_tool: str) -> None:
+    search_entities = AsyncMock(return_value={"results": []})
+
+    result = await _call_tool_e2e(tool_name, search_entities)
+
+    assert result.isError is False
+    assert result.structuredContent == {"result": []}
+    assert len(result.content) == 1
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    for guidance in (
+        "No matching",
+        "synonyms",
+        "broader term",
+        "query=''",
+        "top_n=20",
+        other_tool,
+        "after these fallbacks",
+    ):
+        assert guidance in content.text
+    search_entities.assert_awaited_once()
+
+
+async def _empty_hint(tool_name: str, arguments: dict[str, Any]) -> str:
+    result = await _call_tool_e2e(tool_name, AsyncMock(return_value={"results": []}), arguments)
+    assert result.isError is False
+    assert result.structuredContent == {"result": []}
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    return content.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["discover_servers", "discover_agents"])
+async def test_discover_tool_empty_survey_does_not_suggest_repeating_it(tool_name: str) -> None:
+    text = await _empty_hint(tool_name, {"query": "", "top_n": 20})
+
+    assert "query=''" not in text
+    assert "synonyms" not in text
+    assert "after these fallbacks" in text
+
+
+@pytest.mark.asyncio
+async def test_discover_tool_empty_query_with_small_top_n_still_suggests_survey() -> None:
+    text = await _empty_hint("discover_agents", {"query": "", "top_n": 3})
+
+    assert "query='' and top_n=20" in text
+    assert "synonyms" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("type_list", "unsearched", "searched"),
+    [
+        (["tool"], ["'resource'", "'prompt'"], ["'tool'"]),
+        (["tool", "resource"], ["'prompt'"], ["'tool'", "'resource'"]),
+    ],
+)
+async def test_discover_servers_empty_hint_names_unsearched_entity_types(
+    type_list: list[str], unsearched: list[str], searched: list[str]
+) -> None:
+    text = await _empty_hint("discover_servers", {"query": "release notes feed", "type_list": type_list})
+
+    assert "type_list" in text
+    for entity_type in unsearched:
+        assert entity_type in text
+    for entity_type in searched:
+        assert entity_type not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("discover_servers", {"query": "x", "type_list": ["tool", "resource", "prompt"]}),
+        ("discover_agents", {"query": "x"}),
+    ],
+)
+async def test_discover_tool_empty_hint_omits_type_list_when_nothing_is_unsearched(
+    tool_name: str, arguments: dict[str, Any]
+) -> None:
+    text = await _empty_hint(tool_name, arguments)
+
+    assert "type_list" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "entity"),
+    [
+        ("discover_servers", {"entity_type": "tool", "tool_name": "list_issues", "server_id": "server-1"}),
+        ("discover_agents", {"entity_type": "agent", "agent_id": "agent-1", "description": "Analyze issues"}),
+    ],
+)
+async def test_discover_tool_preserves_nonempty_structured_results(tool_name: str, entity: dict[str, str]) -> None:
+    search_entities = AsyncMock(return_value={"results": [entity]})
+
+    result = await _call_tool_e2e(tool_name, search_entities)
+
+    assert result.isError is False
+    assert result.structuredContent == {"result": [entity]}
+    assert len(result.content) == 1
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert json.loads(content.text) == entity
+    search_entities.assert_awaited_once()

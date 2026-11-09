@@ -15,6 +15,7 @@ from registry_pkgs.models import PrincipalType, SkillSource
 from registry_pkgs.models.enums import RoleBits, SkillSyncSkillErrorCode, SkillSyncSkillErrorPhase
 from registry_pkgs.models.extended_access_role import RegistryAccessRole, RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
+from registry_pkgs.models.extended_skill_file import REGISTRY_SKILL_FILE_SOURCE
 from registry_pkgs.models.skill_sync_job import (
     SkillSyncApplySummary,
     SkillSyncFullRequestSnapshot,
@@ -24,7 +25,6 @@ from registry_pkgs.models.skill_sync_job import (
 from registry_pkgs.models.skill_sync_source import SkillSyncSource, SkillSyncSourceStats
 from registry_pkgs.oauth.user_service import UserService
 
-from ..constants import REGISTRY_SKILL_FILE_SOURCE
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
 from ..utils.skill_files import guess_mime_type, is_text_content

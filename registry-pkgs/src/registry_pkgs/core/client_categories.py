@@ -3,8 +3,8 @@
 Two kinds of category exist:
 - Prefixed collections (MCP_DCR, A2A_DCR): dynamically DCR-registered, client_id stored in Redis
   under a fixed prefix (see auth-server's oauth_flow.py).
-- Single-instance client_ids (REGISTRY_APP, HEADLESS_AGENT, USER_GENERATED, REGISTRY_CLI): always
-  special-cased, never stored in or queried from Redis.
+- Single-instance client_ids (REGISTRY_APP, HEADLESS_AGENT, USER_GENERATED, REGISTRY_CLI,
+  CLAUDE_DESKTOP): always special-cased, never stored in or queried from Redis.
 
 Resolution order in ``resolve_client_category`` matters: exact-match single-instance ids are checked
 before prefix matches, and an unrecognized client_id resolves to UNKNOWN with an *empty* ceiling
@@ -20,6 +20,8 @@ from .downstream_oauth import DEVICE_CODE_GRANT_TYPE
 MCP_CLIENT_ID_PREFIX = "mcp-client-"
 A2A_CLIENT_ID_PREFIX = "a2a-client-"
 REGISTRY_CLI_CLIENT_ID = "jarvis-registry-cli"
+# Permanent identifier embedded in enterprise device policies.
+CLAUDE_DESKTOP_CLIENT_ID = "jarvis-registry-claude-desktop"
 AUTHORIZATION_CODE_GRANT_TYPE = "authorization_code"
 REFRESH_TOKEN_GRANT_TYPE = "refresh_token"
 
@@ -33,6 +35,7 @@ class ClientCategory(StrEnum):
     HEADLESS_AGENT = "headless_agent"
     USER_GENERATED = "user_generated"
     REGISTRY_CLI = "registry_cli"
+    CLAUDE_DESKTOP = "claude_desktop"
     UNKNOWN = "unknown"
 
 
@@ -81,6 +84,16 @@ _CLIENT_POLICIES: dict[ClientCategory, ClientPolicy] = {
         token_endpoint_auth_method="none",
         default_scope="skills-read",
     ),
+    # Valid consent is shared across devices for this public client. Accept the native-app
+    # trust model: a local process can reuse that consent with a live IdP session, but tokens
+    # remain capped at mcp-proxy-ops. Do not force consent on every authorization.
+    ClientCategory.CLAUDE_DESKTOP: ClientPolicy(
+        category=ClientCategory.CLAUDE_DESKTOP,
+        allowed_grant_types=(AUTHORIZATION_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE),
+        max_scopes=frozenset({"mcp-proxy-ops"}),
+        token_endpoint_auth_method="none",
+        default_scope="mcp-proxy-ops",
+    ),
     ClientCategory.HEADLESS_AGENT: ClientPolicy(
         category=ClientCategory.HEADLESS_AGENT,
         allowed_grant_types=(),
@@ -104,6 +117,8 @@ def resolve_client_category(client_id: str, config: JwtTokenConfig) -> ClientCat
         return ClientCategory.USER_GENERATED
     if client_id == REGISTRY_CLI_CLIENT_ID:
         return ClientCategory.REGISTRY_CLI
+    if client_id == CLAUDE_DESKTOP_CLIENT_ID:
+        return ClientCategory.CLAUDE_DESKTOP
     if client_id.startswith(MCP_CLIENT_ID_PREFIX):
         return ClientCategory.MCP_DCR
     if client_id.startswith(A2A_CLIENT_ID_PREFIX):

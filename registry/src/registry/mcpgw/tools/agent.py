@@ -37,6 +37,7 @@ from .utils import (
     _build_url_elicitation_result,
     _extract_authenticated_user_context,
     _get_state_metadata,
+    get_client_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ async def execute_agent_impl(
     ):
         nonce = secrets.token_urlsafe(32)
         elicitation_id = str(uuid.uuid4())
-        state_metadata = _get_state_metadata(ctx.session.client_params)
+        state_metadata = _get_state_metadata(get_client_params(ctx))
         lifespan.pending_consent_store.save(
             nonce,
             {
@@ -269,9 +270,9 @@ async def execute_agent_impl(
         auth_url = f"{settings.registry_client_url}/consent/agent?nonce={nonce}"
         agent_name = agent.config.title if agent.config else agent.card.name
         template = (
-            f"In order to call the '{agent_name}' A2A agent, the user must explicitly consent in a browser window. "
-            "Please direct the client to open the {} in a browser window, grant consent, and come back to retry "
-            "the same request again."
+            f"Calling the '{agent_name}' A2A agent requires the user's explicit consent in a browser. "
+            "Show the user this {} so they can open it and approve, then retry the same request once they "
+            "confirm they are done."
         )
         human_message = (
             f"Jarvis Registry needs your explicit consent before this application can call the '{agent_name}' "
@@ -341,63 +342,24 @@ def get_tools() -> list[tuple[str, Callable]]:
             ),
         ],
     ) -> CallToolResult:
-        """Invoke an A2A agent by its agent_id and receive its response.
-
-        Use this after discover_agents to delegate a complex task to the selected agent.
-        The agent runs autonomously and returns its final result.
+        """Invoke an A2A agent selected through discover_agents, using its exact agent_id.
+        The agent runs autonomously on the delegated task and returns its final result.
 
         Error handling:
-        - Invalid or unknown agent_id → isError=True with a retry hint; call discover_agents again.
-        - Agent invocation failure → isError=True with the error message; consider retrying
-          or trying a different agent.
+        - Invalid or unknown agent_id: isError=True with a rediscovery hint; call discover_agents again.
+        - Agent invocation failure: isError=True with the error message; consider retrying or another agent.
 
-        Workflow:
-        1. discover_agents(query='…') → pick agent_id from results
-        2. execute_agent(agent_id='…', message={parts: [...]})
-        3. Return the agent's response to the user.
+        Build message.parts from the selected agent's requirements:
+        - kind="text": natural-language task instructions or context.
+        - kind="data": structured JSON parameters. Follow field names and types from the agent's description or schema.
+        - kind="file": a URI reference (preferred for large content) or inline base64 for small payloads.
+        Combine parts as needed. Lead with data or files when relevant, adding text for instructions or context.
 
-        Message parts (combinable, include as many as the agent needs based on the requirements and functions of the agent):
+        Example:
+        execute_agent(agent_id="<discovered agent_id>", message={"parts": [{"kind": "text", "text": "Summarize Q1 sales trends."}]})
 
-        kind="text":
-            Natural language instruction or context. Use for task descriptions,
-            prompts, and any free-text input. Always valid.
-
-        kind="data":
-            Structured JSON parameters. Use when your input is structured data such as:
-            named fields, key-value pairs, or objects, rather than a natural-language
-            description. If the agent's description (from discover_agents) explicitly
-            defines expected fields or a parameter schema, use those field names and
-            types exactly as described.
-
-        kind="file":
-            A file by URI reference (preferred for large content) or inline
-            base64 (small payloads only).
-
-        Parts combine freely in a single message. Lead with DataPart or FilePart when
-        relevant, and add a TextPart for any additional instruction or context.
-
-        Examples:
-
-        Text only (default):
-            message={"parts": [{"kind": "text", "text": "Summarize Q1 sales trends."}]}
-
-        Structured data with a text instruction:
-            message={"parts": [
-              {"kind": "data", "data": {"month": "2024-01", "region": "us-east"}},
-              {"kind": "text", "text": "Summarize spending by category."}
-            ]}
-
-        File by URI with a text instruction:
-            message={"parts": [
-              {"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/report.json"}},
-              {"kind": "text", "text": "Analyze this report and highlight anomalies."}
-            ]}
-
-        File inline base64 (small files only):
-            message={"parts": [{"kind": "file", "file": {"name": "data.csv", "mimeType": "text/csv", "bytes": "<base64>"}}]}
-
-        Targeting a specific skill — include the skill name in a TextPart:
-            message={"parts": [{"kind": "text", "text": "Use the code-review skill to review this PR: <url>"}]}"""
+        To target a specific discovered skill, include its skill name in a TextPart.
+        Return the agent's response to the user."""
         return await execute_agent_impl(agent_id, message, ctx)
 
     return [("execute_agent", execute_agent)]

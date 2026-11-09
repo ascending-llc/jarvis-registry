@@ -61,18 +61,19 @@ After sync, admins can:
 
 The sharing model is exactly the same as other resources in Jarvis Registry:
 
-- MCP resources follow the same controls as [MCP Server Registry share panel](mcp-registry.md#sharing-a-server)
-- Agent resources follow the same controls as [A2A Agent Registry share panel](a2a-registry.md#sharing-an-agent)
+- MCP resources follow the same controls as [MCP Server Registry share panel](mcp-gateway-registry.md#sharing-a-server)
+- Agent resources follow the same controls as [A2A Agent Registry share panel](a2a-gateway-registry.md#sharing-an-agent)
 
 Security enforcement (authentication, RBAC, ACL) remains consistent for federated and local resources. See [Security Control Design](../design/security-design.md).
 
 ## Next Steps
 
 - [Workflow Orchestration](workflow-orchestration.md) — How AgentCore agents participate in multi-agent, MCP, and skill workflows
-- [MCP Server Registry](mcp-registry.md) — Sharing and lifecycle for MCP resources
-- [A2A Agent Registry](a2a-registry.md) — Sharing and lifecycle for agent resources
+- [MCP Server Registry](mcp-gateway-registry.md) — Sharing and lifecycle for MCP resources
+- [A2A Agent Registry](a2a-gateway-registry.md) — Sharing and lifecycle for agent resources
 - [Registry Endpoint](registry-endpoint.md) — How clients discover and invoke federated resources
-- [Federation Guide](../design/federation.md) — Detailed federation architecture and workflow
+- [AgentCore Federation API](../design/federation-api.md) — Configuration and synchronization API reference
+- [Federation Guide](../design/federation.md) — Registry-to-registry federation architecture
 
 **Product page & demo**
 

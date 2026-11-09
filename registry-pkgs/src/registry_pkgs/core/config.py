@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from functools import cached_property
 from typing import Any, Self
 from urllib.parse import urlparse
@@ -18,6 +19,10 @@ INTERACTIVE_TOKEN_CLIENT_ID = "user-generated"
 # Set to "1" to stop every JarvisEnvSettings subclass from reading a `.env` file. The test suites set it
 # (registry_pkgs.testing.fixtures.disable_dotenv_loading) so a developer's local `.env` never leaks in.
 DISABLE_DOTENV_ENV_VAR = "JARVIS_DISABLE_DOTENV"
+
+# Google Workspace customer ID, e.g. C046psxkn. It is interpolated into a Cloud Identity CEL query, so anything
+# else must be rejected.
+GOOGLE_CUSTOMER_ID_PATTERN = re.compile(r"C[0-9A-Za-z]+")
 
 
 class ChunkingConfig(BaseModel):
@@ -306,6 +311,8 @@ class JarvisBaseSettings(MongoSettings):
     # Raw JSON key content for the Workspace Groups Reader service account
     google_service_account_key_json: str = ""
     google_allowed_hd: str = ""
+    # Workspace customer ID (starts with "C"); limits group lookups to groups owned by that Workspace.
+    google_customer_id: str = ""
 
     # ==================== Model Validation ====================
     # Skip model validation if set to "disabled". Disabling should only happen for import checks in CI.
@@ -322,6 +329,15 @@ class JarvisBaseSettings(MongoSettings):
                 f"headless_agent_client_id must not use the reserved interactive client ID "
                 f"'{INTERACTIVE_TOKEN_CLIENT_ID}'"
             )
+        return normalized
+
+    @field_validator("google_customer_id")
+    @classmethod
+    def _validate_google_customer_id(cls, value: str) -> str:
+        # Not gated on x_jarvis_registry_import_checks: unset is valid, and a malformed value would alter the query.
+        normalized = value.strip()
+        if normalized and not GOOGLE_CUSTOMER_ID_PATTERN.fullmatch(normalized):
+            raise ValueError("GOOGLE_CUSTOMER_ID must start with 'C' followed by letters or digits, e.g. C046psxkn")
         return normalized
 
     @model_validator(mode="after")

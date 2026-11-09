@@ -16,8 +16,6 @@ This document provides a comprehensive overview of all API endpoints available i
   - [Get Server Details](#get-server-details)
   - [Get Service Tools](#get-service-tools)
   - [Refresh Service](#refresh-service)
-- [WebSocket Endpoints](#websocket-endpoints)
-  - [Health Status Updates](#health-status-updates)
 
 ## Authentication
 
@@ -244,67 +242,6 @@ curl -X POST http://localhost:7860/api/refresh/weather \
   -b cookies.txt
 ```
 
-## WebSocket Endpoints
-
-### Health Status Updates
-
-Provides real-time updates on the health status of all registered services.
-
-**URL:** `/ws/health_status`
-**Protocol:** WebSocket
-**Authentication:** Not required (public endpoint)
-**Response:** JSON messages with health status updates
-
-**Example using websocat:**
-
-First, install websocat:
-
-```bash
-sudo wget -qO /usr/local/bin/websocat https://github.com/vi/websocat/releases/latest/download/websocat.x86_64-unknown-linux-musl
-sudo chmod +x /usr/local/bin/websocat
-```
-
-Then connect to the WebSocket endpoint:
-
-```bash
-websocat ws://localhost:7860/ws/health_status
-```
-
-This will display the JSON messages with health status updates in real-time in your terminal.
-
-**Example using Python:**
-
-```python
-# Python example using websockets library
-import asyncio
-import json
-import websockets
-
-async def health_status_monitor():
-    uri = "ws://localhost:7860/ws/health_status"
-    async with websockets.connect(uri) as websocket:
-        print("WebSocket connection established")
-
-        while True:
-            try:
-                # Receive health status updates
-                message = await websocket.recv()
-                data = json.loads(message)
-
-                print("Health status update received:")
-                for path, info in data.items():
-                    print(f"Service {path}: {info['status']}")
-                    print(f"Last checked: {info['last_checked_iso']}")
-                    print(f"Number of tools: {info['num_tools']}")
-                    print("---")
-            except websockets.exceptions.ConnectionClosed:
-                print("Connection closed")
-                break
-
-# Run the async function
-asyncio.run(health_status_monitor())
-```
-
 ## Authentication Flow
 
 1. **First Step**: Call the `/login` endpoint with valid credentials to obtain a session cookie:
@@ -335,4 +272,3 @@ asyncio.run(health_status_monitor())
 * `GET /api/server_details/{service_path}`: Get full details for a service (requires authentication).
 * `GET /api/tools/{service_path}`: Get the discovered tool list for a service (requires authentication).
 * `POST /api/refresh/{service_path}`: Manually trigger a health check/tool update (requires authentication).
-* `WebSocket /ws/health_status`: Real-time connection for receiving server health status updates.

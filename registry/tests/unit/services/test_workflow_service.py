@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -404,6 +405,55 @@ async def test_validate_executor_refs_finds_bad_key_in_nested_step(monkeypatch: 
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "Unknown executor key: 'missing'"
+
+
+@pytest.mark.asyncio
+async def test_validate_executor_refs_warns_on_model_override_for_direct_a2a_node(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A modelSourceId on a direct A2A node is kept but warned about; MCP and pool nodes stay silent."""
+    service = WorkflowService(acl_service=AsyncMock())
+    _patch_executor_ref_queries(monkeypatch, mcp_names={"github"}, a2a_paths={"deep-intel", "researcher"})
+    monkeypatch.setattr(WorkflowService, "_validate_model_source_refs", AsyncMock())
+    source_id = str(PydanticObjectId())
+    parallel = service._convert_api_node_to_model(
+        WorkflowNodeInput(
+            name="par",
+            nodeType="parallel",
+            children=[
+                WorkflowNodeInput(
+                    name="a2a-node",
+                    nodeType="step",
+                    executorKey="/deep-intel",
+                    modelSourceId=source_id,
+                    stepObjective="run a2a",
+                ),
+                WorkflowNodeInput(
+                    name="mcp-node",
+                    nodeType="step",
+                    executorKey="github",
+                    modelSourceId=source_id,
+                    stepObjective="run mcp",
+                ),
+                WorkflowNodeInput(
+                    name="pool-node",
+                    nodeType="step",
+                    a2aPool=["researcher"],
+                    modelSourceId=source_id,
+                    stepObjective="run pool",
+                ),
+            ],
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger=workflow_service.__name__):
+        await service._validate_executor_refs([parallel])
+
+    assert "'a2a-node'" in caplog.text and "ignored" in caplog.text
+    assert "mcp-node" not in caplog.text
+    assert "pool-node" not in caplog.text
+    # The override is kept on the node, not stripped.
+    assert parallel.children[0].model_source_id == source_id
 
 
 def test_convert_step_node_preserves_executor_key():

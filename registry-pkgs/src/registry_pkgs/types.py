@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class UserContextDict(TypedDict):
@@ -39,3 +39,7 @@ class UserContextDict(TypedDict):
 
     # "jwt_auth" if the JWT token comes from the Authorization header. "jwt_session_auth" if from browser cookie.
     auth_source: str
+
+    # The "jti" (JWT ID) claim of the token, when present. Used to key the MCP gateway's client-info cache
+    # for shared client ids (where several apps present the same client_id but carry distinct jti values).
+    jti: NotRequired[str | None]

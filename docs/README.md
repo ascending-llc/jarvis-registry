@@ -37,7 +37,7 @@ mkdocs build
 - `index.md` - Main landing page (generated from README.md)
 - `installation.md` - Complete installation guide
 - `quick-start.md` - Quick start tutorial
-- `auth.md` - Authentication and OAuth setup
+- [IDP Integration](features/auth-server.md) - Identity provider setup and authentication
 - `cognito.md` - Amazon Cognito configuration
 - `scopes.md` - Access control and permissions
 - `registry_api.md` - API reference

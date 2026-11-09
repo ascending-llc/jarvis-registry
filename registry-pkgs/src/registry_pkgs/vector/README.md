@@ -31,9 +31,13 @@ The service layer captures the hash before `.save()` and compares after to decid
 
 ```python
 old_hash = server.vectorContentHash
+marker = _mark_vector_sync_pending(server)   # pending marker commits with the change
 await server.save()                          # @before_event recomputes hash
-_schedule_vector_sync(server, old_hash)      # routes based on change
+schedule_vector_sync(VectorSyncPlan(doc=server, marker=marker, full_resync=server.vectorContentHash != old_hash))
 ```
+
+`schedule_vector_sync` runs `sync_pending_vectors` (`registry/services/vector_sync_helpers.py`)
+under a per-entity lease; the reconciler retries any entity whose marker is still set.
 
 **Hash changed** → `sync_to_vector_db(is_delete=True)` — full Weaviate rebuild.
 
@@ -50,9 +54,9 @@ Both paths use strict metadata lookups: a failed read propagates instead of bein
 zero docs and triggering embedding. The lookup is capped at 10,000 docs, so if the expected
 count reaches that limit, the sync warns and patches the returned docs without comparing counts. Zero expected and found docs is a no-op.
 
-Metadata syncs are not serialized. Overlapping rebuilds of the same entity converge, because
-doc ids are deterministic per collection, entity and position, so a re-insert replaces docs
-instead of duplicating them.
+Service-driven syncs of one entity are serialized by its per-entity lease. Overlapping rebuilds
+from other callers (scripts) still converge, because doc ids are deterministic per collection,
+entity and position, so a re-insert replaces docs instead of duplicating them.
 
 The new `sync_*` methods return an `error` if the adapter reports fewer successful metadata
 updates than the number of matched docs, while `metadata_updated` retains the successful count.

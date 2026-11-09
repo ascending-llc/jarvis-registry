@@ -21,8 +21,6 @@ from registry_pkgs.testing.fixtures import setup_registry_test_env
 
 setup_registry_test_env()
 
-from registry.health.service import HealthMonitoringService
-
 # Import our application and services
 from registry.main import app
 from registry.services.search.base import VectorSearchService
@@ -71,7 +69,6 @@ def test_settings(temp_dir: Path) -> Settings:
     test_settings = Settings(
         secret_key="test-secret-key-for-testing-only",
         container_registry_dir=temp_dir / "app" / "registry",
-        health_check_interval_seconds=60,  # Longer for tests
         local_embeddings_model_name="all-MiniLM-L6-v2",
         local_embeddings_model_dimensions=384,
     )
@@ -93,7 +90,6 @@ def mock_settings(test_settings: Settings, monkeypatch):
     monkeypatch.setattr("registry.services.server_service.settings", test_settings)
     # embedded_service doesn't have settings attribute, skip it
     # monkeypatch.setattr("registry.services.search.embedded_service.settings", test_settings)
-    monkeypatch.setattr("registry.health.service.settings", test_settings)
     return test_settings
 
 
@@ -122,13 +118,6 @@ def mock_faiss_service() -> Mock:
     mock_service.search = AsyncMock(return_value=[])
     mock_service.save_data = AsyncMock()
     return mock_service
-
-
-@pytest.fixture
-def health_service() -> HealthMonitoringService:
-    """Create a fresh health monitoring service for testing."""
-    service = HealthMonitoringService(server_service=Mock(), mcp_client_service=Mock())
-    return service
 
 
 def create_test_jwt_token(
@@ -239,8 +228,6 @@ def test_client(mock_auth_middleware) -> TestClient:
         mcp_service=Mock(),
         status_resolver=Mock(),
         search_service=Mock(),
-        session_store=Mock(),
-        health_service=Mock(),
     )
     client = TestClient(app)
     yield client
@@ -332,20 +319,6 @@ def mock_authenticated_user():
     app.dependency_overrides.clear()
 
 
-@pytest.fixture
-def mock_websocket():
-    """Create a mock WebSocket for testing."""
-    mock_ws = Mock()
-    mock_ws.client = Mock()
-    mock_ws.client.host = "127.0.0.1"
-    mock_ws.client.port = 12345
-    mock_ws.accept = AsyncMock()
-    mock_ws.send_text = AsyncMock()
-    mock_ws.receive_text = AsyncMock()
-    mock_ws.close = AsyncMock()
-    return mock_ws
-
-
 @pytest.fixture(autouse=True)
 def mock_telemetry_metrics(monkeypatch):
     """
@@ -377,12 +350,6 @@ def mock_telemetry_metrics(monkeypatch):
 def cleanup_services():
     """Automatically cleanup services after each test."""
     yield
-    services_to_cleanup = []
-
-    container = getattr(getattr(app.state, "container", None), "health_service", None)
-    if container is not None:
-        services_to_cleanup.append(container)
-
     server_services_to_cleanup = []
     container_server_service = getattr(getattr(app.state, "container", None), "server_service", None)
     if container_server_service is not None:
@@ -395,14 +362,6 @@ def cleanup_services():
         service_state = getattr(service, "service_state", None)
         if hasattr(service_state, "clear") and not isinstance(service_state, AsyncMock):
             service_state.clear()
-
-    for service in services_to_cleanup:
-        if hasattr(service, "server_health_status"):
-            service.server_health_status.clear()
-        if hasattr(service, "server_last_check_time"):
-            service.server_last_check_time.clear()
-        if hasattr(service, "active_connections"):
-            service.active_connections.clear()
 
 
 # Test markers for different test categories

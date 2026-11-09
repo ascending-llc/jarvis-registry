@@ -58,7 +58,7 @@ uv run poe hooks-run
 - Merge conflicts
 - Private keys (security)
 - Bandit security scanning
-- Tartufo credential scanning
+- gelato credential scanning (configured in `tartufo.toml`)
 
 After a `git pull`, the post-merge hooks run `uv sync` if `uv.lock` changed and `npm ci` in `frontend/` if `frontend/package-lock.json` changed.
 
@@ -70,7 +70,7 @@ If you need to commit without running hooks (not recommended):
 git commit --no-verify -m "message"
 ```
 
-Note: CI re-runs the ruff lint and format checks and the tests, so those issues still block the PR. CI does not run tartufo, so a skipped credential scan is not caught later. CI's bandit step only uploads a report and never fails the build, because its findings are mostly false positives.
+Note: CI re-runs the ruff lint and format checks and the tests, so those issues still block the PR. CI does not run gelato, so a skipped credential scan is not caught later. CI's bandit step only uploads a report and never fails the build, because its findings are mostly false positives.
 
 ## How the Double Defense Works
 

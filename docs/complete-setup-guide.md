@@ -684,7 +684,7 @@ uv run python agents/agent.py --agent-name agent-test-agent-m2m --mcp-registry-u
 
 ### Configure OAuth Credentials
 
-Before generating tokens, you need to configure your OAuth credentials. Follow the [Configuration Reference](configuration.md) for detailed parameter documentation.
+Before generating tokens, you need to configure your OAuth credentials. Follow the [Configuration Reference](production-configuration.md) for detailed parameter documentation.
 
 ```bash
 cd ~/workspace/mcp-gateway-registry
@@ -714,7 +714,7 @@ cp credentials-provider/agentcore-auth/.env.example credentials-provider/agentco
 
 ### Start Automatic Token Refresh Service
 
-For production use, start the token refresh service to automatically maintain valid tokens. See the [Authentication Guide](auth.md) for detailed information about token lifecycle management.
+For production use, start the token refresh service to automatically maintain valid tokens. See the [Token Refresh Service](token-refresh-service.md) for detailed information about token lifecycle management.
 
 ```bash
 # Start the background token refresh service
@@ -1148,7 +1148,7 @@ curl -f https://mcpgateway.mycorp.com/realms/mcp-gateway
 
 ### Documentation Resources
 
-- [Authentication Guide](auth.md) - Deep dive into authentication options
+- [IDP Integration](features/auth-server.md) - Authentication flows and identity provider setup
 - [Keycloak Advanced Configuration](keycloak-integration.md) - Enterprise features
 - [API Reference](registry_api.md) - Programmatic registry management
 - [Dynamic Tool Discovery](dynamic-tool-discovery.md) - AI agent capabilities
