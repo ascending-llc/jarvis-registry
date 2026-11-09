@@ -112,35 +112,6 @@ def test_bedrock_config_digest_uses_identity_fields_only():
     assert plan.scan_llm_info(relabelled).configDigest == base.configDigest  # metadata only
 
 
-def _first_party_source(config: AnthropicModelConfig | OpenAIModelConfig, source_id: PydanticObjectId) -> ModelSource:
-    src = ModelSource.model_construct(displayName="scan", mode=ModelSourceMode.CHAT, providerConfig=config)
-    src.id = source_id
-    return src
-
-
-@pytest.mark.parametrize("config_cls", [AnthropicModelConfig, OpenAIModelConfig])
-def test_scan_llm_info_first_party(config_cls):
-    sid = PydanticObjectId()
-
-    def _info(**overrides):
-        fields = {"modelId": "model-x", "baseUrl": None, "apiKeyEncrypted": "iv:key"} | overrides
-        return plan.scan_llm_info(_first_party_source(config_cls(**fields), sid))
-
-    base = _info()
-    assert (
-        base is not None
-        and base.modelId == "model-x"
-        and base.providerType == config_cls.model_fields["providerType"].default
-    )
-    fp = plan.compose_tool_fingerprint("s", base)
-
-    # A different host (another compatible vendor) or model is a different serving deployment.
-    assert plan.compose_tool_fingerprint("s", _info(baseUrl="https://proxy.example.com")) != fp
-    assert plan.compose_tool_fingerprint("s", _info(modelId="model-y")) != fp
-    # Rotating only the secret api key must NOT change the fingerprint.
-    assert plan.compose_tool_fingerprint("s", _info(apiKeyEncrypted="iv:rotated")) == fp
-
-
 @pytest.mark.asyncio
 async def test_resolve_prefers_scan_source(monkeypatch):
     scan_id, default_id = PydanticObjectId(), PydanticObjectId()
@@ -184,6 +155,47 @@ async def test_resolve_none_when_not_chat_mode(monkeypatch):
         plan.ModelSource, "get", AsyncMock(return_value=_bedrock_source(sid, mode=ModelSourceMode.EMBEDDING))
     )
     assert await plan.resolve_skill_scan_model_source() is None
+
+
+def _first_party_source(source_id: PydanticObjectId, config: AnthropicModelConfig | OpenAIModelConfig) -> ModelSource:
+    src = ModelSource.model_construct(
+        displayName="scan", mode=ModelSourceMode.CHAT, providerConfig=config, deletedAt=None
+    )
+    src.id = source_id
+    return src
+
+
+_FIRST_PARTY_CONFIGS = [
+    AnthropicModelConfig(modelId="claude-sonnet-4-5", apiKeyEncrypted="iv:key"),
+    OpenAIModelConfig(modelId="gpt-4.1", baseUrl="https://api.kimi.com/coding/v1", apiKeyEncrypted="iv:key"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config", _FIRST_PARTY_CONFIGS)
+async def test_resolve_none_for_first_party_scan_source(monkeypatch, config):
+    """Skill content must not leave the client's cloud account (AS-1980 D7/D16)."""
+    sid = PydanticObjectId()
+    selection = type("Sel", (), {"skillScanModelSourceId": sid, "defaultWorkflowModelSourceId": None})()
+    monkeypatch.setattr(plan, "get_model_gateway_selection", AsyncMock(return_value=selection))
+    monkeypatch.setattr(plan.ModelSource, "get", AsyncMock(return_value=_first_party_source(sid, config)))
+    assert await plan.resolve_skill_scan_model_source() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config", _FIRST_PARTY_CONFIGS)
+async def test_resolve_none_for_first_party_workflow_default(monkeypatch, config):
+    """A first-party workflow default is fine for workflows but never falls through to scanning."""
+    default_id = PydanticObjectId()
+    selection = type("Sel", (), {"skillScanModelSourceId": None, "defaultWorkflowModelSourceId": default_id})()
+    monkeypatch.setattr(plan, "get_model_gateway_selection", AsyncMock(return_value=selection))
+    monkeypatch.setattr(plan.ModelSource, "get", AsyncMock(return_value=_first_party_source(default_id, config)))
+    assert await plan.resolve_skill_scan_model_source() is None
+
+
+@pytest.mark.parametrize("config", _FIRST_PARTY_CONFIGS)
+def test_scan_llm_info_none_for_first_party(config):
+    assert plan.scan_llm_info(_first_party_source(PydanticObjectId(), config)) is None
 
 
 @pytest.mark.asyncio

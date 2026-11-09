@@ -49,9 +49,9 @@ class ScanFinding(BaseModel):
 class ScanLLMInfo(BaseModel):
     modelSourceId: PydanticObjectId
     providerType: ModelSourceProviderType
-    modelId: str  # modelIdOrArn (Bedrock), deploymentName (Azure) or modelId (Anthropic / OpenAI)
+    modelId: str  # modelIdOrArn (Bedrock) or deploymentName (Azure)
     # sha256 hex of the provider fields that decide which deployment serves the model (Bedrock: region and
-    # model id; Azure: endpoint, deployment and apiVersion; Anthropic / OpenAI: model id and baseUrl), so an in-place edit that keeps the same source
+    # model id; Azure: endpoint, deployment and apiVersion), so an in-place edit that keeps the same source
     # id and model id but points at a different resource still produces a new tool fingerprint. Never
     # covers credentials. See skill_scan.plan.compose_tool_fingerprint.
     configDigest: str | None = None

@@ -12,30 +12,29 @@ from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from ..database.model_gateway_selection_repository import get_model_gateway_selection
-from ..models.enums import ModelSourceMode, SkillScanResultStatus
-from ..models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, FirstPartyModelConfig, ModelSource
+from ..models.enums import ModelSourceMode, ModelSourceProviderType, SkillScanResultStatus
+from ..models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
 from ..models.skill_scan_job import SkillScanJob
 from ..models.skill_scan_result import ScanLLMInfo, SkillScanResult
 from ..models.skill_scan_toolset import SKILL_SCAN_TOOLSET_ID, SkillScanToolset
 
 _DONE_STATUSES = (SkillScanResultStatus.SUCCEEDED.value, SkillScanResultStatus.SKIPPED.value)
 
+# Providers allowed to serve the scan model. Scanning sends skill content to the LLM, and that content must
+# not leave the client's own cloud account (AS-1980 D7/D16), so first-party Anthropic / OpenAI sources,
+# including any OpenAI-compatible vendor behind a baseUrl, are excluded.
+SKILL_SCAN_PROVIDER_TYPES = frozenset({ModelSourceProviderType.AWS_BEDROCK, ModelSourceProviderType.AZURE_OPENAI})
+
 # Allowlist of the provider-config fields that decide which deployment serves the scan model. Only these
 # enter the fingerprint: a new config field (a credential, or a metadata-only field such as baseModelId)
 # never changes fingerprints or leaks into a digest until someone adds it here on purpose.
 _BEDROCK_IDENTITY_FIELDS = frozenset({"providerType", "awsRegion", "modelIdOrArn"})
 _AZURE_IDENTITY_FIELDS = frozenset({"providerType", "endpoint", "deploymentName", "apiVersion"})
-_FIRST_PARTY_IDENTITY_FIELDS = frozenset({"providerType", "modelId", "baseUrl"})
 
 
-def _provider_config_digest(config: AwsBedrockModelConfig | AzureOpenAIModelConfig | FirstPartyModelConfig) -> str:
+def _provider_config_digest(config: AwsBedrockModelConfig | AzureOpenAIModelConfig) -> str:
     """sha256 of the provider's identity fields, so pointing a source at a different deployment invalidates caches."""
-    if isinstance(config, AwsBedrockModelConfig):
-        fields = _BEDROCK_IDENTITY_FIELDS
-    elif isinstance(config, AzureOpenAIModelConfig):
-        fields = _AZURE_IDENTITY_FIELDS
-    else:
-        fields = _FIRST_PARTY_IDENTITY_FIELDS
+    fields = _BEDROCK_IDENTITY_FIELDS if isinstance(config, AwsBedrockModelConfig) else _AZURE_IDENTITY_FIELDS
     data = config.model_dump(mode="json", include=set(fields))
     return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -43,7 +42,9 @@ def _provider_config_digest(config: AwsBedrockModelConfig | AzureOpenAIModelConf
 async def resolve_skill_scan_model_source() -> ModelSource | None:
     """skillScanModelSourceId, else defaultWorkflowModelSourceId.
 
-    None when unset, missing, soft-deleted, or not mode CHAT. Mirrors resolve_model's fallback/checks.
+    None when unset, missing, soft-deleted, not mode CHAT, or not a SKILL_SCAN_PROVIDER_TYPES provider (scans then
+    run without an LLM). Mirrors resolve_model's fallback/checks, plus the provider restriction: a first-party
+    workflow default is valid for workflows but never used for scanning.
     """
     selection = await get_model_gateway_selection(create_if_missing=False)
     if selection is None:
@@ -53,6 +54,8 @@ async def resolve_skill_scan_model_source() -> ModelSource | None:
         return None
     source = await ModelSource.get(source_id)
     if source is None or source.deletedAt is not None or source.mode != ModelSourceMode.CHAT:
+        return None
+    if source.providerConfig.providerType not in SKILL_SCAN_PROVIDER_TYPES:
         return None
     return source
 
@@ -66,9 +69,9 @@ def scan_llm_info(source: ModelSource | None) -> ScanLLMInfo | None:
         model_id = config.modelIdOrArn
     elif isinstance(config, AzureOpenAIModelConfig):
         model_id = config.deploymentName
-    elif isinstance(config, FirstPartyModelConfig):
-        model_id = config.modelId
-    else:  # pragma: no cover — discriminated union is exhaustive
+    else:
+        # Anthropic / OpenAI are never a scan model: resolve_skill_scan_model_source filters them out
+        # (SKILL_SCAN_PROVIDER_TYPES). Treat one that reaches here as "no LLM configured".
         return None
     return ScanLLMInfo(
         modelSourceId=source.id,
