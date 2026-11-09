@@ -1,6 +1,17 @@
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from beanie import PydanticObjectId
+from skill_scan_worker import finish as finish_module
 from skill_scan_worker.finish import _worst_status
 
-from registry_pkgs.models.enums import SkillScanResultStatus
+from registry_pkgs.database.leased_job import LeaseLostError
+from registry_pkgs.models.enums import ScanFindingCategory, ScanSeverity, SkillScanResultStatus
+from registry_pkgs.models.skill_scan_result import ScanFinding, SkillScanResult
+
+_DIGEST = "sha256:d"
 
 
 def _v(status: SkillScanResultStatus) -> str:
@@ -36,20 +47,6 @@ def test_skipped_plus_succeeded_is_succeeded() -> None:
 
 
 # --- _build_summary / _write_results / finish_job (fake collection, no Mongo) ---
-
-from datetime import UTC, datetime, timedelta  # noqa: E402
-from types import SimpleNamespace  # noqa: E402
-from unittest.mock import AsyncMock, MagicMock  # noqa: E402
-
-import pytest  # noqa: E402
-from beanie import PydanticObjectId  # noqa: E402
-from skill_scan_worker import finish as finish_module  # noqa: E402
-
-from registry_pkgs.database.leased_job import LeaseLostError  # noqa: E402
-from registry_pkgs.models.enums import ScanFindingCategory, ScanSeverity  # noqa: E402
-from registry_pkgs.models.skill_scan_result import ScanFinding, SkillScanResult  # noqa: E402
-
-_DIGEST = "sha256:d"
 
 
 class _Cursor:
