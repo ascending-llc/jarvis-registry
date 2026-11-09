@@ -58,6 +58,8 @@ interface ModelStats {
   total: number;
   aws_bedrock: number;
   azure_openai: number;
+  openai: number;
+  anthropic: number;
 }
 
 const EMPTY_MODEL_SELECTION: ModelGatewaySelection = {
@@ -225,6 +227,8 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       total: models.length,
       aws_bedrock: models.filter(model => model.providerType === 'aws_bedrock').length,
       azure_openai: models.filter(model => model.providerType === 'azure_openai').length,
+      openai: models.filter(model => model.providerType === 'openai').length,
+      anthropic: models.filter(model => model.providerType === 'anthropic').length,
     }),
     [models],
   );

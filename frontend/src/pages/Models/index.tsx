@@ -312,6 +312,8 @@ const ModelsPage: React.FC = () => {
       all: modelStats.total,
       aws_bedrock: modelStats.aws_bedrock,
       azure_openai: modelStats.azure_openai,
+      openai: modelStats.openai,
+      anthropic: modelStats.anthropic,
     },
     activeProvider: providerFilter,
     onProviderChange: handleProviderFilterChange,

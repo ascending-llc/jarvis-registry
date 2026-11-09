@@ -155,7 +155,7 @@ const DirectProviderFields: React.FC<ProviderFieldsProps> = ({ form, errors, has
           monospace
           value={form.baseUrl}
           onChange={event => updateField('baseUrl', event.target.value)}
-          placeholder={isOpenAI ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'}
+          placeholder={FIRST_PARTY_DEFAULT_BASE_URL[isOpenAI ? 'openai' : 'anthropic']}
           helperText='Leave blank for the public API; set this for a proxy or regional endpoint.'
           error={errors.baseUrl}
         />
@@ -250,16 +250,6 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
     setErrors(current => (current[field] ? { ...current, [field]: undefined } : current));
   };
 
-  const handleProviderChange = (value: ModelFormProviderType) => {
-    setForm(current => ({
-      ...current,
-      providerType: value,
-      // Prefill the correct public base URL for a first-party provider so it isn't mistyped.
-      baseUrl: value === 'anthropic' || value === 'openai' ? FIRST_PARTY_DEFAULT_BASE_URL[value] : current.baseUrl,
-    }));
-    setErrors(current => (current.baseUrl ? { ...current, baseUrl: undefined } : current));
-  };
-
   const handleSubmit = () => {
     const nextErrors = validateForm(form, storedKeyApplies);
     setErrors(nextErrors);
@@ -270,8 +260,13 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
     value: provider.value,
     label: `${provider.label} — ${provider.auth}`,
   }));
-  // The stored key belongs to the original provider; switching provider re-requires a key.
-  const storedKeyApplies = hasStoredApiKey && form.providerType === initialForm.providerType;
+  // The stored key belongs to the original provider (and, for first-party, its base URL); the backend
+  // drops it when either changes, so a new key is required then.
+  const isFirstParty = form.providerType === 'openai' || form.providerType === 'anthropic';
+  const storedKeyApplies =
+    hasStoredApiKey &&
+    form.providerType === initialForm.providerType &&
+    (!isFirstParty || form.baseUrl.trim() === initialForm.baseUrl.trim());
   const providerSupported = isBackendSupportedProvider(form.providerType);
   const pageTitle = editing
     ? initialForm.displayName
@@ -380,7 +375,7 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
                         required
                         value={form.providerType}
                         options={providerOptions}
-                        onChange={value => handleProviderChange(value as ModelFormProviderType)}
+                        onChange={value => updateField('providerType', value as ModelFormProviderType)}
                       />
                       <div>
                         <div className='mb-1 text-sm font-medium text-[var(--jarvis-text)]'>
