@@ -24,6 +24,10 @@ _COMPLETED_FLOW_MARKER_KEY = "{prefix}:skill_sync:oauth_completed:{flow_id}"
 _COMPLETED_FLOW_MARKER_TTL_SECONDS = 86400
 
 
+def _hash_state(state: str) -> str:
+    return hashlib.sha256(state.encode()).hexdigest()
+
+
 class SkillSyncOAuthService:
     def __init__(
         self,
@@ -88,13 +92,16 @@ class SkillSyncOAuthService:
             raise ValueError("OAuth state does not reference a known flow")
         return flow.server_id
 
+    def _completed_marker_key(self, flow_id: str) -> str:
+        return _COMPLETED_FLOW_MARKER_KEY.format(prefix=self._redis_key_prefix, flow_id=flow_id)
+
     async def resolve_completed_source_id(self, state: str) -> str | None:
         try:
             decoded = self._flow_state_manager.decode_state(state)
         except ValueError:
             return None
 
-        key = _COMPLETED_FLOW_MARKER_KEY.format(prefix=self._redis_key_prefix, flow_id=decoded["flow_id"])
+        key = self._completed_marker_key(decoded["flow_id"])
         try:
             marker = await asyncio.to_thread(self._redis_client.get, key)
         except RedisError:
@@ -104,8 +111,7 @@ class SkillSyncOAuthService:
         if not marker:
             return None
         stored_hash, separator, source_id = marker.partition(":")
-        state_hash = hashlib.sha256(state.encode()).hexdigest()
-        if separator and source_id and secrets.compare_digest(stored_hash, state_hash):
+        if separator and source_id and secrets.compare_digest(stored_hash, _hash_state(state)):
             return source_id
         return None
 
@@ -139,11 +145,12 @@ class SkillSyncOAuthService:
         tokens = OAuthTokens(**payload)
         await self._token_service.store_tokens(user_id=flow.user_id, source_id=source.id, tokens=tokens)
 
-        key = _COMPLETED_FLOW_MARKER_KEY.format(prefix=self._redis_key_prefix, flow_id=decoded["flow_id"])
-        marker = f"{hashlib.sha256(state.encode()).hexdigest()}:{flow.server_id}"
+        key = self._completed_marker_key(decoded["flow_id"])
+        # Hash the state: it carries the flow's security token.
+        marker = f"{_hash_state(state)}:{flow.server_id}"
         try:
             await asyncio.to_thread(self._redis_client.set, key, marker, ex=_COMPLETED_FLOW_MARKER_TTL_SECONDS)
         except RedisError:
-            # 令牌已保存；完成标记只用于识别后续重放，写入失败不应使本次授权失败。
+            # Tokens are already stored; the marker only lets a later replay be recognized, so don't fail the callback.
             logger.warning("Failed to write GitHub OAuth completed-flow marker")
         return flow.user_id

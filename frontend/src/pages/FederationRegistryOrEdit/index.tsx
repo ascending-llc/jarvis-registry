@@ -114,7 +114,7 @@ const FederationRegistryOrEdit: React.FC = () => {
 
   const goBack = () => {
     if (isGithubSource) {
-      // OAuth 返回后，历史记录可能包含 GitHub 授权页，回退会重放已使用的 state。
+      // History may hold GitHub's authorize page (OAuth round trip); going back replays a used state.
       navigate(EXTERNAL_PROVIDERS_LIST_PATH, { replace: true });
       return;
     }
