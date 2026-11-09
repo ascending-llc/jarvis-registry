@@ -446,6 +446,14 @@ def test_set_skill_scan_model_null_clears_slot(ctx) -> None:
     ctx.selection.set_skill_scan_model.assert_awaited_once_with(None, updated_by=USER_ID)
 
 
+def test_set_skill_scan_model_requires_explicit_model_source_id(ctx) -> None:
+    # An omitted (or misspelled) key must not be read as null and silently clear the slot.
+    for body in ({}, {"modelSourceID": str(ctx.source.id)}):
+        response = ctx.client.put("/model-gateway/selection/skill-scan-model", json=body)
+        assert response.status_code == 422, body
+    ctx.selection.set_skill_scan_model.assert_not_awaited()
+
+
 def test_set_skill_scan_model_maps_missing_to_404(ctx) -> None:
     ctx.selection.set_skill_scan_model.side_effect = ModelSourceNotFoundError("Model source 'missing' not found")
     response = ctx.client.put("/model-gateway/selection/skill-scan-model", json={"modelSourceId": "missing"})

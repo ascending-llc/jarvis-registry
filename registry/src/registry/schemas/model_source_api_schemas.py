@@ -153,7 +153,9 @@ class SetDefaultWorkflowModelRequest(BaseModel):
 
 
 class SetSkillScanModelRequest(BaseModel):
-    modelSourceId: str | None = None  # null clears the slot (falls back to the workflow default)
+    # Required but nullable: an explicit null clears the slot (scanning falls back to the workflow
+    # default); an omitted or misspelled key is a 422, not a silent clear.
+    modelSourceId: str | None
 
 
 class SetEmbeddingModelRequest(BaseModel):
