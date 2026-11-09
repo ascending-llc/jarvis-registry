@@ -27,6 +27,7 @@ from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.search.service import SearchService
 from .services.server_service import ServerServiceV1
+from .services.skill_scan_service import SkillScanService
 from .services.skill_service import SkillService
 from .services.skill_sync_job_service import SkillSyncJobService
 from .services.skill_sync_oauth_service import SkillSyncOAuthService
@@ -65,6 +66,10 @@ def get_acl_service(container: RegistryContainer = Depends(get_container)) -> AC
 
 def get_skill_service(container: RegistryContainer = Depends(get_container)) -> SkillService:
     return container.skill_service
+
+
+def get_skill_scan_service(container: RegistryContainer = Depends(get_container)) -> SkillScanService:
+    return container.skill_scan_service
 
 
 def get_token_service(container: RegistryContainer = Depends(get_container)) -> TokenService:

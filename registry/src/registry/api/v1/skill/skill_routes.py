@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
-from ....deps import get_skill_service
+from ....deps import get_skill_scan_service, get_skill_service
 from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.skill_api_schemas import (
@@ -23,10 +23,13 @@ from ....schemas.skill_api_schemas import (
     SkillListResponse,
     SkillMetadataResponse,
     SkillOriginResponse,
+    SkillScanBriefResponse,
+    SkillScanResponse,
     SkillToggleRequest,
     SkillToggleResponse,
     SkillUpdateRequest,
 )
+from ....services.skill_scan_service import SkillScanService
 from ....services.skill_service import SkillService, skill_file_metadata
 
 logger = logging.getLogger(__name__)
@@ -63,7 +66,12 @@ def handle_service_errors(operation: str) -> Callable[[Callable[_P, Awaitable[_R
     return decorator
 
 
-def _metadata_response(skill, permissions: ResourcePermissions, origin: SkillOriginResponse) -> SkillMetadataResponse:
+def _metadata_response(
+    skill,
+    permissions: ResourcePermissions,
+    origin: SkillOriginResponse,
+    scan_summary: SkillScanBriefResponse | None = None,
+) -> SkillMetadataResponse:
     return SkillMetadataResponse(
         id=str(skill.id),
         name=skill.name,
@@ -83,6 +91,7 @@ def _metadata_response(skill, permissions: ResourcePermissions, origin: SkillOri
         origin=origin,
         permissions=permissions,
         updatedAt=skill.updatedAt,
+        scanSummary=scan_summary,
     )
 
 
@@ -126,15 +135,21 @@ async def list_skills_route(
     enabled: bool | None = None,
     file_count: Annotated[int | None, Query(alias="fileCount", ge=0)] = None,
     skill_service: SkillService = Depends(get_skill_service),
+    scan_service: SkillScanService = Depends(get_skill_scan_service),
 ) -> SkillListResponse:
     results = await skill_service.list_skills(
         user_id=user_context.get("user_id"),
         enabled=enabled,
         file_count=file_count,
     )
-    origins = await skill_service.resolve_origins([skill for skill, _ in results])
+    skills = [skill for skill, _ in results]
+    origins = await skill_service.resolve_origins(skills)
+    scan_summaries = await scan_service.summaries_for(skills)
     return SkillListResponse(
-        skills=[_metadata_response(skill, permissions, origins[skill.id]) for skill, permissions in results]
+        skills=[
+            _metadata_response(skill, permissions, origins[skill.id], scan_summaries.get(skill.id))
+            for skill, permissions in results
+        ]
     )
 
 
@@ -200,6 +215,41 @@ async def get_skill_content(
         createdByRegistry=skill.createdByRegistry,
         files=files,
     )
+
+
+@router.get(
+    "/skills/{skill_id}/scan",
+    response_model=SkillScanResponse,
+    summary="Get a skill's security scan",
+)
+@track_registry_operation("read", resource_type="skill_scan")
+@handle_service_errors("get skill scan")
+async def get_skill_scan(
+    skill_id: PydanticObjectId,
+    user_context: CurrentUser,
+    scan_service: SkillScanService = Depends(get_skill_scan_service),
+) -> SkillScanResponse:
+    return await scan_service.get_scan(skill_id, user_context.get("user_id"))
+
+
+@router.post(
+    "/skills/{skill_id}/scan",
+    response_model=SkillScanResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Request a skill security scan",
+)
+@track_registry_operation("scan", resource_type="skill_scan")
+@handle_service_errors("request skill scan")
+async def request_skill_scan(
+    skill_id: PydanticObjectId,
+    user_context: CurrentUser,
+    response: Response,
+    scan_service: SkillScanService = Depends(get_skill_scan_service),
+) -> SkillScanResponse:
+    scan, queued = await scan_service.request_scan(skill_id, user_context.get("user_id"))
+    if not queued:
+        response.status_code = status.HTTP_200_OK
+    return scan
 
 
 @router.get(

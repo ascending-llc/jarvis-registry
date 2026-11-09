@@ -39,6 +39,7 @@ from ....schemas.model_source_api_schemas import (
     OpenAIModelConfigResponse,
     SetDefaultWorkflowModelRequest,
     SetEmbeddingModelRequest,
+    SetSkillScanModelRequest,
 )
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.embedding_reindex_job_service import (
@@ -302,6 +303,9 @@ async def get_model_gateway_selection(
             embeddingModelSourceId=(
                 str(selection.embeddingModelSourceId) if selection.embeddingModelSourceId else None
             ),
+            skillScanModelSourceId=(
+                str(selection.skillScanModelSourceId) if selection.skillScanModelSourceId else None
+            ),
         )
     except HTTPException:
         raise
@@ -333,6 +337,9 @@ async def set_default_workflow_model(
             embeddingModelSourceId=(
                 str(selection.embeddingModelSourceId) if selection.embeddingModelSourceId else None
             ),
+            skillScanModelSourceId=(
+                str(selection.skillScanModelSourceId) if selection.skillScanModelSourceId else None
+            ),
         )
     except ModelSourceNotFoundError as exc:
         raise HTTPException(
@@ -346,6 +353,53 @@ async def set_default_workflow_model(
         raise
     except Exception as exc:
         logger.exception("Failed to set default workflow model")
+        raise HTTPException(
+            http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
+
+
+@router.put(
+    "/model-gateway/selection/skill-scan-model",
+    response_model=ModelGatewaySelectionResponse,
+    description="Set the ModelSource (mode CHAT) used for skill security scanning. A null modelSourceId "
+    "clears the slot, so scanning falls back to the default workflow model. Returns 404 if the source is "
+    "unknown or soft-deleted, 409 if it is not a CHAT source or its provider is not AWS Bedrock or Azure OpenAI.",
+)
+@track_registry_operation("set_skill_scan_model", resource_type="model_gateway_selection")
+async def set_skill_scan_model(
+    data: SetSkillScanModelRequest,
+    user_context: CurrentUser,
+    selection_service: ModelGatewaySelectionService = Depends(get_model_gateway_selection_service),
+):
+    try:
+        selection = await selection_service.set_skill_scan_model(
+            data.modelSourceId,
+            updated_by=str(user_context["user_id"]),
+        )
+        return ModelGatewaySelectionResponse(
+            defaultWorkflowModelSourceId=(
+                str(selection.defaultWorkflowModelSourceId) if selection.defaultWorkflowModelSourceId else None
+            ),
+            embeddingModelSourceId=(
+                str(selection.embeddingModelSourceId) if selection.embeddingModelSourceId else None
+            ),
+            skillScanModelSourceId=(
+                str(selection.skillScanModelSourceId) if selection.skillScanModelSourceId else None
+            ),
+        )
+    except ModelSourceNotFoundError as exc:
+        raise HTTPException(
+            http_status.HTTP_404_NOT_FOUND, detail=create_error_detail(ErrorCode.NOT_FOUND, str(exc))
+        ) from exc
+    except ModelSourceModeMismatchError as exc:
+        raise HTTPException(
+            http_status.HTTP_409_CONFLICT, detail=create_error_detail(ErrorCode.CONFLICT, str(exc))
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to set skill scan model")
         raise HTTPException(
             http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
@@ -382,6 +436,9 @@ async def set_embedding_model(
             # deployment that has never committed an embedding generation.
             embeddingModelSourceId=(
                 str(selection.embeddingModelSourceId) if selection.embeddingModelSourceId else None
+            ),
+            skillScanModelSourceId=(
+                str(selection.skillScanModelSourceId) if selection.skillScanModelSourceId else None
             ),
         )
     except ModelSourceNotFoundError as exc:

@@ -492,7 +492,7 @@ workflows-share:
     endpoint: /permissions/workflowSchedule/{resource_id}
 
 skills-read:
-  description: "View skills and their content and files."
+  description: "View skills, their content and files, and their security scan results."
   actions:
   - action: list_skills
     method: GET
@@ -500,6 +500,9 @@ skills-read:
   - action: get_skill
     method: GET
     endpoint: /skills/{skill_id}
+  - action: get_skill_scan
+    method: GET
+    endpoint: /skills/{skill_id}/scan
   - action: get_skill_content
     method: GET
     endpoint: /skills/{skill_id}/content
@@ -517,11 +520,14 @@ skills-read:
     endpoint: /skill-sync-sources/{source_id}/jobs/{job_id}
 
 skills-write:
-  description: "Create, update, delete, and enable/disable skills."
+  description: "Create, update, delete, and enable/disable skills, and request security scans."
   actions:
   - action: create_skill
     method: POST
     endpoint: /skills
+  - action: request_skill_scan
+    method: POST
+    endpoint: /skills/{skill_id}/scan
   - action: update_skill
     method: PATCH
     endpoint: /skills/{skill_id}
@@ -554,7 +560,7 @@ skills-write:
     endpoint: /skill-sync-sources/{source_id}/oauth/initiate
 
 models-read:
-  description: "View registered model sources and the current default workflow/embedding model selection."
+  description: "View registered model sources and the current default workflow, embedding, and skill-scan model selection."
   actions:
   - action: list_model_sources
     method: GET
@@ -570,7 +576,7 @@ models-read:
     endpoint: /model-gateway/selection/embedding-model/reindex-jobs
 
 models-write:
-  description: "Create, update, and delete model sources; change the default workflow model."
+  description: "Create, update, and delete model sources; change the default workflow and skill-scan models."
   actions:
   - action: create_model_source
     method: POST
@@ -587,3 +593,6 @@ models-write:
   - action: set_embedding_model
     method: PUT
     endpoint: /model-gateway/selection/embedding-model
+  - action: set_skill_scan_model
+    method: PUT
+    endpoint: /model-gateway/selection/skill-scan-model

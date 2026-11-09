@@ -86,12 +86,22 @@ def ctx():
 
     selection = MagicMock()
     selection.get_selection = AsyncMock(
-        return_value=SimpleNamespace(defaultWorkflowModelSourceId=None, embeddingModelSourceId=None)
+        return_value=SimpleNamespace(
+            defaultWorkflowModelSourceId=None, embeddingModelSourceId=None, skillScanModelSourceId=None
+        )
     )
     selection.set_default_workflow_model = AsyncMock(
         return_value=SimpleNamespace(
             defaultWorkflowModelSourceId=source.id,
             embeddingModelSourceId=None,
+            skillScanModelSourceId=None,
+        )
+    )
+    selection.set_skill_scan_model = AsyncMock(
+        return_value=SimpleNamespace(
+            defaultWorkflowModelSourceId=None,
+            embeddingModelSourceId=None,
+            skillScanModelSourceId=source.id,
         )
     )
 
@@ -100,6 +110,7 @@ def ctx():
         return_value=SimpleNamespace(
             defaultWorkflowModelSourceId=None,
             embeddingModelSourceId=source.id,
+            skillScanModelSourceId=None,
         )
     )
     reindex.list_jobs = AsyncMock(return_value=[])
@@ -457,3 +468,62 @@ def test_scopes_config_grants_are_correct() -> None:
     assert "models-write" in mappings["jarvis-registry-admin"]
     for group in ("jarvis-registry-power-user", "jarvis-registry-user", "jarvis-registry-read-only"):
         assert "models-write" not in mappings[group], group
+
+
+# -----------------------------
+# PUT /model-gateway/selection/skill-scan-model
+# -----------------------------
+
+
+def test_set_skill_scan_model(ctx) -> None:
+    response = ctx.client.put(
+        "/model-gateway/selection/skill-scan-model",
+        json={"modelSourceId": str(ctx.source.id)},
+    )
+    assert response.status_code == 200
+    assert response.json()["skillScanModelSourceId"] == str(ctx.source.id)
+    ctx.selection.set_skill_scan_model.assert_awaited_once_with(str(ctx.source.id), updated_by=USER_ID)
+
+
+def test_set_skill_scan_model_null_clears_slot(ctx) -> None:
+    ctx.selection.set_skill_scan_model.return_value = SimpleNamespace(
+        defaultWorkflowModelSourceId=None, embeddingModelSourceId=None, skillScanModelSourceId=None
+    )
+    response = ctx.client.put("/model-gateway/selection/skill-scan-model", json={"modelSourceId": None})
+    assert response.status_code == 200
+    assert response.json()["skillScanModelSourceId"] is None
+    ctx.selection.set_skill_scan_model.assert_awaited_once_with(None, updated_by=USER_ID)
+
+
+def test_set_skill_scan_model_requires_explicit_model_source_id(ctx) -> None:
+    # An omitted (or misspelled) key must not be read as null and silently clear the slot.
+    for body in ({}, {"modelSourceID": str(ctx.source.id)}):
+        response = ctx.client.put("/model-gateway/selection/skill-scan-model", json=body)
+        assert response.status_code == 422, body
+    ctx.selection.set_skill_scan_model.assert_not_awaited()
+
+
+def test_set_skill_scan_model_maps_missing_to_404(ctx) -> None:
+    ctx.selection.set_skill_scan_model.side_effect = ModelSourceNotFoundError("Model source 'missing' not found")
+    response = ctx.client.put("/model-gateway/selection/skill-scan-model", json={"modelSourceId": "missing"})
+    assert response.status_code == 404
+
+
+def test_set_skill_scan_model_maps_mode_mismatch_to_409(ctx) -> None:
+    ctx.selection.set_skill_scan_model.side_effect = ModelSourceModeMismatchError("expected 'chat'")
+    response = ctx.client.put(
+        "/model-gateway/selection/skill-scan-model",
+        json={"modelSourceId": str(ctx.source.id)},
+    )
+    assert response.status_code == 409
+
+
+def test_get_selection_returns_skill_scan_slot(ctx) -> None:
+    ctx.selection.get_selection.return_value = SimpleNamespace(
+        defaultWorkflowModelSourceId=None,
+        embeddingModelSourceId=None,
+        skillScanModelSourceId=ctx.source.id,
+    )
+    response = ctx.client.get("/model-gateway/selection")
+    assert response.status_code == 200
+    assert response.json()["skillScanModelSourceId"] == str(ctx.source.id)

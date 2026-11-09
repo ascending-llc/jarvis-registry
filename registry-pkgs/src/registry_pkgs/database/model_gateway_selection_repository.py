@@ -7,7 +7,7 @@ from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.models.model_gateway_selection import MODEL_GATEWAY_SELECTION_ID, ModelGatewaySelection
 
-SelectionField = Literal["defaultWorkflowModelSourceId"]
+SelectionField = Literal["defaultWorkflowModelSourceId", "skillScanModelSourceId"]
 
 
 async def get_model_gateway_selection(*, create_if_missing: bool) -> ModelGatewaySelection | None:
@@ -27,11 +27,16 @@ async def get_model_gateway_selection(*, create_if_missing: bool) -> ModelGatewa
 
 async def set_model_gateway_selection(
     field: SelectionField,
-    model_source_id: PydanticObjectId,
+    model_source_id: PydanticObjectId | None,
     *,
     updated_by: str | None,
 ) -> ModelGatewaySelection:
-    """Atomically update one selection slot without overwriting the other slot."""
+    """Atomically update one selection slot without overwriting the other slot.
+
+    ``model_source_id=None`` clears the slot (e.g. the skill-scan model falling back to the
+    workflow default); ``keep_nulls=False`` is not set on this singleton, so the field is stored
+    as null rather than dropped, which reads back the same.
+    """
     document = await ModelGatewaySelection.get_pymongo_collection().find_one_and_update(
         {"_id": MODEL_GATEWAY_SELECTION_ID},
         {

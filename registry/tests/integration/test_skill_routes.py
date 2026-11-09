@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from registry.api.v1.skill.skill_routes import router as skill_router
 from registry.auth.dependencies import get_current_user
-from registry.deps import get_skill_service
+from registry.deps import get_skill_scan_service, get_skill_service
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.skill_api_schemas import (
     SkillFileContentResponse,
@@ -83,6 +83,11 @@ def skill_app() -> Generator[SimpleNamespace, None, None]:
     service.upsert_skill_file = AsyncMock()
     service.delete_skill_file = AsyncMock()
 
+    scan_service = MagicMock()
+    scan_service.summaries_for = AsyncMock(return_value={})
+    scan_service.get_scan = AsyncMock()
+    scan_service.request_scan = AsyncMock()
+
     app = FastAPI()
     app.include_router(skill_router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: {
@@ -96,9 +101,10 @@ def skill_app() -> Generator[SimpleNamespace, None, None]:
         "auth_source": "jwt_session_auth",
     }
     app.dependency_overrides[get_skill_service] = lambda: service
+    app.dependency_overrides[get_skill_scan_service] = lambda: scan_service
 
     with TestClient(app) as client:
-        yield SimpleNamespace(client=client, service=service)
+        yield SimpleNamespace(client=client, service=service, scan_service=scan_service)
 
 
 def test_list_skills_returns_acl_metadata_and_forwards_filters(skill_app):
@@ -437,3 +443,99 @@ def test_delete_skill_file_missing_returns_404(skill_app):
     response = skill_app.client.delete(f"/api/v1/skills/{PydanticObjectId()}/files/scripts/run.sh")
 
     assert response.status_code == 404
+
+
+# -----------------------------
+# scan routes + list scanSummary
+# -----------------------------
+
+
+def _scan_response(skill_id: str, *, scan_status: str = "not_scanned") -> dict:
+    return {
+        "skillId": skill_id,
+        "skillVersion": 1,
+        "scanStatus": scan_status,
+        "stale": False,
+        "outdatedTool": False,
+        "job": None,
+        "summary": None,
+        "results": [],
+    }
+
+
+def test_get_skill_scan_returns_payload(skill_app):
+    skill_id = str(PydanticObjectId())
+    from registry.schemas.skill_api_schemas import SkillScanResponse
+
+    skill_app.scan_service.get_scan.return_value = SkillScanResponse(**_scan_response(skill_id))
+
+    response = skill_app.client.get(f"/api/v1/skills/{skill_id}/scan")
+
+    assert response.status_code == 200
+    assert response.json()["scanStatus"] == "not_scanned"
+    skill_app.scan_service.get_scan.assert_awaited_once()
+
+
+def test_get_skill_scan_404_for_unknown_skill(skill_app):
+    skill_app.scan_service.get_scan.side_effect = HTTPException(status_code=404, detail="Skill not found")
+    response = skill_app.client.get(f"/api/v1/skills/{PydanticObjectId()}/scan")
+    assert response.status_code == 404
+
+
+def test_get_skill_scan_403_without_view(skill_app):
+    skill_app.scan_service.get_scan.side_effect = HTTPException(status_code=403, detail="forbidden")
+    response = skill_app.client.get(f"/api/v1/skills/{PydanticObjectId()}/scan")
+    assert response.status_code == 403
+
+
+def test_request_skill_scan_202_when_queued(skill_app):
+    skill_id = str(PydanticObjectId())
+    from registry.schemas.skill_api_schemas import SkillScanResponse
+
+    skill_app.scan_service.request_scan.return_value = (
+        SkillScanResponse(**_scan_response(skill_id, scan_status="pending")),
+        True,
+    )
+
+    response = skill_app.client.post(f"/api/v1/skills/{skill_id}/scan")
+
+    assert response.status_code == 202
+    assert response.json()["scanStatus"] == "pending"
+
+
+def test_request_skill_scan_200_when_nothing_queued(skill_app):
+    skill_id = str(PydanticObjectId())
+    from registry.schemas.skill_api_schemas import SkillScanResponse
+
+    skill_app.scan_service.request_scan.return_value = (
+        SkillScanResponse(**_scan_response(skill_id, scan_status="completed")),
+        False,
+    )
+
+    response = skill_app.client.post(f"/api/v1/skills/{skill_id}/scan")
+
+    assert response.status_code == 200
+
+
+def test_request_skill_scan_403_without_edit(skill_app):
+    skill_app.scan_service.request_scan.side_effect = HTTPException(status_code=403, detail="forbidden")
+    response = skill_app.client.post(f"/api/v1/skills/{PydanticObjectId()}/scan")
+    assert response.status_code == 403
+
+
+def test_list_skills_includes_scan_summary(skill_app):
+    from registry.schemas.skill_api_schemas import SkillScanBriefResponse
+
+    skill = _make_skill()
+    skill_app.service.list_skills.return_value = [(skill, _PERMISSIONS)]
+    skill_app.scan_service.summaries_for.return_value = {
+        skill.id: SkillScanBriefResponse(scanStatus="completed", stale=True)
+    }
+
+    response = skill_app.client.get("/api/v1/skills")
+
+    assert response.status_code == 200
+    item = response.json()["skills"][0]
+    assert item["scanSummary"]["scanStatus"] == "completed"
+    assert item["scanSummary"]["stale"] is True
+    skill_app.scan_service.summaries_for.assert_awaited_once()

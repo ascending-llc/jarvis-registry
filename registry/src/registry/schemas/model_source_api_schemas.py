@@ -168,6 +168,7 @@ class ModelSourceDeleteResponse(BaseModel):
 class ModelGatewaySelectionResponse(BaseModel):
     defaultWorkflowModelSourceId: str | None = None
     embeddingModelSourceId: str | None = None
+    skillScanModelSourceId: str | None = None
 
 
 class EmbeddingReindexJobResponse(BaseModel):
@@ -195,6 +196,12 @@ class EmbeddingReindexJobListResponse(BaseModel):
 
 class SetDefaultWorkflowModelRequest(BaseModel):
     modelSourceId: str
+
+
+class SetSkillScanModelRequest(BaseModel):
+    # Required but nullable: an explicit null clears the slot (scanning falls back to the workflow
+    # default); an omitted or misspelled key is a 422, not a silent clear.
+    modelSourceId: str | None
 
 
 class SetEmbeddingModelRequest(BaseModel):

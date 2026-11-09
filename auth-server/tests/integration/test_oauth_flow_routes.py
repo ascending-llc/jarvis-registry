@@ -1684,7 +1684,7 @@ class TestDeviceFlowCallbackAndConsent:
         assert "Jarvis Registry CLI" in response.text
         assert "Unknown application" not in response.text
         assert "<code>skills-read</code>" in response.text
-        assert "View skills and their content and files." in response.text
+        assert "View skills, their content and files, and their security scan results." in response.text
 
     def test_consent_page_shows_only_mcp_client_ceiling_scope(
         self,

@@ -9,7 +9,7 @@ from registry.services.skill_sync_apply_service import SkillSyncApplyService
 from registry.services.skill_sync_discovery_service import DiscoveredSkill, DiscoveryResult
 from registry.services.skill_sync_github_service import ExtractedAuxFile
 from registry.utils.skill_files import is_text_content as _is_text_content
-from registry_pkgs.models.enums import SkillSyncSkillErrorCode
+from registry_pkgs.models.enums import SkillScanTriggerType, SkillSyncSkillErrorCode
 from registry_pkgs.models.skill_sync_job import (
     SkillSyncDiscoverySummary,
     SkillSyncFullRequestSnapshot,
@@ -41,6 +41,16 @@ class _FakeSessionContext:
 
     async def __aexit__(self, *args):
         return None
+
+
+@pytest.fixture(autouse=True)
+def _stub_scan_helpers():
+    """No-op the scan enqueue/cleanup by default so write-path tests don't touch the real scan models."""
+    with (
+        patch("registry.services.skill_sync_apply_service.enqueue_skill_scan", new=AsyncMock()),
+        patch("registry.services.skill_sync_apply_service.delete_skill_scan_state", new=AsyncMock()),
+    ):
+        yield
 
 
 def _user_service(user=None) -> MagicMock:
@@ -678,3 +688,56 @@ def test_text_detection_checks_full_payload_not_just_prefix():
     assert _is_text_content(payload) is False
     payload_no_nul = b"A" * 8192 + b"\xff\xfe"
     assert _is_text_content(payload_no_nul) is False
+
+
+# -----------------------------
+# enqueue / delete scan state in the GitHub-sync write paths
+# -----------------------------
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_sync_apply_service.enqueue_skill_scan", new_callable=AsyncMock)
+async def test_apply_discovered_skill_enqueues_auto_scan_with_none_requester(mock_enqueue, monkeypatch):
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext()))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+    service = _service()
+    existing = SimpleNamespace(id=PydanticObjectId(), version=1)
+    service._update_skill = AsyncMock()
+    service._sync_skill_files = AsyncMock(return_value=(1, 2, 3))
+
+    await service._apply_discovered_skill(
+        existing=existing,
+        discovered=_discovered(),
+        source=SimpleNamespace(id=PydanticObjectId()),
+        commit_sha="a" * 40,
+        request_snapshot=_snapshot(),
+        author_id=PydanticObjectId(),
+        author_name="Jane Doe",
+        now=datetime.now(UTC),
+    )
+
+    mock_enqueue.assert_awaited_once()
+    assert mock_enqueue.await_args.args[0] == existing.id
+    assert mock_enqueue.await_args.kwargs["trigger"] == SkillScanTriggerType.AUTO
+    assert mock_enqueue.await_args.kwargs["requested_by"] is None
+    # Shares the write's transaction session.
+    assert mock_enqueue.await_args.kwargs["session"] is service._sync_skill_files.await_args.kwargs["session"]
+
+
+@pytest.mark.asyncio
+@patch("registry.services.skill_sync_apply_service.delete_skill_scan_state", new_callable=AsyncMock)
+@patch("registry.services.skill_sync_apply_service.SkillFile")
+async def test_delete_skill_deletes_scan_state(mock_skillfile_cls, mock_delete_state, monkeypatch):
+    client = MagicMock(start_session=MagicMock(return_value=_FakeSessionContext()))
+    monkeypatch.setattr("registry.services.skill_sync_apply_service.MongoDB.get_client", lambda: client)
+    service = _service(acl_service=MagicMock(delete_acl_entries_for_resource=AsyncMock()))
+    delete_query = MagicMock()
+    delete_query.delete = AsyncMock(return_value=SimpleNamespace(deleted_count=1))
+    mock_skillfile_cls.find.return_value = delete_query
+    skill = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock())
+
+    await service._delete_skill(skill)
+
+    mock_delete_state.assert_awaited_once()
+    assert mock_delete_state.await_args.args[0] == skill.id
+    skill.delete.assert_awaited_once()
