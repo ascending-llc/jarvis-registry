@@ -15,9 +15,9 @@ from registry_pkgs.models.model_source import (
     AnthropicModelConfig,
     AwsBedrockModelConfig,
     AzureOpenAIModelConfig,
+    FirstPartyModelConfig,
     ModelSource,
     OpenAIModelConfig,
-    _FirstPartyModelConfig,
 )
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
@@ -115,7 +115,7 @@ class ModelSourceCrudService:
     @staticmethod
     def _require_first_party_key(config: StoredProviderConfig) -> None:
         """First-party providers have no ambient identity, so an API key must be present at creation."""
-        if isinstance(config, _FirstPartyModelConfig) and not config.apiKeyEncrypted:
+        if isinstance(config, FirstPartyModelConfig) and not config.apiKeyEncrypted:
             raise HTTPException(
                 http_status.HTTP_400_BAD_REQUEST,
                 detail=create_error_detail(
@@ -254,10 +254,10 @@ class ModelSourceCrudService:
             new_config.apiKeyEncrypted = old_config.apiKeyEncrypted
         # Same carry-over for a first-party source keeping its provider type across an update.
         if (
-            isinstance(new_config, _FirstPartyModelConfig)
+            isinstance(new_config, FirstPartyModelConfig)
             and new_config.apiKeyEncrypted is None
             and type(new_config) is type(old_config)
-            and isinstance(old_config, _FirstPartyModelConfig)
+            and isinstance(old_config, FirstPartyModelConfig)
             and old_config.apiKeyEncrypted
         ):
             new_config.apiKeyEncrypted = old_config.apiKeyEncrypted

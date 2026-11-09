@@ -54,7 +54,7 @@ class AzureOpenAIModelConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class _FirstPartyModelConfig(BaseModel):
+class FirstPartyModelConfig(BaseModel):
     """Shared shape for a direct (first-party) provider reached with an API key.
 
     Unlike Bedrock/Azure there is no ambient identity (no IRSA / Workload Identity), so the API key
@@ -80,11 +80,11 @@ class _FirstPartyModelConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class AnthropicModelConfig(_FirstPartyModelConfig):
+class AnthropicModelConfig(FirstPartyModelConfig):
     providerType: Literal[ModelSourceProviderType.ANTHROPIC] = ModelSourceProviderType.ANTHROPIC
 
 
-class OpenAIModelConfig(_FirstPartyModelConfig):
+class OpenAIModelConfig(FirstPartyModelConfig):
     providerType: Literal[ModelSourceProviderType.OPENAI] = ModelSourceProviderType.OPENAI
 
 
