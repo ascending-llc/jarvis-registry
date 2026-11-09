@@ -13,7 +13,13 @@ from bson.errors import InvalidId
 from registry_pkgs.core.crypto_utils import decrypt_value
 from registry_pkgs.database.model_gateway_selection_repository import get_model_gateway_selection
 from registry_pkgs.models.enums import ModelSourceMode
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
+from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    ModelSource,
+    OpenAIModelConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +119,16 @@ def build_agno_model(
             request_params,
             api_base=config.endpoint,
             api_key=api_key,
+        )
+    if isinstance(config, (AnthropicModelConfig, OpenAIModelConfig)):
+        prefix = "anthropic" if isinstance(config, AnthropicModelConfig) else "openai"
+        if not config.apiKeyEncrypted:
+            raise RuntimeError(f"{prefix} model source is missing its required API key")
+        return _litellm_model(
+            f"{prefix}/{config.modelId}",
+            {},
+            api_base=config.baseUrl,
+            api_key=decrypt_value(config.apiKeyEncrypted, encryption_key=encryption_key),
         )
     raise TypeError(f"Unsupported model source provider config: {type(config).__name__}")
 

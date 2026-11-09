@@ -6,7 +6,13 @@ from fastapi import status as http_status
 
 from registry_pkgs.models.embedding_reindex_job import EmbeddingReindexJob
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
+from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    ModelSource,
+    OpenAIModelConfig,
+)
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
@@ -17,6 +23,7 @@ from ....deps import (
 )
 from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.model_source_api_schemas import (
+    AnthropicModelConfigResponse,
     AwsBedrockModelConfigResponse,
     AzureOpenAIModelConfigResponse,
     EmbeddingReindexJobListResponse,
@@ -29,6 +36,7 @@ from ....schemas.model_source_api_schemas import (
     ModelSourcePagedResponse,
     ModelSourceProviderConfigResponse,
     ModelSourceUpdateRequest,
+    OpenAIModelConfigResponse,
     SetDefaultWorkflowModelRequest,
     SetEmbeddingModelRequest,
 )
@@ -52,18 +60,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Model Source Management"])
 
 
-def _to_response_config(config: AwsBedrockModelConfig | AzureOpenAIModelConfig) -> ModelSourceProviderConfigResponse:
+def _to_response_config(
+    config: AwsBedrockModelConfig | AzureOpenAIModelConfig | AnthropicModelConfig | OpenAIModelConfig,
+) -> ModelSourceProviderConfigResponse:
     if isinstance(config, AwsBedrockModelConfig):
         return AwsBedrockModelConfigResponse(
             awsRegion=config.awsRegion,
             modelIdOrArn=config.modelIdOrArn,
             baseModelId=config.baseModelId,
         )
-    return AzureOpenAIModelConfigResponse(
-        endpoint=config.endpoint,
-        deploymentName=config.deploymentName,
-        baseModelId=config.baseModelId,
-        apiVersion=config.apiVersion,
+    if isinstance(config, AzureOpenAIModelConfig):
+        return AzureOpenAIModelConfigResponse(
+            endpoint=config.endpoint,
+            deploymentName=config.deploymentName,
+            baseModelId=config.baseModelId,
+            apiVersion=config.apiVersion,
+            hasApiKey=bool(config.apiKeyEncrypted),
+        )
+    response_cls = (
+        AnthropicModelConfigResponse if isinstance(config, AnthropicModelConfig) else OpenAIModelConfigResponse
+    )
+    return response_cls(
+        modelId=config.modelId,
+        baseUrl=config.baseUrl,
         hasApiKey=bool(config.apiKeyEncrypted),
     )
 

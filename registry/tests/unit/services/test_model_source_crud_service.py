@@ -4,16 +4,24 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
+from fastapi import HTTPException
 
 from registry.schemas.model_source_api_schemas import (
+    AnthropicModelConfigInput,
     AwsBedrockModelConfigInput,
     AzureOpenAIModelConfigInput,
+    OpenAIModelConfigInput,
 )
 from registry.services import model_source_crud_service as crud_module
 from registry.services.model_source_crud_service import ModelSourceCrudService
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig
+from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    OpenAIModelConfig,
+)
 from registry_pkgs.models.workflow import WorkflowNode
 
 VALID_ID = "0" * 24
@@ -118,6 +126,59 @@ def test_to_stored_config_azure_without_key_leaves_none(service) -> None:
     assert stored.apiKeyEncrypted is None
 
 
+def test_to_stored_config_openai_encrypts_key(service) -> None:
+    stored = service._to_stored_config(
+        OpenAIModelConfigInput(modelId="gpt-4.1", baseUrl="https://proxy.example.com/v1", apiKey="sk-plain")
+    )
+    assert isinstance(stored, OpenAIModelConfig)
+    assert stored.modelId == "gpt-4.1"
+    assert stored.baseUrl == "https://proxy.example.com/v1"
+    assert stored.apiKeyEncrypted and is_encrypted(stored.apiKeyEncrypted)
+
+
+async def test_create_first_party_without_key_raises_400(service, monkeypatch) -> None:
+    monkeypatch.setattr(crud_module, "ModelSource", _StubModelSource)
+    with pytest.raises(HTTPException) as exc:
+        await service.create_source(
+            display_name="Claude",
+            description=None,
+            tags=[],
+            mode=ModelSourceMode.CHAT,
+            provider_config=AnthropicModelConfigInput(modelId="claude-sonnet-4-5"),
+            created_by="u1",
+        )
+    assert exc.value.status_code == 400
+
+
+async def test_create_anthropic_embedding_raises_400(service, monkeypatch) -> None:
+    monkeypatch.setattr(crud_module, "ModelSource", _StubModelSource)
+    with pytest.raises(HTTPException) as exc:
+        await service.create_source(
+            display_name="Claude",
+            description=None,
+            tags=[],
+            mode=ModelSourceMode.EMBEDDING,
+            provider_config=AnthropicModelConfigInput(modelId="claude-sonnet-4-5", apiKey="sk-ant"),
+            created_by="u1",
+        )
+    assert exc.value.status_code == 400
+
+
+async def test_create_first_party_inserts(service, monkeypatch) -> None:
+    monkeypatch.setattr(crud_module, "ModelSource", _StubModelSource)
+    source = await service.create_source(
+        display_name="GPT-4.1",
+        description=None,
+        tags=[],
+        mode=ModelSourceMode.CHAT,
+        provider_config=OpenAIModelConfigInput(modelId="gpt-4.1", apiKey="sk-plain"),
+        created_by="u1",
+    )
+    assert isinstance(source.providerConfig, OpenAIModelConfig)
+    assert source.providerConfig.apiKeyEncrypted
+    source.insert.assert_awaited_once()
+
+
 def test_encrypt_secret_is_idempotent(service) -> None:
     once = service._encrypt_secret("secret")
     twice = service._encrypt_secret(once)
@@ -218,6 +279,7 @@ async def test_update_source_applies_only_supplied_fields(service) -> None:
 async def test_update_azure_config_without_key_preserves_stored_secret(service) -> None:
     """AS-1851: omitting apiKey on update must not wipe the stored encrypted key."""
     source = SimpleNamespace(
+        mode="chat",
         providerConfig=AzureOpenAIModelConfig(
             endpoint="https://acme.openai.azure.com",
             deploymentName="d",
@@ -241,6 +303,7 @@ async def test_update_azure_config_without_key_preserves_stored_secret(service) 
 
 async def test_update_azure_config_with_new_key_reencrypts(service) -> None:
     source = SimpleNamespace(
+        mode="chat",
         providerConfig=AzureOpenAIModelConfig(
             endpoint="https://acme.openai.azure.com",
             deploymentName="d",
@@ -264,6 +327,149 @@ async def test_update_azure_config_with_new_key_reencrypts(service) -> None:
     assert is_encrypted(enc)
 
 
+def _azure_update(endpoint: str, api_key: str | None = None) -> AzureOpenAIModelConfigInput:
+    return AzureOpenAIModelConfigInput(
+        endpoint=endpoint, deploymentName="d", baseModelId="gpt-4o", apiVersion="2024-10-21", apiKey=api_key
+    )
+
+
+async def test_update_azure_endpoint_change_without_key_raises_400(service) -> None:
+    """A changed endpoint must not inherit the stored key, or it would be sent to the new host."""
+    source = _azure_source(PydanticObjectId(), endpoint="https://old.openai.azure.com")
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(
+            source, {"providerConfig": _azure_update("https://new.openai.azure.com")}, updated_by="admin"
+        )
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
+async def test_update_azure_endpoint_change_with_new_key_succeeds(service) -> None:
+    source = _azure_source(PydanticObjectId(), endpoint="https://old.openai.azure.com")
+
+    await service.update_source(
+        source, {"providerConfig": _azure_update("https://new.openai.azure.com", "new-key")}, updated_by="admin"
+    )
+
+    assert source.providerConfig.endpoint == "https://new.openai.azure.com"
+    assert is_encrypted(source.providerConfig.apiKeyEncrypted)
+    assert source.providerConfig.apiKeyEncrypted != "iv:existing-cipher"
+    source.save.assert_awaited_once()
+
+
+async def test_update_azure_endpoint_change_without_stored_key_succeeds(service) -> None:
+    """A Workload Identity source has no key to redirect, so its endpoint may change freely."""
+    source = _azure_source(PydanticObjectId(), endpoint="https://old.openai.azure.com")
+    source.providerConfig.apiKeyEncrypted = None
+
+    await service.update_source(
+        source, {"providerConfig": _azure_update("https://new.openai.azure.com")}, updated_by="admin"
+    )
+
+    assert source.providerConfig.endpoint == "https://new.openai.azure.com"
+    assert source.providerConfig.apiKeyEncrypted is None
+    source.save.assert_awaited_once()
+
+
+async def test_update_openai_config_without_key_preserves_stored_secret(service) -> None:
+    """Omitting apiKey on a first-party update must keep the stored encrypted key (AS-1952)."""
+    source = SimpleNamespace(
+        mode="chat",
+        providerConfig=OpenAIModelConfig(
+            modelId="gpt-4.1",
+            baseUrl=None,
+            apiKeyEncrypted="iv:existing-cipher",
+        ),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+    new_config = OpenAIModelConfigInput(modelId="gpt-4.1-mini")
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    assert source.providerConfig.modelId == "gpt-4.1-mini"
+    assert source.providerConfig.apiKeyEncrypted == "iv:existing-cipher"
+
+
+async def test_update_switch_to_first_party_without_key_raises_400(service) -> None:
+    """Switching provider to first-party drops the old key, so a new one is required."""
+    source = SimpleNamespace(
+        mode="chat",
+        providerConfig=AzureOpenAIModelConfig(
+            endpoint="https://acme.openai.azure.com",
+            deploymentName="d",
+            baseModelId="gpt-4o",
+            apiVersion="2024-10-21",
+            apiKeyEncrypted="iv:existing-cipher",
+        ),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+    new_config = OpenAIModelConfigInput(modelId="gpt-4.1")  # no apiKey
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
+def _openai_source(sid=None, *, mode="chat", model="gpt-4.1", base_url=None):
+    return SimpleNamespace(
+        id=sid or PydanticObjectId(),
+        mode=mode,
+        providerConfig=OpenAIModelConfig(modelId=model, baseUrl=base_url, apiKeyEncrypted="iv:existing-cipher"),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+
+
+async def test_update_openai_base_url_change_without_key_raises_400(service) -> None:
+    """A changed baseUrl must not inherit the stored key, or it would be sent to the new host."""
+    source = _openai_source(base_url="https://api.openai.com/v1")
+    new_config = OpenAIModelConfigInput(modelId="gpt-4.1", baseUrl="https://attacker.example.com/v1")
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
+async def test_update_openai_base_url_change_with_new_key_succeeds(service) -> None:
+    source = _openai_source(base_url=None)
+    new_config = OpenAIModelConfigInput(modelId="gpt-4.1", baseUrl="https://proxy.example.com/v1", apiKey="sk-new")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+
+    assert source.providerConfig.baseUrl == "https://proxy.example.com/v1"
+    assert is_encrypted(source.providerConfig.apiKeyEncrypted)
+    assert source.providerConfig.apiKeyEncrypted != "iv:existing-cipher"
+    source.save.assert_awaited_once()
+
+
+async def test_update_switch_between_first_party_providers_without_key_raises_400(service) -> None:
+    """The stored key belongs to the original provider; switching OpenAI -> Anthropic requires a new one."""
+    source = _openai_source()
+    new_config = AnthropicModelConfigInput(modelId="claude-sonnet-4-5")
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
+async def test_update_anthropic_mode_to_embedding_raises_400(service) -> None:
+    source = SimpleNamespace(
+        id=PydanticObjectId(),
+        mode=ModelSourceMode.CHAT,
+        providerConfig=AnthropicModelConfig(modelId="claude-sonnet-4-5", apiKeyEncrypted="iv:existing-cipher"),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(source, {"mode": ModelSourceMode.EMBEDDING}, updated_by="admin")
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
 async def test_update_rejects_provider_config_change_during_reindex(service, monkeypatch) -> None:
     src_id = PydanticObjectId()
     monkeypatch.setattr(
@@ -273,6 +479,7 @@ async def test_update_rejects_provider_config_change_during_reindex(service, mon
     )
     source = SimpleNamespace(
         id=src_id,
+        mode="chat",
         providerConfig=AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn="m", baseModelId="m"),
         updatedBy=None,
         save=AsyncMock(),
@@ -287,6 +494,7 @@ async def test_update_rejects_provider_config_change_during_reindex(service, mon
 def _bedrock_source(sid, *, region="us-east-1", model="m"):
     return SimpleNamespace(
         id=sid,
+        mode="embedding",
         providerConfig=AwsBedrockModelConfig(awsRegion=region, modelIdOrArn=model, baseModelId=model),
         updatedBy=None,
         save=AsyncMock(),
@@ -296,6 +504,7 @@ def _bedrock_source(sid, *, region="us-east-1", model="m"):
 def _azure_source(sid, *, endpoint="https://acme.openai.azure.com", deployment="d"):
     return SimpleNamespace(
         id=sid,
+        mode="embedding",
         providerConfig=AzureOpenAIModelConfig(
             endpoint=endpoint,
             deploymentName=deployment,
@@ -350,6 +559,31 @@ async def test_update_active_source_rejects_azure_endpoint_change(service, selec
         baseModelId="gpt-4o",
         apiVersion="2024-10-21",
         apiKey=None,
+    )
+
+    with pytest.raises(ValueError, match="active embedding selection"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_active_source_rejects_openai_model_change(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _openai_source(sid, mode="embedding", model="text-embedding-3-small")
+    new_config = OpenAIModelConfigInput(modelId="text-embedding-3-large")
+
+    with pytest.raises(ValueError, match="active embedding selection"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_active_source_rejects_openai_base_url_change(service, selection_service) -> None:
+    """Same model id behind a different OpenAI-compatible vendor is a different vector space."""
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _openai_source(sid, mode="embedding", model="text-embedding-3-large", base_url=None)
+    new_config = OpenAIModelConfigInput(
+        modelId="text-embedding-3-large", baseUrl="https://other-vendor.example.com/v1", apiKey="sk-new"
     )
 
     with pytest.raises(ValueError, match="active embedding selection"):
@@ -431,6 +665,39 @@ async def test_update_active_source_allows_base_model_id_only_change(service, se
     source.save.assert_awaited_once()
 
 
+async def test_update_skill_scan_source_rejects_switch_to_first_party(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    selection_service.get_selection_or_none.return_value = _selection(skillScanModelSourceId=sid)
+    source = _azure_source(sid)
+    source.mode = ModelSourceMode.CHAT
+    new_config = OpenAIModelConfigInput(modelId="gpt-4.1", apiKey="sk-new")
+
+    with pytest.raises(ValueError, match="skill-scan"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_skill_scan_source_allows_switch_between_cloud_providers(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    selection_service.get_selection_or_none.return_value = _selection(skillScanModelSourceId=sid)
+    source = _azure_source(sid)
+    source.mode = ModelSourceMode.CHAT
+    new_config = AwsBedrockModelConfigInput(awsRegion="us-east-1", modelIdOrArn="m", baseModelId="m")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_awaited_once()
+
+
+async def test_update_non_skill_scan_source_allows_switch_to_first_party(service, selection_service) -> None:
+    source = _azure_source(PydanticObjectId())
+    source.mode = ModelSourceMode.CHAT
+    new_config = AnthropicModelConfigInput(modelId="claude-sonnet-4-5", apiKey="sk-ant-new")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    assert source.providerConfig.providerType == ModelSourceProviderType.ANTHROPIC
+    source.save.assert_awaited_once()
+
+
 async def test_update_rejects_mode_change_when_in_use(service, selection_service) -> None:
     sid = PydanticObjectId(VALID_ID)
     source = SimpleNamespace(id=sid, mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())
@@ -441,7 +708,13 @@ async def test_update_rejects_mode_change_when_in_use(service, selection_service
 
 
 async def test_update_allows_mode_change_when_not_in_use(service, selection_service) -> None:
-    source = SimpleNamespace(id=PydanticObjectId(VALID_ID), mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())
+    source = SimpleNamespace(
+        id=PydanticObjectId(VALID_ID),
+        mode=ModelSourceMode.CHAT,
+        providerConfig=AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn="m", baseModelId="m"),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
     selection_service.get_selection_or_none.return_value = _selection()
     await service.update_source(source, {"mode": ModelSourceMode.EMBEDDING}, updated_by="admin")
     assert source.mode == ModelSourceMode.EMBEDDING
