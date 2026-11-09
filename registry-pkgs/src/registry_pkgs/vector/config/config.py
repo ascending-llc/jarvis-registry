@@ -161,6 +161,7 @@ class OpenAIEmbeddingConfig(EmbeddingModelConfig):
 
     api_key: str = Field(description="OpenAI API key")
     model: str = Field(description="Model name")
+    base_url: str | None = Field(default=None, description="Override API base URL (proxy/regional endpoint)")
 
     @classmethod
     def from_vector_config(cls, config: VectorConfig) -> "OpenAIEmbeddingConfig":
