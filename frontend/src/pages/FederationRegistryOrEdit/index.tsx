@@ -41,6 +41,8 @@ import MainConfigForm from './MainConfigForm';
 import { getLatestFinishedSyncJob } from './skillSyncJobUtils';
 import type { FederationFormConfig } from './types';
 
+const EXTERNAL_PROVIDERS_LIST_PATH = '/?tab=external';
+
 const INIT_DATA: FederationFormConfig = {
   providerType: 'aws_agentcore',
   displayName: '',
@@ -110,7 +112,14 @@ const FederationRegistryOrEdit: React.FC = () => {
   const hasUnsavedGithubChanges =
     isGithubSource && skillSyncSource !== null && hasGithubFormChanges(skillSyncSource, formData);
 
-  const goBack = () => navigate(-1);
+  const goBack = () => {
+    if (isGithubSource) {
+      // History may hold GitHub's authorize page (OAuth round trip); going back replays a used state.
+      navigate(EXTERNAL_PROVIDERS_LIST_PATH, { replace: true });
+      return;
+    }
+    navigate(-1);
+  };
 
   const getDetail = useCallback(async () => {
     const providerId = id;
@@ -287,7 +296,7 @@ const FederationRegistryOrEdit: React.FC = () => {
         showToast('External Provider deleted successfully', 'success');
       }
       await refreshFederationData(true);
-      navigate('/?tab=external', { replace: true });
+      navigate(EXTERNAL_PROVIDERS_LIST_PATH, { replace: true });
     } catch (error: unknown) {
       showToast(getErrorMessage(error, 'Failed to delete external provider'), 'error');
     } finally {

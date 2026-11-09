@@ -21,7 +21,8 @@ from registry.schemas.skill_api_schemas import SkillCreateRequest, SkillUpdateRe
 from registry.services.skill_service import SkillService
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedSkill, ExtendedSkillFile, SkillScanJob, SkillScanResult
-from registry_pkgs.models.enums import SkillScanJobStatus
+from registry_pkgs.models.enums import SkillScanJobStatus, SkillScanTriggerType
+from registry_pkgs.skill_scan.enqueue import enqueue_skill_scan
 
 pytestmark = pytest.mark.integration
 
@@ -76,20 +77,36 @@ async def test_create_skill_commits_exactly_one_pending_job(ctx):
 
 
 @pytest.mark.asyncio
-async def test_failed_update_leaves_the_existing_job_untouched(ctx):
-    # A skill whose name the rename will collide with.
-    await ctx.service.create_skill(SkillCreateRequest(name="taken", description="d"), _USER_ID, "x")
+async def test_rollback_after_enqueue_leaves_job_and_skill_untouched(ctx, monkeypatch):
+    # The enqueue writes skill_scan_jobs inside the update transaction. To prove that write rolls back
+    # with the skill, force the failure AFTER the real enqueue has run (a pre-save 409 would never
+    # reach it, so it would pass even with session=None).
     skill, _f, _p = await ctx.service.create_skill(SkillCreateRequest(name="movable", description="d"), _USER_ID, "x")
+    before_version = skill.version
+    # Flip the job to DONE so a committed enqueue would visibly reset it to PENDING -> if we still see
+    # DONE after the rollback, the enqueue's in-transaction write was undone.
+    await SkillScanJob.get_pymongo_collection().update_one(
+        {"skillId": skill.id}, {"$set": {"status": SkillScanJobStatus.DONE.value}}
+    )
     before = await _jobs_for(skill.id)
     assert len(before) == 1
 
-    # Renaming to an existing name raises 409 inside the transaction -> the whole write rolls back.
-    with pytest.raises(Exception):  # noqa: B017 — HTTPException(409); any raise must leave state intact
-        await ctx.service.update_skill(skill.id, SkillUpdateRequest(name="taken"), _USER_ID)
+    real_enqueue = enqueue_skill_scan
 
-    after = await _jobs_for(skill.id)
-    assert len(after) == 1  # no second job, none deleted
-    assert after[0]["requestedAt"] == before[0]["requestedAt"]  # the failed write did not re-enqueue
+    async def fail_after_enqueue(skill_id, *, trigger: SkillScanTriggerType, requested_by, session) -> None:
+        await real_enqueue(skill_id, trigger=trigger, requested_by=requested_by, session=session)
+        raise RuntimeError("Forced rollback after enqueue")
+
+    monkeypatch.setattr("registry.services.skill_service.enqueue_skill_scan", fail_after_enqueue)
+
+    with pytest.raises(RuntimeError, match="Forced rollback after enqueue"):
+        await ctx.service.update_skill(skill.id, SkillUpdateRequest(description="Changed"), _USER_ID)
+
+    assert await _jobs_for(skill.id) == before  # job write (incl. the DONE->PENDING reset) rolled back
+    stored = await ExtendedSkill.get_pymongo_collection().find_one({"_id": skill.id})
+    assert stored is not None
+    assert stored["description"] == "d"  # the skill edit rolled back too
+    assert stored["version"] == before_version
 
 
 @pytest.mark.asyncio

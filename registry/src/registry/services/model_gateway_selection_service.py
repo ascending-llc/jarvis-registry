@@ -8,6 +8,13 @@ from registry_pkgs.database.model_gateway_selection_repository import (
 from registry_pkgs.models.enums import ModelSourceMode
 from registry_pkgs.models.model_gateway_selection import ModelGatewaySelection
 from registry_pkgs.models.model_source import ModelSource
+from registry_pkgs.skill_scan.plan import SKILL_SCAN_PROVIDER_TYPES
+
+# Rejection for a skill-scan source outside SKILL_SCAN_PROVIDER_TYPES (AS-1980 D7).
+_SKILL_SCAN_PROVIDER_REJECTED = (
+    "Model source '{model_source_id}' uses provider '{provider}', which cannot scan skills: skill content must "
+    "not leave the client's cloud account, so only AWS Bedrock and Azure OpenAI can scan skills."
+)
 
 
 class ModelSourceNotFoundError(ValueError):
@@ -51,12 +58,18 @@ class ModelGatewaySelectionService:
     ) -> ModelGatewaySelection:
         """Set (or clear, with ``None``) the model used for skill security scanning.
 
-        A non-null id must point at a live CHAT ModelSource, as the workflow default does; ``None``
-        clears the slot so scanning falls back to ``defaultWorkflowModelSourceId``.
+        A non-null id must point at a live CHAT ModelSource on a ``SKILL_SCAN_PROVIDER_TYPES`` provider
+        (``ModelSourceModeMismatchError`` otherwise, which the route maps to 409); ``None`` clears the
+        slot so scanning falls back to ``defaultWorkflowModelSourceId``.
         """
         source_id = None
         if model_source_id is not None:
             source = await self._require_model_source(model_source_id, ModelSourceMode.CHAT)
+            provider = source.providerConfig.providerType
+            if provider not in SKILL_SCAN_PROVIDER_TYPES:
+                raise ModelSourceModeMismatchError(
+                    _SKILL_SCAN_PROVIDER_REJECTED.format(model_source_id=model_source_id, provider=provider)
+                )
             source_id = source.id
         return await set_model_gateway_selection(
             "skillScanModelSourceId",

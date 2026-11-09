@@ -589,6 +589,8 @@ class RegistryContainer:
             flow_state_manager=self.flow_state_manager,
             token_service=self.skill_sync_token_service,
             http_client=self.mcp_proxy_client,
+            redis_client=self.redis_client,
+            redis_key_prefix=self.settings.redis_key_prefix,
         )
 
     @cached_property

@@ -308,6 +308,8 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
               ['all', 'All providers', 'bg-[var(--jarvis-primary)]'],
               ['aws_bedrock', 'AWS Bedrock', 'bg-[var(--jarvis-orange)]'],
               ['azure_openai', 'Azure OpenAI', 'bg-[var(--jarvis-blue)]'],
+              ['openai', 'OpenAI', 'bg-[var(--jarvis-text)]'],
+              ['anthropic', 'Anthropic', 'bg-[var(--jarvis-warning)]'],
             ] as const
           ).map(([provider, label, dotClass]) => (
             <button

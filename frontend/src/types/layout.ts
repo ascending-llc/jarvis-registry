@@ -20,7 +20,7 @@ export type SkillsNavigationConfig = {
   showStatusFilters: boolean;
 };
 
-export type ModelProviderFilter = 'all' | 'aws_bedrock' | 'azure_openai';
+export type ModelProviderFilter = 'all' | 'aws_bedrock' | 'azure_openai' | 'openai' | 'anthropic';
 
 export type ModelsNavigationConfig = {
   total: number;
