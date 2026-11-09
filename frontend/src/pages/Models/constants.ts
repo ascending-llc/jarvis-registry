@@ -44,6 +44,13 @@ export const FIRST_PARTY_DEFAULT_BASE_URL: Record<'anthropic' | 'openai', string
   openai: 'https://api.openai.com/v1',
 };
 
+// Skill content must not leave the client's cloud account (AS-1980 D7/D16), so only these providers can
+// scan skills. Mirrors SKILL_SCAN_PROVIDER_TYPES in registry_pkgs.skill_scan.plan.
+export const SKILL_SCAN_PROVIDER_TYPES: ReadonlySet<ModelSourceProviderType> = new Set(['aws_bedrock', 'azure_openai']);
+
+export const SKILL_SCAN_FALLBACK_NOTE =
+  'Not used for skill scanning, which requires AWS Bedrock or Azure OpenAI so skill content stays in your cloud account.';
+
 export const isBackendSupportedProvider = (
   providerType: ModelFormProviderType,
 ): providerType is ModelSourceProviderType =>

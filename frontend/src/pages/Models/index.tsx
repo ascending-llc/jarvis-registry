@@ -17,6 +17,7 @@ import type {
 import type { ModelProviderFilter } from '@/types/layout';
 import { getErrorMessage } from '@/utils/getErrorMessage';
 
+import { SKILL_SCAN_FALLBACK_NOTE, SKILL_SCAN_PROVIDER_TYPES } from './constants';
 import DeleteModelDialog from './DeleteModelDialog';
 import ModelDetailView from './ModelDetailView';
 import ModelFormView from './ModelFormView';
@@ -215,7 +216,7 @@ const ModelsPage: React.FC = () => {
     }
   };
 
-  const handleSetDefault = async (model: Pick<ModelSourceListItem, 'id' | 'mode'>) => {
+  const handleSetDefault = async (model: Pick<ModelSourceListItem, 'id' | 'mode' | 'providerType'>) => {
     if (!canWrite || settingDefaultId) return;
     if (model.mode === 'embedding' && reindexJob?.status === 'running') {
       showToast('An embedding reindex is already running.', 'error');
@@ -228,7 +229,12 @@ const ModelsPage: React.FC = () => {
         const nextSelection = await SERVICES.MODEL.setDefaultWorkflowModel(model.id);
         setModelSelection(nextSelection);
         await refreshModelData(true);
-        showToast('Default workflow model updated.', 'success');
+        showToast(
+          SKILL_SCAN_PROVIDER_TYPES.has(model.providerType)
+            ? 'Default workflow model updated.'
+            : `Default workflow model updated. ${SKILL_SCAN_FALLBACK_NOTE}`,
+          'success',
+        );
         return;
       }
       await SERVICES.MODEL.setEmbeddingModel(model.id);
