@@ -35,14 +35,14 @@ from .model_gateway_selection_service import ModelGatewaySelectionService, Model
 StoredProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig | AnthropicModelConfig | OpenAIModelConfig
 
 # Fields whose change moves an embedding to a different vector space (different model / different
-# Azure resource+deployment). Editing them on the source backing the ACTIVE embedding selection would
-# leave every existing vector unreadable, so they are rejected there (a new generation must reindex).
-# apiKey rotation, apiVersion, and a Bedrock awsRegion change (same model) do NOT change the space.
+# Azure resource+deployment / different OpenAI-compatible vendor). Editing them on the source backing the
+# ACTIVE embedding selection would leave every existing vector unreadable, so they are rejected there (a
+# new generation must reindex). apiKey rotation, apiVersion, and a Bedrock awsRegion change (same model)
+# do NOT change the space. Anthropic is absent: it has no embedding API, so it is never in embedding mode.
 _VECTOR_SPACE_FIELDS: dict[type, tuple[str, ...]] = {
     AwsBedrockModelConfig: ("modelIdOrArn",),
     AzureOpenAIModelConfig: ("deploymentName", "endpoint"),
-    AnthropicModelConfig: ("modelId",),
-    OpenAIModelConfig: ("modelId",),
+    OpenAIModelConfig: ("modelId", "baseUrl"),
 }
 _ACTIVE_SOURCE_VECTOR_SPACE_ERROR = (
     "Cannot change the embedding model or endpoint of the model source backing the active embedding "
@@ -114,13 +114,14 @@ class ModelSourceCrudService:
 
     @staticmethod
     def _require_first_party_key(config: StoredProviderConfig) -> None:
-        """First-party providers have no ambient identity, so an API key must be present at creation."""
+        """First-party providers have no ambient identity, so an API key must always be present."""
         if isinstance(config, FirstPartyModelConfig) and not config.apiKeyEncrypted:
             raise HTTPException(
                 http_status.HTTP_400_BAD_REQUEST,
                 detail=create_error_detail(
                     ErrorCode.INVALID_REQUEST,
-                    "An API key is required for first-party (Anthropic / OpenAI) model sources.",
+                    "An API key is required for first-party (Anthropic / OpenAI) model sources. "
+                    "Re-enter it when changing the provider type or baseUrl.",
                 ),
             )
 
@@ -244,7 +245,7 @@ class ModelSourceCrudService:
         new_config: StoredProviderConfig,
         old_config: StoredProviderConfig,
     ) -> StoredProviderConfig:
-        """Carry over the stored Azure key when an update omits a new one."""
+        """Carry over the stored Azure / first-party key when an update omits a new one."""
         if (
             isinstance(new_config, AzureOpenAIModelConfig)
             and new_config.apiKeyEncrypted is None
@@ -252,12 +253,15 @@ class ModelSourceCrudService:
             and old_config.apiKeyEncrypted
         ):
             new_config.apiKeyEncrypted = old_config.apiKeyEncrypted
-        # Same carry-over for a first-party source keeping its provider type across an update.
+        # Same carry-over for a first-party source keeping its provider type and baseUrl. A changed
+        # baseUrl must not inherit the key: that would send the stored key to a host the editor chose
+        # without ever knowing the key.
         if (
             isinstance(new_config, FirstPartyModelConfig)
             and new_config.apiKeyEncrypted is None
             and type(new_config) is type(old_config)
             and isinstance(old_config, FirstPartyModelConfig)
+            and new_config.baseUrl == old_config.baseUrl
             and old_config.apiKeyEncrypted
         ):
             new_config.apiKeyEncrypted = old_config.apiKeyEncrypted

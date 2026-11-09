@@ -224,8 +224,14 @@ Partial update — only the fields present in the body are changed (`displayName
 
 **Credential handling:** `providerConfig` is replaced as a whole when supplied. For an Azure
 config, if `apiKey` is **omitted**, the previously stored encrypted key is **preserved**; if a
-new `apiKey` is supplied, it is re-encrypted. (Omitting `providerConfig` entirely leaves the
-stored config and key untouched.)
+new `apiKey` is supplied, it is re-encrypted. A first-party (Anthropic / OpenAI) key is preserved
+the same way only when `providerType` **and** `baseUrl` are unchanged; changing either requires a
+new `apiKey` (`400` otherwise), so the stored key is never sent to a host the editor chose.
+(Omitting `providerConfig` entirely leaves the stored config and key untouched.)
+
+**Active embedding source:** on the source backing the active embedding selection, a change that
+moves the vector space is rejected with `409`: a provider-type switch, Bedrock `modelIdOrArn`,
+Azure `deploymentName` / `endpoint`, or OpenAI `modelId` / `baseUrl`.
 
 **Response**: `200 OK` → [`ModelSourceDetailResponse`](#modelsourcedetailresponse)
 (no `metadata`). `404` if not found/soft-deleted.
@@ -451,7 +457,7 @@ Direct API-key providers (`providerType` = `"anthropic"` / `"openai"`). Same sha
 | `apiKeyEncrypted` | string \| null | **required at creation** (no ambient identity); encrypted at rest; **response returns `hasApiKey: bool` instead** |
 
 No ambient identity exists for first-party providers, so `apiKey` is required on create
-(omit on update to keep the stored key). Anthropic has no embedding API, so
+(omit on update to keep the stored key, unless `baseUrl` changes). Anthropic has no embedding API, so
 `providerType: "anthropic"` with `mode: "embedding"` is rejected with `400`.
 
 ### ModelGatewaySelection (singleton)

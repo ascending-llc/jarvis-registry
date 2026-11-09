@@ -17,6 +17,7 @@ from registry.services.model_source_crud_service import ModelSourceCrudService
 from registry_pkgs.core.crypto_utils import is_encrypted
 from registry_pkgs.models.enums import ModelSourceMode, ModelSourceProviderType
 from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
     AwsBedrockModelConfig,
     AzureOpenAIModelConfig,
     OpenAIModelConfig,
@@ -357,6 +358,65 @@ async def test_update_switch_to_first_party_without_key_raises_400(service) -> N
     source.save.assert_not_awaited()
 
 
+def _openai_source(sid=None, *, mode="chat", model="gpt-4.1", base_url=None):
+    return SimpleNamespace(
+        id=sid or PydanticObjectId(),
+        mode=mode,
+        providerConfig=OpenAIModelConfig(modelId=model, baseUrl=base_url, apiKeyEncrypted="iv:existing-cipher"),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+
+
+async def test_update_openai_base_url_change_without_key_raises_400(service) -> None:
+    """A changed baseUrl must not inherit the stored key, or it would be sent to the new host."""
+    source = _openai_source(base_url="https://api.openai.com/v1")
+    new_config = OpenAIModelConfigInput(modelId="gpt-4.1", baseUrl="https://attacker.example.com/v1")
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
+async def test_update_openai_base_url_change_with_new_key_succeeds(service) -> None:
+    source = _openai_source(base_url=None)
+    new_config = OpenAIModelConfigInput(modelId="gpt-4.1", baseUrl="https://proxy.example.com/v1", apiKey="sk-new")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+
+    assert source.providerConfig.baseUrl == "https://proxy.example.com/v1"
+    assert is_encrypted(source.providerConfig.apiKeyEncrypted)
+    assert source.providerConfig.apiKeyEncrypted != "iv:existing-cipher"
+    source.save.assert_awaited_once()
+
+
+async def test_update_switch_between_first_party_providers_without_key_raises_400(service) -> None:
+    """The stored key belongs to the original provider; switching OpenAI -> Anthropic requires a new one."""
+    source = _openai_source()
+    new_config = AnthropicModelConfigInput(modelId="claude-sonnet-4-5")
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
+async def test_update_anthropic_mode_to_embedding_raises_400(service) -> None:
+    source = SimpleNamespace(
+        id=PydanticObjectId(),
+        mode=ModelSourceMode.CHAT,
+        providerConfig=AnthropicModelConfig(modelId="claude-sonnet-4-5", apiKeyEncrypted="iv:existing-cipher"),
+        updatedBy=None,
+        save=AsyncMock(),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update_source(source, {"mode": ModelSourceMode.EMBEDDING}, updated_by="admin")
+    assert exc.value.status_code == 400
+    source.save.assert_not_awaited()
+
+
 async def test_update_rejects_provider_config_change_during_reindex(service, monkeypatch) -> None:
     src_id = PydanticObjectId()
     monkeypatch.setattr(
@@ -448,6 +508,31 @@ async def test_update_active_source_rejects_azure_endpoint_change(service, selec
         baseModelId="gpt-4o",
         apiVersion="2024-10-21",
         apiKey=None,
+    )
+
+    with pytest.raises(ValueError, match="active embedding selection"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_active_source_rejects_openai_model_change(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _openai_source(sid, mode="embedding", model="text-embedding-3-small")
+    new_config = OpenAIModelConfigInput(modelId="text-embedding-3-large")
+
+    with pytest.raises(ValueError, match="active embedding selection"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_active_source_rejects_openai_base_url_change(service, selection_service) -> None:
+    """Same model id behind a different OpenAI-compatible vendor is a different vector space."""
+    sid = PydanticObjectId()
+    _mark_active(selection_service, sid)
+    source = _openai_source(sid, mode="embedding", model="text-embedding-3-large", base_url=None)
+    new_config = OpenAIModelConfigInput(
+        modelId="text-embedding-3-large", baseUrl="https://other-vendor.example.com/v1", apiKey="sk-new"
     )
 
     with pytest.raises(ValueError, match="active embedding selection"):
