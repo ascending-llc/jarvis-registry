@@ -2,8 +2,10 @@
 pod secrets to untrusted tool code (Risk)."""
 
 import asyncio
+import contextlib
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -145,3 +147,60 @@ async def test_non_zero_exit_returns_result_without_raising(tmp_path: Path) -> N
     )
     assert result.exit_code == 3
     assert result.timed_out is False
+
+
+async def test_normal_exit_kills_leftover_group_members_and_does_not_hang(tmp_path: Path) -> None:
+    # The tool exits at once but leaves a backgrounded helper in its group holding stderr open.
+    out = tmp_path / "pid.out"
+    argv = [
+        sys.executable,
+        "-c",
+        (
+            "import subprocess,sys;"
+            "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+            "open(sys.argv[1],'w').write(str(p.pid))"
+        ),
+        str(out),
+    ]
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    result = await run_tool_process(
+        Invocation(argv=argv, output_file=out), cwd=tmp_path, timeout=30, max_output_bytes=1 << 20
+    )
+    assert loop.time() - started < 10
+    assert result.exit_code == 0
+    assert result.timed_out is False
+
+    grandchild_pid = int(out.read_text())
+    for _ in range(50):
+        if not _pid_alive(grandchild_pid):
+            break
+        await asyncio.sleep(0.1)
+    assert not _pid_alive(grandchild_pid)
+
+
+async def test_descendant_that_escapes_the_group_cannot_block_the_drain(tmp_path: Path) -> None:
+    # A helper in its own session is out of reach of killpg, but still holds stderr; the drain must be bounded.
+    out = tmp_path / "pid.out"
+    argv = [
+        sys.executable,
+        "-c",
+        (
+            "import subprocess,sys;"
+            "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True);"
+            "open(sys.argv[1],'w').write(str(p.pid))"
+        ),
+        str(out),
+    ]
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        result = await run_tool_process(
+            Invocation(argv=argv, output_file=out), cwd=tmp_path, timeout=30, max_output_bytes=1 << 20
+        )
+        assert loop.time() - started < 10
+        assert result.exit_code == 0
+    finally:
+        if out.exists() and out.read_text():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(out.read_text()), signal.SIGKILL)

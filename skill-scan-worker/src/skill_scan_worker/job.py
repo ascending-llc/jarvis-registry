@@ -60,6 +60,27 @@ _CANCEL_REQUEUE_TIMEOUT = 5.0
 
 async def execute_job(job: SkillScanJob, lease: Lease) -> None:
     """Run the full scan for one claimed job, or requeue it on shutdown."""
+    try:
+        await _scan(job, lease)
+    except asyncio.CancelledError:
+        # Shutdown, at any point of the job (including the initial loads): process.py has killed any running
+        # tool. Restore the attempt this claim consumed so a rollout does not burn one of the three attempts;
+        # shielded and bounded so it can't hang shutdown.
+        with suppress(Exception):
+            await asyncio.wait_for(
+                asyncio.shield(
+                    skill_scan_job_repository.transition(
+                        lease,
+                        {"status": SkillScanJobStatus.PENDING.value, "attemptCount": job.attemptCount - 1},
+                        release=True,
+                    )
+                ),
+                timeout=_CANCEL_REQUEUE_TIMEOUT,
+            )
+        raise
+
+
+async def _scan(job: SkillScanJob, lease: Lease) -> None:
     skill = await ExtendedSkill.get(job.skillId)
     if skill is None:
         # Deleted in Chat (Chat bypasses Registry): delete_skill_scan_state removes the job and results.
@@ -76,42 +97,26 @@ async def execute_job(job: SkillScanJob, lease: Lease) -> None:
 
     pending = await tools_needing_scan(skill.id, digest, fingerprints)
 
-    try:
-        results: list[SkillScanResult] = []
-        if pending:
-            if has_unreadable_files(skill, files):
-                results = [
-                    _no_process_result(
-                        skill,
-                        digest,
-                        adapters_by_name[name],
-                        fingerprints[name],
-                        llm_info,
-                        status=SkillScanResultStatus.SKIPPED,
-                        status_reason=SkillScanStatusReason.CHAT_SUPPORTING_FILES_UNSUPPORTED,
-                    )
-                    for name in pending
-                ]
-            else:
-                results = await _run_pending(
-                    skill, files, digest, source, llm_info, fingerprints, pending, adapters_by_name
+    results: list[SkillScanResult] = []
+    if pending:
+        if has_unreadable_files(skill, files):
+            results = [
+                _no_process_result(
+                    skill,
+                    digest,
+                    adapters_by_name[name],
+                    fingerprints[name],
+                    llm_info,
+                    status=SkillScanResultStatus.SKIPPED,
+                    status_reason=SkillScanStatusReason.CHAT_SUPPORTING_FILES_UNSUPPORTED,
                 )
-        await finish_job(lease, skill, digest, fingerprints, results)
-    except asyncio.CancelledError:
-        # Shutdown: process.py has killed the tool. Restore the attempt this claim consumed so a rollout
-        # does not burn one of the three attempts; shielded and bounded so it can't hang shutdown.
-        with suppress(Exception):
-            await asyncio.wait_for(
-                asyncio.shield(
-                    skill_scan_job_repository.transition(
-                        lease,
-                        {"status": SkillScanJobStatus.PENDING.value, "attemptCount": job.attemptCount - 1},
-                        release=True,
-                    )
-                ),
-                timeout=_CANCEL_REQUEUE_TIMEOUT,
+                for name in pending
+            ]
+        else:
+            results = await _run_pending(
+                skill, files, digest, source, llm_info, fingerprints, pending, adapters_by_name
             )
-        raise
+    await finish_job(lease, skill, digest, fingerprints, results)
 
 
 async def _run_pending(
@@ -129,7 +134,8 @@ async def _run_pending(
     try:
         skill_dir = run_dir / "skill"
         try:
-            materialize_skill(skill, files, skill_dir)
+            # Synchronous file I/O: keep it off the event loop so it never starves the lease heartbeat.
+            await asyncio.to_thread(materialize_skill, skill, files, skill_dir)
         except SkillNotScannableError as e:
             # Content Registry cannot read safely (e.g. clashing file paths): a tool failure, not retryable.
             return [
@@ -173,7 +179,7 @@ async def _run_pending(
             )
         return results
     finally:
-        shutil.rmtree(run_dir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, run_dir, ignore_errors=True)
 
 
 async def run_adapter(

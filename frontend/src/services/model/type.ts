@@ -1,6 +1,6 @@
 export type ModelSourceMode = 'chat' | 'embedding';
 
-export type ModelSourceProviderType = 'aws_bedrock' | 'azure_openai';
+export type ModelSourceProviderType = 'aws_bedrock' | 'azure_openai' | 'anthropic' | 'openai';
 
 export type AwsBedrockModelConfig = {
   providerType: 'aws_bedrock';
@@ -22,9 +22,24 @@ export type AzureOpenAIModelConfigInput = Omit<AzureOpenAIModelConfig, 'hasApiKe
   apiKey?: string;
 };
 
-export type ModelSourceProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig;
+export type FirstPartyModelConfig = {
+  providerType: 'anthropic' | 'openai';
+  modelId: string;
+  baseUrl: string | null;
+  hasApiKey: boolean;
+};
 
-export type ModelSourceProviderConfigInput = AwsBedrockModelConfig | AzureOpenAIModelConfigInput;
+export type FirstPartyModelConfigInput = Omit<FirstPartyModelConfig, 'hasApiKey' | 'baseUrl'> & {
+  baseUrl?: string;
+  apiKey?: string;
+};
+
+export type ModelSourceProviderConfig = AwsBedrockModelConfig | AzureOpenAIModelConfig | FirstPartyModelConfig;
+
+export type ModelSourceProviderConfigInput =
+  | AwsBedrockModelConfig
+  | AzureOpenAIModelConfigInput
+  | FirstPartyModelConfigInput;
 
 export type ModelSourceListItem = {
   id: string;

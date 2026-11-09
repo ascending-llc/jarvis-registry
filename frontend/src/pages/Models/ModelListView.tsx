@@ -18,7 +18,14 @@ import type {
 } from '@/services/model/type';
 import formatTimeSince from '@/utils/formatTimeSince';
 
-import { MODE_BADGE_CLASSES, MODE_LABELS, PROVIDER_BADGE_CLASSES, PROVIDER_LABELS } from './constants';
+import {
+  MODE_BADGE_CLASSES,
+  MODE_LABELS,
+  PROVIDER_BADGE_CLASSES,
+  PROVIDER_LABELS,
+  SKILL_SCAN_FALLBACK_NOTE,
+  SKILL_SCAN_PROVIDER_TYPES,
+} from './constants';
 import ModelDefaultBadge from './ModelDefaultBadge';
 
 type ModelListViewProps = {
@@ -190,7 +197,9 @@ const ModelListView: React.FC<ModelListViewProps> = ({
                     : isReindexTarget
                       ? 'Reindexing with this embedding model'
                       : canWrite
-                        ? `Set as default ${model.mode} model`
+                        ? model.mode === 'chat' && !SKILL_SCAN_PROVIDER_TYPES.has(model.providerType)
+                          ? `Set as default chat model. ${SKILL_SCAN_FALLBACK_NOTE}`
+                          : `Set as default ${model.mode} model`
                         : 'Requires models-write scope'
                 }
                 onClick={() => onSetDefault(model)}

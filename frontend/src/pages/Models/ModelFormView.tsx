@@ -5,7 +5,13 @@ import { useState } from 'react';
 import { InputField, SelectField } from '@/components/FormFields';
 import type { ModelGatewaySelection, ModelSourceListItem } from '@/services/model/type';
 
-import { AWS_REGION_OPTIONS, isBackendSupportedProvider, MODEL_PROVIDER_OPTIONS, PROVIDER_LABELS } from './constants';
+import {
+  AWS_REGION_OPTIONS,
+  FIRST_PARTY_DEFAULT_BASE_URL,
+  isBackendSupportedProvider,
+  MODEL_PROVIDER_OPTIONS,
+  PROVIDER_LABELS,
+} from './constants';
 import ModelBackLink from './ModelBackLink';
 import ModelDefaultBadge from './ModelDefaultBadge';
 import { slugifyModelName } from './modelForm';
@@ -123,6 +129,7 @@ const AzureFields: React.FC<ProviderFieldsProps> = ({ form, errors, hasStoredApi
           ? 'Embedding selection requires an API key; Workload Identity is not supported on that path.'
           : 'Jarvis uses Workload Identity first. A supplied key is encrypted and used as fallback.'
       }
+      error={errors.apiKey}
     />
   </div>
 );
@@ -131,9 +138,6 @@ const DirectProviderFields: React.FC<ProviderFieldsProps> = ({ form, errors, has
   const isOpenAI = form.providerType === 'openai';
   return (
     <div className='space-y-4'>
-      <div className='rounded-lg border border-[var(--jarvis-warning)]/40 bg-[var(--jarvis-warning-soft)] p-3.5 text-sm leading-5 text-[var(--jarvis-warning-text)]'>
-        This provider form is ready for review. Saving will be enabled when backend ModelSource support is available.
-      </div>
       <div className='grid gap-4 sm:grid-cols-2'>
         <InputField
           name='baseModelId'
@@ -152,7 +156,7 @@ const DirectProviderFields: React.FC<ProviderFieldsProps> = ({ form, errors, has
           monospace
           value={form.baseUrl}
           onChange={event => updateField('baseUrl', event.target.value)}
-          placeholder={isOpenAI ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'}
+          placeholder={FIRST_PARTY_DEFAULT_BASE_URL[isOpenAI ? 'openai' : 'anthropic']}
           helperText='Leave blank for the public API; set this for a proxy or regional endpoint.'
           error={errors.baseUrl}
         />
@@ -171,7 +175,7 @@ const DirectProviderFields: React.FC<ProviderFieldsProps> = ({ form, errors, has
         helperText={
           hasStoredApiKey
             ? 'Leave blank to preserve the stored key.'
-            : 'This field will be encrypted at rest when backend support is added.'
+            : 'Encrypted at rest; used to call the provider API.'
         }
         error={errors.apiKey}
       />
@@ -185,7 +189,7 @@ const ProviderFields: React.FC<ProviderFieldsProps> = props => {
   return <DirectProviderFields {...props} />;
 };
 
-const validateForm = (form: ModelFormState, hasStoredApiKey: boolean): ModelFormErrors => {
+const validateForm = (form: ModelFormState, hasStoredApiKey: boolean, storedKeyDropped: boolean): ModelFormErrors => {
   const errors: ModelFormErrors = {};
   if (!form.displayName.trim()) errors.displayName = 'Display name is required';
   else if (form.displayName.trim().length > 128) errors.displayName = 'Display name must be 128 characters or fewer';
@@ -199,6 +203,7 @@ const validateForm = (form: ModelFormState, hasStoredApiKey: boolean): ModelForm
     else if (!/^https:\/\//i.test(form.endpoint)) errors.endpoint = 'Endpoint must start with https://';
     if (!form.deploymentName.trim()) errors.deploymentName = 'Deployment name is required';
     if (!form.apiVersion.trim()) errors.apiVersion = 'API version is required';
+    if (storedKeyDropped && !form.apiKey.trim()) errors.apiKey = 'Re-enter the API key when changing the endpoint';
   } else {
     if (!hasStoredApiKey && !form.apiKey.trim()) errors.apiKey = 'API key is required';
     if (form.baseUrl.trim() && !/^https:\/\//i.test(form.baseUrl)) errors.baseUrl = 'Base URL must start with https://';
@@ -248,7 +253,7 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
   };
 
   const handleSubmit = () => {
-    const nextErrors = validateForm(form, hasStoredApiKey);
+    const nextErrors = validateForm(form, storedKeyApplies, storedKeyDropped);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length === 0) onSubmit(form);
   };
@@ -257,6 +262,14 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
     value: provider.value,
     label: `${provider.label} — ${provider.auth}`,
   }));
+  // The stored key belongs to the original provider and the host it is sent to (Azure endpoint,
+  // first-party base URL); the backend won't carry it over when either changes, so a new key is required.
+  const hostField = form.providerType === 'azure_openai' ? 'endpoint' : 'baseUrl';
+  const hostUnchanged = form[hostField].trim() === initialForm[hostField].trim();
+  const sameProvider = form.providerType === initialForm.providerType;
+  const storedKeyApplies = hasStoredApiKey && sameProvider && hostUnchanged;
+  // Same provider, but the host moved: the key must be re-entered even where it is otherwise optional (Azure).
+  const storedKeyDropped = hasStoredApiKey && sameProvider && !hostUnchanged;
   const providerSupported = isBackendSupportedProvider(form.providerType);
   const pageTitle = editing
     ? initialForm.displayName
@@ -411,14 +424,9 @@ const ModelFormView: React.FC<ModelFormViewProps> = ({
                   <ProviderFields
                     form={form}
                     errors={errors}
-                    hasStoredApiKey={hasStoredApiKey}
+                    hasStoredApiKey={storedKeyApplies}
                     updateField={updateField}
                   />
-                  {!providerSupported && (
-                    <p className='mt-3 text-xs text-[var(--jarvis-muted)]'>
-                      OpenAI and Anthropic ModelSource APIs are pending backend implementation.
-                    </p>
-                  )}
                 </section>
               </div>
             </div>

@@ -64,8 +64,12 @@ async def finish_job(
             raise LeaseLostError(f"lost lease finishing skill scan job for skill {skill.id}")
         return "done" if result == "terminal" else "requeued"
 
-    async with client.start_session() as session:
-        outcome = await session.with_transaction(_txn)
+    try:
+        async with client.start_session() as session:
+            outcome = await session.with_transaction(_txn)
+    except LeaseLostError:
+        record_job_finished("lease_lost")
+        raise
 
     record_job_finished(outcome)
 
@@ -79,7 +83,8 @@ async def _write_results(
 ) -> None:
     collection = SkillScanResult.get_pymongo_collection()
     for result in results:
-        doc = result.model_dump(mode="python", exclude={"id"})
+        # exclude_none matches the model's keep_nulls=False: unset optional fields are omitted, not stored as null.
+        doc = result.model_dump(mode="python", exclude={"id"}, exclude_none=True)
         await collection.replace_one(
             {"skillId": skill_id, "contentDigest": content_digest, "toolFingerprint": result.toolFingerprint},
             doc,

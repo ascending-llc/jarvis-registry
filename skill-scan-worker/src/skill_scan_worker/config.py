@@ -19,7 +19,7 @@ class SkillScanWorkerSettings(JarvisBaseSettings):
     tool_timeout_seconds: float = Field(default=600.0, validation_alias="SKILL_SCAN_WORKER_TOOL_TIMEOUT_SECONDS", gt=0)
     # Above this, adapters with llm_input_unbounded=True run without the LLM.
     llm_max_text_bytes: int = Field(default=524288, validation_alias="SKILL_SCAN_WORKER_LLM_MAX_TEXT_BYTES", ge=0)
-    # Root for per-run temp dirs (an emptyDir,).
+    # Root for per-run temp dirs (an emptyDir in the deployed pod).
     work_dir: str = Field(default="/scan-tmp", validation_alias="SKILL_SCAN_WORKER_WORK_DIR")
     # Root of per-tool virtualenvs; adapters build argv from it.
     tools_dir: str = Field(default="/opt/scanners", validation_alias="SKILL_SCAN_WORKER_TOOLS_DIR")

@@ -50,6 +50,11 @@ PASSTHROUGH_ENV: tuple[str, ...] = (
 
 _STDERR_TAIL_BYTES = 4096
 _KILL_GRACE_SECONDS = 5.0
+# How often to check whether the child itself has exited (see _wait_for_exit).
+_EXIT_POLL_SECONDS = 0.05
+# How long to wait for stderr EOF after the group is gone. A descendant that left the group (its own setsid) can
+# still hold the pipe open; it must not block the job.
+_DRAIN_GRACE_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -85,20 +90,40 @@ def _build_env(cwd: Path, additions: dict[str, str]) -> dict[str, str]:
     return env
 
 
+async def _wait_for_exit(proc: asyncio.subprocess.Process) -> int:
+    """Return once the child itself has exited.
+
+    ``proc.wait()`` also waits for every pipe to close, so a descendant still holding stderr would keep it pending
+    after the tool has exited (and turn a finished run into a timeout). ``returncode`` is set as soon as the child
+    is reaped, so poll that instead.
+    """
+    while proc.returncode is None:
+        await asyncio.sleep(_EXIT_POLL_SECONDS)
+    return proc.returncode
+
+
+def _kill_remaining(pgid: int) -> None:
+    """SIGKILL whatever is left in the tool's process group (e.g. a backgrounded helper the tool left behind)."""
+    with suppress(ProcessLookupError):
+        os.killpg(pgid, signal.SIGKILL)
+
+
 async def _kill_group(proc: asyncio.subprocess.Process) -> None:
-    """SIGTERM the process group, wait up to the grace period, then SIGKILL. Never outlives its job."""
-    try:
-        pgid = os.getpgid(proc.pid)
-    except ProcessLookupError:
-        return
+    """SIGTERM the process group, wait up to the grace period, then SIGKILL. Never outlives its job.
+
+    ``start_new_session=True`` makes the child its own group leader, so the pgid is always ``proc.pid``; looking it
+    up with ``os.getpgid`` would fail once the leader is reaped while other group members are still alive.
+    """
+    pgid = proc.pid
     with suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGTERM)
     try:
-        await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
+        await asyncio.wait_for(_wait_for_exit(proc), timeout=_KILL_GRACE_SECONDS)
     except TimeoutError:
-        with suppress(ProcessLookupError):
-            os.killpg(pgid, signal.SIGKILL)
-        await proc.wait()
+        _kill_remaining(pgid)
+        await _wait_for_exit(proc)
+    # The leader may exit on SIGTERM while descendants ignore it.
+    _kill_remaining(pgid)
 
 
 async def _drain_stderr(stream: asyncio.StreamReader, tail: bytearray) -> None:
@@ -133,7 +158,7 @@ async def run_tool_process(
 
     timed_out = False
     try:
-        await asyncio.wait_for(proc.wait(), timeout=timeout)
+        await asyncio.wait_for(_wait_for_exit(proc), timeout=timeout)
     except TimeoutError:
         timed_out = True
         await _kill_group(proc)
@@ -145,9 +170,20 @@ async def run_tool_process(
             await drain_task
         raise
 
-    # The process has exited (normally or killed); stderr reaches EOF, so the drain completes.
-    with suppress(Exception):
-        await drain_task
+    if not timed_out:
+        # The tool exited on its own. Anything it left running in its group must not outlive the job, and would
+        # otherwise hold stderr open so the drain below never reaches EOF.
+        _kill_remaining(proc.pid)
+    try:
+        # wait_for cancels the drain on timeout.
+        await asyncio.wait_for(drain_task, timeout=_DRAIN_GRACE_SECONDS)
+    except TimeoutError:
+        # The pipe's transport closes once that descendant exits.
+        logger.warning(
+            "Tool stderr still open %.0fs after exit; a descendant escaped the process group", _DRAIN_GRACE_SECONDS
+        )
+    except Exception:
+        logger.warning("Draining tool stderr failed", exc_info=True)
 
     duration_ms = int((time.monotonic() - start) * 1000)
     try:

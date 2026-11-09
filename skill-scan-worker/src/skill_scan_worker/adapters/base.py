@@ -1,4 +1,4 @@
-"""The ``ScannerAdapter`` protocol and its result dataclass. Concrete adapters are."""
+"""The ``ScannerAdapter`` protocol and its result dataclass. Concrete adapters live alongside this module."""
 
 from __future__ import annotations
 
