@@ -20,6 +20,7 @@ from registry_pkgs.models.model_source import (
     OpenAIModelConfig,
 )
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
+from registry_pkgs.skill_scan.plan import SKILL_SCAN_PROVIDER_TYPES
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 
 from ..schemas.errors import ErrorCode, create_error_detail
@@ -44,6 +45,11 @@ _VECTOR_SPACE_FIELDS: dict[type, tuple[str, ...]] = {
     AzureOpenAIModelConfig: ("deploymentName", "endpoint"),
     OpenAIModelConfig: ("modelId", "baseUrl"),
 }
+_SKILL_SCAN_PROVIDER_ERROR = (
+    "Cannot switch the selected skill-scan model source to this provider: skill content must not leave the "
+    "client's cloud account, so only AWS Bedrock and Azure OpenAI can scan skills. Select a different "
+    "skill-scan model first."
+)
 _ACTIVE_SOURCE_VECTOR_SPACE_ERROR = (
     "Cannot change the embedding model or endpoint of the model source backing the active embedding "
     "selection; this would make existing vectors unreadable. Create a new ModelSource and call "
@@ -219,6 +225,7 @@ class ModelSourceCrudService:
                 )
             new_config = self._to_stored_config(provider_config)
             await self._reject_vector_space_change_on_active_source(source, new_config)
+            await self._reject_disallowed_provider_on_skill_scan_source(source, new_config)
             source.providerConfig = self._preserve_existing_secret(new_config, source.providerConfig)
             self._require_first_party_key(source.providerConfig)
         # Reject an invalid (provider, mode) combo the update would leave behind — e.g. switching an
@@ -227,6 +234,20 @@ class ModelSourceCrudService:
         source.updatedBy = updated_by
         await source.save()
         return source
+
+    async def _reject_disallowed_provider_on_skill_scan_source(
+        self, source: ModelSource, new_config: StoredProviderConfig
+    ) -> None:
+        """Keep the selected skill-scan source on a provider allowed to scan (AS-1980 D7/D16). Without this, the
+        resolver would silently drop the model and scans would quietly run without an LLM."""
+        if new_config.providerType in SKILL_SCAN_PROVIDER_TYPES:
+            return
+        selection = await self._selection_service.get_selection_or_none()
+        if selection is None or selection.skillScanModelSourceId is None:
+            return
+        if selection.skillScanModelSourceId != source.id:
+            return
+        raise ValueError(_SKILL_SCAN_PROVIDER_ERROR)
 
     async def _reject_vector_space_change_on_active_source(
         self, source: ModelSource, new_config: StoredProviderConfig

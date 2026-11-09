@@ -236,6 +236,9 @@ A supplied `apiKey` is re-encrypted.
 moves the vector space is rejected with `409`: a provider-type switch, Bedrock `modelIdOrArn`,
 Azure `deploymentName` / `endpoint`, or OpenAI `modelId` / `baseUrl`.
 
+**Selected skill-scan source:** on the source in `skillScanModelSourceId`, switching `providerType`
+to `anthropic` or `openai` is rejected with `409` (see [Skill-scan provider restriction](#skill-scan-provider-restriction)).
+
 **Response**: `200 OK` → [`ModelSourceDetailResponse`](#modelsourcedetailresponse)
 (no `metadata`). `404` if not found/soft-deleted.
 
@@ -292,6 +295,10 @@ pod restart.
 **Errors**:
 - `404` — `modelSourceId` does not resolve (invalid id, not found, or soft-deleted).
 - `409` — the target ModelSource has `mode != chat`.
+
+Any chat provider may be the workflow default. When no skill-scan model is selected, skill scanning
+falls back to this default, but only if it is AWS Bedrock or Azure OpenAI; a first-party default
+leaves scans running without an LLM (see [Skill-scan provider restriction](#skill-scan-provider-restriction)).
 
 ---
 
@@ -463,12 +470,24 @@ No ambient identity exists for first-party providers, so `apiKey` is required on
 (omit on update to keep the stored key, unless `baseUrl` changes). Anthropic has no embedding API, so
 `providerType: "anthropic"` with `mode: "embedding"` is rejected with `400`.
 
+#### Skill-scan provider restriction
+
+First-party sources are never used to scan skills. Scanning sends skill content to the LLM, and that
+content must not leave the client's own cloud account (AS-1980 D7/D16); a first-party provider, or an
+OpenAI-compatible vendor behind `baseUrl`, is outside it. Only `aws_bedrock` and `azure_openai`
+(`SKILL_SCAN_PROVIDER_TYPES` in `registry_pkgs.skill_scan.plan`) can serve the scan model:
+
+- The skill-scan resolver ignores a first-party source, whether it is selected for skill scanning or
+  is the workflow-default fallback; scans then run without an LLM.
+- Switching the selected skill-scan source to a first-party provider is rejected with `409`.
+
 ### ModelGatewaySelection (singleton)
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `defaultWorkflowModelSourceId` | ObjectId \| null | current default chat model |
 | `embeddingModelSourceId` | ObjectId \| null | current default embedding model |
+| `skillScanModelSourceId` | ObjectId \| null | chat model for skill scanning; falls back to `defaultWorkflowModelSourceId`; Bedrock / Azure only ([restriction](#skill-scan-provider-restriction)) |
 | `updatedBy` | string \| null | |
 | `updatedAt` | datetime | |
 

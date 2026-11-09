@@ -665,6 +665,39 @@ async def test_update_active_source_allows_base_model_id_only_change(service, se
     source.save.assert_awaited_once()
 
 
+async def test_update_skill_scan_source_rejects_switch_to_first_party(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    selection_service.get_selection_or_none.return_value = _selection(skillScanModelSourceId=sid)
+    source = _azure_source(sid)
+    source.mode = ModelSourceMode.CHAT
+    new_config = OpenAIModelConfigInput(modelId="gpt-4.1", apiKey="sk-new")
+
+    with pytest.raises(ValueError, match="skill-scan"):
+        await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_not_awaited()
+
+
+async def test_update_skill_scan_source_allows_switch_between_cloud_providers(service, selection_service) -> None:
+    sid = PydanticObjectId()
+    selection_service.get_selection_or_none.return_value = _selection(skillScanModelSourceId=sid)
+    source = _azure_source(sid)
+    source.mode = ModelSourceMode.CHAT
+    new_config = AwsBedrockModelConfigInput(awsRegion="us-east-1", modelIdOrArn="m", baseModelId="m")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    source.save.assert_awaited_once()
+
+
+async def test_update_non_skill_scan_source_allows_switch_to_first_party(service, selection_service) -> None:
+    source = _azure_source(PydanticObjectId())
+    source.mode = ModelSourceMode.CHAT
+    new_config = AnthropicModelConfigInput(modelId="claude-sonnet-4-5", apiKey="sk-ant-new")
+
+    await service.update_source(source, {"providerConfig": new_config}, updated_by="admin")
+    assert source.providerConfig.providerType == ModelSourceProviderType.ANTHROPIC
+    source.save.assert_awaited_once()
+
+
 async def test_update_rejects_mode_change_when_in_use(service, selection_service) -> None:
     sid = PydanticObjectId(VALID_ID)
     source = SimpleNamespace(id=sid, mode=ModelSourceMode.CHAT, updatedBy=None, save=AsyncMock())
