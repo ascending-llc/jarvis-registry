@@ -434,9 +434,11 @@ Request a manual scan. The response body is the **same** `SkillScanResponse` as 
 - **Scope:** `skills-write`  ·  **ACL:** EDIT on the skill
 - **`202 Accepted`** — a scan was queued (or a concurrent request already queued one). The body
   reflects the just-enqueued state, typically `scanStatus: "pending"`.
-- **`200 OK`** — nothing to do: every enabled tool already has a `succeeded` or `skipped` result
-  for the skill's current content. The body shows the existing `completed` state. No empty body;
-  read `scanStatus` / `summary`, not just the status code.
+- **`200 OK`** — nothing to queue: every enabled tool already has a `succeeded` or `skipped`
+  result for the skill's current content. The body is the skill's **current** scan state,
+  whatever its `scanStatus`. This is usually `completed`, but it can be `scanning` if a worker has
+  written every result and not yet closed the job, or `failed` if the job failed after writing
+  them. The body is never empty. Read `scanStatus` / `summary`, not just the status code.
 
 **`202` (queued):**
 
@@ -462,7 +464,8 @@ Request a manual scan. The response body is the **same** `SkillScanResponse` as 
 }
 ```
 
-**`200` (already up to date):** identical shape to a `completed` `GET` response (see 3.1).
+**`200` (nothing to queue):** same shape as a `GET` response (see 3.1), typically the
+`completed` example.
 
 **Errors:** same table as [3.1](#31-get-skillsskill_idscan), except the scope is `skills-write`
 and the ACL check requires **EDIT** (`403` detail `"You do not have EDIT permissions for this
@@ -472,19 +475,33 @@ resource."`).
 
 ### 3.3 `GET /skills` (scanSummary per item)
 
-The existing list endpoint. Each item gains a `scanSummary` field — a compact
-[`SkillScanBriefResponse`](#skillscanbriefresponse), or `null` for a skill with no job yet.
-Scope `skills-read`, VIEW filtered per item (unchanged from today).
+The existing list endpoint. Each item gains a `scanSummary` field, a compact
+[`SkillScanBriefResponse`](#skillscanbriefresponse). This endpoint **always populates it**, for
+every item. A skill with no job reports `scanStatus: "not_scanned"`, not `null`. Scope
+`skills-read`, VIEW filtered per item (unchanged from today).
 
-One item, scan portion shown (other `SkillMetadataResponse` fields omitted for brevity):
+One complete item (a `SkillMetadataResponse`) with a completed scan:
 
 ```json
 {
   "id": "0000000000000000000000a1",
   "name": "repo-indexer",
+  "displayTitle": null,
   "description": "Index a git repo",
+  "category": "",
+  "tags": [],
   "version": 5,
+  "fileCount": 1,
+  "alwaysApply": false,
   "enabled": true,
+  "author": "0000000000000000000000f1",
+  "authorName": "Jane Doe",
+  "source": "inline",
+  "sourceMetadata": null,
+  "createdByRegistry": true,
+  "origin": { "kind": "registry", "provider": null },
+  "permissions": { "VIEW": true, "EDIT": true, "DELETE": true, "SHARE": true },
+  "updatedAt": "2026-11-06T10:59:00Z",
   "scanSummary": {
     "scanStatus": "completed",
     "status": "succeeded",
@@ -497,9 +514,22 @@ One item, scan portion shown (other `SkillMetadataResponse` fields omitted for b
 }
 ```
 
-`scanSummary` is `null` when the skill has never been queued, and has `scanStatus` populated with
-the other fields at their defaults (e.g. `status: null`) when a job exists but no scan has
-completed yet.
+`scanSummary` of a skill that has never been scanned (no job):
+
+```json
+{
+  "scanStatus": "not_scanned",
+  "status": null,
+  "maxSeverity": null,
+  "severityCounts": {},
+  "stale": false,
+  "outdatedTool": false,
+  "scannedAt": null
+}
+```
+
+The fields have the same defaults when a job exists but no scan has completed yet; only
+`scanStatus` differs (`pending`, `scanning` or `failed`).
 
 ---
 
@@ -686,7 +716,8 @@ One per enabled tool for the scanned digest.
 | `outdatedTool` | boolean | no | As in the detail response; defaults to `false`. |
 | `scannedAt` | datetime | yes | When the last completed scan finished; `null` if none. |
 
-The whole `scanSummary` field is itself nullable (`null` when the skill has no job).
+`SkillMetadataResponse.scanSummary` is typed nullable, but `GET /skills` always populates it. A
+skill with no job is reported as `scanStatus: "not_scanned"`. Check `scanStatus`, not `null`.
 
 ### SetSkillScanModelRequest
 
