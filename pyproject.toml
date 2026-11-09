@@ -11,6 +11,7 @@ dependencies = [
   "registry",
   "auth-server",
   "workflow-worker",
+  "skill-scan-worker",
   # External direct dependencies
   "python-dotenv>=1.0.0",
   "inflection>=0.5.1",
@@ -18,13 +19,14 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["registry-pkgs", "registry", "auth-server", "workflow-worker"]
+members = ["registry-pkgs", "registry", "auth-server", "workflow-worker", "skill-scan-worker"]
 
 [tool.uv.sources]
 registry-pkgs = { workspace = true }
 registry = { workspace = true }
 auth-server = { workspace = true }
 workflow-worker = { workspace = true }
+skill-scan-worker = { workspace = true }
 
 [tool.uv]
 
@@ -161,10 +163,10 @@ cmd = "python scripts/generate_llms.py --check"
 
 # Run all tests across all projects
 [tool.poe.tasks.test-all]
-shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test && cd ../workflow-worker && uv run poe test"
+shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test && cd ../workflow-worker && uv run poe test && cd ../skill-scan-worker && uv run poe test"
 
 [tool.poe.tasks.test-all-cov]
-shell = "cd registry && uv run poe test-cov && cd ../auth-server && uv run poe test-cov && cd ../registry-pkgs && uv run poe test-cov && cd ../workflow-worker && uv run poe test-cov"
+shell = "cd registry && uv run poe test-cov && cd ../auth-server && uv run poe test-cov && cd ../registry-pkgs && uv run poe test-cov && cd ../workflow-worker && uv run poe test-cov && cd ../skill-scan-worker && uv run poe test-cov"
 
 # registry tests
 [tool.poe.tasks.test-registry]
@@ -193,6 +195,13 @@ shell = "cd workflow-worker && uv run poe test"
 
 [tool.poe.tasks.test-workflow-worker-cov]
 shell = "cd workflow-worker && uv run poe test-cov"
+
+# skill-scan-worker tests
+[tool.poe.tasks.test-skill-scan-worker]
+shell = "cd skill-scan-worker && uv run poe test"
+
+[tool.poe.tasks.test-skill-scan-worker-cov]
+shell = "cd skill-scan-worker && uv run poe test-cov"
 
 # Linting and formatting
 [tool.poe.tasks.lint]
