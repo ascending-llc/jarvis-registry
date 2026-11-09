@@ -6,7 +6,13 @@ from agno.models.litellm import LiteLLM
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import ModelSourceMode
-from registry_pkgs.models.model_source import AwsBedrockModelConfig, AzureOpenAIModelConfig, ModelSource
+from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
+    AwsBedrockModelConfig,
+    AzureOpenAIModelConfig,
+    ModelSource,
+    OpenAIModelConfig,
+)
 from registry_pkgs.workflows import model_resolution
 
 
@@ -94,6 +100,31 @@ def test_build_agno_model_for_azure_decrypts_api_key(monkeypatch: pytest.MonkeyP
     assert model.api_base == "https://example.openai.azure.com"
     assert model.api_key == "plain-key"
     assert model.get_request_params()["api_version"] == "2024-10-21"
+
+
+def test_build_agno_model_for_anthropic_decrypts_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(model_resolution, "decrypt_value", lambda *_a, **_kw: "sk-ant-plain")
+    source = _source(AnthropicModelConfig(modelId="claude-sonnet-4-5", baseUrl=None, apiKeyEncrypted="encrypted"))
+
+    model = model_resolution.build_agno_model(source, encryption_key=b"key", azure_ad_token_provider=None)
+
+    assert isinstance(model, LiteLLM)
+    assert model.id == "anthropic/claude-sonnet-4-5"
+    assert model.api_base is None
+    assert model.api_key == "sk-ant-plain"
+
+
+def test_build_agno_model_for_openai_uses_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(model_resolution, "decrypt_value", lambda *_a, **_kw: "sk-plain")
+    source = _source(
+        OpenAIModelConfig(modelId="gpt-4.1", baseUrl="https://proxy.example.com/v1", apiKeyEncrypted="encrypted")
+    )
+
+    model = model_resolution.build_agno_model(source, encryption_key=b"key", azure_ad_token_provider=None)
+
+    assert model.id == "openai/gpt-4.1"
+    assert model.api_base == "https://proxy.example.com/v1"
+    assert model.api_key == "sk-plain"
 
 
 def test_build_agno_model_for_azure_workload_identity_uses_shared_provider() -> None:
