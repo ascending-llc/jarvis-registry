@@ -1,0 +1,27 @@
+[project]
+name = "skill-scan-worker"
+version = "0.2.0"
+description = "Advisory security-scan worker for Jarvis Registry skills"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "registry-pkgs",
+    "pydantic-settings>=2.15.0",
+]
+
+[tool.uv.sources]
+registry-pkgs = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.poe]
+# Hide poe's "Poe => <command>" echo so successful runs stay minimal; `poe -v <task>` shows it.
+verbosity = -1
+
+[tool.poe.tasks]
+test = { shell = "uv run pytest tests" }
+test-cov = { shell = "uv run pytest tests --cov=skill_scan_worker --cov-report=term --cov-report=xml" }

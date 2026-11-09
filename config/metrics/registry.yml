@@ -61,6 +61,24 @@ counters:
     unit: "1"
     capture: true
 
+  # Skill scan: per-tool runs (labels: tool, status, status_reason)
+  - name: skill_scan_tool_runs_total
+    description: Total skill-scan tool runs
+    unit: "1"
+    capture: true
+
+  # Skill scan: LLM tokens (labels: tool, direction = input|output)
+  - name: skill_scan_llm_tokens_total
+    description: Total LLM tokens used by skill-scan tools
+    unit: "1"
+    capture: true
+
+  # Skill scan: finished jobs (label: outcome = done|requeued|retried|lease_lost|failed)
+  - name: skill_scan_jobs_finished_total
+    description: Total finished skill-scan jobs by outcome
+    unit: "1"
+    capture: true
+
 histograms:
   # Registry operation latency
   - name: registry_operation_duration_seconds
@@ -113,5 +131,11 @@ histograms:
   # Workflow: individual MCP tool call latency
   - name: workflow_tool_call_seconds
     description: Individual MCP tool call latency in seconds
+    unit: "s"
+    capture: true
+
+  # Skill scan: per-tool run duration (label: tool)
+  - name: skill_scan_tool_duration_seconds
+    description: Skill-scan tool run duration in seconds
     unit: "s"
     capture: true
