@@ -783,11 +783,12 @@ def _agg_query(result):
 
 
 @pytest.mark.asyncio
+@patch("registry.services.skill_service.enqueue_skill_scan", new_callable=AsyncMock)
 @patch("registry.services.skill_service.MongoDB")
 @patch("registry.services.skill_service.SkillFile")
 @patch("registry.services.skill_service.Skill")
 async def test_upsert_skill_file_creates_new_file(
-    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, mock_enqueue, acl_service, user_service
 ):
     skill = _make_skill(created_by_registry=True)
     skill.fileCount = 0
@@ -827,6 +828,9 @@ async def test_upsert_skill_file_creates_new_file(
     assert skill.fileCount == 1
     assert skill.version == 2
     skill.save.assert_awaited_once_with(session=session)
+    mock_enqueue.assert_awaited_once_with(
+        skill.id, trigger=SkillScanTriggerType.AUTO, requested_by=_USER_ID, session=session
+    )
 
 
 @pytest.mark.asyncio
@@ -961,11 +965,12 @@ async def test_upsert_skill_file_rejects_total_size_limit(
 
 
 @pytest.mark.asyncio
+@patch("registry.services.skill_service.enqueue_skill_scan", new_callable=AsyncMock)
 @patch("registry.services.skill_service.MongoDB")
 @patch("registry.services.skill_service.SkillFile")
 @patch("registry.services.skill_service.Skill")
 async def test_delete_skill_file_removes_file_and_updates_skill(
-    mock_skill_cls, mock_skillfile_cls, mock_mongodb, acl_service, user_service
+    mock_skill_cls, mock_skillfile_cls, mock_mongodb, mock_enqueue, acl_service, user_service
 ):
     skill = _make_skill(created_by_registry=True)
     skill.fileCount = 1
@@ -985,6 +990,9 @@ async def test_delete_skill_file_removes_file_and_updates_skill(
     existing.delete.assert_awaited_once_with(session=session)
     assert skill.fileCount == 0
     assert skill.version == 2
+    mock_enqueue.assert_awaited_once_with(
+        skill.id, trigger=SkillScanTriggerType.AUTO, requested_by=_USER_ID, session=session
+    )
 
 
 @pytest.mark.asyncio
@@ -1422,6 +1430,7 @@ async def test_update_skill_enqueues_auto_scan(mock_mongodb, mock_enqueue, acl_s
     mock_enqueue.assert_awaited_once()
     assert mock_enqueue.await_args.args[0] == skill.id
     assert mock_enqueue.await_args.kwargs["trigger"] == SkillScanTriggerType.AUTO
+    assert mock_enqueue.await_args.kwargs["requested_by"] == _USER_ID
     assert mock_enqueue.await_args.kwargs["session"] is session
 
 
