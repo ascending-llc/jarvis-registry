@@ -452,7 +452,7 @@ Direct API-key providers (`providerType` = `"anthropic"` / `"openai"`). Same sha
 | Field | Type | Notes |
 |-------|------|-------|
 | `providerType` | `"anthropic"` \| `"openai"` | discriminator |
-| `modelId` | string | provider-native id, e.g. `claude-sonnet-4-5` / `gpt-4.1`; also the metadata-lookup key |
+| `modelId` | string | provider-native id, e.g. `claude-sonnet-4-5` / `gpt-4.1`; also the metadata-lookup key (as `{providerType}/{modelId}`) |
 | `baseUrl` | string \| null | optional proxy/regional endpoint (must be `https://`); null = public API |
 | `apiKeyEncrypted` | string \| null | **required at creation** (no ambient identity); encrypted at rest; **response returns `hasApiKey: bool` instead** |
 
@@ -492,8 +492,8 @@ No ambient identity exists for first-party providers, so `apiKey` is required on
 ## Model Metadata
 
 `GET /model-sources/{id}` populates `metadata` live via `litellm.get_model_info()` keyed on
-`bedrock/{baseModelId}`, `azure/{baseModelId}`, or — for first-party — the bare `modelId`
-(already litellm's canonical key). This reads litellm's in-memory model-cost map
+`bedrock/{baseModelId}`, `azure/{baseModelId}`, or — for first-party — `{providerType}/{modelId}`
+(e.g. `openai/gpt-4.1`, `anthropic/claude-sonnet-4-5`). This reads litellm's in-memory model-cost map
 (no network I/O) and is not snapshotted onto the document. When a model is not in litellm's map
 (e.g. an AIP ARN, or an unmapped id), metadata degrades gracefully: the fields are `null` and
 `unavailableReason` carries the reason — the request still returns `200`, never `500`.

@@ -1,6 +1,9 @@
+import pytest
+
 from registry.services import model_metadata_service
 from registry.services.model_metadata_service import get_model_metadata
 from registry_pkgs.models.model_source import (
+    AnthropicModelConfig,
     AwsBedrockModelConfig,
     AzureOpenAIModelConfig,
     OpenAIModelConfig,
@@ -54,7 +57,14 @@ def test_uses_azure_prefix_for_azure_config(monkeypatch) -> None:
     assert seen["model"] == "azure/gpt-4o"
 
 
-def test_uses_bare_model_id_for_first_party_config(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        (OpenAIModelConfig(modelId="gpt-4.1", apiKeyEncrypted="x"), "openai/gpt-4.1"),
+        (AnthropicModelConfig(modelId="claude-sonnet-4-5", apiKeyEncrypted="x"), "anthropic/claude-sonnet-4-5"),
+    ],
+)
+def test_prefixes_first_party_model_id_with_provider(monkeypatch, config, expected) -> None:
     seen: dict[str, str] = {}
 
     def _capture(model: str):
@@ -62,8 +72,8 @@ def test_uses_bare_model_id_for_first_party_config(monkeypatch) -> None:
         return {"max_input_tokens": 200000}
 
     monkeypatch.setattr(model_metadata_service, "get_litellm_model_info", _capture)
-    get_model_metadata(OpenAIModelConfig(modelId="gpt-4.1", baseUrl=None, apiKeyEncrypted="x"))
-    assert seen["model"] == "gpt-4.1"
+    get_model_metadata(config)
+    assert seen["model"] == expected
 
 
 def test_unmapped_model_degrades_to_reason(monkeypatch) -> None:

@@ -18,8 +18,9 @@ def _litellm_metadata_key(provider_config: ModelSourceProviderConfig) -> str:
         return f"bedrock/{provider_config.baseModelId}"
     if isinstance(provider_config, AzureOpenAIModelConfig):
         return f"azure/{provider_config.baseModelId}"
-    # First-party: the model id is itself litellm's canonical key, no prefix needed.
-    return provider_config.modelId
+    # First-party: prefix with the provider so the lookup matches the runtime model string and an
+    # OpenAI-compatible vendor serving e.g. a Claude id never picks up Anthropic metadata.
+    return f"{provider_config.providerType}/{provider_config.modelId}"
 
 
 def get_model_metadata(
