@@ -1,16 +1,7 @@
 # Skill Security Scan API
 
-Read-only and manual-trigger API for the **advisory security scan** of skills stored in
-Registry, plus the admin control that picks the LLM used for scanning. A frontend engineer
-can build the scan UI against this document alone, without reading backend code.
-
-**What a scan is.** Registry scans the skills it can fully read with existing OSS scanners
-(Cisco `cisco-ai-skill-scanner`, NVIDIA SkillSpector), orchestrated by a separate worker.
-Scans are **advisory**: they flag things for a human to investigate before installing a skill
-with the CLI. False positives are expected, and findings from different tools are shown side
-by side, **not** deduplicated. Registry never runs the scan inline — it queues a job and reads
-the results the worker writes back; the UI learns a scan finished by **re-fetching** (there is
-no push and no polling contract).
+Frontend reference for the advisory skill security scan and the admin control that picks the
+scan LLM. A frontend engineer can build the scan UI from this document alone.
 
 ## Table of Contents
 
@@ -31,22 +22,15 @@ no push and no polling contract).
 
 ## 1. Overview
 
-- **Advisory, never proof.** A finding raises a concern; it does not prove the skill is
-  malicious. False positives are accepted. Results from different tools are independent and are
-  **not** deduplicated — the same issue may appear twice.
-- **Asynchronous.** Scans run in a separate worker pod. The API returns the current state
-  immediately. There is **no push notification and no polling contract** — the UI re-fetches
-  `GET /skills/{id}/scan` (or the `scanSummary` on the list) to see progress and completion.
-- **Triggers.** Registry **content writes** (create, update, upsert/delete file, GitHub sync)
-  enqueue a scan automatically. Edits made in **Jarvis Chat** write MongoDB directly and do
-  **not** enqueue; their results go stale and surface as `stale: true`. A user with EDIT can
-  rescan manually with `POST`.
-- **Skipped skills.** A skill with a supporting file Registry cannot read is never scanned and
-  reports a `skipped` tool result with reason `chat_supporting_files_unsupported`. That is every
-  Chat-created skill with supporting files, plus any Registry skill to which Chat later added a
-  file — those bytes live in Chat's external storage.
-- **Not backfilled.** Existing skills are not scanned at rollout; they report `not_scanned`
-  until the next trigger.
+Scans are **advisory**: a finding is a concern to investigate, not proof, and false positives are
+expected. Findings from different tools are shown side by side and are **not** deduplicated.
+Scans run **asynchronously**, outside the request. The UI learns a scan finished by
+**re-fetching** `GET /skills/{id}/scan` (or the list's `scanSummary`); there is no push and no
+polling contract. Registry content writes (create, update, file changes, GitHub sync) trigger a
+scan automatically. Edits made in **Jarvis Chat** do not, so they surface as `stale: true`.
+Skills with a supporting file stored by Jarvis Chat (every Chat-created skill with files, and any
+Registry skill to which Chat added a file) are never scanned and report `skipped` with reason
+`chat_supporting_files_unsupported`.
 
 ---
 
@@ -101,7 +85,7 @@ typeof detail === "string"
 ### 3.1 `GET /skills/{skill_id}/scan`
 
 Return the full scan state for one skill: the job (if any), the summary of the last **completed**
-scan, and the per-tool results for that scan's content digest.
+scan, and the per-tool results of that scan.
 
 - **Scope:** `skills-read`  ·  **ACL:** VIEW on the skill  ·  **Success:** `200`
 - No path body. Response body: [`SkillScanResponse`](#skillscanresponse).
@@ -396,7 +380,7 @@ one result is outdated. It is still shown until the next scan replaces it:
 }
 ```
 
-**`failed`** — the job exhausted its attempts (crash / lease loss), distinct from a `failed` tool
+**`failed`** — the job could not finish after repeated attempts, distinct from a `failed` tool
 result. `summary`/`results` are whatever the last completed scan left (here none):
 
 ```json
@@ -647,7 +631,7 @@ Body of `GET`/`POST /skills/{id}/scan`.
 | `outdatedTool` | boolean | no | Any result came from a no-longer-configured tool/LLM. |
 | `job` | [`SkillScanJobResponse`](#skillscanjobresponse) | yes | The current job; `null` when never triggered. |
 | `summary` | [`SkillScanSummaryResponse`](#skillscansummaryresponse) | yes | Summary of the last **completed** scan. |
-| `results` | [`SkillScanToolResultResponse`](#skillscantoolresultresponse)[] | no | Per-tool results for `summary.contentDigest`, ordered by tool name. Empty `[]` when no completed scan. |
+| `results` | [`SkillScanToolResultResponse`](#skillscantoolresultresponse)[] | no | Per-tool results of the last completed scan, ordered by tool name. Empty `[]` when no completed scan. |
 
 ### SkillScanJobResponse
 
@@ -666,7 +650,7 @@ Body of `GET`/`POST /skills/{id}/scan`.
 
 | Field | Type | Nullable | Meaning |
 |---|---|---|---|
-| `contentDigest` | string | no | SHA-256 of the scanned content; the dedup key the `results` belong to. |
+| `contentDigest` | string | no | Opaque identifier of the scanned content. Not for display. |
 | `skillVersion` | integer | no | The `version` this scan ran against. Compare with the top-level `skillVersion` for `stale`. |
 | `status` | [result `status`](#result-status) enum | no | Aggregate across tools (`succeeded`/`partial`/`failed`/`skipped`). |
 | `maxSeverity` | [`severity`](#severity) enum | yes | Highest severity across findings; `null` when there are none. |
@@ -675,7 +659,7 @@ Body of `GET`/`POST /skills/{id}/scan`.
 
 ### SkillScanToolResultResponse
 
-One per enabled tool for the scanned digest.
+One per enabled tool for the last completed scan.
 
 | Field | Type | Nullable | Meaning |
 |---|---|---|---|
@@ -683,7 +667,7 @@ One per enabled tool for the scanned digest.
 | `toolVersion` | string | no | Pinned tool version that produced this result. |
 | `status` | [result `status`](#result-status) enum | no | `succeeded` / `partial` / `failed` / `skipped`. |
 | `statusReason` | [`statusReason`](#statusreason) enum | yes | Why, when not plain `succeeded`. |
-| `outdatedTool` | boolean | no | This result's fingerprint no longer matches the enabled tool. |
+| `outdatedTool` | boolean | no | The result came from a scanner version or LLM model that is no longer configured. |
 | `findings` | [`SkillScanFindingResponse`](#skillscanfindingresponse)[] | no | Findings; defaults to `[]`. |
 | `findingsTruncated` | boolean | no | More than 200 findings; only the first 200 are stored. Defaults to `false`. |
 | `llmProviderType` | [`providerType`](#llmprovidertype) enum | yes | LLM provider used (`aws_bedrock`/`azure_openai`), when the LLM pass ran. |
@@ -776,7 +760,7 @@ API-facing status on `SkillScanResponse` and `SkillScanBriefResponse`.
 | `pending` | Queued, not claimed. |
 | `scanning` | Claimed and running. |
 | `done` | Finished (surfaces as `scanStatus: "completed"`). |
-| `failed` | Attempts exhausted (crash / lease loss), not a tool failure. |
+| `failed` | The job could not finish after repeated attempts; not a tool failure. |
 
 ### result status
 
