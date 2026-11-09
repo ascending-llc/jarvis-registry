@@ -34,17 +34,9 @@ from ..schemas.skill_api_schemas import (
     SkillScanToolResultResponse,
 )
 from .access_control_service import ACLService
+from .skill_service import require_user_id
 
 logger = logging.getLogger(__name__)
-
-
-def _require_user_id(user_id: str | None) -> PydanticObjectId:
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authenticated user ID is required")
-    try:
-        return PydanticObjectId(user_id)
-    except Exception as e:  # noqa: BLE001 — any malformed id is an unauthenticated request
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user ID") from e
 
 
 def _scan_status(job: SkillScanJob | None) -> SkillScanStatus:
@@ -74,7 +66,7 @@ class SkillScanService:
     async def get_scan(self, skill_id: PydanticObjectId, user_id: str | None) -> SkillScanResponse:
         skill = await self._require_skill(skill_id)
         await self._acl_service.check_user_permission(
-            user_id=_require_user_id(user_id),
+            user_id=require_user_id(user_id),
             resource_type=RegistryResourceType.SKILL.value,
             resource_id=skill_id,
             required_permission="VIEW",
@@ -85,7 +77,7 @@ class SkillScanService:
         """Returns (response, queued). queued False -> route answers 200, True -> 202."""
         skill = await self._require_skill(skill_id)
         await self._acl_service.check_user_permission(
-            user_id=_require_user_id(user_id),
+            user_id=require_user_id(user_id),
             resource_type=RegistryResourceType.SKILL.value,
             resource_id=skill_id,
             required_permission="EDIT",
