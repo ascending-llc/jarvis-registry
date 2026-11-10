@@ -224,6 +224,33 @@ def test_invocation_bedrock_anthropic_arn_is_usable() -> None:
     assert inv.env["SKILLSPECTOR_PROVIDER"] == "bedrock"
 
 
+@pytest.mark.parametrize(
+    ("model", "base_model_id"),
+    [
+        ("amazon.nova-lite-v1:0", "amazon.nova-lite-v1:0"),
+        ("arn:aws:bedrock:us-east-1:1:application-inference-profile/p", "anthropic.claude-sonnet-5-5"),
+    ],
+)
+def test_invocation_bedrock_uses_json_schema_output(model: str, base_model_id: str) -> None:
+    # The default forced tool call is rejected by Claude Sonnet 5.5, failing every LLM batch.
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), _bedrock_llm(model, base_model_id=base_model_id))
+    assert inv.env["SKILLSPECTOR_STRUCTURED_OUTPUT_METHOD"] == "json_schema"
+
+
+@pytest.mark.parametrize("key", ["k", None])
+def test_invocation_without_bedrock_llm_keeps_default_output_method(key: str | None) -> None:
+    for llm in (None, _azure_llm(key=key)):
+        inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), llm)
+        assert "SKILLSPECTOR_STRUCTURED_OUTPUT_METHOD" not in inv.env
+
+
+def test_invocation_never_sets_temperature() -> None:
+    # v2.13.3 sends no temperature unless asked; newer models reject any value.
+    for llm in (None, _bedrock_llm("amazon.nova-lite-v1:0"), _azure_llm(key="k")):
+        inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), llm)
+        assert "SKILLSPECTOR_TEMPERATURE" not in inv.env
+
+
 def test_invocation_bedrock_non_anthropic_arn_falls_back_to_no_llm() -> None:
     arn = "arn:aws:bedrock:us-east-1:1:application-inference-profile/p"
     inv = _ADAPTER.build_invocation(

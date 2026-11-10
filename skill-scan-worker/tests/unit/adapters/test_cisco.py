@@ -186,6 +186,41 @@ def test_invocation_azure_with_key() -> None:
     assert "secret-key" not in " ".join(inv.argv)
 
 
+@pytest.mark.parametrize(
+    "llm",
+    [
+        _bedrock_llm("amazon.nova-lite-v1:0"),
+        _bedrock_llm("arn:aws:bedrock:us-east-1:1:application-inference-profile/p"),
+        _azure_llm(key="k"),
+        _azure_llm(key=None),
+    ],
+)
+def test_invocation_never_sends_temperature(llm: ResolvedLLM) -> None:
+    # Claude Sonnet 5.x / Haiku 5.5 reject any temperature, and Cisco's own model-name check can't see through
+    # an application inference profile ARN or an Azure deployment name.
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), llm)
+    assert inv.env["SKILL_SCANNER_LLM_TEMPERATURE"] == "none"
+
+
+@pytest.mark.parametrize(
+    "model", ["amazon.nova-lite-v1:0", "arn:aws:bedrock:us-east-1:1:application-inference-profile/p"]
+)
+def test_invocation_bedrock_forces_plain_json_output(model: str) -> None:
+    # Avoids LiteLLM's forced-tool-call JSON emulation, which Claude Sonnet 5.5 rejects.
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), _bedrock_llm(model))
+    assert inv.env["SKILL_SCANNER_LLM_FORCE_JSON_OBJECT"] == "1"
+
+
+def test_invocation_azure_keeps_schema_output() -> None:
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), _azure_llm(key="k"))
+    assert "SKILL_SCANNER_LLM_FORCE_JSON_OBJECT" not in inv.env
+
+
+def test_invocation_without_llm_sets_no_llm_controls() -> None:
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), None)
+    assert not any(key.startswith("SKILL_SCANNER_LLM_") for key in inv.env)
+
+
 def test_invocation_azure_workload_identity_has_no_key() -> None:
     inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), _azure_llm(key=None))
     assert "--use-llm" in inv.argv

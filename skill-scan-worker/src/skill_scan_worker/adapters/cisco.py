@@ -27,7 +27,22 @@ _LLM_FAILED_RULE = "LLM_ANALYSIS_FAILED"
 _LLM_BUDGET_RULE = "LLM_CONTEXT_BUDGET_EXCEEDED"
 _STATUS_RULE_IDS = frozenset({_LLM_FAILED_RULE, _LLM_BUDGET_RULE})
 
-_STATIC_CONFIG = {"policy": "balanced", "analyzers": ["behavioral", "osv"], "llm_flags": []}
+# LLM request controls for every provider. 2.3.2 sends temperature=0.0 unless told otherwise, and newer models
+# reject any temperature ("`temperature` is deprecated for this model": Claude Sonnet 5.x, Haiku 5.5). Its own
+# model-name check that omits it can't see the model behind an application inference profile ARN or an Azure
+# deployment name, so omit it always and let the provider default apply, as workflow models do.
+_LLM_COMMON_ENV = {"SKILL_SCANNER_LLM_TEMPERATURE": "none"}
+# Bedrock only: LiteLLM emulates a JSON schema there with a forced tool call, which Claude Sonnet 5.5 rejects
+# ('tool_choice: type "tool" and "any" are not supported for this model'). Plain JSON with the schema in the
+# prompt works for every Bedrock model. Same ARN blind spot as above.
+_LLM_BEDROCK_ENV = {"SKILL_SCANNER_LLM_FORCE_JSON_OBJECT": "1"}
+
+_STATIC_CONFIG = {
+    "policy": "balanced",
+    "analyzers": ["behavioral", "osv"],
+    "llm_flags": [],
+    "llm_env": {"common": _LLM_COMMON_ENV, "bedrock": _LLM_BEDROCK_ENV},
+}
 
 
 class CiscoSkillScannerAdapter:
@@ -123,6 +138,8 @@ def _llm_env(llm: ResolvedLLM, secrets: list[str]) -> dict[str, str] | None:
         if not llm.bedrock_model or not llm.aws_region:
             return None
         return {
+            **_LLM_COMMON_ENV,
+            **_LLM_BEDROCK_ENV,
             "SKILL_SCANNER_LLM_MODEL": bedrock_litellm_model_id(llm.bedrock_model),
             "AWS_REGION": llm.aws_region,
         }
@@ -130,6 +147,7 @@ def _llm_env(llm: ResolvedLLM, secrets: list[str]) -> dict[str, str] | None:
         if not llm.azure_deployment or not llm.azure_endpoint or not llm.azure_api_version:
             return None
         env = {
+            **_LLM_COMMON_ENV,
             "SKILL_SCANNER_LLM_MODEL": f"azure/{llm.azure_deployment}",
             "SKILL_SCANNER_LLM_BASE_URL": llm.azure_endpoint,
             "SKILL_SCANNER_LLM_API_VERSION": llm.azure_api_version,

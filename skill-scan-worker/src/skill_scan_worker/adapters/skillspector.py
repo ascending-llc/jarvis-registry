@@ -39,11 +39,17 @@ _REPORT_EXIT_CODES = frozenset({0, 1})
 _PROMPT_TOKENS = "prompt_tokens"
 _COMPLETION_TOKENS = "completion_tokens"
 
+# Bedrock only: v2.13.3's default structured output is a forced tool call, which Claude Sonnet 5.5 rejects
+# ('tool_choice: type "tool" and "any" are not supported for this model'), failing every LLM batch. json_schema
+# avoids the forced tool call. (v2.13.3 sends no temperature unless SKILLSPECTOR_TEMPERATURE is set.)
+_LLM_BEDROCK_ENV = {"SKILLSPECTOR_STRUCTURED_OUTPUT_METHOD": "json_schema"}
+
 _STATIC_CONFIG = {
     "format": "json",
     "flags": [],
     "max_llm_concurrency": _MAX_LLM_CONCURRENCY,
     "max_workflow_seconds": _MAX_WORKFLOW_SECONDS,
+    "llm_env": {"bedrock": _LLM_BEDROCK_ENV},
 }
 
 
@@ -133,6 +139,7 @@ def _llm_env(llm: ResolvedLLM, secrets: list[str]) -> dict[str, str] | None:
         if llm.bedrock_model.startswith("arn:") and "anthropic" not in llm.base_model_id.lower():
             return None
         return {
+            **_LLM_BEDROCK_ENV,
             "SKILLSPECTOR_PROVIDER": "bedrock",
             "SKILLSPECTOR_MODEL": llm.bedrock_model,
             "AWS_REGION": llm.aws_region,
