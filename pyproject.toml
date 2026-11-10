@@ -272,10 +272,12 @@ registry-pkgs
 registry
 auth-server
 workflow-worker
+skill-scan-worker
 EOF
 uv export --package registry --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-registry.txt
 uv export --package auth-server --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-auth-server.txt
 uv export --package workflow-worker --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-workflow-worker.txt
+uv export --package skill-scan-worker --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-skill-scan-worker.txt
 """
 
 [tool.poe.tasks.cleanup-artifacts]
@@ -303,6 +305,7 @@ auth-server
 registry
 registry-pkgs
 workflow-worker
+skill-scan-worker
 EOF
 """
 

@@ -53,7 +53,12 @@ jobs:
           enable-cache: true
 
       - name: Build artifacts
-        run: uv run poe build-artifacts
+        run: |
+          uv run poe build-artifacts
+          # Fail here if the worker is accidentally dropped from the build task.
+          for artifact in build-artifacts/requirements-skill-scan-worker.txt build-artifacts/skill_scan_worker-*.whl; do
+            test -s "$artifact"
+          done
 
       - name: Display artifacts
         run: ls -al build-artifacts
