@@ -1,6 +1,7 @@
 from pathlib import Path
 
-import smoke  # scripts/smoke.py, on the test pythonpath
+import pytest
+from skill_scan_worker import smoke
 from skill_scan_worker.adapters.base import ToolOutcome
 
 from registry_pkgs.models.enums import (
@@ -66,5 +67,29 @@ def test_fails_on_empty_title(tmp_path: Path) -> None:
 
 
 def test_main_rejects_missing_dir() -> None:
-    assert smoke.main(["smoke", "/no/such/dir"]) == 2
-    assert smoke.main(["smoke"]) == 2
+    assert smoke.main(["/no/such/dir"]) == 2
+
+
+def test_main_requires_skill_dir_without_check_versions() -> None:
+    with pytest.raises(SystemExit):
+        smoke.main([])
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("skill-scanner 2.3.2", "2.3.2"),  # Cisco
+        ("SkillSpector v2.13.3", "2.13.3"),  # SkillSpector, leading v stripped
+        ("2.3.2", "2.3.2"),  # bare version
+        ("skill-scanner 2.3.20", "2.3.20"),  # must stay distinct from 2.3.2
+        ("", None),  # empty output
+        ("   \n  ", None),  # whitespace only
+    ],
+)
+def test_extract_version(output: str, expected: str | None) -> None:
+    assert smoke.extract_version(output) == expected
+
+
+def test_extract_version_distinguishes_suffix() -> None:
+    # An exact match must reject 2.3.20 when 2.3.2 is pinned.
+    assert smoke.extract_version("skill-scanner 2.3.20") != "2.3.2"
