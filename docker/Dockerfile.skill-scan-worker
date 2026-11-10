@@ -50,10 +50,11 @@ RUN pip install --only-binary :all: -r /opt/build/requirements-skill-scan-worker
 RUN X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled JARVIS_DISABLE_DOTENV=1 \
       python -m skill_scan_worker.smoke --check-versions
 
-# scripts/ holds the acceptance check and fixture recorder, run in the image (acceptance mounts no repo):
+# The acceptance check runs in the image with no repo mounted, so it ships here:
 #   docker compose run ... skill-scan-worker python scripts/acceptance.py
-# The smoke check ships in the package instead (python -m skill_scan_worker.smoke).
-COPY ./skill-scan-worker/scripts /app/scripts
+# The fixture recorder (scripts/skill_scan/record_fixtures.py) runs from the mounted repo instead, and the
+# smoke check ships in the package (python -m skill_scan_worker.smoke).
+COPY ./skill-scan-worker/scripts/acceptance.py /app/scripts/acceptance.py
 
 RUN useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin scanner \
  && mkdir -p /scan-tmp && chown scanner /scan-tmp

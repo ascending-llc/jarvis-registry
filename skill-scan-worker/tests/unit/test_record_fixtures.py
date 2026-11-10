@@ -9,21 +9,20 @@ _ARN = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/tes
 _BASE_MODEL = "anthropic.claude-sonnet-4-5"
 
 
-@pytest.fixture(params=["workspace", "repository"])
-def recorder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    workspace = Path(__file__).resolve().parents[2]
-    path = (
-        workspace / "scripts" / "record_fixtures.py"
-        if request.param == "workspace"
-        else workspace.parent / "scripts" / "skill_scan" / "record_fixtures.py"
-    )
+def _load_recorder() -> ModuleType:
+    path = Path(__file__).resolve().parents[3] / "scripts" / "skill_scan" / "record_fixtures.py"
     spec = importlib.util.spec_from_file_location("record_fixtures", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def recorder(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.delenv("SCAN_RECORD_BEDROCK_BASE_MODEL", raising=False)
-    return module
+    return _load_recorder()
 
 
 async def test_arn_without_base_model_rejected_before_any_recording(
@@ -66,18 +65,9 @@ async def test_llm_recordings_keep_llm_enabled(
         assert llm.bedrock_model == (model if output.name == "malicious-llm.json" else recorder._INVALID_MODEL)
 
 
-def _repository_recorder() -> ModuleType:
-    path = Path(__file__).resolve().parents[3] / "scripts" / "skill_scan" / "record_fixtures.py"
-    spec = importlib.util.spec_from_file_location("repository_record_fixtures", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_redact_strips_account_ids_and_role_sessions() -> None:
     # Recorded fixtures are committed to a public repo.
-    redact = _repository_recorder()._redact
+    redact = _load_recorder()._redact
     report = (
         '{"model": "bedrock/converse/arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/p",'
         ' "error": "User: arn:aws:sts::111122223333:assumed-role/ExampleSsoRole/someone@example.com'
