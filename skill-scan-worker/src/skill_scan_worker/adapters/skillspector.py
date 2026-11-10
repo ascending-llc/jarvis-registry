@@ -39,11 +39,17 @@ _REPORT_EXIT_CODES = frozenset({0, 1})
 _PROMPT_TOKENS = "prompt_tokens"
 _COMPLETION_TOKENS = "completion_tokens"
 
+# Bedrock only: v2.13.3's default structured output is a forced tool call, which Claude Sonnet 5.5 rejects
+# ('tool_choice: type "tool" and "any" are not supported for this model'), failing every LLM batch. json_schema
+# avoids the forced tool call. (v2.13.3 sends no temperature unless SKILLSPECTOR_TEMPERATURE is set.)
+_LLM_BEDROCK_ENV = {"SKILLSPECTOR_STRUCTURED_OUTPUT_METHOD": "json_schema"}
+
 _STATIC_CONFIG = {
     "format": "json",
     "flags": [],
     "max_llm_concurrency": _MAX_LLM_CONCURRENCY,
     "max_workflow_seconds": _MAX_WORKFLOW_SECONDS,
+    "llm_env": {"bedrock": _LLM_BEDROCK_ENV},
 }
 
 
@@ -105,6 +111,8 @@ class SkillSpectorAdapter:
             llm_requested=llm_requested,
             llm_available=metadata.get("llm_available"),
             llm_degraded=metadata.get("llm_degraded"),
+            calls_attempted=coerce_int(metadata.get("llm_calls_attempted")),
+            calls_succeeded=coerce_int(metadata.get("llm_calls_succeeded")),
             is_complete=completeness.get("is_complete"),
         )
 
@@ -133,6 +141,7 @@ def _llm_env(llm: ResolvedLLM, secrets: list[str]) -> dict[str, str] | None:
         if llm.bedrock_model.startswith("arn:") and "anthropic" not in llm.base_model_id.lower():
             return None
         return {
+            **_LLM_BEDROCK_ENV,
             "SKILLSPECTOR_PROVIDER": "bedrock",
             "SKILLSPECTOR_MODEL": llm.bedrock_model,
             "AWS_REGION": llm.aws_region,
@@ -157,13 +166,27 @@ def _llm_env(llm: ResolvedLLM, secrets: list[str]) -> dict[str, str] | None:
 
 
 def _status(
-    *, llm_requested: bool, llm_available: object, llm_degraded: object, is_complete: object
+    *,
+    llm_requested: bool,
+    llm_available: object,
+    llm_degraded: object,
+    calls_attempted: int | None,
+    calls_succeeded: int | None,
+    is_complete: object,
 ) -> tuple[SkillScanResultStatus, SkillScanStatusReason | None]:
     if not llm_requested:
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_UNAVAILABLE
-    # llm_available covers only preflight and the meta_analyzer call. Failed semantic-analyzer batches leave it
-    # true and set llm_degraded instead, without touching analysis_completeness (nodes/report.py at v2.13.3).
-    if llm_available is False or llm_degraded is True:
+    if llm_degraded is True:
+        return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_FAILED
+    if calls_attempted is not None and calls_succeeded is not None:
+        # Every LLM call (meta_analyzer and semantic batches) is counted here. llm_available is not usable for
+        # Bedrock: v2.13.3 re-checks availability at report time through the API-key path, which the SigV4
+        # Bedrock provider never satisfies (BedrockProvider.resolve_credentials always returns None), so it is
+        # false even when every call succeeded.
+        if calls_attempted == 0 or calls_succeeded < calls_attempted:
+            return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_FAILED
+    elif llm_available is False:
+        # No counters: fall back to llm_available, which covers preflight and the meta_analyzer call.
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_FAILED
     if is_complete is False:
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.ANALYSIS_INCOMPLETE

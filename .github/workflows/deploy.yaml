@@ -114,6 +114,14 @@ jobs:
             container_name: registry-workflow-worker
             image_name: workflow-worker
             init_container_name: migrations-wait
+          # optional: the Deployment only exists where skillScan is enabled, so skip it when it's absent
+          # instead of failing the whole deploy.
+          - name: skill-scan-worker
+            deployment_name: jarvis-registry-skill-scan-worker
+            container_name: registry-skill-scan-worker
+            image_name: skill-scan-worker
+            init_container_name: migrations-wait
+            optional: true
     env:
       DEPLOYMENT_NAME: ${{ matrix.deployment_name }}
     steps:
@@ -153,6 +161,13 @@ jobs:
         env:
           image: ghcr.io/${{ github.repository_owner }}/jarvis/${{ matrix.image_name }}:${{ github.sha }}
         run: |
+          if [ "${{ matrix.optional }}" = "true" ]; then
+            DEPLOYMENT=$(kubectl get deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application }} --ignore-not-found -o name) || exit $?
+            if [ -z "$DEPLOYMENT" ]; then
+              echo "::notice::${{ env.DEPLOYMENT_NAME }} not deployed here; skipping."
+              exit 0
+            fi
+          fi
           ARGS="${{ matrix.container_name }}=$image"
           if [ -n "${{ matrix.init_container_name }}" ]; then
             ARGS="$ARGS ${{ matrix.init_container_name }}=$image"
@@ -161,4 +176,11 @@ jobs:
 
       - name: Check pod status
         run: |
+          if [ "${{ matrix.optional }}" = "true" ]; then
+            DEPLOYMENT=$(kubectl get deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application }} --ignore-not-found -o name) || exit $?
+            if [ -z "$DEPLOYMENT" ]; then
+              echo "::notice::${{ env.DEPLOYMENT_NAME }} not deployed here; skipping."
+              exit 0
+            fi
+          fi
           kubectl rollout status deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application  }}

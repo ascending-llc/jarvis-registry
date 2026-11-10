@@ -131,6 +131,39 @@ services:
     profiles:
       - full
 
+  # Advisory skill-scan worker. read_only root + two tmpfs mirror the hardened pod.
+  skill-scan-worker:
+    image: ghcr.io/ascending-llc/jarvis/skill-scan-worker:latest
+    environment:
+      - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - SKILL_SCAN_WORKER_CONCURRENCY=${SKILL_SCAN_WORKER_CONCURRENCY:-2}
+      - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-True}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      - OTEL_SERVICE_NAME=skill-scan-worker
+    depends_on:
+      otel-collector:
+        condition: service_started
+      registry-mongodb:
+        condition: service_healthy
+      registry-migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    env_file:
+      - .env
+    read_only: true
+    volumes:
+      - type: tmpfs
+        target: /scan-tmp
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 01777
+    profiles:
+      - full
+
   # MongoDB Database
   registry-mongodb:
     container_name: registry-mongodb

@@ -1,0 +1,3 @@
+Error: Cannot determine input type for:
+/w/skill-scan-worker/tests/fixtures/skills/does-not-exist
+Supported formats: Git URL, file URL, .zip file, .md file, or directory

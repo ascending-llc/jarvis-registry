@@ -61,40 +61,104 @@ def _azure_llm(*, key: str | None) -> ResolvedLLM:
 # ---- parse ----
 
 
+# Exit codes the recorder observed for each fixture (v2.13.3 exits 1 when the risk score is above 50).
+_RECORDED_EXIT = {"malicious-nollm.json": 1, "clean-nollm.json": 0, "malicious-llm.json": 1, "llm-failed.json": 2}
+
+
+def _recorded(fixture: str) -> ProcessResult:
+    return _process(fixture, exit_code=_RECORDED_EXIT[fixture])
+
+
+def _parse_modified(tmp_path: Path, fixture: str, **metadata: object) -> ToolOutcome:
+    """Parse a recorded report with some ``metadata`` fields overridden (a real report shape, other outcome)."""
+    report = json.loads((_FIXTURES / fixture).read_text())
+    report["metadata"].update(metadata)
+    path = tmp_path / fixture
+    path.write_text(json.dumps(report))
+    process = ProcessResult(
+        exit_code=_RECORDED_EXIT[fixture],
+        timed_out=False,
+        output_file=path,
+        output_too_large=False,
+        stderr_tail="",
+        duration_ms=1,
+    )
+    return _ADAPTER.parse(process, llm_requested=True)
+
+
 def test_malicious_nollm() -> None:
-    outcome = _ADAPTER.parse(_process("malicious-nollm.json"), llm_requested=False)
+    outcome = _ADAPTER.parse(_recorded("malicious-nollm.json"), llm_requested=False)
     assert outcome.status == SkillScanResultStatus.PARTIAL
     assert outcome.status_reason == SkillScanStatusReason.LLM_UNAVAILABLE
     assert any(f.severity in (ScanSeverity.HIGH, ScanSeverity.CRITICAL) for f in outcome.findings)
-    assert outcome.tool_metadata["riskScore"] == 92
+    assert outcome.tool_metadata["riskScore"] == 91
 
 
 def test_clean_nollm() -> None:
-    outcome = _ADAPTER.parse(_process("clean-nollm.json"), llm_requested=False)
+    outcome = _ADAPTER.parse(_recorded("clean-nollm.json"), llm_requested=False)
     assert outcome.status == SkillScanResultStatus.PARTIAL
     assert outcome.status_reason == SkillScanStatusReason.LLM_UNAVAILABLE
     assert outcome.findings == []
 
 
 def test_malicious_llm_succeeds_with_usage() -> None:
-    outcome = _ADAPTER.parse(_process("malicious-llm.json"), llm_requested=True)
+    outcome = _ADAPTER.parse(_recorded("malicious-llm.json"), llm_requested=True)
     assert outcome.status == SkillScanResultStatus.SUCCEEDED
+    assert outcome.status_reason is None
     assert outcome.usage is not None
-    assert outcome.usage.inputTokens == 2100 + 1540
-    assert outcome.usage.outputTokens == 180 + 95
+    assert outcome.usage.inputTokens == 16708
+    assert outcome.usage.outputTokens == 3455
 
 
-def test_llm_failed() -> None:
-    outcome = _ADAPTER.parse(_process("llm-failed.json"), llm_requested=True)
+def test_bedrock_llm_available_false_is_ignored_when_every_call_succeeded() -> None:
+    # v2.13.3 reports llm_available=false for every Bedrock scan (its report-time check takes the API-key path,
+    # which SigV4 Bedrock never satisfies). The recording shows it next to 5 of 5 successful calls.
+    metadata = json.loads((_FIXTURES / "malicious-llm.json").read_text())["metadata"]
+    assert metadata["llm_available"] is False
+    assert metadata["llm_calls_attempted"] == metadata["llm_calls_succeeded"] == 5
+    assert "No LLM API key configured" in metadata["llm_error"]
+    assert _ADAPTER.parse(_recorded("malicious-llm.json"), llm_requested=True).status == SkillScanResultStatus.SUCCEEDED
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"llm_calls_succeeded": 4, "llm_degraded": True},  # one batch failed (e.g. a content-filtered reply)
+        {"llm_calls_succeeded": 4},  # a failed call even without the degraded flag
+        {"llm_calls_attempted": 0, "llm_calls_succeeded": 0},  # the LLM never ran
+    ],
+)
+def test_lost_llm_calls_are_llm_failed(tmp_path: Path, metadata: dict) -> None:
+    outcome = _parse_modified(tmp_path, "malicious-llm.json", **metadata)
     assert outcome.status == SkillScanResultStatus.PARTIAL
+    assert outcome.status_reason == SkillScanStatusReason.LLM_FAILED
+    assert outcome.findings  # the static findings are kept
+
+
+def test_without_call_counters_llm_available_false_is_llm_failed(tmp_path: Path) -> None:
+    outcome = _parse_modified(tmp_path, "malicious-llm.json", llm_calls_attempted=None, llm_calls_succeeded=None)
     assert outcome.status_reason == SkillScanStatusReason.LLM_FAILED
 
 
+def test_every_llm_call_failed_is_tool_error() -> None:
+    # Recorded with an invalid model id: v2.13.3 marks the LLM ledger exceptions fatal, sets
+    # execution_successful=false and exits 2 after writing the report, so it is a tool error, not llm_failed.
+    report = json.loads((_FIXTURES / "llm-failed.json").read_text())
+    assert report["execution_successful"] is False
+    assert report["metadata"]["llm_calls_succeeded"] == 0
+    outcome = _ADAPTER.parse(_recorded("llm-failed.json"), llm_requested=True)
+    assert outcome.status == SkillScanResultStatus.FAILED
+    assert outcome.status_reason == SkillScanStatusReason.TOOL_ERROR
+
+
 def test_duplicate_issues_collapse() -> None:
-    outcome = _ADAPTER.parse(_process("malicious-nollm.json"), llm_requested=False)
+    report = json.loads((_FIXTURES / "malicious-nollm.json").read_text())
+    raw_keys = [(i["id"], i["location"]["file"], i["location"]["start_line"]) for i in report["issues"]]
+    assert raw_keys.count(("E1", "scripts/collect.py", 13)) == 2  # the recording repeats E1 on one line
+    outcome = _ADAPTER.parse(_recorded("malicious-nollm.json"), llm_requested=False)
     keys = [(f.ruleId, f.filePath, f.startLine) for f in outcome.findings]
     assert len(keys) == len(set(keys))
-    assert ("SC1", "scripts/collect.py", 14) in keys  # the two SC1 rows became one
+    assert ("E1", "scripts/collect.py", 13) in keys
 
 
 def test_non_json_is_parse_error(tmp_path: Path) -> None:
@@ -106,6 +170,16 @@ def test_non_json_is_parse_error(tmp_path: Path) -> None:
     outcome = _ADAPTER.parse(process, llm_requested=False)
     assert outcome.status == SkillScanResultStatus.FAILED
     assert outcome.status_reason == SkillScanStatusReason.PARSE_ERROR
+
+
+def test_forced_error_exit_is_tool_error_with_stderr() -> None:
+    # Recorded: scanning a missing directory exits 2 and writes no report.
+    stderr = (_FIXTURES / "forced-error.stderr.txt").read_text()
+    assert stderr.startswith("Error: Cannot determine input type for:")
+    outcome = _ADAPTER.parse(_process("forced-error.json", exit_code=2, stderr=stderr), llm_requested=False)
+    assert outcome.status == SkillScanResultStatus.FAILED
+    assert outcome.status_reason == SkillScanStatusReason.TOOL_ERROR
+    assert outcome.error_message == stderr
 
 
 @pytest.mark.parametrize("exit_code", [2, -9, 137, None])
@@ -222,6 +296,33 @@ def test_invocation_bedrock_anthropic_arn_is_usable() -> None:
     )
     assert "--no-llm" not in inv.argv
     assert inv.env["SKILLSPECTOR_PROVIDER"] == "bedrock"
+
+
+@pytest.mark.parametrize(
+    ("model", "base_model_id"),
+    [
+        ("amazon.nova-lite-v1:0", "amazon.nova-lite-v1:0"),
+        ("arn:aws:bedrock:us-east-1:1:application-inference-profile/p", "anthropic.claude-sonnet-5-5"),
+    ],
+)
+def test_invocation_bedrock_uses_json_schema_output(model: str, base_model_id: str) -> None:
+    # The default forced tool call is rejected by Claude Sonnet 5.5, failing every LLM batch.
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), _bedrock_llm(model, base_model_id=base_model_id))
+    assert inv.env["SKILLSPECTOR_STRUCTURED_OUTPUT_METHOD"] == "json_schema"
+
+
+@pytest.mark.parametrize("key", ["k", None])
+def test_invocation_without_bedrock_llm_keeps_default_output_method(key: str | None) -> None:
+    for llm in (None, _azure_llm(key=key)):
+        inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), llm)
+        assert "SKILLSPECTOR_STRUCTURED_OUTPUT_METHOD" not in inv.env
+
+
+def test_invocation_never_sets_temperature() -> None:
+    # v2.13.3 sends no temperature unless asked; newer models reject any value.
+    for llm in (None, _bedrock_llm("amazon.nova-lite-v1:0"), _azure_llm(key="k")):
+        inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), llm)
+        assert "SKILLSPECTOR_TEMPERATURE" not in inv.env
 
 
 def test_invocation_bedrock_non_anthropic_arn_falls_back_to_no_llm() -> None:

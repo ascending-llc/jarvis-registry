@@ -80,9 +80,20 @@ def test_malicious_llm_succeeds_with_usage() -> None:
     assert outcome.status == SkillScanResultStatus.SUCCEEDED
     assert outcome.status_reason is None
     assert outcome.usage is not None
-    assert outcome.usage.inputTokens == 4120
-    assert outcome.usage.outputTokens == 388
-    assert any(f.confidence == 0.95 for f in outcome.findings)
+    assert outcome.usage.inputTokens == 4851
+    assert outcome.usage.outputTokens == 1606
+    rule_ids = {f.ruleId for f in outcome.findings}
+    assert {"LLM_PROMPT_INJECTION", "LLM_DATA_EXFILTRATION"} <= rule_ids  # the LLM pass contributed findings
+
+
+def test_llm_confidence_label_is_not_a_score() -> None:
+    # 2.3.2's LLM schema allows only HIGH/MEDIUM/LOW for llm_confidence, never a 0..1 number, so Cisco
+    # findings carry no confidence score.
+    report = json.loads((_FIXTURES / "malicious-llm.json").read_text())
+    labels = {(f.get("metadata") or {}).get("llm_confidence") for f in report["findings"]} - {None}
+    assert labels and labels <= {"HIGH", "MEDIUM", "LOW"}
+    outcome = _ADAPTER.parse(_process("malicious-llm.json"), llm_requested=True)
+    assert all(f.confidence is None for f in outcome.findings)
 
 
 def test_llm_failed() -> None:
@@ -92,11 +103,13 @@ def test_llm_failed() -> None:
 
 
 def test_status_signal_rules_are_dropped() -> None:
+    report = json.loads((_FIXTURES / "llm-failed.json").read_text())
+    assert "LLM_ANALYSIS_FAILED" in {f["rule_id"] for f in report["findings"]}  # the recording has the marker
     outcome = _ADAPTER.parse(_process("llm-failed.json"), llm_requested=True)
     rule_ids = {f.ruleId for f in outcome.findings}
     assert "LLM_ANALYSIS_FAILED" not in rule_ids
     assert "LLM_CONTEXT_BUDGET_EXCEEDED" not in rule_ids
-    assert "BEH_EXFIL_001" in rule_ids  # a real finding survives
+    assert "DATA_EXFIL_SENSITIVE_FILES" in rule_ids  # a real finding survives
 
 
 def test_non_json_is_parse_error(tmp_path: Path) -> None:
@@ -142,7 +155,18 @@ def test_report_without_findings_array_is_parse_error(tmp_path: Path, report: di
     assert outcome.status_reason == SkillScanStatusReason.PARSE_ERROR
 
 
-def test_exit_1_is_tool_error() -> None:
+def test_forced_error_exit_is_tool_error_with_stderr() -> None:
+    # Recorded: scanning a missing directory exits 1 and writes no report.
+    stderr = (_FIXTURES / "forced-error.stderr.txt").read_text()
+    assert stderr.startswith("Error: Directory does not exist:")
+    outcome = _ADAPTER.parse(_process("forced-error.json", exit_code=1, stderr=stderr), llm_requested=False)
+    assert outcome.status == SkillScanResultStatus.FAILED
+    assert outcome.status_reason == SkillScanStatusReason.TOOL_ERROR
+    assert outcome.error_message == stderr
+
+
+def test_exit_1_with_a_report_is_still_tool_error() -> None:
+    # Never run with --fail-on-*, so a non-zero exit is a runtime error even if a report exists.
     outcome = _ADAPTER.parse(_process("malicious-nollm.json", exit_code=1, stderr="crash"), llm_requested=False)
     assert outcome.status == SkillScanResultStatus.FAILED
     assert outcome.status_reason == SkillScanStatusReason.TOOL_ERROR
@@ -184,6 +208,41 @@ def test_invocation_azure_with_key() -> None:
     assert inv.env["SKILL_SCANNER_LLM_API_KEY"] == "secret-key"
     assert "secret-key" in inv.secrets
     assert "secret-key" not in " ".join(inv.argv)
+
+
+@pytest.mark.parametrize(
+    "llm",
+    [
+        _bedrock_llm("amazon.nova-lite-v1:0"),
+        _bedrock_llm("arn:aws:bedrock:us-east-1:1:application-inference-profile/p"),
+        _azure_llm(key="k"),
+        _azure_llm(key=None),
+    ],
+)
+def test_invocation_never_sends_temperature(llm: ResolvedLLM) -> None:
+    # Claude Sonnet 5.x / Haiku 5.5 reject any temperature, and Cisco's own model-name check can't see through
+    # an application inference profile ARN or an Azure deployment name.
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), llm)
+    assert inv.env["SKILL_SCANNER_LLM_TEMPERATURE"] == "none"
+
+
+@pytest.mark.parametrize(
+    "model", ["amazon.nova-lite-v1:0", "arn:aws:bedrock:us-east-1:1:application-inference-profile/p"]
+)
+def test_invocation_bedrock_forces_plain_json_output(model: str) -> None:
+    # Avoids LiteLLM's forced-tool-call JSON emulation, which Claude Sonnet 5.5 rejects.
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), _bedrock_llm(model))
+    assert inv.env["SKILL_SCANNER_LLM_FORCE_JSON_OBJECT"] == "1"
+
+
+def test_invocation_azure_keeps_schema_output() -> None:
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), _azure_llm(key="k"))
+    assert "SKILL_SCANNER_LLM_FORCE_JSON_OBJECT" not in inv.env
+
+
+def test_invocation_without_llm_sets_no_llm_controls() -> None:
+    inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), None)
+    assert not any(key.startswith("SKILL_SCANNER_LLM_") for key in inv.env)
 
 
 def test_invocation_azure_workload_identity_has_no_key() -> None:

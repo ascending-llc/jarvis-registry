@@ -1,0 +1,1 @@
+Error: Directory does not exist: /w/skill-scan-worker/tests/fixtures/skills/does-not-exist
