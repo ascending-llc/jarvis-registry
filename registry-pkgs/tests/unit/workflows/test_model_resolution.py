@@ -26,6 +26,15 @@ def _source(provider_config, *, mode: ModelSourceMode = ModelSourceMode.CHAT) ->
     )
 
 
+def test_bedrock_litellm_model_id_plain_id() -> None:
+    assert model_resolution.bedrock_litellm_model_id("amazon.nova-lite-v1:0") == "bedrock/amazon.nova-lite-v1:0"
+
+
+def test_bedrock_litellm_model_id_application_inference_profile_arn() -> None:
+    arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id"
+    assert model_resolution.bedrock_litellm_model_id(arn) == f"bedrock/converse/{arn}"
+
+
 def test_build_agno_model_for_bedrock() -> None:
     source = _source(
         AwsBedrockModelConfig(

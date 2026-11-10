@@ -1,0 +1,8 @@
+{
+  "execution_successful": true,
+  "metadata": {"llm_available": false, "inference_usage": []},
+  "analysis_completeness": {"is_complete": true, "coverage_percent": 100},
+  "risk_assessment": {"score": 3, "severity": "info", "recommendation": "allow"},
+  "issues": [],
+  "suppressed": []
+}

