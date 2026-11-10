@@ -7,10 +7,11 @@ Run it inside the built image, where the tools are installed:
     docker run --rm -v "$PWD/skill-scan-worker:/w" -w /w <image> \
         python scripts/record_fixtures.py [--with-llm]
 
-Always writes ``clean-nollm.json`` and ``malicious-nollm.json``. With ``--with-llm`` it also writes
-``malicious-llm.json`` (a real LLM run) and ``llm-failed.json`` (a run with a deliberately invalid model
-id, so the tool's own LLM-failure markers appear). A run that produces no report has its stderr saved
-next to the target, which captures the forced-error cases.
+Always writes ``clean-nollm.json`` and ``malicious-nollm.json``, plus ``forced-error.stderr.txt`` (each
+tool scanning a path that does not exist: it writes no report and exits non-zero, so its stderr is
+captured for the adapter error tests). With ``--with-llm`` it also writes ``malicious-llm.json`` (a real
+LLM run) and ``llm-failed.json`` (a run with a deliberately invalid model id, so the tool's own
+LLM-failure markers appear). A run that produces no report has its stderr saved next to the target.
 
 The LLM is a Bedrock model read from the environment, so no code edit is needed:
 
@@ -40,6 +41,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 _SKILLS = _ROOT / "tests" / "fixtures" / "skills"
 _FIXTURES = _ROOT / "tests" / "fixtures"
 _INVALID_MODEL = "does-not-exist.invalid-model-v0"  # a plain id the provider rejects, to force an LLM failure
+_MISSING_SKILL_DIR = _SKILLS / "does-not-exist"  # a path neither tool finds, to force a no-report error exit
 
 
 def _bedrock_llm(model: str) -> ResolvedLLM:
@@ -95,6 +97,8 @@ async def _main(with_llm: bool) -> None:
         out_dir = _FIXTURES / adapter.name.replace("-skill-scanner", "")
         await _record(adapter, _SKILLS / "clean", out_dir / "clean-nollm.json", None)
         await _record(adapter, _SKILLS / "malicious", out_dir / "malicious-nollm.json", None)
+        # Forced error: scanning a missing dir writes no report, so _record saves forced-error.stderr.txt.
+        await _record(adapter, _MISSING_SKILL_DIR, out_dir / "forced-error.json", None)
         if with_llm:
             await _record(adapter, _SKILLS / "malicious", out_dir / "malicious-llm.json", llm)
             await _record(adapter, _SKILLS / "malicious", out_dir / "llm-failed.json", _bedrock_llm(_INVALID_MODEL))

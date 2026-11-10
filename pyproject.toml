@@ -203,6 +203,28 @@ shell = "cd skill-scan-worker && uv run poe test"
 [tool.poe.tasks.test-skill-scan-worker-cov]
 shell = "cd skill-scan-worker && uv run poe test-cov"
 
+[tool.poe.tasks.record-skill-scan-fixtures]
+help = "Record scanner fixtures from a built image. Usage: record-skill-scan-fixtures <image> [--with-llm]"
+shell = """
+docker run --rm --entrypoint='' \
+  -e X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled -e JARVIS_DISABLE_DOTENV=1 \
+  -e SCAN_RECORD_BEDROCK_MODEL -e SCAN_RECORD_BEDROCK_BASE_MODEL -e AWS_REGION \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  -v "$PWD/skill-scan-worker:/w" -w /w \
+  "$image" python scripts/record_fixtures.py $([ -n "$with_llm" ] && echo --with-llm)
+"""
+
+[[tool.poe.tasks.record-skill-scan-fixtures.args]]
+name = "image"
+positional = true
+help = "The built skill-scan-worker image tag"
+
+[[tool.poe.tasks.record-skill-scan-fixtures.args]]
+name = "with_llm"
+options = ["--with-llm"]
+type = "boolean"
+help = "Also record real-LLM and llm-failed reports"
+
 # Linting and formatting
 [tool.poe.tasks.lint]
 help = "Run ruff linter"
@@ -246,10 +268,12 @@ registry-pkgs
 registry
 auth-server
 workflow-worker
+skill-scan-worker
 EOF
 uv export --package registry --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-registry.txt
 uv export --package auth-server --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-auth-server.txt
 uv export --package workflow-worker --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-workflow-worker.txt
+uv export --package skill-scan-worker --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-skill-scan-worker.txt
 """
 
 [tool.poe.tasks.cleanup-artifacts]
@@ -277,6 +301,7 @@ auth-server
 registry
 registry-pkgs
 workflow-worker
+skill-scan-worker
 EOF
 """
 

@@ -60,7 +60,7 @@ jobs:
     # Report only: findings are mostly false positives, so this step never fails the build.
     - name: Security check with bandit
       run: |
-        bandit -c pyproject.toml -r registry/src auth-server/src registry-pkgs/src workflow-worker/src -f json -o bandit-report.json || true
+        bandit -c pyproject.toml -r registry/src auth-server/src registry-pkgs/src workflow-worker/src skill-scan-worker/src -f json -o bandit-report.json || true
 
     - name: Upload security report
       uses: actions/upload-artifact@v7
