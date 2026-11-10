@@ -10,11 +10,14 @@ exclude-path-patterns = [
     {path-pattern = '.*\.svg$', reason = 'SVG assets are static images and can trigger entropy false positives'},
     {path-pattern = 'docs/llms\.txt$', reason = 'llms.txt is a plain-text LLM index file with no credentials'},
     {path-pattern = '.*\.env\.example$', reason = 'sample env template with placeholder values (root or any workspace)'},
+    {path-pattern = 'docker/skill-scanners/.*', reason = 'hash-locked scanner requirement lock files and their README; the sha256 hashes and pinned SkillSpector git commit SHA are not credentials'},
+    {path-pattern = 'docker/Dockerfile\.skill-scan-worker$', reason = 'build recipe with no credentials; pinned git commit and config paths trigger entropy false positives'},
 ]
 
 exclude-entropy-patterns = [
     {path-pattern = '(registry-pkgs|registry)/tests/.*', pattern = '.*VCeDsk8ZHncYF1g234fKtc4lNipbBhu3.*', reason = "Atlassian MCP's public authorization-server tenant ID in captured discovery fixtures is not a credential"},
     {path-pattern = 'docs/.*\.md$', pattern = '.*github\.com/ascending-llc/jarvis-registry/blob/[0-9a-f]{40}/.*', reason = 'commit SHAs in GitHub permalinks to this repository are not credentials'},
+    {path-pattern = 'docker-compose\.yml$', pattern = 'OTEL_SERVICE_NAME=skill-scan-worker', reason = 'plain OTel service name is not a credential'},
 ]
 
 exclude-signatures = [
