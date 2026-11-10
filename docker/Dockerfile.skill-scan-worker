@@ -1,0 +1,67 @@
+# Advisory skill-scan worker: the worker plus two isolated scanner virtualenvs.
+#
+# Each scanner installs from a hash-locked requirements.txt in docker/skill-scanners/ (both pull litellm,
+# which had a credential-stealing release, so a rebuild can't silently grab a different transitive version).
+FROM python:3.12-slim
+
+ARG BUILD_VERSION=
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PIP_NO_CACHE_DIR=1 \
+    LITELLM_LOCAL_MODEL_COST_MAP=True \
+    BUILD_VERSION=${BUILD_VERSION}
+
+# git: fetch SkillSpector at its pinned commit (not on PyPI). ca-certificates: TLS for pip and git.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pinned uv for reproducible, hash-checked scanner installs.
+COPY --from=ghcr.io/astral-sh/uv:0.9.10 /uv /usr/local/bin/uv
+
+# Scanner virtualenvs, isolated from each other and from the worker's own environment: each tool's
+# interpreter never imports our code and ours never imports theirs.
+COPY docker/skill-scanners/ /opt/scanner-locks/
+RUN uv venv /opt/scanners/cisco --python /usr/local/bin/python3.12 \
+ && uv pip install --python /opt/scanners/cisco/bin/python --require-hashes \
+      -r /opt/scanner-locks/cisco/requirements.txt
+# skillspector's deps and build backend (hatchling) are hash-locked; skillspector itself comes from the git
+# ref with --no-deps --no-build-isolation, so it builds against the pinned hatchling, not an unlocked one
+# fetched at build time (not on PyPI).
+RUN uv venv /opt/scanners/skillspector --python /usr/local/bin/python3.12 \
+ && uv pip install --python /opt/scanners/skillspector/bin/python --require-hashes \
+      -r /opt/scanner-locks/skillspector/requirements.txt \
+      -r /opt/scanner-locks/skillspector/build-requirements.txt \
+ && uv pip install --python /opt/scanners/skillspector/bin/python --no-deps --no-build-isolation \
+      "skillspector @ git+https://github.com/NVIDIA/SkillSpector.git@38a1dfe93325d2f8bfcd4f8d0241eed706334915"
+
+WORKDIR /app
+COPY ./config/metrics/registry.yml /app/config/metrics/registry.yml
+ENV OTEL_METRICS_CONFIG_PATH=/app/config/metrics/registry.yml
+
+COPY ./build-artifacts /opt/build/
+RUN pip install --only-binary :all: -r /opt/build/requirements-skill-scan-worker.txt \
+ && pip install --no-deps --no-index --find-links /opt/build/ skill-scan-worker registry-pkgs
+
+# Fail the build if an installed scanner's version differs from its adapter's pinned tool_version. The
+# adapter is the single source of the version (no literal here); this runs each tool's own --version via
+# the worker, which also proves the console script runs. A drift must fail the build, never silently
+# return zero findings at runtime. The import-check and dotenv guards let settings load without app secrets.
+RUN X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled JARVIS_DISABLE_DOTENV=1 \
+      python -m skill_scan_worker.smoke --check-versions
+
+# scripts/ holds the acceptance check and fixture recorder, run in the image (acceptance mounts no repo):
+#   docker compose run ... skill-scan-worker python scripts/acceptance.py
+# The smoke check ships in the package instead (python -m skill_scan_worker.smoke).
+COPY ./skill-scan-worker/scripts /app/scripts
+
+RUN useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin scanner \
+ && mkdir -p /scan-tmp && chown scanner /scan-tmp
+USER 10001
+
+ENV SKILL_SCAN_WORKER_WORK_DIR=/scan-tmp \
+    SKILL_SCAN_WORKER_TOOLS_DIR=/opt/scanners \
+    HOME=/scan-tmp \
+    TMPDIR=/scan-tmp
+
+CMD ["python", "-m", "skill_scan_worker.main"]
