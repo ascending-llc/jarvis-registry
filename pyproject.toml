@@ -161,6 +161,32 @@ cmd = "python scripts/generate_llms.py"
 help = "Check that llms.txt and llms-full.txt are up to date"
 cmd = "python scripts/generate_llms.py --check"
 
+# Re-record the skill-scan-worker scanner report fixtures (skill-scan-worker/tests/fixtures/{cisco,skillspector}/)
+# from the real pinned tools. Required on every scanner version bump. Runs scripts/skill_scan/record_fixtures.py
+# inside a built skill-scan-worker image with the repo mounted. It runs as the host user so written fixtures are
+# owned by you, and uses /tmp as the work dir because /scan-tmp in the image belongs to the image's own user.
+# No MongoDB or app secrets are involved: X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled lets the worker settings load
+# without JWT keys / CREDS_KEY, and JARVIS_DISABLE_DOTENV=1 keeps the mounted repo's .env out of the container.
+# With --with-llm, export SCAN_RECORD_BEDROCK_MODEL (and SCAN_RECORD_BEDROCK_BASE_MODEL for an inference-profile
+# ARN), AWS_REGION and AWS credentials first; they are forwarded only when set. See the script's docstring.
+[tool.poe.tasks.record-skill-scan-fixtures]
+help = "Record skill-scan-worker scanner fixtures inside a built image (usage: poe record-skill-scan-fixtures <image> [--with-llm])"
+shell = """
+docker run --rm --entrypoint '' \
+  --user "$(id -u):$(id -g)" \
+  -e SKILL_SCAN_WORKER_WORK_DIR=/tmp \
+  -e X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled -e JARVIS_DISABLE_DOTENV=1 \
+  -e SCAN_RECORD_BEDROCK_MODEL -e SCAN_RECORD_BEDROCK_BASE_MODEL \
+  -e AWS_REGION -e AWS_DEFAULT_REGION \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  -v "${POE_ROOT}:/w" -w /w \
+  "${image}" python scripts/skill_scan/record_fixtures.py ${with_llm:+--with-llm}
+"""
+args = [
+  { name = "image", positional = true, required = true, help = "skill-scan-worker image to run, e.g. ghcr.io/ascending-llc/jarvis/skill-scan-worker:latest" },
+  { name = "with-llm", type = "boolean", help = "Also record malicious-llm.json and llm-failed.json against a real Bedrock model" },
+]
+
 # Run all tests across all projects
 [tool.poe.tasks.test-all]
 shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test && cd ../workflow-worker && uv run poe test && cd ../skill-scan-worker && uv run poe test"
@@ -202,28 +228,6 @@ shell = "cd skill-scan-worker && uv run poe test"
 
 [tool.poe.tasks.test-skill-scan-worker-cov]
 shell = "cd skill-scan-worker && uv run poe test-cov"
-
-[tool.poe.tasks.record-skill-scan-fixtures]
-help = "Record scanner fixtures from a built image. Usage: record-skill-scan-fixtures <image> [--with-llm]"
-shell = """
-docker run --rm --entrypoint='' \
-  -e X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled -e JARVIS_DISABLE_DOTENV=1 \
-  -e SCAN_RECORD_BEDROCK_MODEL -e SCAN_RECORD_BEDROCK_BASE_MODEL -e AWS_REGION \
-  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
-  -v "$PWD/skill-scan-worker:/w" -w /w \
-  "$image" python scripts/record_fixtures.py $([ -n "$with_llm" ] && echo --with-llm)
-"""
-
-[[tool.poe.tasks.record-skill-scan-fixtures.args]]
-name = "image"
-positional = true
-help = "The built skill-scan-worker image tag"
-
-[[tool.poe.tasks.record-skill-scan-fixtures.args]]
-name = "with_llm"
-options = ["--with-llm"]
-type = "boolean"
-help = "Also record real-LLM and llm-failed reports"
 
 # Linting and formatting
 [tool.poe.tasks.lint]
@@ -268,12 +272,10 @@ registry-pkgs
 registry
 auth-server
 workflow-worker
-skill-scan-worker
 EOF
 uv export --package registry --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-registry.txt
 uv export --package auth-server --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-auth-server.txt
 uv export --package workflow-worker --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-workflow-worker.txt
-uv export --package skill-scan-worker --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-skill-scan-worker.txt
 """
 
 [tool.poe.tasks.cleanup-artifacts]
@@ -301,7 +303,6 @@ auth-server
 registry
 registry-pkgs
 workflow-worker
-skill-scan-worker
 EOF
 """
 

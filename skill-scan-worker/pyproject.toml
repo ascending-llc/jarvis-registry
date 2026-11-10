@@ -15,8 +15,14 @@ registry-pkgs = { workspace = true }
 requires = ["setuptools>=67", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+skill_scan_worker = ["py.typed"]
 
 [tool.poe]
 # Hide poe's "Poe => <command>" echo so successful runs stay minimal; `poe -v <task>` shows it.

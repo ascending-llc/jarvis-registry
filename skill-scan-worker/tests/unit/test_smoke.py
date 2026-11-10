@@ -70,6 +70,26 @@ def test_main_rejects_missing_dir() -> None:
     assert smoke.main(["/no/such/dir"]) == 2
 
 
+@pytest.mark.parametrize("file_path", [None, ""])
+def test_fails_when_file_path_absent(tmp_path: Path, file_path: str | None) -> None:
+    problems = smoke.check_outcome("t", _outcome([_finding(filePath=file_path)]), tmp_path)
+    assert any("has no filePath" in p for p in problems)
+
+
+def test_main_resolves_relative_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "skill").mkdir()
+    monkeypatch.chdir(tmp_path)
+    seen: list[Path] = []
+
+    async def fake_run(skill_dir: Path) -> int:
+        seen.append(skill_dir)
+        return 0
+
+    monkeypatch.setattr(smoke, "_run", fake_run)
+    assert smoke.main(["skill"]) == 0
+    assert seen == [tmp_path.resolve() / "skill"]
+
+
 def test_main_requires_skill_dir_without_check_versions() -> None:
     with pytest.raises(SystemExit):
         smoke.main([])

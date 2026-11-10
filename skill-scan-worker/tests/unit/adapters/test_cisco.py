@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -127,6 +128,18 @@ def test_malformed_line_and_usage_do_not_fail_parse(tmp_path: Path) -> None:
     assert outcome.usage is not None
     assert outcome.usage.inputTokens is None
     assert outcome.usage.outputTokens == 9
+
+
+@pytest.mark.parametrize("report", [{}, {"findings": None}, {"findings": {}}, {"error": "boom"}])
+def test_report_without_findings_array_is_parse_error(tmp_path: Path, report: dict) -> None:
+    out = tmp_path / "r.json"
+    out.write_text(json.dumps(report))
+    process = ProcessResult(
+        exit_code=0, timed_out=False, output_file=out, output_too_large=False, stderr_tail="", duration_ms=1
+    )
+    outcome = _ADAPTER.parse(process, llm_requested=True)
+    assert outcome.status == SkillScanResultStatus.FAILED
+    assert outcome.status_reason == SkillScanStatusReason.PARSE_ERROR
 
 
 def test_exit_1_is_tool_error() -> None:

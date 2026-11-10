@@ -3,8 +3,28 @@
   "metadata": {
     "llm_available": true,
     "inference_usage": [
-      {"input_tokens": 2100, "output_tokens": 180},
-      {"input_tokens": 1540, "output_tokens": 95}
+      {
+        "node": "semantic_security",
+        "request_kind": "structured_output",
+        "provider": "bedrock",
+        "model": "us.anthropic.claude-sonnet-4-6",
+        "model_source": "requested_model",
+        "usage_source": "provider_response",
+        "prompt_tokens": 2100,
+        "completion_tokens": 180,
+        "total_tokens": 2280
+      },
+      {
+        "node": "meta_analyzer",
+        "request_kind": "structured_output",
+        "provider": "bedrock",
+        "model": "us.anthropic.claude-sonnet-4-6",
+        "model_source": "requested_model",
+        "usage_source": "provider_response",
+        "prompt_tokens": 1540,
+        "completion_tokens": 95,
+        "total_tokens": 1635
+      }
     ]
   },
   "analysis_completeness": {"is_complete": true, "coverage_percent": 100},

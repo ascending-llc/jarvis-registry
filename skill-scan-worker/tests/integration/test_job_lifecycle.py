@@ -13,7 +13,8 @@ import pytest_asyncio
 from beanie import PydanticObjectId, init_beanie
 from pymongo import AsyncMongoClient
 from skill_scan_worker.finish import finish_job
-from skill_scan_worker.sweeper import fail_exhausted_jobs
+from skill_scan_worker.main import _on_execution_error
+from skill_scan_worker.sweeper import OrphanSweeper, fail_exhausted_jobs
 
 from registry_pkgs.database.leased_job import LeaseLostError
 from registry_pkgs.database.mongodb import MongoDB
@@ -73,6 +74,16 @@ def _result(skill_id: PydanticObjectId, digest: str, *, tool: str = "t", fingerp
         status=SkillScanResultStatus.SUCCEEDED,
         findings=[],
     )
+
+
+async def _enqueue_and_claim(skill_id: PydanticObjectId, *, prior_attempts: int = 0):
+    """Enqueue a job, optionally mark earlier attempts as used, and claim it (the claim adds one attempt)."""
+    await enqueue_skill_scan(skill_id, trigger=SkillScanTriggerType.AUTO, requested_by=None, session=None)
+    if prior_attempts:
+        await _jobs().update_one({"skillId": skill_id}, {"$set": {"attemptCount": prior_attempts}})
+    claimed = await _claim(skill_id)
+    assert claimed is not None
+    return claimed
 
 
 async def _claim(skill_id: PydanticObjectId):
@@ -158,8 +169,11 @@ async def test_finish_succeeds_under_concurrent_heartbeats(mongo) -> None:
     stop = asyncio.Event()
 
     async def _heartbeat_storm() -> None:
+        # Paced: back-to-back heartbeats would make every transaction retry conflict (a livelock no real 30 s
+        # heartbeat can cause), while a few ms apart they still land mid-transaction.
         while not stop.is_set():
             await skill_scan_job_repository.heartbeat(lease)
+            await asyncio.sleep(0.02)
 
     storm = asyncio.ensure_future(_heartbeat_storm())
     try:
@@ -210,3 +224,98 @@ async def test_reaper_requeues_rerequested_exhausted_job(mongo) -> None:
     assert job["status"] == "pending"
     assert job["attemptCount"] == 0
     assert job["rerequested"] is False
+
+
+async def test_finish_after_job_deleted_writes_nothing(mongo) -> None:
+    skill_id = PydanticObjectId()
+    _job, lease = await _enqueue_and_claim(skill_id)
+    # Registry deletes the job when the skill is deleted mid-scan.
+    await _jobs().delete_one({"skillId": skill_id})
+
+    with pytest.raises(LeaseLostError):
+        await finish_job(lease, _skill(skill_id), "sha256:d1", {"t": "fp"}, [_result(skill_id, "sha256:d1")])
+
+    assert await _results().count_documents({"skillId": skill_id}) == 0
+
+
+async def test_finish_drops_old_fingerprint_only_for_tools_that_ran(mongo) -> None:
+    skill_id = PydanticObjectId()
+    for tool in ("ran", "idle"):
+        await _results().insert_one(
+            _result(skill_id, "sha256:d1", tool=tool, fingerprint=f"{tool}-old").model_dump(
+                mode="python", exclude={"id"}
+            )
+        )
+    _job, lease = await _enqueue_and_claim(skill_id)
+
+    await finish_job(
+        lease,
+        _skill(skill_id),
+        "sha256:d1",
+        {"ran": "ran-new", "idle": "idle-new"},
+        [_result(skill_id, "sha256:d1", tool="ran", fingerprint="ran-new")],
+    )
+
+    fingerprints = {doc["toolFingerprint"] async for doc in _results().find({"skillId": skill_id})}
+    assert fingerprints == {"ran-new", "idle-old"}
+
+
+async def test_execution_error_on_last_attempt_fails_the_job(mongo) -> None:
+    skill_id = PydanticObjectId()
+    job, lease = await _enqueue_and_claim(skill_id, prior_attempts=2)
+    assert job.attemptCount == 3
+
+    await _on_execution_error(job, lease, RuntimeError("boom"))
+
+    doc = await _jobs().find_one({"skillId": skill_id})
+    assert doc["status"] == "failed"
+    assert doc["errorCode"] == "internal_error"
+    assert doc["error"] == "boom"
+
+
+async def test_execution_error_on_last_attempt_after_rerequest_requeues(mongo) -> None:
+    skill_id = PydanticObjectId()
+    job, lease = await _enqueue_and_claim(skill_id, prior_attempts=2)
+    await enqueue_skill_scan(skill_id, trigger=SkillScanTriggerType.AUTO, requested_by=None, session=None)
+
+    await _on_execution_error(job, lease, RuntimeError("boom"))
+
+    doc = await _jobs().find_one({"skillId": skill_id})
+    assert doc["status"] == "pending"
+    assert doc["attemptCount"] == 0
+    assert doc["rerequested"] is False
+    assert "errorCode" not in doc
+    assert "error" not in doc
+
+
+async def test_finish_after_an_earlier_internal_error_clears_the_error(mongo) -> None:
+    skill_id = PydanticObjectId()
+    job, lease = await _enqueue_and_claim(skill_id)
+    await _on_execution_error(job, lease, RuntimeError("boom"))
+    assert (await _jobs().find_one({"skillId": skill_id}))["errorCode"] == "internal_error"
+
+    claimed = await _claim(skill_id)
+    assert claimed is not None
+    _job, lease = claimed
+    await finish_job(lease, _skill(skill_id), "sha256:d1", {"t": "fp"}, [_result(skill_id, "sha256:d1")])
+
+    doc = await _jobs().find_one({"skillId": skill_id})
+    assert doc["status"] == "done"
+    assert "errorCode" not in doc
+    assert "error" not in doc
+
+
+async def test_orphan_sweep_deletes_state_only_for_missing_skills(mongo) -> None:
+    kept, orphan = PydanticObjectId(), PydanticObjectId()
+    await ExtendedSkill.get_pymongo_collection().insert_one(
+        {"_id": kept, "name": "s", "description": "d", "author": PydanticObjectId(), "authorName": "a"}
+    )
+    for skill_id in (kept, orphan):
+        await enqueue_skill_scan(skill_id, trigger=SkillScanTriggerType.AUTO, requested_by=None, session=None)
+        await _results().insert_one(_result(skill_id, "sha256:d1").model_dump(mode="python", exclude={"id"}))
+
+    await OrphanSweeper("owner-a", 60)._sweep()
+
+    for collection in (_jobs(), _results()):
+        assert await collection.count_documents({"skillId": kept}) == 1
+        assert await collection.count_documents({"skillId": orphan}) == 0

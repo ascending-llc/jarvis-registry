@@ -102,7 +102,9 @@ def check_outcome(tool: str, outcome: ToolOutcome, skill_dir: Path) -> list[str]
             problems.append(f"finding {finding.ruleId} has empty title")
         if finding.severity not in valid_severities:
             problems.append(f"finding {finding.ruleId} has invalid severity {finding.severity}")
-        if finding.filePath is not None and not (skill_dir / finding.filePath).exists():
+        if not finding.filePath:
+            problems.append(f"finding {finding.ruleId} has no filePath")
+        elif not (skill_dir / finding.filePath).exists():
             problems.append(f"finding {finding.ruleId} filePath {finding.filePath} not under skill dir")
     return problems
 
@@ -144,7 +146,7 @@ def main(argv: list[str]) -> int:
         return check_versions()
     if args.skill_dir is None:
         parser.error("skill_dir is required unless --check-versions is given")
-    skill_dir = Path(args.skill_dir)
+    skill_dir = Path(args.skill_dir).resolve()
     if not skill_dir.is_dir():
         print(f"not a directory: {skill_dir}", file=sys.stderr)
         return 2

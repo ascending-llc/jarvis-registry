@@ -242,7 +242,7 @@ def _build_frontmatter(
     )
 
 
-def _require_user_id(user_id: str | None) -> PydanticObjectId:
+def require_user_id(user_id: str | None) -> PydanticObjectId:
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authenticated user ID is required")
     try:
@@ -410,7 +410,7 @@ class SkillService:
         enabled: bool | None = None,
         file_count: int | None = None,
     ) -> list[tuple[Skill, ResourcePermissions]]:
-        object_user_id = _require_user_id(user_id)
+        object_user_id = require_user_id(user_id)
         accessible_ids = await self.acl_service.get_accessible_resource_ids(
             user_id=object_user_id,
             resource_type=RegistryResourceType.SKILL.value,
@@ -444,7 +444,7 @@ class SkillService:
     ) -> tuple[Skill, list[SkillFile], ResourcePermissions]:
         skill = await self._get_existing_skill(skill_id)
         permissions = await self.acl_service.check_user_permission(
-            user_id=_require_user_id(user_id),
+            user_id=require_user_id(user_id),
             resource_type=RegistryResourceType.SKILL.value,
             resource_id=skill_id,
             required_permission="VIEW",
@@ -468,7 +468,7 @@ class SkillService:
     ) -> SkillFileContentResponse:
         await self._get_existing_skill(skill_id)
         await self.acl_service.check_user_permission(
-            user_id=_require_user_id(user_id),
+            user_id=require_user_id(user_id),
             resource_type=RegistryResourceType.SKILL.value,
             resource_id=skill_id,
             required_permission="VIEW",
@@ -503,7 +503,7 @@ class SkillService:
         user_id: str | None,
         author_name: str | None,
     ) -> tuple[Skill, list[SkillFile], ResourcePermissions]:
-        object_user_id = _require_user_id(user_id)
+        object_user_id = require_user_id(user_id)
         user = await self.user_service.get_user_by_user_id(str(object_user_id))
         if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authenticated user was not found")
@@ -583,7 +583,7 @@ class SkillService:
         data: SkillFileUpsertRequest,
         user_id: str | None,
     ) -> tuple[SkillFileMetadataResponse, bool]:
-        object_user_id = _require_user_id(user_id)
+        object_user_id = require_user_id(user_id)
         prepared = _prepare_inline_file(relative_path, data)  # fail fast before opening a session
         now = datetime.now(UTC)
         try:
@@ -667,7 +667,7 @@ class SkillService:
         relative_path: str,
         user_id: str | None,
     ) -> None:
-        object_user_id = _require_user_id(user_id)
+        object_user_id = require_user_id(user_id)
         _validate_relative_path(relative_path)
         now = datetime.now(UTC)
         try:
@@ -723,7 +723,7 @@ class SkillService:
         data: SkillUpdateRequest,
         user_id: str | None,
     ) -> tuple[Skill, list[SkillFile], ResourcePermissions]:
-        object_user_id = _require_user_id(user_id)
+        object_user_id = require_user_id(user_id)
         # _get_existing_skill loads the document via find_one, which seeds Beanie's
         # state management snapshot.  The subsequent save() therefore emits an
         # incremental $set instead of a full-document replace, preserving any
@@ -822,7 +822,7 @@ class SkillService:
             async with MongoDB.get_client().start_session() as mongo_session:
                 async with await mongo_session.start_transaction():
                     await self.acl_service.check_user_permission(
-                        user_id=_require_user_id(user_id),
+                        user_id=require_user_id(user_id),
                         resource_type=RegistryResourceType.SKILL.value,
                         resource_id=skill_id,
                         required_permission="DELETE",
@@ -860,7 +860,7 @@ class SkillService:
     ) -> Skill:
         skill = await self._get_existing_skill(skill_id)
         await self.acl_service.check_user_permission(
-            user_id=_require_user_id(user_id),
+            user_id=require_user_id(user_id),
             resource_type=RegistryResourceType.SKILL.value,
             resource_id=skill_id,
             required_permission="EDIT",

@@ -83,10 +83,11 @@ class CiscoSkillScannerAdapter:
             report = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return _failed(SkillScanStatusReason.PARSE_ERROR, process.stderr_tail)
-        if not isinstance(report, dict):
+        # 2.3.2 always writes the findings array (ScanResult.to_dict); a report without one is not a scan result.
+        if not isinstance(report, dict) or not isinstance(report.get("findings"), list):
             return _failed(SkillScanStatusReason.PARSE_ERROR, process.stderr_tail)
 
-        raw_findings = report.get("findings") or []
+        raw_findings = report["findings"]
         rule_ids = {f.get("rule_id") for f in raw_findings if isinstance(f, dict)}
         analyzers_failed = report.get("analyzers_failed") or []
         llm_analyzer_failed = any(

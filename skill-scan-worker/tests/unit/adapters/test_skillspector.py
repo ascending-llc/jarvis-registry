@@ -1,8 +1,10 @@
+import json
 from pathlib import Path
 
 import pytest
 from beanie import PydanticObjectId
 from pydantic import SecretStr
+from skill_scan_worker.adapters.base import ToolOutcome
 from skill_scan_worker.adapters.skillspector import SkillSpectorAdapter
 from skill_scan_worker.llm import ResolvedLLM
 from skill_scan_worker.process import ProcessResult
@@ -19,7 +21,7 @@ _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "skillspector"
 _ADAPTER = SkillSpectorAdapter()
 
 
-def _process(fixture: str, *, exit_code: int = 0, stderr: str = "") -> ProcessResult:
+def _process(fixture: str, *, exit_code: int | None = 0, stderr: str = "") -> ProcessResult:
     return ProcessResult(
         exit_code=exit_code,
         timed_out=False,
@@ -106,8 +108,10 @@ def test_non_json_is_parse_error(tmp_path: Path) -> None:
     assert outcome.status_reason == SkillScanStatusReason.PARSE_ERROR
 
 
-def test_exit_2_is_tool_error() -> None:
-    outcome = _ADAPTER.parse(_process("malicious-nollm.json", exit_code=2), llm_requested=False)
+@pytest.mark.parametrize("exit_code", [2, -9, 137, None])
+def test_exit_outside_0_and_1_is_tool_error(exit_code: int | None) -> None:
+    # The report file is complete here; a signal kill after writing it still is not a successful scan.
+    outcome = _ADAPTER.parse(_process("malicious-nollm.json", exit_code=exit_code), llm_requested=False)
     assert outcome.status == SkillScanResultStatus.FAILED
     assert outcome.status_reason == SkillScanStatusReason.TOOL_ERROR
 
@@ -117,22 +121,77 @@ def test_exit_1_with_valid_json_is_not_a_failure() -> None:
     assert outcome.status != SkillScanResultStatus.FAILED
 
 
-def test_malformed_usage_does_not_fail_parse(tmp_path: Path) -> None:
-    # A bad token value must contribute 0, not turn the whole scan into a parse error.
+def _parse_inline(tmp_path: Path, report_json: dict) -> ToolOutcome:
     report = tmp_path / "r.json"
-    report.write_text(
-        '{"metadata": {"llm_available": true, "inference_usage": '
-        '[{"input_tokens": "oops", "output_tokens": null}, {"input_tokens": 50, "output_tokens": 7}]},'
-        '"analysis_completeness": {"is_complete": true}, "issues": []}'
-    )
+    report.write_text(json.dumps(report_json))
     process = ProcessResult(
         exit_code=0, timed_out=False, output_file=report, output_too_large=False, stderr_tail="", duration_ms=1
     )
-    outcome = _ADAPTER.parse(process, llm_requested=True)
+    return _ADAPTER.parse(process, llm_requested=True)
+
+
+@pytest.mark.parametrize("report", [{}, {"issues": None}, {"issues": {}}])
+def test_report_without_issues_array_is_parse_error(tmp_path: Path, report: dict) -> None:
+    report = {"metadata": {"llm_available": True}, "analysis_completeness": {"is_complete": True}} | report
+    outcome = _parse_inline(tmp_path, report)
+    assert outcome.status == SkillScanResultStatus.FAILED
+    assert outcome.status_reason == SkillScanStatusReason.PARSE_ERROR
+
+
+def test_malformed_usage_does_not_fail_parse(tmp_path: Path) -> None:
+    # A bad token value must contribute 0, not turn the whole scan into a parse error.
+    outcome = _parse_inline(
+        tmp_path,
+        {
+            "metadata": {
+                "llm_available": True,
+                "inference_usage": [
+                    {"prompt_tokens": "oops", "completion_tokens": 3},
+                    {"prompt_tokens": 50, "completion_tokens": 7},
+                ],
+            },
+            "analysis_completeness": {"is_complete": True},
+            "issues": [],
+        },
+    )
     assert outcome.status == SkillScanResultStatus.SUCCEEDED
     assert outcome.usage is not None
     assert outcome.usage.inputTokens == 50
-    assert outcome.usage.outputTokens == 7
+    assert outcome.usage.outputTokens == 10
+
+
+@pytest.mark.parametrize(
+    "inference_usage",
+    [
+        [],  # SkillSpector's "provider supplied no counters", not zero cost
+        [{"node": "meta_analyzer", "usage_source": "provider_response"}],
+        [{"input_tokens": 50, "output_tokens": 7}],  # not v2.13.3's counter names
+    ],
+)
+def test_usage_is_none_without_counters(tmp_path: Path, inference_usage: list) -> None:
+    outcome = _parse_inline(
+        tmp_path,
+        {
+            "metadata": {"llm_available": True, "inference_usage": inference_usage},
+            "analysis_completeness": {"is_complete": True},
+            "issues": [],
+        },
+    )
+    assert outcome.usage is None
+
+
+def test_llm_degraded_is_llm_failed(tmp_path: Path) -> None:
+    # Failed semantic batches leave llm_available true and the analysis complete; only llm_degraded says so.
+    outcome = _parse_inline(
+        tmp_path,
+        {
+            "metadata": {"llm_available": True, "llm_degraded": True, "inference_usage": []},
+            "analysis_completeness": {"is_complete": True},
+            "issues": [],
+        },
+    )
+    assert outcome.status == SkillScanResultStatus.PARTIAL
+    assert outcome.status_reason == SkillScanStatusReason.LLM_FAILED
 
 
 # ---- build_invocation ----
