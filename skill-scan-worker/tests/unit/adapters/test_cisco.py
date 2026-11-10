@@ -80,9 +80,20 @@ def test_malicious_llm_succeeds_with_usage() -> None:
     assert outcome.status == SkillScanResultStatus.SUCCEEDED
     assert outcome.status_reason is None
     assert outcome.usage is not None
-    assert outcome.usage.inputTokens == 4120
-    assert outcome.usage.outputTokens == 388
-    assert any(f.confidence == 0.95 for f in outcome.findings)
+    assert outcome.usage.inputTokens == 4851
+    assert outcome.usage.outputTokens == 1606
+    rule_ids = {f.ruleId for f in outcome.findings}
+    assert {"LLM_PROMPT_INJECTION", "LLM_DATA_EXFILTRATION"} <= rule_ids  # the LLM pass contributed findings
+
+
+def test_llm_confidence_label_is_not_a_score() -> None:
+    # 2.3.2's LLM schema allows only HIGH/MEDIUM/LOW for llm_confidence, never a 0..1 number, so Cisco
+    # findings carry no confidence score.
+    report = json.loads((_FIXTURES / "malicious-llm.json").read_text())
+    labels = {(f.get("metadata") or {}).get("llm_confidence") for f in report["findings"]} - {None}
+    assert labels and labels <= {"HIGH", "MEDIUM", "LOW"}
+    outcome = _ADAPTER.parse(_process("malicious-llm.json"), llm_requested=True)
+    assert all(f.confidence is None for f in outcome.findings)
 
 
 def test_llm_failed() -> None:
@@ -92,11 +103,13 @@ def test_llm_failed() -> None:
 
 
 def test_status_signal_rules_are_dropped() -> None:
+    report = json.loads((_FIXTURES / "llm-failed.json").read_text())
+    assert "LLM_ANALYSIS_FAILED" in {f["rule_id"] for f in report["findings"]}  # the recording has the marker
     outcome = _ADAPTER.parse(_process("llm-failed.json"), llm_requested=True)
     rule_ids = {f.ruleId for f in outcome.findings}
     assert "LLM_ANALYSIS_FAILED" not in rule_ids
     assert "LLM_CONTEXT_BUDGET_EXCEEDED" not in rule_ids
-    assert "BEH_EXFIL_001" in rule_ids  # a real finding survives
+    assert "DATA_EXFIL_SENSITIVE_FILES" in rule_ids  # a real finding survives
 
 
 def test_non_json_is_parse_error(tmp_path: Path) -> None:
@@ -142,7 +155,18 @@ def test_report_without_findings_array_is_parse_error(tmp_path: Path, report: di
     assert outcome.status_reason == SkillScanStatusReason.PARSE_ERROR
 
 
-def test_exit_1_is_tool_error() -> None:
+def test_forced_error_exit_is_tool_error_with_stderr() -> None:
+    # Recorded: scanning a missing directory exits 1 and writes no report.
+    stderr = (_FIXTURES / "forced-error.stderr.txt").read_text()
+    assert stderr.startswith("Error: Directory does not exist:")
+    outcome = _ADAPTER.parse(_process("forced-error.json", exit_code=1, stderr=stderr), llm_requested=False)
+    assert outcome.status == SkillScanResultStatus.FAILED
+    assert outcome.status_reason == SkillScanStatusReason.TOOL_ERROR
+    assert outcome.error_message == stderr
+
+
+def test_exit_1_with_a_report_is_still_tool_error() -> None:
+    # Never run with --fail-on-*, so a non-zero exit is a runtime error even if a report exists.
     outcome = _ADAPTER.parse(_process("malicious-nollm.json", exit_code=1, stderr="crash"), llm_requested=False)
     assert outcome.status == SkillScanResultStatus.FAILED
     assert outcome.status_reason == SkillScanStatusReason.TOOL_ERROR

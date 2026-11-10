@@ -64,3 +64,28 @@ async def test_llm_recordings_keep_llm_enabled(
         adapter, skill_dir, output, llm = call.args
         assert adapter.build_invocation(skill_dir, output, llm).llm_used
         assert llm.bedrock_model == (model if output.name == "malicious-llm.json" else recorder._INVALID_MODEL)
+
+
+def _repository_recorder() -> ModuleType:
+    path = Path(__file__).resolve().parents[3] / "scripts" / "skill_scan" / "record_fixtures.py"
+    spec = importlib.util.spec_from_file_location("repository_record_fixtures", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_redact_strips_account_ids_and_role_sessions() -> None:
+    # Recorded fixtures are committed to a public repo.
+    redact = _repository_recorder()._redact
+    report = (
+        '{"model": "bedrock/converse/arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/p",'
+        ' "error": "User: arn:aws:sts::111122223333:assumed-role/ExampleSsoRole/someone@example.com'
+        ' is not authorized"}'
+    )
+    redacted = redact(report)
+    assert "111122223333" not in redacted
+    assert "someone@example.com" not in redacted
+    assert "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/p" in redacted
+    assert "assumed-role/example-role/example-session is not authorized" in redacted
+    assert redact("Error: Directory does not exist: /w/skills/x") == "Error: Directory does not exist: /w/skills/x"

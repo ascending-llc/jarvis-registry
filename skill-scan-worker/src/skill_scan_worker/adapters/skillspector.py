@@ -111,6 +111,8 @@ class SkillSpectorAdapter:
             llm_requested=llm_requested,
             llm_available=metadata.get("llm_available"),
             llm_degraded=metadata.get("llm_degraded"),
+            calls_attempted=coerce_int(metadata.get("llm_calls_attempted")),
+            calls_succeeded=coerce_int(metadata.get("llm_calls_succeeded")),
             is_complete=completeness.get("is_complete"),
         )
 
@@ -164,13 +166,27 @@ def _llm_env(llm: ResolvedLLM, secrets: list[str]) -> dict[str, str] | None:
 
 
 def _status(
-    *, llm_requested: bool, llm_available: object, llm_degraded: object, is_complete: object
+    *,
+    llm_requested: bool,
+    llm_available: object,
+    llm_degraded: object,
+    calls_attempted: int | None,
+    calls_succeeded: int | None,
+    is_complete: object,
 ) -> tuple[SkillScanResultStatus, SkillScanStatusReason | None]:
     if not llm_requested:
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_UNAVAILABLE
-    # llm_available covers only preflight and the meta_analyzer call. Failed semantic-analyzer batches leave it
-    # true and set llm_degraded instead, without touching analysis_completeness (nodes/report.py at v2.13.3).
-    if llm_available is False or llm_degraded is True:
+    if llm_degraded is True:
+        return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_FAILED
+    if calls_attempted is not None and calls_succeeded is not None:
+        # Every LLM call (meta_analyzer and semantic batches) is counted here. llm_available is not usable for
+        # Bedrock: v2.13.3 re-checks availability at report time through the API-key path, which the SigV4
+        # Bedrock provider never satisfies (BedrockProvider.resolve_credentials always returns None), so it is
+        # false even when every call succeeded.
+        if calls_attempted == 0 or calls_succeeded < calls_attempted:
+            return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_FAILED
+    elif llm_available is False:
+        # No counters: fall back to llm_available, which covers preflight and the meta_analyzer call.
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_FAILED
     if is_complete is False:
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.ANALYSIS_INCOMPLETE

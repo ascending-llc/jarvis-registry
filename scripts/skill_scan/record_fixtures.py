@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -48,6 +49,16 @@ _FIXTURES = _REPO_ROOT / "skill-scan-worker" / "tests" / "fixtures"
 _SKILLS = _FIXTURES / "skills"
 _INVALID_MODEL = "does-not-exist.invalid-model-v0"  # a plain id the provider rejects, to force an LLM failure
 _FIXTURE_DIRS = {"cisco-skill-scanner": "cisco", "skillspector": "skillspector"}
+# Fixtures are committed to a public repo. LLM reports echo the model ARN, and provider errors can echo the
+# caller's assumed-role session, so both are redacted to AWS's documented example values.
+_ARN_ACCOUNT = re.compile(r"(arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:)\d{12}(?=:)")
+_ASSUMED_ROLE_SESSION = re.compile(r"assumed-role/[^/\s\"']+/[^\s\"']+")
+
+
+def _redact(text: str) -> str:
+    """Replace AWS account ids in ARNs and assumed-role session names with placeholders."""
+    text = _ARN_ACCOUNT.sub(r"\g<1>123456789012", text)
+    return _ASSUMED_ROLE_SESSION.sub("assumed-role/example-role/example-session", text)
 
 
 def _bedrock_llm(model: str, base_model: str) -> ResolvedLLM:
@@ -100,12 +111,12 @@ async def _record(adapter: ScannerAdapter, skill_dir: Path, out_path: Path, llm:
         )
         if output_file.exists() and output_file.read_bytes().strip():
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(output_file, out_path)
+            out_path.write_text(_redact(output_file.read_text()))
             print(f"wrote {out_path.relative_to(_REPO_ROOT)} (exit {process.exit_code})")
         else:
             stderr_path = out_path.parent / f"{out_path.stem}.stderr.txt"
             stderr_path.parent.mkdir(parents=True, exist_ok=True)
-            stderr_path.write_text(process.stderr_tail)
+            stderr_path.write_text(_redact(process.stderr_tail))
             print(f"no report for {out_path.name} (exit {process.exit_code}); stderr saved to {stderr_path.name}")
     finally:
         shutil.rmtree(run_dir, ignore_errors=True)

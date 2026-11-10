@@ -18,6 +18,7 @@ exclude-entropy-patterns = [
     {path-pattern = '(registry-pkgs|registry)/tests/.*', pattern = '.*VCeDsk8ZHncYF1g234fKtc4lNipbBhu3.*', reason = "Atlassian MCP's public authorization-server tenant ID in captured discovery fixtures is not a credential"},
     {path-pattern = 'docs/.*\.md$', pattern = '.*github\.com/ascending-llc/jarvis-registry/blob/[0-9a-f]{40}/.*', reason = 'commit SHAs in GitHub permalinks to this repository are not credentials'},
     {path-pattern = 'docker-compose\.yml$', pattern = 'OTEL_SERVICE_NAME=skill-scan-worker', reason = 'plain OTel service name is not a credential'},
+    {path-pattern = 'skill-scan-worker/tests/fixtures/(cisco|skillspector)/.*\.json$', pattern = '.*[0-9a-f]{32,64}.*', reason = 'recorded scanner reports: hex sha256 rule/policy hashes, finding ids, match fingerprints and the pinned SkillSpector commit are not credentials; regex secret scanning still applies'},
 ]
 
 exclude-signatures = [

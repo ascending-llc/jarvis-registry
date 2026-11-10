@@ -174,6 +174,8 @@ def _status(
 
 def _finding(entry: dict[str, Any]) -> ScanFinding:
     metadata = entry.get("metadata") or {}
+    # 2.3.2 reports llm_confidence as a HIGH/MEDIUM/LOW label (llm_response_schema.json), not a 0..1 score, so
+    # this is None for its findings today; a numeric value from a future version is still picked up.
     confidence = parse_confidence(metadata.get("llm_confidence"))
     if confidence is None:
         confidence = parse_confidence(metadata.get("meta_confidence"))
