@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 
 _MAX_LLM_CONCURRENCY = 2  # cap concurrent LLM calls per scan
 _MAX_WORKFLOW_SECONDS = 540  # below the worker's 600s tool timeout so it writes a report before being killed
-_ERROR_EXIT_CODE = 2
+# v2.13.3 exits 0 or 1 after writing a full report (1: incomplete, findings or high risk; cli.py:796-810) and 2 on
+# error. Anything else, such as a signal kill, is an error even if a report file exists.
+_REPORT_EXIT_CODES = frozenset({0, 1})
 # Token counter keys in each metadata.inference_usage[] record (src/skillspector/inference_usage.py).
 _PROMPT_TOKENS = "prompt_tokens"
 _COMPLETION_TOKENS = "completion_tokens"
@@ -79,7 +81,7 @@ class SkillSpectorAdapter:
         )
 
     def parse(self, process: ProcessResult, *, llm_requested: bool) -> ToolOutcome:
-        if process.exit_code == _ERROR_EXIT_CODE:
+        if process.exit_code not in _REPORT_EXIT_CODES:
             return _failed(SkillScanStatusReason.TOOL_ERROR, process.stderr_tail)
         try:
             raw = process.output_file.read_bytes()
@@ -91,7 +93,8 @@ class SkillSpectorAdapter:
             report = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return _failed(SkillScanStatusReason.PARSE_ERROR, process.stderr_tail)
-        if not isinstance(report, dict):
+        # v2.13.3 always writes the issues array (nodes/report.py); a report without one is not a scan result.
+        if not isinstance(report, dict) or not isinstance(report.get("issues"), list):
             return _failed(SkillScanStatusReason.PARSE_ERROR, process.stderr_tail)
         if report.get("execution_successful") is False:
             return _failed(SkillScanStatusReason.TOOL_ERROR, process.stderr_tail)
@@ -105,7 +108,7 @@ class SkillSpectorAdapter:
             is_complete=completeness.get("is_complete"),
         )
 
-        findings = _dedupe([_finding(i) for i in report.get("issues") or [] if isinstance(i, dict)])
+        findings = _dedupe([_finding(i) for i in report["issues"] if isinstance(i, dict)])
         risk = report.get("risk_assessment") or {}
         return ToolOutcome(
             status=status,
