@@ -26,7 +26,7 @@ from skill_scan_worker.adapters.base import ToolOutcome
 from skill_scan_worker.config import settings
 from skill_scan_worker.llm import ResolvedLLM
 from skill_scan_worker.process import run_tool_process
-from smoke import check_outcome  # baked beside this script in the image; reuses the no-llm contract
+from skill_scan_worker.smoke import check_outcome
 
 from registry_pkgs.models.enums import (
     ModelSourceProviderType,
@@ -37,12 +37,11 @@ from registry_pkgs.models.enums import (
 from registry_pkgs.models.skill_scan_result import ScanLLMInfo
 
 _HIGH = frozenset({ScanSeverity.HIGH, ScanSeverity.CRITICAL})
-# Statuses that mean the tool's LLM pass did not fully succeed in this environment (geo restriction, access
-# denied, throttling, a retired model, partial batch failure): environment-dependent, not a code defect.
+# Degraded LLM analysis reported by the adapters. Generic TOOL_ERROR must fail acceptance: a crash or
+# missing report is not evidence of a provider restriction.
 _LLM_DEGRADED = frozenset(
     {
         SkillScanStatusReason.LLM_FAILED,
-        SkillScanStatusReason.TOOL_ERROR,
         SkillScanStatusReason.ANALYSIS_INCOMPLETE,
     }
 )

@@ -161,9 +161,12 @@ jobs:
         env:
           image: ghcr.io/${{ github.repository_owner }}/jarvis/${{ matrix.image_name }}:${{ github.sha }}
         run: |
-          if [ "${{ matrix.optional }}" = "true" ] && ! kubectl get deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application }} >/dev/null 2>&1; then
-            echo "::notice::${{ env.DEPLOYMENT_NAME }} not deployed here; skipping."
-            exit 0
+          if [ "${{ matrix.optional }}" = "true" ]; then
+            DEPLOYMENT=$(kubectl get deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application }} --ignore-not-found -o name) || exit $?
+            if [ -z "$DEPLOYMENT" ]; then
+              echo "::notice::${{ env.DEPLOYMENT_NAME }} not deployed here; skipping."
+              exit 0
+            fi
           fi
           ARGS="${{ matrix.container_name }}=$image"
           if [ -n "${{ matrix.init_container_name }}" ]; then
@@ -173,8 +176,11 @@ jobs:
 
       - name: Check pod status
         run: |
-          if [ "${{ matrix.optional }}" = "true" ] && ! kubectl get deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application }} >/dev/null 2>&1; then
-            echo "::notice::${{ env.DEPLOYMENT_NAME }} not deployed here; skipping."
-            exit 0
+          if [ "${{ matrix.optional }}" = "true" ]; then
+            DEPLOYMENT=$(kubectl get deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application }} --ignore-not-found -o name) || exit $?
+            if [ -z "$DEPLOYMENT" ]; then
+              echo "::notice::${{ env.DEPLOYMENT_NAME }} not deployed here; skipping."
+              exit 0
+            fi
           fi
           kubectl rollout status deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application  }}
