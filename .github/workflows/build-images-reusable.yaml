@@ -350,3 +350,93 @@ jobs:
           for tag in "${TAGS[@]}"; do
             docker push "$tag"
           done
+
+  build-and-push-skill-scan-worker:
+    needs: prepare-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.git_ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine BUILD_VERSION
+        id: version
+        run: |
+          if [ -n "${{ inputs.version_tag }}" ]; then
+            echo "version=${{ inputs.version_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_SHA:0:8}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine image tags
+        id: tags
+        run: |
+          GHCR_BASE="ghcr.io/${{ github.repository_owner }}/jarvis/skill-scan-worker"
+          GHCR_COMMIT_TAG="${GHCR_BASE}:${{ github.sha }}"
+          GHCR_LATEST_TAG="${GHCR_BASE}:latest"
+
+          if [ -n "${{ inputs.version_tag }}" ]; then
+            GHCR_VERSION_TAG="${GHCR_BASE}:${{ inputs.version_tag }}"
+            echo "tags=${GHCR_VERSION_TAG},${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.tag_as_latest }}" = "true" ]; then
+            echo "tags=${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "tags=${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download build artifact - wheels and locks
+        uses: actions/download-artifact@v8
+        with:
+          name: wheels-and-locks
+          path: build-artifacts/
+
+      - name: Display artifacts
+        run: ls -al build-artifacts
+
+      - name: Build skill-scan-worker image
+        uses: docker/build-push-action@v7
+        with:
+          platforms: linux/amd64
+          context: .
+          file: docker/Dockerfile.skill-scan-worker
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.version }}
+          push: false
+          load: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+
+      - name: Guard the Docker image against import exceptions
+        run: >
+          docker run --rm --entrypoint='' -e X_JARVIS_REGISTRY_IMPORT_CHECKS="disabled"
+          "ghcr.io/${{ github.repository_owner }}/jarvis/skill-scan-worker:${{ github.sha }}"
+          python -c "import skill_scan_worker.main; from skill_scan_worker.adapters import ENABLED_ADAPTERS; assert ENABLED_ADAPTERS"
+
+      # Run both scanners against a malicious fixture with no LLM creds, under the same read-only root and
+      # two tmpfs mounts the pod uses. Proves the tools don't need to write anywhere else and the offline
+      # rules path works. A version bump that breaks a tool's output format fails here, not silently later.
+      - name: Scanner smoke check
+        run: >
+          docker run --rm --entrypoint='' --read-only --tmpfs /scan-tmp --tmpfs /tmp
+          -v "$PWD/skill-scan-worker/tests/fixtures/skills/malicious:/fixtures/malicious:ro"
+          "ghcr.io/${{ github.repository_owner }}/jarvis/skill-scan-worker:${{ github.sha }}"
+          python -m skill_scan_worker.smoke /fixtures/malicious
+
+      - name: Push image tags after passing the guards
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.tags }}"
+          for tag in "${TAGS[@]}"; do
+            docker push "$tag"
+          done
