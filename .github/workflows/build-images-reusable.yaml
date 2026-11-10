@@ -429,7 +429,8 @@ jobs:
       # rules path works. A version bump that breaks a tool's output format fails here, not silently later.
       - name: Scanner smoke check
         run: >
-          docker run --rm --entrypoint='' --read-only --tmpfs /scan-tmp --tmpfs /tmp
+          docker run --rm --entrypoint='' --read-only --tmpfs /scan-tmp:uid=10001,mode=0700 --tmpfs /tmp
+          -e X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled -e JARVIS_DISABLE_DOTENV=1
           -v "$PWD/skill-scan-worker/tests/fixtures/skills/malicious:/fixtures/malicious:ro"
           "ghcr.io/${{ github.repository_owner }}/jarvis/skill-scan-worker:${{ github.sha }}"
           python -m skill_scan_worker.smoke /fixtures/malicious
