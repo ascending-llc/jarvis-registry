@@ -77,7 +77,8 @@ def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print("usage: python -m skill_scan_worker.smoke <skill_dir>", file=sys.stderr)
         return 2
-    skill_dir = Path(argv[1])
+    # The scanners run from a per-run directory, so a relative path would not resolve there.
+    skill_dir = Path(argv[1]).resolve()
     if not skill_dir.is_dir():
         print(f"not a directory: {skill_dir}", file=sys.stderr)
         return 2

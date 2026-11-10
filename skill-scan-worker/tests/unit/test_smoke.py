@@ -72,6 +72,21 @@ def test_fails_on_empty_title(tmp_path: Path) -> None:
     assert any("empty title" in p for p in problems)
 
 
+def test_main_resolves_relative_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The scanners run from a per-run directory, so smoke must hand them an absolute path.
+    (tmp_path / "skill").mkdir()
+    monkeypatch.chdir(tmp_path)
+    seen: list[Path] = []
+
+    async def fake_run(skill_dir: Path) -> int:
+        seen.append(skill_dir)
+        return 0
+
+    monkeypatch.setattr(smoke, "_run", fake_run)
+    assert smoke.main(["smoke", "skill"]) == 0
+    assert seen == [tmp_path.resolve() / "skill"]
+
+
 def test_main_rejects_missing_dir() -> None:
     assert smoke.main(["smoke", "/no/such/dir"]) == 2
     assert smoke.main(["smoke"]) == 2
