@@ -1,0 +1,3 @@
+# SkillSpector build backend (its only [build-system] requirement at the pinned commit).
+# Hash-locked so the --no-build-isolation git install uses a pinned hatchling, not an unlocked one.
+hatchling
