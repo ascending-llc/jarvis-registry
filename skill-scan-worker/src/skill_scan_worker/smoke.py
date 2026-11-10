@@ -5,9 +5,9 @@ A version bump that breaks a tool's report format must fail here rather than sil
 findings. Runs offline (no MongoDB): it validates each adapter's ``ToolOutcome`` directly via
 ``build_invocation`` -> ``run_tool_process`` -> ``parse``, bypassing ``run_adapter``, which would
 construct a Beanie ``SkillScanResult`` and need an initialized database. Run inside the built image
-(pytest is not installed there):
+(pytest is not installed there); CI runs it on every image build:
 
-    python scripts/smoke.py <skill_dir>
+    python -m skill_scan_worker.smoke <skill_dir>
 """
 
 from __future__ import annotations
@@ -17,12 +17,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+from registry_pkgs.models.enums import ScanSeverity, SkillScanResultStatus, SkillScanStatusReason
 from skill_scan_worker.adapters import ENABLED_ADAPTERS
 from skill_scan_worker.adapters.base import ToolOutcome
 from skill_scan_worker.config import settings
 from skill_scan_worker.process import run_tool_process
-
-from registry_pkgs.models.enums import ScanSeverity, SkillScanResultStatus, SkillScanStatusReason
 
 _HIGH_SEVERITIES = frozenset({ScanSeverity.HIGH, ScanSeverity.CRITICAL})
 
@@ -42,7 +41,9 @@ def check_outcome(tool: str, outcome: ToolOutcome, skill_dir: Path) -> list[str]
             problems.append(f"finding {finding.ruleId} has empty title")
         if finding.severity not in valid_severities:
             problems.append(f"finding {finding.ruleId} has invalid severity {finding.severity}")
-        if finding.filePath is not None and not (skill_dir / finding.filePath).exists():
+        if not finding.filePath:
+            problems.append(f"finding {finding.ruleId} has no filePath")
+        elif not (skill_dir / finding.filePath).exists():
             problems.append(f"finding {finding.ruleId} filePath {finding.filePath} not under skill dir")
     return problems
 
@@ -74,7 +75,7 @@ async def _run(skill_dir: Path) -> int:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print("usage: python scripts/smoke.py <skill_dir>", file=sys.stderr)
+        print("usage: python -m skill_scan_worker.smoke <skill_dir>", file=sys.stderr)
         return 2
     skill_dir = Path(argv[1])
     if not skill_dir.is_dir():

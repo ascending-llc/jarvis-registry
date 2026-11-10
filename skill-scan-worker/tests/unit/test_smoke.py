@@ -1,6 +1,7 @@
 from pathlib import Path
 
-import smoke  # scripts/smoke.py, on the test pythonpath
+import pytest
+from skill_scan_worker import smoke
 from skill_scan_worker.adapters.base import ToolOutcome
 
 from registry_pkgs.models.enums import (
@@ -57,6 +58,12 @@ def test_fails_on_wrong_status(tmp_path: Path) -> None:
 def test_fails_on_missing_file_path(tmp_path: Path) -> None:
     problems = smoke.check_outcome("t", _outcome([_finding(filePath="does/not/exist.py")]), tmp_path)
     assert any("not under skill dir" in p for p in problems)
+
+
+@pytest.mark.parametrize("file_path", [None, ""])
+def test_fails_when_file_path_absent(tmp_path: Path, file_path: str | None) -> None:
+    problems = smoke.check_outcome("t", _outcome([_finding(filePath=file_path)]), tmp_path)
+    assert any("has no filePath" in p for p in problems)
 
 
 def test_fails_on_empty_title(tmp_path: Path) -> None:

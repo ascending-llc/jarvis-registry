@@ -161,6 +161,32 @@ cmd = "python scripts/generate_llms.py"
 help = "Check that llms.txt and llms-full.txt are up to date"
 cmd = "python scripts/generate_llms.py --check"
 
+# Re-record the skill-scan-worker scanner report fixtures (skill-scan-worker/tests/fixtures/{cisco,skillspector}/)
+# from the real pinned tools. Required on every scanner version bump. Runs scripts/skill_scan/record_fixtures.py
+# inside a built skill-scan-worker image with the repo mounted. It runs as the host user so written fixtures are
+# owned by you, and uses /tmp as the work dir because /scan-tmp in the image belongs to the image's own user.
+# No MongoDB or app secrets are involved: X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled lets the worker settings load
+# without JWT keys / CREDS_KEY, and JARVIS_DISABLE_DOTENV=1 keeps the mounted repo's .env out of the container.
+# With --with-llm, export SCAN_RECORD_BEDROCK_MODEL (and SCAN_RECORD_BEDROCK_BASE_MODEL for an inference-profile
+# ARN), AWS_REGION and AWS credentials first; they are forwarded only when set. See the script's docstring.
+[tool.poe.tasks.record-skill-scan-fixtures]
+help = "Record skill-scan-worker scanner fixtures inside a built image (usage: poe record-skill-scan-fixtures <image> [--with-llm])"
+shell = """
+docker run --rm --entrypoint '' \
+  --user "$(id -u):$(id -g)" \
+  -e SKILL_SCAN_WORKER_WORK_DIR=/tmp \
+  -e X_JARVIS_REGISTRY_IMPORT_CHECKS=disabled -e JARVIS_DISABLE_DOTENV=1 \
+  -e SCAN_RECORD_BEDROCK_MODEL -e SCAN_RECORD_BEDROCK_BASE_MODEL \
+  -e AWS_REGION -e AWS_DEFAULT_REGION \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+  -v "${POE_ROOT}:/w" -w /w \
+  "${image}" python scripts/skill_scan/record_fixtures.py ${with_llm:+--with-llm}
+"""
+args = [
+  { name = "image", positional = true, required = true, help = "skill-scan-worker image to run, e.g. ghcr.io/ascending-llc/jarvis/skill-scan-worker:latest" },
+  { name = "with-llm", type = "boolean", help = "Also record malicious-llm.json and llm-failed.json against a real Bedrock model" },
+]
+
 # Run all tests across all projects
 [tool.poe.tasks.test-all]
 shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test && cd ../workflow-worker && uv run poe test && cd ../skill-scan-worker && uv run poe test"
