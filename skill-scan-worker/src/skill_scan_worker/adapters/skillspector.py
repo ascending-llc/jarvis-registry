@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 _MAX_LLM_CONCURRENCY = 2  # cap concurrent LLM calls per scan
 _MAX_WORKFLOW_SECONDS = 540  # below the worker's 600s tool timeout so it writes a report before being killed
 _ERROR_EXIT_CODE = 2
+# Token counter keys in each metadata.inference_usage[] record (src/skillspector/inference_usage.py).
+_PROMPT_TOKENS = "prompt_tokens"
+_COMPLETION_TOKENS = "completion_tokens"
 
 _STATIC_CONFIG = {
     "format": "json",
@@ -98,6 +101,7 @@ class SkillSpectorAdapter:
         status, reason = _status(
             llm_requested=llm_requested,
             llm_available=metadata.get("llm_available"),
+            llm_degraded=metadata.get("llm_degraded"),
             is_complete=completeness.get("is_complete"),
         )
 
@@ -150,11 +154,13 @@ def _llm_env(llm: ResolvedLLM, secrets: list[str]) -> dict[str, str] | None:
 
 
 def _status(
-    *, llm_requested: bool, llm_available: object, is_complete: object
+    *, llm_requested: bool, llm_available: object, llm_degraded: object, is_complete: object
 ) -> tuple[SkillScanResultStatus, SkillScanStatusReason | None]:
     if not llm_requested:
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_UNAVAILABLE
-    if llm_available is False:
+    # llm_available covers only preflight and the meta_analyzer call. Failed semantic-analyzer batches leave it
+    # true and set llm_degraded instead, without touching analysis_completeness (nodes/report.py at v2.13.3).
+    if llm_available is False or llm_degraded is True:
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.LLM_FAILED
     if is_complete is False:
         return SkillScanResultStatus.PARTIAL, SkillScanStatusReason.ANALYSIS_INCOMPLETE
@@ -195,6 +201,9 @@ def _dedupe(findings: list[ScanFinding]) -> list[ScanFinding]:
 
 
 def _usage(metadata: dict[str, Any]) -> ScanUsage | None:
+    """Sum ``prompt_tokens``/``completion_tokens`` over ``metadata.inference_usage[]`` (the counter names
+    ``sanitize_inference_usage`` emits at v2.13.3). ``None`` when no entry carries either counter: SkillSpector
+    documents an empty list as "the provider supplied no counters", not as zero cost."""
     entries = metadata.get("inference_usage")
     if not isinstance(entries, list):
         return None
@@ -204,9 +213,13 @@ def _usage(metadata: dict[str, Any]) -> ScanUsage | None:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        prompt = coerce_int(entry.get(_PROMPT_TOKENS))
+        completion = coerce_int(entry.get(_COMPLETION_TOKENS))
+        if prompt is None and completion is None:
+            continue
         seen = True
-        inp += max(coerce_int(entry.get("input_tokens")) or 0, 0)
-        out += max(coerce_int(entry.get("output_tokens")) or 0, 0)
+        inp += max(prompt or 0, 0)
+        out += max(completion or 0, 0)
     if not seen:
         return None
     return ScanUsage(inputTokens=inp, outputTokens=out)
