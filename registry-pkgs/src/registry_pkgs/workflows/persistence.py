@@ -23,6 +23,12 @@ from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY, is_skip_tole
 
 logger = logging.getLogger(__name__)
 
+# agno stores each workflow session here, and (since agno 3) each run as its own
+# document in a sibling "<session>_runs" collection. These two names are the DB
+# contract shared by the syncer and every cleanup path that deletes agno state.
+AGNO_SESSION_COLLECTION = "agno_workflow_sessions"
+AGNO_RUNS_COLLECTION = f"{AGNO_SESSION_COLLECTION}_runs"
+
 _STATUS_MAP: dict[RunStatus, WorkflowRunStatus] = {
     RunStatus.completed: WorkflowRunStatus.COMPLETED,
     RunStatus.error: WorkflowRunStatus.FAILED,
@@ -51,7 +57,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
         node_by_name: dict[str, WorkflowNode],
         db_client: Any,
         db_name: str,
-        session_collection: str = "agno_workflow_sessions",
+        session_collection: str = AGNO_SESSION_COLLECTION,
         run_writer: RunStateWriter | None = None,
     ) -> None:
         super().__init__(
@@ -62,29 +68,58 @@ class WorkflowRunSyncer(AsyncMongoDb):
         self._workflow_run = workflow_run
         self._node_by_name = node_by_name
         self._run_writer = run_writer or RunStateWriter(workflow_run.id)
+        # Set once agno calls upsert_session; the upsert_run guard relies on agno
+        # persisting the session (and so firing our Beanie sync) before each run.
+        self._saw_upsert_session = False
 
     @override
     async def upsert_session(
         self,
         session: Session,
         deserialize: bool | None = True,
-        mongo_session: AsyncClientSession | None = None,
     ) -> Session | dict[str, Any] | None:
         """Persist agno session, then mirror the latest run into Beanie."""
+        self._saw_upsert_session = True
         result = await super().upsert_session(session, deserialize=deserialize)
         if isinstance(session, WorkflowSession) and session.runs:
             session_data: dict[str, Any] = session.session_data or {}
             try:
+                # agno 3 no longer threads an ambient client session here, so the
+                # sync opens its own transaction for terminal writes (session=None).
                 await self._sync_to_beanie(
                     session.runs[-1],
                     session_data=session_data,
-                    session=mongo_session,
+                    session=None,
                 )
             except Exception as e:
                 logger.exception(
                     "WorkflowRunSyncer: failed to sync run %s to Beanie, error: %s", self._workflow_run.id, e
                 )
         return result
+
+    @override
+    async def upsert_run(
+        self,
+        run: Any,
+        session_id: str,
+        user_id: str | None = None,
+        run_index: int | None = None,
+    ) -> None:
+        """Persist the agno run document, guarding agno 3's persistence ordering.
+
+        Our Beanie sync runs off ``upsert_session``, which agno calls before
+        ``asave_run`` on every non-streaming persist. If that order ever changes
+        (e.g. a run is saved without its session), ``WorkflowRun`` state would
+        silently freeze — so fail loudly instead of degrading quietly.
+        """
+        if not self._saw_upsert_session:
+            message = (
+                f"WorkflowRunSyncer.upsert_run called for run {self._workflow_run.id} "
+                "without a preceding upsert_session; agno persistence ordering changed"
+            )
+            logger.error(message)
+            raise RuntimeError(message)
+        await super().upsert_run(run, session_id, user_id=user_id, run_index=run_index)
 
     @override
     async def upsert_sessions(

@@ -48,6 +48,7 @@ def _sync_with_fake_run(write_result: bool = True):
         save=AsyncMock(),
     )
     sync._node_by_name = {}
+    sync._saw_upsert_session = False
     # The syncer now writes through a RunStateWriter rather than run.save(); a mock
     # writer lets these unit tests assert on the computed in-memory state and on the
     # exact $set payload without a live Mongo collection.
@@ -100,6 +101,32 @@ class TestWorkflowPersistence:
             await sync.upsert_sessions([])
 
         assert "WorkflowRunSyncer should not call upsert_sessions at all" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_upsert_run_without_prior_upsert_session_raises(self, caplog):
+        sync = _sync_with_fake_run()
+        caplog.set_level(logging.ERROR)
+
+        with pytest.raises(RuntimeError, match="without a preceding upsert_session"):
+            await sync.upsert_run(WorkflowRunOutput(content="x"), session_id="session-1")
+
+        assert "agno persistence ordering changed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_upsert_run_delegates_after_upsert_session(self, monkeypatch: pytest.MonkeyPatch):
+        super_upsert_session = AsyncMock(return_value={"ok": True})
+        super_upsert_run = AsyncMock(return_value=None)
+        monkeypatch.setattr(persistence.AsyncMongoDb, "upsert_session", super_upsert_session)
+        monkeypatch.setattr(persistence.AsyncMongoDb, "upsert_run", super_upsert_run)
+
+        sync = _sync_with_fake_run()
+        sync._sync_to_beanie = AsyncMock()
+        await sync.upsert_session(WorkflowSession(session_id="session-1"))
+
+        run = WorkflowRunOutput(content="x")
+        await sync.upsert_run(run, session_id="session-1")
+
+        super_upsert_run.assert_awaited_once_with(run, "session-1", user_id=None, run_index=None)
 
     @pytest.mark.asyncio
     async def test_update_workflow_run_clears_finished_at_while_running(self):
