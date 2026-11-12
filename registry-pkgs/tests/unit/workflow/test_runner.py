@@ -14,7 +14,13 @@ from beanie import PydanticObjectId
 from pymongo.errors import AutoReconnect
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
-from registry_pkgs.models.workflow import StepConfig, WorkflowDefinition, WorkflowNode, WorkflowRun
+from registry_pkgs.models.workflow import (
+    HumanReviewSpec,
+    StepConfig,
+    WorkflowDefinition,
+    WorkflowNode,
+    WorkflowRun,
+)
 from registry_pkgs.workflows import runner
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer, _flatten_step_results
@@ -856,6 +862,32 @@ class TestStoppedFailureFallback:
         assert stale_run.status == WorkflowRunStatus.AWAITING_APPROVAL
         assert stale_run.error_summary is None
         assert stale_run.finished_at is None
+        w.write.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_hitl", [False, True])
+    async def test_on_error_fail_ends_run_failed_with_or_without_hitl(
+        self,
+        stale_run: SimpleNamespace,
+        with_hitl: bool,
+    ) -> None:
+        # In agno 3 the error policy lives on the step's HumanReview, so a failing
+        # on_error="fail" step must fail the run whether or not the node also
+        # configures HITL.
+        definition = _definition()
+        definition.nodes[0].step_config = StepConfig(on_error="fail")
+        if with_hitl:
+            definition.nodes[0].human_review = HumanReviewSpec(requires_confirmation=True)
+        stale_run.definition_snapshot = definition.model_dump(mode="json")
+        output = StepOutput(step_name="fetch", success=False, stop=True, error="boom")
+        result = WorkflowRunOutput(status=RunStatus.completed, step_results=[output])
+
+        w = _writer()
+        await _make_runner()._handle_run_output(stale_run, result, w)
+
+        assert stale_run.status == WorkflowRunStatus.FAILED
+        assert stale_run.error_summary == "boom"
+        assert stale_run.finished_at is not None
         w.write.assert_awaited_once()
 
     @pytest.mark.asyncio

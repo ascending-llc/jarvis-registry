@@ -1201,22 +1201,31 @@ async def test_delete_workflow_cascades_agno_sessions(monkeypatch: pytest.Monkey
     monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
     monkeypatch.setattr(workflow_service, "WorkflowSchedule", _FakeWorkflowSchedule)
 
+    deleted_queries_by_collection: dict[str, dict] = {}
+
     class _Collection:
+        def __init__(self, name):
+            self._name = name
+
         async def delete_many(self, query):
+            deleted_queries_by_collection[self._name] = query
             deleted_session_query.update(query)
             return SimpleNamespace(deleted_count=len(run_ids))
 
     class _Db:
         def get_collection(self, name):
-            assert name == "agno_workflow_sessions"
-            return _Collection()
+            assert name in ("agno_workflow_sessions", "agno_workflow_sessions_runs")
+            return _Collection(name)
 
     monkeypatch.setattr(workflow_service.MongoDB, "get_database", staticmethod(lambda: _Db()))
 
     await WorkflowService(acl_service=AsyncMock()).delete_workflow(str(workflow_oid))
 
     assert workflow_deleted == [True]
-    assert deleted_session_query == {"session_id": {"$in": [str(rid) for rid in run_ids]}}
+    expected_query = {"session_id": {"$in": [str(rid) for rid in run_ids]}}
+    # Both the session collection and agno 3's per-run collection are purged.
+    assert deleted_queries_by_collection["agno_workflow_sessions"] == expected_query
+    assert deleted_queries_by_collection["agno_workflow_sessions_runs"] == expected_query
 
 
 @pytest.mark.asyncio
