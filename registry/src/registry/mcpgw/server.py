@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import functools
 import inspect
-import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server._otel import OpenTelemetryMiddleware
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic_settings.exceptions import IncompleteFieldDefinitionWarning
+from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
+from mcp.types import CallToolResult, TextContent
+
+from registry_pkgs.core.exceptions import McpGatewayException
 
 from ..core.config import settings
 from .core.types import McpAppContext
@@ -27,21 +31,33 @@ Errors, denied access and unavailable services are not empty results or proof of
 If no match, refine or survey; check both discovery types when unclear. Avoid repeated identical searches; report no match after these fallbacks. Rediscover stale IDs. Limit execution retries to 2 per request, then report the outcome."""
 
 
-def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> FastMCP[McpAppContext]:
+def build_transport_security_settings() -> TransportSecuritySettings:
+    """Build DNS-rebinding / allowed-host transport security from env settings.
+
+    In v2, transport security moves off the server constructor and onto ``streamable_http_app(...)``,
+    so ``app_factory`` builds the ASGI app and needs this at mount time.
     """
-    Factory function to create a stateless FastMCP application instance.
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=settings.mcpgw_enable_dns_rebinding_protection,
+        allowed_hosts=[host.strip() for host in settings.mcpgw_allowed_hosts.split(",") if host.strip()],
+        allowed_origins=[origin.strip() for origin in settings.mcpgw_allowed_origins.split(",") if origin.strip()],
+    )
+
+
+def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> MCPServer[McpAppContext]:
+    """
+    Factory function to create a stateless MCPServer application instance.
 
     Returns:
-        Configured FastMCP application instance
+        Configured MCPServer application instance
     """
 
-    # Stateless FastMCP enters the lifespan on every request, so it must not open or close per-request
-    # resources: the proxy client lives on the container, and the assembled context is cached here and
-    # yielded unchanged on every entry.
+    # In v2 the server lifespan runs once per session manager (not per request). The proxy client lives
+    # on the container, so the assembled context is cached here and yielded unchanged on every entry.
     cached_context: McpAppContext | None = None
 
     @asynccontextmanager
-    async def mcp_lifespan(server: FastMCP) -> AsyncIterator[McpAppContext]:
+    async def mcp_lifespan(server: MCPServer) -> AsyncIterator[McpAppContext]:
         """Assemble the MCP app context once from container references and yield it on every entry."""
         nonlocal cached_context
         if cached_context is None:
@@ -66,41 +82,27 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
             )
         yield cached_context
 
-    # Configure transport security settings from environment variables
-    transport_security_settings = TransportSecuritySettings(
-        enable_dns_rebinding_protection=settings.mcpgw_enable_dns_rebinding_protection,
-        allowed_hosts=[host.strip() for host in settings.mcpgw_allowed_hosts.split(",") if host.strip()],
-        allowed_origins=[origin.strip() for origin in settings.mcpgw_allowed_origins.split(",") if origin.strip()],
+    # `instructions` MUST be keyword: v2's positional order is (name, title, description, instructions),
+    # so a positional string would land in `title`. Transport settings (stateless_http, json_response,
+    # transport_security) move to streamable_http_app(...) and are applied in app_factory.
+    mcp = MCPServer(
+        "JarvisRegistry",
+        instructions=_SYSTEM_INSTRUCTIONS,
+        lifespan=mcp_lifespan,
+        # The default InMemorySubscriptionBus is per-process and the gateway's tool list is static.
+        subscriptions=False,
     )
 
-    # mcp's FastMCP Settings (a pydantic-settings BaseSettings) has a `lifespan` field whose
-    # forward reference to `FastMCP` itself is never resolved via model_rebuild() — an upstream
-    # bug unfixed in the 1.x line as of mcp 1.29.0, only removed in the breaking v2 rewrite.
-    # Suppressed locally (not via a global filter) because some of our other dependencies
-    # (e.g. weaviate) call warnings.simplefilter("default") on import, which resets the global
-    # filter list and would silently defeat a suppression registered earlier at import time.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="Field 'lifespan' has an incomplete definition",
-            category=IncompleteFieldDefinitionWarning,
-        )
-        mcp = FastMCP(
-            "JarvisRegistry",
-            lifespan=mcp_lifespan,
-            # Stateless so any pod can serve any request (no process-local session affinity). Leave
-            # json_response at its False default: downstream progress/log/list-changed notifications are
-            # forwarded on the POST's own SSE stream via related_request_id, which the JSON path drops.
-            stateless_http=True,
-            instructions=_SYSTEM_INSTRUCTIONS,
-            transport_security=transport_security_settings,
-        )
+    # Drop the SDK's built-in OpenTelemetryMiddleware. It parents a SERVER span on the client-supplied
+    # `_meta.traceparent`, which violates our rule of never trusting client trace context on external
+    # paths, and it duplicates the spans mcpgw/tracing.py already emits. Keep the rest (RequestStateBoundary).
+    mcp.middleware[:] = [m for m in mcp.middleware if not isinstance(m, OpenTelemetryMiddleware)]
 
     return mcp
 
 
-def create_gateway_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> FastMCP[McpAppContext]:
-    """Create the FastMCP app and register its tools."""
+def create_gateway_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]) -> MCPServer[McpAppContext]:
+    """Create the MCPServer app and register its tools."""
     mcp = create_mcp_app(container_provider=container_provider)
     register_tools(mcp)
     return mcp
@@ -111,13 +113,42 @@ def create_gateway_mcp_app(*, container_provider: Callable[[], RegistryContainer
 # ============================================================================
 
 
-def register_tools(mcp: FastMCP) -> None:
+def _wrap_tool_error_shape(name: str, tool_func: Callable) -> Callable:
+    """Preserve the v1 wire shape for the downstream-error path on top of v2's tool error handling.
+
+    v1 turned any tool exception into ``CallToolResult(isError=True, text="Error executing tool ...")``,
+    except ``UrlElicitationRequiredError`` (-32042). v2 instead makes ``MCPError`` a top-level JSON-RPC
+    error and collapses every other exception into ``UnexpectedToolError``, dropping the message.
+
+    This wrapper restores the v1 shape for ``MCPError`` and ``McpGatewayException`` (the downstream-error
+    and InternalServerException paths), re-raises ``UrlElicitationRequiredError`` so the SDK still emits
+    -32042, and leaves any other exception to the SDK. ``functools.wraps`` keeps the original signature so
+    the SDK still sees the ``Context`` parameter for dependency injection.
+    """
+
+    @functools.wraps(tool_func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await tool_func(*args, **kwargs)
+        except UrlElicitationRequiredError:
+            raise
+        except (MCPError, McpGatewayException) as exc:
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Error executing tool {name}: {exc}")],
+                is_error=True,
+            )
+
+    return wrapper
+
+
+def register_tools(mcp: MCPServer) -> None:
     """
     Register all tools for the MCP application.
 
     Args:
-        mcp: FastMCP application instance
+        mcp: MCPServer application instance
     """
     for module in (search, agent, server):
         for tool_name, tool_func in module.get_tools():
-            mcp.tool(name=tool_name, description=inspect.cleandoc(tool_func.__doc__ or ""))(tool_func)
+            wrapped = _wrap_tool_error_shape(tool_name, tool_func)
+            mcp.tool(name=tool_name, description=inspect.cleandoc(tool_func.__doc__ or ""))(wrapped)

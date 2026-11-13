@@ -66,6 +66,8 @@ class Settings(JarvisBaseSettings):
     mcpgw_enable_dns_rebinding_protection: bool = True
     mcpgw_allowed_hosts: str = "jarvis-demo.ascendingdc.com,jarvis-demo.ascendingdc.com:*"
     mcpgw_allowed_origins: str = "https://jarvis-demo.ascendingdc.com,https://jarvis-demo.ascendingdc.com:*"
+    # Kill switch for the 2026-07-28 MCP era. Off keeps clients negotiating 2025-11-25.
+    mcpgw_modern_protocol_enabled: bool = False
 
     # ==================== Container Paths ====================
     container_registry_dir: Path = Path("/app/registry")
