@@ -5,7 +5,7 @@ const getDefaultStepObjective = (desc: string): string =>
 
 export const getDefaultNodeData = (type: string, label: string, desc: string): NodeData => {
   const base = { label, description: desc || '' };
-  const executionBase = { ...base, stepObjective: getDefaultStepObjective(desc) };
+  const executionBase = { ...base, stepObjective: getDefaultStepObjective(desc), modelSourceId: null };
   if (type === 'parallel') {
     const pData = base as import('./types').ParallelNodeData;
     return { ...base, branches: pData.branches || ['Branch A', 'Branch B'] };

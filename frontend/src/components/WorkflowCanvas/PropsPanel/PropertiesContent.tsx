@@ -12,6 +12,7 @@ import type {
   RouterNodeData,
 } from '../types';
 import { isExecutionNode } from '../utils/dag';
+import { ModelSourceSection } from './ModelSourceSection';
 import { ConditionNodeProperties } from './Nodes/ConditionNodeProperties';
 import { GateNodeProperties } from './Nodes/GateNodeProperties';
 import { LoopNodeProperties } from './Nodes/LoopNodeProperties';
@@ -97,6 +98,14 @@ export const PropertiesContent: React.FC<PropertiesContentProps> = ({ panelMode,
             onChange={stepObjective => onNodeDataChange(selectedNode.id, { stepObjective })}
             onSave={stepObjective => onSaveStepObjective(selectedNode.id, stepObjective)}
           />
+          {(nodeType === 'mcp' || nodeType === 'pool') && (
+            <ModelSourceSection
+              key={`model-${selectedNode.id}`}
+              modelSourceId={nodeData?.modelSourceId ?? null}
+              isReadOnly={isReadOnly}
+              onChange={modelSourceId => onNodeDataChange(selectedNode.id, { modelSourceId })}
+            />
+          )}
           <UpstreamReferencesSection node={selectedNode} />
         </>
       )}
