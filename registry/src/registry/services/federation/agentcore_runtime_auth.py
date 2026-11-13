@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+import httpx2
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
@@ -20,7 +21,14 @@ logger = logging.getLogger(__name__)
 _JWT_EXPIRES_IN_SECONDS = 300
 
 
-class _SigV4HttpxAuth(httpx.Auth):
+class _SigV4AuthMixin:
+    """SigV4 request signing shared by the httpx and httpx2 auth variants.
+
+    httpx.Request and httpx2.Request expose the same ``method``/``url``/``content``/``headers`` surface,
+    so one ``auth_flow`` serves both. mcp v2 transports need an ``httpx2.Auth``; the A2A card fetch still
+    uses httpx.
+    """
+
     requires_request_body = True
 
     def __init__(self, service: str, region: str, credentials_provider: Callable[[], Any]):
@@ -28,7 +36,7 @@ class _SigV4HttpxAuth(httpx.Auth):
         self.region = region
         self.credentials_provider = credentials_provider
 
-    def auth_flow(self, request: httpx.Request):
+    def auth_flow(self, request):
         # HTTP fallback requests must be signed the same way as SDK runtime calls.
         credentials = self.credentials_provider()
         credentials = credentials.get_frozen_credentials()
@@ -44,6 +52,14 @@ class _SigV4HttpxAuth(httpx.Auth):
         for key, value in aws_request.headers.items():
             request.headers[key] = value
         yield request
+
+
+class _SigV4HttpxAuth(_SigV4AuthMixin, httpx.Auth):
+    """SigV4 auth for httpx (A2A card fetch)."""
+
+
+class _SigV4Httpx2Auth(_SigV4AuthMixin, httpx2.Auth):
+    """SigV4 auth for httpx2 (MCP discovery transports)."""
 
 
 class AgentCoreRuntimeAuthService:
@@ -64,7 +80,8 @@ class AgentCoreRuntimeAuthService:
         region: str,
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
-    ) -> tuple[dict[str, str], httpx.Auth | None]:
+        use_httpx2: bool = False,
+    ) -> tuple[dict[str, str], httpx.Auth | httpx2.Auth | None]:
         # Runtime enrichment uses resource-local auth settings because an AWS
         # federation can contain a mix of IAM-backed and JWT-backed runtimes.
         discovered_mode, detection_reason = self._detect_agentcore_data_plane_auth_mode_with_reason(
@@ -123,6 +140,7 @@ class AgentCoreRuntimeAuthService:
             runtime_detail=runtime_detail,
             region=region,
             assume_role_arn=assume_role_arn,
+            use_httpx2=use_httpx2,
         )
 
     @staticmethod
@@ -199,7 +217,8 @@ class AgentCoreRuntimeAuthService:
         runtime_detail: dict[str, Any] | None,
         region: str,
         assume_role_arn: str | None,
-    ) -> tuple[dict[str, str], httpx.Auth | None]:
+        use_httpx2: bool = False,
+    ) -> tuple[dict[str, str], httpx.Auth | httpx2.Auth | None]:
         runtime_arn = self._resolve_runtime_arn(metadata=metadata, runtime_detail=runtime_detail)
         resolved_region = region.strip()
         if runtime_arn:
@@ -218,11 +237,12 @@ class AgentCoreRuntimeAuthService:
         )
         if not credentials_provider:
             raise ValueError(f"Failed to initialize runtime credentials provider for region {resolved_region}")
-        return {}, _SigV4HttpxAuth("bedrock-agentcore", resolved_region, credentials_provider)
+        auth_cls = _SigV4Httpx2Auth if use_httpx2 else _SigV4HttpxAuth
+        return {}, auth_cls("bedrock-agentcore", resolved_region, credentials_provider)
 
     def _build_jwt_auth(
         self, *, runtime_access: AgentCoreRuntimeAccessConfig
-    ) -> tuple[dict[str, str], httpx.Auth | None]:
+    ) -> tuple[dict[str, str], httpx.Auth | httpx2.Auth | None]:
         jwt_config = runtime_access.jwt
 
         if jwt_config is None:
