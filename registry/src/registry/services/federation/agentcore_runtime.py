@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+import httpx2
 
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
@@ -459,6 +460,7 @@ class AgentCoreRuntimeInvoker:
             runtime_detail=runtime_detail,
             region=region,
             assume_role_arn=assume_role_arn,
+            use_httpx2=True,
         )
         return await get_tools_and_capabilities_from_server(
             runtime_url,
@@ -1033,12 +1035,14 @@ class AgentCoreRuntimeInvoker:
         region: str,
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
-    ) -> tuple[dict[str, str], httpx.Auth | None]:
+        use_httpx2: bool = False,
+    ) -> tuple[dict[str, str], httpx.Auth | httpx2.Auth | None]:
         """
         Delegate runtime data-plane auth selection to the shared auth service.
 
         Keeping the branching outside the HTTP transport code makes MCP/A2A
-        runtime callers share the same IAM-vs-JWT validation rules.
+        runtime callers share the same IAM-vs-JWT validation rules. MCP discovery runs on httpx2 (v2
+        transports), so it asks for the httpx2 auth variant; the A2A card fetch uses httpx.
         """
         return await self.auth_service.build_runtime_http_auth(
             runtime_access=runtime_access,
@@ -1046,6 +1050,7 @@ class AgentCoreRuntimeInvoker:
             runtime_detail=runtime_detail,
             region=region,
             assume_role_arn=assume_role_arn,
+            use_httpx2=use_httpx2,
         )
 
     @staticmethod

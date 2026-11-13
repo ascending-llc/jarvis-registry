@@ -66,11 +66,11 @@ def test_root_path_resolves_v0_1_mount(enabled_dispatcher):
 
 
 def test_root_path_resolves_nested_fastmcp_style_mount():
-    """Guard the exact nesting the dispatcher adds around the pre-existing FastMCP mount.
+    """Guard the exact nesting the dispatcher adds around the pre-existing MCPServer mount.
 
     Reproduces dispatcher -> Mount('/') main -> Mount('/proxy/mcpgw') inner and asserts that under
     a non-empty root_path the innermost app is reached and Starlette strips the accumulated prefix
-    so ``get_route_path`` yields the app's own sub-path (``/mcp``). The live FastMCP mount can't be
+    so ``get_route_path`` yields the app's own sub-path (``/mcp``). The live MCPServer mount can't be
     probed here (its session manager isn't running and the main app's middleware stack intercepts),
     so this isolates the routing mechanism that the entrypoint's --root-path comment depends on.
     """

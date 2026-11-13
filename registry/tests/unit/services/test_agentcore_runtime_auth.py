@@ -160,3 +160,46 @@ async def test_build_runtime_http_auth_jwt_requires_federation_context():
             region="us-east-1",
             assume_role_arn=None,
         )
+
+
+def test_sigv4_httpx2_auth_signs_like_httpx_variant(monkeypatch):
+    """_SigV4Httpx2Auth builds the same AWSRequest and applies the same signed headers as the httpx variant.
+
+    SigV4 is stubbed so the comparison is deterministic (the real signature embeds a timestamp).
+    """
+    from types import SimpleNamespace
+
+    import httpx
+    import httpx2
+
+    from registry.services.federation import agentcore_runtime_auth as mod
+
+    captured: list[tuple] = []
+
+    class _FakeSigV4:
+        def __init__(self, _creds, service, region):
+            self.service = service
+            self.region = region
+
+        def add_auth(self, aws_request):
+            captured.append((aws_request.method, str(aws_request.url), aws_request.data))
+            aws_request.headers["Authorization"] = f"SIG {self.service}/{self.region}"
+
+    monkeypatch.setattr(mod, "SigV4Auth", _FakeSigV4)
+
+    creds = SimpleNamespace(get_frozen_credentials=lambda: "frozen")
+    provider = lambda: creds  # noqa: E731
+
+    httpx_auth = mod._SigV4HttpxAuth("bedrock-agentcore", "us-east-1", provider)
+    httpx2_auth = mod._SigV4Httpx2Auth("bedrock-agentcore", "us-east-1", provider)
+
+    body = b'{"jsonrpc": "2.0"}'
+    headers = {"Content-Type": "application/json"}
+    req1 = httpx.Request("POST", "https://runtime.example.com/mcp", content=body, headers=headers)
+    req2 = httpx2.Request("POST", "https://runtime.example.com/mcp", content=body, headers=headers)
+
+    list(httpx_auth.auth_flow(req1))
+    list(httpx2_auth.auth_flow(req2))
+
+    assert captured[0] == captured[1]
+    assert req1.headers["Authorization"] == req2.headers["Authorization"] == "SIG bedrock-agentcore/us-east-1"

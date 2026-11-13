@@ -2,33 +2,22 @@
 
 No credentials, real records, external calls or write tools. This fixture does
 not authenticate users: Jarvis' identity/ACL layer is the separate test subject.
-Tested with the repository's pinned mcp 1.28.1 SDK.
+Tested with the repository's pinned mcp 2.3.0 SDK.
 """
 
 import argparse
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.server import Settings
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 
-def build_server(port: int = 8879) -> FastMCP:
-    # The v1 SDK otherwise reads .env during Settings construction. Disable that
-    # source only while constructing this isolated test fixture, then restore it.
-    env_file = Settings.model_config.get("env_file")
-    Settings.model_config["env_file"] = None
-    try:
-        app = FastMCP(
-            "Jarvis synthetic access-control lab",
-            instructions="Local synthetic test fixture; not a business system or identity provider.",
-            host="127.0.0.1",
-            port=port,
-            json_response=True,
-            stateless_http=True,
-            log_level="WARNING",
-        )
-    finally:
-        Settings.model_config["env_file"] = env_file
+def build_server() -> MCPServer:
+    # v2 transport settings (host/port/json_response/stateless_http) move to run(); the server
+    # constructor only carries name/instructions.
+    app = MCPServer(
+        "Jarvis synthetic access-control lab",
+        instructions="Local synthetic test fixture; not a business system or identity provider.",
+    )
 
     @app.tool(
         annotations=ToolAnnotations(
@@ -59,4 +48,10 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=valid_port, default=8879)
     args = parser.parse_args()
     print(f"Synthetic MCP fixture: http://127.0.0.1:{args.port}/mcp", flush=True)
-    build_server(args.port).run(transport="streamable-http")
+    build_server().run(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=args.port,
+        json_response=True,
+        stateless_http=True,
+    )
