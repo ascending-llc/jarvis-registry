@@ -12,7 +12,7 @@ class UserContextDict(TypedDict):
     If a FastAPI path operation function needs to access this UserContextDict information, it can retrieve this dictionary
     by asking for the `user_context: CurrentUser` dependency injection (``registry.auth.dependencies.CurrentUser``).
     If an MCP tool/resource/prompt handler function needs it, it can retrieve this dictionary by asking for the
-    `ctx: Context` dependency injection (`mcp.server.fastmcp.Context`) and then accessing
+    `ctx: Context` dependency injection (`mcp.server.mcpserver.Context`) and then accessing
     `ctx.request_context.request.state.user`.
     """
 
