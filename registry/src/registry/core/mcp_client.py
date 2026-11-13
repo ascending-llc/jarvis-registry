@@ -18,11 +18,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import httpx2
 from httpx_sse import EventSource
-from mcp import ClientSession
+from mcp import Client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared.exceptions import McpError
+from mcp.shared._httpx_utils import create_mcp_http_client
 from redis import Redis
 
 from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
@@ -329,42 +330,54 @@ def _clear_session(session_key: str, redis_client: Redis | None = None) -> None:
         logger.error(f"Failed to clear session from Redis: {e}")
 
 
-# mcp's streamable_http_client doesn't raise on a 404 POST: it answers the pending request in-band
-# with this error instead (`_send_session_terminated_error` in mcp/client/streamable_http.py).
-# During initialize no session exists yet, so it can only mean the endpoint itself returned 404.
-_SDK_SESSION_TERMINATED_MESSAGE = "Session terminated"
+@dataclass
+class _InitResult:
+    """Snapshot of the v2 Client's post-handshake attributes.
+
+    The ``mcp.Client`` is a context manager that closes when the transport exits, so we copy the
+    handshake results out before the ``async with`` ends. Field names are snake_case to match the v2
+    SDK; callers read ``protocol_version``, ``server_info`` and ``capabilities``.
+    """
+
+    protocol_version: str
+    server_info: Any
+    capabilities: Any
 
 
-class InitializeEndpointNotFoundError(Exception):
-    """The MCP endpoint answered the initialize request with HTTP 404."""
+class _ResponseRecorder:
+    """Record the first HTTP response's status code and ``mcp-session-id`` header.
 
+    In v2 the transport no longer surfaces HTTP status as an ``httpx.HTTPStatusError`` — a 401/403
+    arrives as ``MCPError`` and a 404 as a JSON-RPC error, so the status disappears. This httpx2
+    ``event_hooks["response"]`` hook captures the status (for health-check outcomes) and the session id
+    (for ``requiresInit``) directly off the wire, before any error swallows them.
+    """
 
-def _is_sdk_initialize_404(exc: BaseException) -> bool:
-    return isinstance(exc, McpError) and exc.error.message == _SDK_SESSION_TERMINATED_MESSAGE
+    def __init__(self) -> None:
+        self.status_code: int | None = None
+        self.session_id: str | None = None
+
+    async def __call__(self, response: httpx2.Response) -> None:
+        if self.status_code is None:
+            self.status_code = response.status_code
+            self.session_id = response.headers.get("mcp-session-id")
 
 
 async def initialize_mcp(
     target_url: str, headers: dict[str, str] = None, transport_type: str = "streamable-http"
-) -> Any | None:
+) -> tuple[_InitResult | None, int | None]:
     """
-    Perform MCP initialization using MCP client library and return the init_result.
+    Perform MCP initialization using the v2 ``mcp.Client`` and return the handshake result.
 
-    This is a pure transport layer function that performs the MCP initialize handshake
-    and returns the raw InitializeResult. The caller is responsible for interpreting
-    the result (e.g., for health checks, validation, etc.).
+    This is a pure transport layer function that performs the MCP initialize handshake. It returns a
+    ``(_InitResult | None, status_code | None)`` tuple: the init snapshot (or None on failure) and the
+    first HTTP response's status code recorded off the wire, since v2 hides the HTTP status inside
+    ``MCPError``. The caller interprets both (e.g. for health checks).
 
     Args:
         target_url: MCP server URL
         headers: HTTP headers (optional, defaults to standard MCP headers)
         transport_type: Transport type ("streamable-http" or "sse")
-
-    Returns:
-        InitializeResult object from MCP library, or None if initialization failed
-
-    Raises:
-        httpx.HTTPStatusError: Re-raised to allow caller to inspect HTTP status codes
-        InitializeEndpointNotFoundError: The streamable-http endpoint returned 404, which the SDK
-            reports in-band rather than as an HTTPStatusError
     """
 
     # Use provided headers or default MCP headers
@@ -377,52 +390,44 @@ async def initialize_mcp(
 
     logger.info(f"Initializing MCP connection to {mcp_url} using {transport_type} transport")
 
+    recorder = _ResponseRecorder()
     try:
         if transport_type == "streamable-http":
-            # streamable_http_client supports injecting a custom httpx client.
-            async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
-                async with streamable_http_client(url=mcp_url, http_client=http_client) as (read, write, _):
-                    async with ClientSession(read, write) as session:
-                        # Perform MCP initialization
-                        init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
-                        logger.info(f"MCP initialization successful for {target_url}")
-                        return init_result
+            async with httpx2.AsyncClient(
+                headers=headers, timeout=30.0, event_hooks={"response": [recorder]}
+            ) as http_client:
+                async with Client(
+                    streamable_http_client(url=mcp_url, http_client=http_client), mode="legacy"
+                ) as session:
+                    logger.info(f"MCP initialization successful for {target_url}")
+                    return _snapshot_init(session), recorder.status_code
 
         elif transport_type == "sse":
-            # sse_client does not accept http_client; pass headers directly.
-            async with sse_client(mcp_url, headers=headers) as (read, write):
-                async with ClientSession(read, write) as session:
-                    # Perform MCP initialization
-                    init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
-                    logger.info(f"MCP initialization successful for {target_url}")
-                    return init_result
+            async with Client(
+                sse_client(
+                    mcp_url,
+                    headers=headers,
+                    httpx_client_factory=_mcp_sse_client_factory(recorder),
+                ),
+                mode="legacy",
+            ) as session:
+                logger.info(f"MCP initialization successful for {target_url}")
+                return _snapshot_init(session), recorder.status_code
         else:
             logger.error(f"Unsupported transport type: {transport_type}")
-            return None
+            return None, None
 
-    except ExceptionGroup as eg:
-        # Unwrap ExceptionGroup to extract HTTPStatusError (from asyncio.TaskGroup)
-        for exc in eg.exceptions:
-            if isinstance(exc, httpx.HTTPStatusError):
-                logger.debug(f"HTTP error during MCP initialization for {target_url}: {exc.response.status_code}")
-                raise exc  # Re-raise the unwrapped HTTPStatusError
-        # The SDK nests its task groups, so search the whole tree rather than the top level.
-        if eg.subgroup(_is_sdk_initialize_404) is not None:
-            raise InitializeEndpointNotFoundError(target_url) from eg
-        logger.error(f"MCP initialization failed for {target_url}: ExceptionGroup - {eg}")
-        return None
-    except httpx.HTTPStatusError as e:
-        # Re-raise HTTP errors so caller can inspect status code (e.g., 401 for health checks)
-        logger.debug(f"HTTP error during MCP initialization for {target_url}: {e.response.status_code}")
-        raise
-    except McpError as e:
-        if _is_sdk_initialize_404(e):
-            raise InitializeEndpointNotFoundError(target_url) from e
-        logger.error(f"MCP initialization failed for {target_url}: McpError - {e}")
-        return None
     except Exception as e:
-        logger.error(f"MCP initialization failed for {target_url}: {type(e).__name__} - {e}")
-        return None
+        logger.debug(f"MCP initialization failed for {target_url}: {type(e).__name__} - {e}")
+        return None, recorder.status_code
+
+
+def _snapshot_init(session: Client) -> _InitResult:
+    return _InitResult(
+        protocol_version=session.protocol_version,
+        server_info=session.server_info,
+        capabilities=session.server_capabilities,
+    )
 
 
 async def perform_health_check(
@@ -467,20 +472,9 @@ async def perform_health_check(
 
     start_time = datetime.now(UTC)
 
-    # Attempt MCP initialization
-    init_result = None
-    http_status_code = None
-
-    try:
-        init_result = await initialize_mcp(target_url=url, headers=headers, transport_type=transport)
-    except httpx.HTTPStatusError as e:
-        http_status_code = e.response.status_code
-        logger.debug(f"HTTP error {http_status_code} during health check for {url}")
-    except InitializeEndpointNotFoundError:
-        http_status_code = HTTPStatus.NOT_FOUND
-        logger.debug(f"HTTP error {http_status_code} during health check for {url}")
-    except Exception as e:
-        logger.debug(f"Non-HTTP error during health check for {url}: {type(e).__name__} - {e}")
+    # Attempt MCP initialization. v2 hides the HTTP status inside MCPError, so initialize_mcp records
+    # the first response's status off the wire and returns it alongside the init snapshot.
+    init_result, http_status_code = await initialize_mcp(target_url=url, headers=headers, transport_type=transport)
 
     # Calculate response time
     end_time = datetime.now(UTC)
@@ -514,16 +508,16 @@ async def perform_health_check(
         logger.warning(f"Health check failed for {url}: initialization failed")
         return False, "unhealthy: initialization failed", response_time_ms, None
 
-    # Check for required fields: protocolVersion and serverInfo
-    if hasattr(init_result, "protocolVersion") and hasattr(init_result, "serverInfo"):
-        remote_server_name = init_result.serverInfo.name if hasattr(init_result.serverInfo, "name") else "unknown"
+    # Check for required fields: protocol_version and server_info
+    if hasattr(init_result, "protocol_version") and hasattr(init_result, "server_info"):
+        remote_server_name = init_result.server_info.name if hasattr(init_result.server_info, "name") else "unknown"
 
         # Convert capabilities to dict if present (normalize Pydantic models to dicts)
         if hasattr(init_result, "capabilities"):
             init_result.capabilities = _convert_pydantic_to_dict(init_result.capabilities)
 
         logger.info(
-            f"Health check passed for {url}: Initialize handshake successful - {remote_server_name} (protocol: {init_result.protocolVersion})"
+            f"Health check passed for {url}: Initialize handshake successful - {remote_server_name} (protocol: {init_result.protocol_version})"
         )
         return True, "initialize handshake successful", response_time_ms, init_result
     else:
@@ -650,7 +644,8 @@ def _convert_pydantic_to_dict(obj: Any) -> dict:
         Dictionary representation of the object
     """
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        # by_alias keeps the stored shape in v1 camelCase (e.g. listChanged) under v2's snake_case models.
+        return obj.model_dump(by_alias=True, mode="json")
     elif hasattr(obj, "__dict__"):
         return dict(obj.__dict__)
     return obj
@@ -718,6 +713,35 @@ def normalize_sse_endpoint_url_for_request(url_str: str) -> str:
     return url_str
 
 
+async def _rewrite_sse_request_url(request: httpx2.Request) -> None:
+    """httpx2 request hook that strips SSE mount-path prefixes off the POST-back URL.
+
+    v2's ``sse_client`` uses httpx2, so the old process-wide monkey-patch of ``httpx.AsyncClient.request``
+    silently stopped applying. This per-client hook replaces it (and removes the non-concurrency-safe
+    global patch).
+    """
+    url_str = str(request.url)
+    if MCPClientConfig.ENDPOINT_MESSAGES in url_str:
+        request.url = httpx2.URL(normalize_sse_endpoint_url_for_request(url_str))
+
+
+def _mcp_sse_client_factory(recorder: _ResponseRecorder | None = None):
+    """Build an httpx2 client factory for ``sse_client`` with the mount-path rewrite hook.
+
+    Reuses the SDK's ``create_mcp_http_client`` (so its own defaults stand) and attaches the request
+    hook; when a recorder is given, also attaches it as a response hook to capture status/session id.
+    """
+
+    def factory(headers=None, auth=None, timeout=None) -> httpx2.AsyncClient:
+        client = create_mcp_http_client(headers=headers, auth=auth, timeout=timeout)
+        client.event_hooks["request"].append(_rewrite_sse_request_url)
+        if recorder is not None:
+            client.event_hooks["response"].append(recorder)
+        return client
+
+    return factory
+
+
 async def detect_server_transport(base_url: str) -> str:
     """
     Detect which transport a server supports by testing endpoints.
@@ -731,19 +755,20 @@ async def detect_server_transport(base_url: str) -> str:
         logger.debug(f"Server URL {base_url} already has MCP endpoint")
         return MCPClientConfig.TRANSPORT_HTTP
 
-    # Test streamable-http first (default preference)
+    # Test streamable-http first (default preference). v2 transports need an explicit httpx2 client.
     try:
         mcp_url = base_url.rstrip("/") + MCPClientConfig.ENDPOINT_MCP + "/"
-        async with streamable_http_client(url=mcp_url):
-            logger.debug(f"Server at {base_url} supports streamable-http transport")
-            return MCPClientConfig.TRANSPORT_HTTP
+        async with httpx2.AsyncClient(timeout=30.0) as http_client:
+            async with streamable_http_client(url=mcp_url, http_client=http_client):
+                logger.debug(f"Server at {base_url} supports streamable-http transport")
+                return MCPClientConfig.TRANSPORT_HTTP
     except Exception as e:
         logger.debug(f"Streamable-HTTP test failed for {base_url}: {e}")
 
     # Fallback to SSE
     try:
         sse_url = base_url.rstrip("/") + MCPClientConfig.ENDPOINT_SSE
-        async with sse_client(sse_url):
+        async with sse_client(sse_url, timeout=30.0):
             logger.debug(f"Server at {base_url} supports SSE transport")
             return MCPClientConfig.TRANSPORT_SSE
     except Exception as e:
@@ -791,17 +816,14 @@ async def get_tools_from_server_with_transport(base_url: str, transport: str = "
         return None
 
 
-async def _is_requires_init(get_session_id) -> bool | None:
-    """Return None when the session ID can't be read, so the stored requiresInit is kept."""
-    try:
-        session_id = get_session_id() if callable(get_session_id) else None
-        requires_init = session_id is not None
-        logger.info(
-            f"streamable-http: session_id={'present' if session_id else 'absent'}, requiresInit={requires_init}"
-        )
-    except Exception as e:
-        logger.warning(f"Failed to get session_id: {e}, leaving requiresInit undetermined")
-        requires_init = None
+def _is_requires_init(session_id: str | None) -> bool:
+    """Whether the server issued a session id (so it is stateful and requires init).
+
+    v2's ``streamable_http_client`` no longer yields ``get_session_id``; the session id is recorded off
+    the response headers by :class:`_ResponseRecorder` instead.
+    """
+    requires_init = session_id is not None
+    logger.info(f"streamable-http: session_id={'present' if session_id else 'absent'}, requiresInit={requires_init}")
     return requires_init
 
 
@@ -849,60 +871,63 @@ async def _get_from_streamable_http(
     # Import httpx for custom client
 
     try:
-        # Create custom httpx client with headers
-        async with httpx.AsyncClient(headers=headers, timeout=30.0, auth=httpx_auth) as http_client:
-            async with streamable_http_client(url=mcp_url, http_client=http_client) as (read, write, get_session_id):
-                async with ClientSession(read, write) as session:
-                    init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
-                    tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
+        # Create custom httpx2 client with headers; the recorder captures the session id off the wire
+        # since v2's streamable_http_client no longer yields get_session_id.
+        recorder = _ResponseRecorder()
+        async with httpx2.AsyncClient(
+            headers=headers, timeout=30.0, auth=httpx_auth, event_hooks={"response": [recorder]}
+        ) as http_client:
+            async with Client(streamable_http_client(url=mcp_url, http_client=http_client), mode="legacy") as session:
+                init_result = _snapshot_init(session)
+                tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
 
-                    # Extract capabilities if requested
-                    capabilities = None
-                    if include_capabilities:
-                        capabilities = _extract_capabilities(init_result)
+                # Extract capabilities if requested
+                capabilities = None
+                if include_capabilities:
+                    capabilities = _extract_capabilities(init_result)
 
-                        # If capabilities required but not retrieved, consider it a failed server
-                        if not capabilities:
-                            logger.error(f"Failed to retrieve capabilities from {mcp_url} - server considered failed")
-                            return MCPServerData(None, None, None, None, "Failed to retrieve capabilities")
+                    # If capabilities required but not retrieved, consider it a failed server
+                    if not capabilities:
+                        logger.error(f"Failed to retrieve capabilities from {mcp_url} - server considered failed")
+                        return MCPServerData(None, None, None, None, "Failed to retrieve capabilities")
 
-                        logger.info(f"Successfully retrieved capabilities from {mcp_url}: {capabilities}")
+                    logger.info(f"Successfully retrieved capabilities from {mcp_url}: {capabilities}")
 
-                    # Extract tool details
-                    tool_list = _extract_tool_details(tools_response)
+                # Extract tool details
+                tool_list = _extract_tool_details(tools_response)
 
-                    # Extract resources if requested
-                    resource_list = []
-                    if include_resources:
-                        try:
-                            resources_response = await asyncio.wait_for(
-                                session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                            )
-                            resource_list = _extract_resource_details(resources_response)
-                        except Exception as e:
-                            logger.warning(f"Failed to retrieve resources from {mcp_url}: {e}")
-                            resource_list = []
+                # Extract resources if requested
+                resource_list = []
+                if include_resources:
+                    try:
+                        resources_response = await asyncio.wait_for(
+                            session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
+                        )
+                        resource_list = _extract_resource_details(resources_response)
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve resources from {mcp_url}: {e}")
+                        resource_list = []
 
-                    # Extract prompts if requested
-                    prompt_list = []
-                    if include_prompts:
-                        try:
-                            prompts_response = await asyncio.wait_for(
-                                session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                            )
-                            prompt_list = _extract_prompt_details(prompts_response)
-                        except Exception as e:
-                            logger.warning(f"Failed to retrieve prompts from {mcp_url}: {e}")
-                            prompt_list = []
+                # Extract prompts if requested
+                prompt_list = []
+                if include_prompts:
+                    try:
+                        prompts_response = await asyncio.wait_for(
+                            session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
+                        )
+                        prompt_list = _extract_prompt_details(prompts_response)
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve prompts from {mcp_url}: {e}")
+                        prompt_list = []
 
-                    requires_init = await _is_requires_init(get_session_id)
-                    return MCPServerData(
-                        tools=tool_list,
-                        resources=resource_list,
-                        prompts=prompt_list,
-                        capabilities=capabilities,
-                        requires_init=requires_init,
-                    )
+                requires_init = _is_requires_init(recorder.session_id)
+                return MCPServerData(
+                    tools=tool_list,
+                    resources=resource_list,
+                    prompts=prompt_list,
+                    capabilities=capabilities,
+                    requires_init=requires_init,
+                )
 
     except TimeoutError:
         logger.error(f"Timeout connecting to {mcp_url}")
@@ -976,81 +1001,68 @@ async def _get_from_sse(
     requires_init = True
     logger.info("SSE transport: always stateful (requiresInit=True)")
 
-    # Import httpx for custom client and monkey patching
-
     try:
-        # Monkey patch httpx to fix mount path issues (legacy SSE support)
-        original_request = httpx.AsyncClient.request
+        # v2's sse_client uses httpx2, so the old global monkey-patch no longer applies. The client
+        # factory attaches a per-client request hook that rewrites the mount-path POST-back URL, and
+        # auth is honoured (passed through instead of logged as ignored).
+        async with Client(
+            sse_client(
+                mcp_server_url,
+                headers=headers,
+                auth=httpx_auth,
+                httpx_client_factory=_mcp_sse_client_factory(),
+            ),
+            mode="legacy",
+        ) as session:
+            init_result = _snapshot_init(session)
+            tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
 
-        async def patched_request(self, method, url, **kwargs):
-            if isinstance(url, str) and MCPClientConfig.ENDPOINT_MESSAGES in url:
-                url = normalize_sse_endpoint_url_for_request(url)
-            elif hasattr(url, "__str__") and MCPClientConfig.ENDPOINT_MESSAGES in str(url):
-                url = normalize_sse_endpoint_url_for_request(str(url))
-            return await original_request(self, method, url, **kwargs)
+            # Extract capabilities if requested
+            capabilities = None
+            if include_capabilities:
+                capabilities = _extract_capabilities(init_result)
 
-        httpx.AsyncClient.request = patched_request
+                # If capabilities required but not retrieved, consider it a failed server
+                if not capabilities:
+                    logger.error(f"Failed to retrieve capabilities from {mcp_server_url} - server considered failed")
+                    return MCPServerData(None, None, None, None, "Failed to retrieve capabilities")
 
-        try:
-            # sse_client does not accept http_client; pass headers directly.
-            if httpx_auth is not None:
-                logger.debug("SSE transport ignores httpx_auth object; authentication should be provided via headers")
+                logger.info(f"Successfully retrieved capabilities from {mcp_server_url}: {capabilities}")
 
-            async with sse_client(mcp_server_url, headers=headers) as (read, write):
-                async with ClientSession(read, write, sampling_callback=None) as session:
-                    init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
-                    tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
+            # Extract tool details
+            tool_list = _extract_tool_details(tools_response)
 
-                    # Extract capabilities if requested
-                    capabilities = None
-                    if include_capabilities:
-                        capabilities = _extract_capabilities(init_result)
-
-                        # If capabilities required but not retrieved, consider it a failed server
-                        if not capabilities:
-                            logger.error(
-                                f"Failed to retrieve capabilities from {mcp_server_url} - server considered failed"
-                            )
-                            return MCPServerData(None, None, None, None, "Failed to retrieve capabilities")
-
-                        logger.info(f"Successfully retrieved capabilities from {mcp_server_url}: {capabilities}")
-
-                    # Extract tool details
-                    tool_list = _extract_tool_details(tools_response)
-
-                    # Extract resources if requested
-                    resource_list = []
-                    if include_resources:
-                        try:
-                            resources_response = await asyncio.wait_for(
-                                session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                            )
-                            resource_list = _extract_resource_details(resources_response)
-                        except Exception as e:
-                            logger.warning(f"Failed to retrieve resources from {mcp_server_url}: {e}")
-                            resource_list = []
-
-                    # Extract prompts if requested
-                    prompt_list = []
-                    if include_prompts:
-                        try:
-                            prompts_response = await asyncio.wait_for(
-                                session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                            )
-                            prompt_list = _extract_prompt_details(prompts_response)
-                        except Exception as e:
-                            logger.warning(f"Failed to retrieve prompts from {mcp_server_url}: {e}")
-                            prompt_list = []
-
-                    return MCPServerData(
-                        tools=tool_list,
-                        resources=resource_list,
-                        prompts=prompt_list,
-                        capabilities=capabilities,
-                        requires_init=requires_init,
+            # Extract resources if requested
+            resource_list = []
+            if include_resources:
+                try:
+                    resources_response = await asyncio.wait_for(
+                        session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
                     )
-        finally:
-            httpx.AsyncClient.request = original_request
+                    resource_list = _extract_resource_details(resources_response)
+                except Exception as e:
+                    logger.warning(f"Failed to retrieve resources from {mcp_server_url}: {e}")
+                    resource_list = []
+
+            # Extract prompts if requested
+            prompt_list = []
+            if include_prompts:
+                try:
+                    prompts_response = await asyncio.wait_for(
+                        session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
+                    )
+                    prompt_list = _extract_prompt_details(prompts_response)
+                except Exception as e:
+                    logger.warning(f"Failed to retrieve prompts from {mcp_server_url}: {e}")
+                    prompt_list = []
+
+            return MCPServerData(
+                tools=tool_list,
+                resources=resource_list,
+                prompts=prompt_list,
+                capabilities=capabilities,
+                requires_init=requires_init,
+            )
 
     except TimeoutError:
         logger.error(f"Timeout connecting to {mcp_server_url}")
@@ -1093,7 +1105,8 @@ def _extract_capabilities(init_result: Any) -> dict | None:
         capabilities_obj = init_result.capabilities
         # Convert to dict if it's a Pydantic model or similar
         if hasattr(capabilities_obj, "model_dump"):
-            capabilities = capabilities_obj.model_dump()
+            # by_alias keeps camelCase capability keys (listChanged) under v2's snake_case models.
+            capabilities = capabilities_obj.model_dump(by_alias=True, mode="json")
         elif hasattr(capabilities_obj, "__dict__"):
             capabilities = capabilities_obj.__dict__
         else:
@@ -1164,8 +1177,8 @@ def _extract_tool_details(tools_response) -> list[dict]:
             else:
                 parsed_desc["main"] = "No description available."
 
-            # Get inputSchema - properly handle conversion to dict
-            tool_schema = getattr(tool, "inputSchema", {})
+            # Get input_schema (snake_case in v2) - properly handle conversion to dict
+            tool_schema = tool.input_schema
 
             # Convert Pydantic model to dict if necessary
             tool_schema = _convert_pydantic_to_dict(tool_schema)
@@ -1196,7 +1209,7 @@ def _extract_resource_details(resources_response) -> list[dict]:
             resource_uri = getattr(resource, "uri", "Unknown URI")
             resource_name = getattr(resource, "name", None)
             resource_desc = getattr(resource, "description", None)
-            resource_mime = getattr(resource, "mimeType", None)
+            resource_mime = resource.mime_type
 
             # Get annotations if present
             annotations = getattr(resource, "annotations", None)

@@ -24,6 +24,76 @@ from registry_pkgs.oauth.discovery import DiscoveryResult
 from registry_pkgs.oauth.errors import OAuthDiscoveryError
 
 
+def _mock_client_cm(session):
+    """Wrap a mock v2 ``mcp.Client`` session in an async context manager."""
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    return cm
+
+
+def _mock_mcp_session(*, capabilities=None, tools_response=None, resources=None, prompts=None):
+    """Build a mock post-handshake ``mcp.Client`` session with v2 snake_case attributes."""
+    session = AsyncMock()
+    session.protocol_version = "2025-11-25"
+    session.server_info = Mock(name="server", version="1.0")
+    session.server_capabilities = capabilities
+    session.list_tools = AsyncMock(return_value=tools_response if tools_response is not None else Mock(tools=[]))
+    session.list_resources = AsyncMock(return_value=Mock(resources=resources or []))
+    session.list_prompts = AsyncMock(return_value=Mock(prompts=prompts or []))
+    return session
+
+
+@pytest.mark.unit
+@pytest.mark.core
+@pytest.mark.asyncio
+async def test_rewrite_sse_request_url_strips_mount_path():
+    """The v2 request hook (replacing the old httpx monkey-patch) rewrites the mount-path POST-back URL."""
+    import httpx2
+
+    from registry.core.mcp_client import _rewrite_sse_request_url
+
+    req = httpx2.Request("POST", "http://host:8000/fininfo/messages/?session_id=abc")
+    await _rewrite_sse_request_url(req)
+    assert str(req.url) == "http://host:8000/messages/?session_id=abc"
+
+
+@pytest.mark.unit
+@pytest.mark.core
+@pytest.mark.asyncio
+async def test_rewrite_sse_request_url_leaves_non_messages_url_untouched():
+    import httpx2
+
+    from registry.core.mcp_client import _rewrite_sse_request_url
+
+    req = httpx2.Request("GET", "http://host:8000/sse")
+    await _rewrite_sse_request_url(req)
+    assert str(req.url) == "http://host:8000/sse"
+
+
+@pytest.mark.unit
+@pytest.mark.core
+@pytest.mark.asyncio
+async def test_mcp_sse_client_factory_attaches_hook_and_optional_recorder():
+    """The SSE factory attaches the mount-path rewrite hook, and the recorder only when provided."""
+    from registry.core.mcp_client import _mcp_sse_client_factory, _ResponseRecorder, _rewrite_sse_request_url
+
+    recorder = _ResponseRecorder()
+    client = _mcp_sse_client_factory(recorder)(headers={"a": "b"}, auth=None, timeout=None)
+    try:
+        assert _rewrite_sse_request_url in client.event_hooks["request"]
+        assert recorder in client.event_hooks["response"]
+    finally:
+        await client.aclose()
+
+    client2 = _mcp_sse_client_factory()(headers=None, auth=None, timeout=None)
+    try:
+        assert _rewrite_sse_request_url in client2.event_hooks["request"]
+        assert recorder not in client2.event_hooks["response"]
+    finally:
+        await client2.aclose()
+
+
 @pytest.mark.unit
 @pytest.mark.core
 class TestMCPClient:
@@ -34,19 +104,13 @@ class TestMCPClient:
 
         assert result.requires_init is None
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("session_id", "expected"), [("sid-1", True), (None, False)], ids=["stateful", "stateless"]
     )
-    async def test_is_requires_init_detects_session(self, session_id: str | None, expected: bool) -> None:
-        assert await _is_requires_init(lambda: session_id) is expected
-
-    @pytest.mark.asyncio
-    async def test_is_requires_init_unknown_when_session_id_unreadable(self) -> None:
-        def get_session_id() -> str | None:
-            raise RuntimeError("transport closed")
-
-        assert await _is_requires_init(get_session_id) is None
+    def test_is_requires_init_detects_session(self, session_id: str | None, expected: bool) -> None:
+        # v2's streamable_http_client no longer yields get_session_id; the recorder captures the session
+        # id off the response headers and _is_requires_init takes it directly.
+        assert _is_requires_init(session_id) is expected
 
     @pytest.mark.asyncio
     async def test_call_tool_via_sse_ephemeral_waits_for_initialize_response(self, mock_headers):
@@ -608,7 +672,8 @@ class TestMCPClient:
         tool = Mock()
         tool.name = "test_tool"
         tool.description = "Test tool description"
-        tool.inputSchema = {"type": "object", "properties": {"query": {"type": "string"}}}
+        # v2 Tool model exposes input_schema (snake_case).
+        tool.input_schema = {"type": "object", "properties": {"query": {"type": "string"}}}
 
         response = Mock()
         response.tools = [tool]
@@ -625,40 +690,24 @@ class TestMCPClient:
         base_url = "http://localhost:8000/mcp/"
 
         with (
-            patch("registry.core.mcp_client.streamable_http_client") as mock_client,
+            patch("registry.core.mcp_client.Client") as mock_client_cls,
+            patch("registry.core.mcp_client.streamable_http_client"),
             patch("registry.core.mcp_client.get_server_strategy") as mock_strategy,
         ):
-            # Mock strategy
             strategy = Mock()
             strategy.modify_url = Mock(return_value=base_url)
             mock_strategy.return_value = strategy
 
-            # Mock MCP session
-            mock_init_result = Mock()
-            mock_init_result.capabilities = mock_capabilities
+            session = _mock_mcp_session(capabilities=mock_capabilities, tools_response=mock_tools_response)
+            mock_client_cls.return_value = _mock_client_cm(session)
 
-            mock_session = AsyncMock()
-            mock_session.initialize = AsyncMock(return_value=mock_init_result)
-            mock_session.list_tools = AsyncMock(return_value=mock_tools_response)
-            mock_session.list_resources = AsyncMock(return_value=Mock(resources=[]))
-            mock_session.list_prompts = AsyncMock(return_value=Mock(prompts=[]))
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=None)
-
-            # Mock streamable_http_client context manager
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock(), Mock()))
-            mock_client.return_value = mock_context
-
-            with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
-                mock_session_cls.return_value = mock_session
-
-                result = await _get_from_streamable_http(
-                    base_url=base_url, headers=mock_headers, transport_type="streamable-http", include_capabilities=True
-                )
+            result = await _get_from_streamable_http(
+                base_url=base_url, headers=mock_headers, transport_type="streamable-http", include_capabilities=True
+            )
 
             # Verify result is MCPServerData object
             assert result.tools is not None
+            assert result.tools[0]["inputSchema"] == {"type": "object", "properties": {"query": {"type": "string"}}}
             assert result.capabilities == mock_capabilities
 
     @pytest.mark.asyncio
@@ -667,31 +716,23 @@ class TestMCPClient:
         base_url = "http://localhost:8000/mcp/"
 
         with (
-            patch("registry.core.mcp_client.streamable_http_client") as mock_client,
+            patch("registry.core.mcp_client.Client") as mock_client_cls,
+            patch("registry.core.mcp_client.streamable_http_client"),
             patch("registry.core.mcp_client.get_server_strategy") as mock_strategy,
         ):
             strategy = Mock()
             strategy.modify_url = Mock(return_value=base_url)
             mock_strategy.return_value = strategy
 
-            mock_session = AsyncMock()
-            mock_session.list_tools = AsyncMock(return_value=mock_tools_response)
-            mock_session.list_resources = AsyncMock(return_value=Mock(resources=[]))
-            mock_session.list_prompts = AsyncMock(return_value=Mock(prompts=[]))
+            session = _mock_mcp_session(tools_response=mock_tools_response)
+            mock_client_cls.return_value = _mock_client_cm(session)
 
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock(), Mock()))
-            mock_client.return_value = mock_context
-
-            with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
-                mock_session_cls.return_value = mock_session
-
-                result = await _get_from_streamable_http(
-                    base_url=base_url,
-                    headers=mock_headers,
-                    transport_type="streamable-http",
-                    include_capabilities=False,
-                )
+            result = await _get_from_streamable_http(
+                base_url=base_url,
+                headers=mock_headers,
+                transport_type="streamable-http",
+                include_capabilities=False,
+            )
 
             assert result.tools is not None
             assert result.capabilities is None
@@ -702,42 +743,28 @@ class TestMCPClient:
         base_url = "http://localhost:8000/sse"
 
         with (
-            patch("registry.core.mcp_client.sse_client") as mock_client,
+            patch("registry.core.mcp_client.Client") as mock_client_cls,
+            patch("registry.core.mcp_client.sse_client") as mock_sse,
             patch("registry.core.mcp_client.get_server_strategy") as mock_strategy,
         ):
             strategy = Mock()
             strategy.modify_url = Mock(return_value=base_url)
             mock_strategy.return_value = strategy
 
-            mock_init_result = Mock()
-            mock_init_result.capabilities = mock_capabilities
+            session = _mock_mcp_session(capabilities=mock_capabilities, tools_response=mock_tools_response)
+            mock_client_cls.return_value = _mock_client_cm(session)
 
-            mock_session = AsyncMock()
-            mock_session.initialize = AsyncMock(return_value=mock_init_result)
-            mock_session.list_tools = AsyncMock(return_value=mock_tools_response)
-            mock_session.list_resources = AsyncMock(return_value=Mock(resources=[]))
-            mock_session.list_prompts = AsyncMock(return_value=Mock(prompts=[]))
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=None)
-
-            # Mock sse_client context
-            mock_sse_context = AsyncMock()
-            mock_sse_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock()))
-            mock_client.return_value = mock_sse_context
-
-            with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
-                mock_session_cls.return_value = mock_session
-
-                result = await _get_from_sse(
-                    base_url=base_url, headers=mock_headers, transport_type="sse", include_capabilities=True
-                )
+            result = await _get_from_sse(
+                base_url=base_url, headers=mock_headers, transport_type="sse", include_capabilities=True
+            )
 
             assert result.tools is not None
             assert result.capabilities == mock_capabilities
-            # Regression guard: sse_client should receive headers and never http_client.
-            _, kwargs = mock_client.call_args
+            # Regression guard: sse_client receives headers + auth, never http_client (v2 uses a factory).
+            _, kwargs = mock_sse.call_args
             assert kwargs["headers"] == mock_headers
             assert "http_client" not in kwargs
+            assert "httpx_client_factory" in kwargs
 
     @pytest.mark.asyncio
     async def test_initialize_mcp_sse_uses_headers_not_http_client(self, mock_headers):
@@ -745,6 +772,7 @@ class TestMCPClient:
         target_url = "https://example.com/sse"
 
         with (
+            patch("registry.core.mcp_client.Client") as mock_client_cls,
             patch("registry.core.mcp_client.sse_client") as mock_sse_client,
             patch("registry.core.mcp_client.get_server_strategy") as mock_strategy,
         ):
@@ -752,30 +780,21 @@ class TestMCPClient:
             strategy.modify_url = Mock(return_value=target_url)
             mock_strategy.return_value = strategy
 
-            mock_init_result = Mock()
+            session = _mock_mcp_session()
+            mock_client_cls.return_value = _mock_client_cm(session)
 
-            mock_session = AsyncMock()
-            mock_session.initialize = AsyncMock(return_value=mock_init_result)
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=None)
+            init_result, status = await initialize_mcp(
+                target_url=target_url,
+                headers=mock_headers,
+                transport_type="sse",
+            )
 
-            mock_sse_context = AsyncMock()
-            mock_sse_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock()))
-            mock_sse_client.return_value = mock_sse_context
-
-            with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
-                mock_session_cls.return_value = mock_session
-
-                result = await initialize_mcp(
-                    target_url=target_url,
-                    headers=mock_headers,
-                    transport_type="sse",
-                )
-
-            assert result == mock_init_result
+            assert init_result.protocol_version == "2025-11-25"
+            assert status is None
             _, kwargs = mock_sse_client.call_args
             assert kwargs["headers"] == mock_headers
             assert "http_client" not in kwargs
+            assert "httpx_client_factory" in kwargs
 
     @pytest.mark.asyncio
     async def test_get_tools_and_capabilities_from_server_streamable_http(self, mock_headers):
@@ -860,31 +879,22 @@ class TestMCPClient:
         base_url = "http://localhost:8000/mcp/"
 
         with (
-            patch("registry.core.mcp_client.streamable_http_client") as mock_client,
+            patch("registry.core.mcp_client.Client") as mock_client_cls,
+            patch("registry.core.mcp_client.streamable_http_client"),
             patch("registry.core.mcp_client.get_server_strategy") as mock_strategy,
         ):
             strategy = Mock()
             strategy.modify_url = Mock(return_value=base_url)
             mock_strategy.return_value = strategy
 
-            mock_session = AsyncMock()
-            mock_session.list_tools = AsyncMock(return_value=Mock(tools=[]))
-            mock_session.list_resources = AsyncMock(return_value=Mock(resources=[]))
-            mock_session.list_prompts = AsyncMock(return_value=Mock(prompts=[]))
+            mock_client_cls.return_value = _mock_client_cm(_mock_mcp_session())
 
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock(), Mock()))
-            mock_client.return_value = mock_context
-
-            with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
-                mock_session_cls.return_value = mock_session
-
-                await _get_from_streamable_http(
-                    base_url=base_url,
-                    headers=None,  # Should use defaults
-                    transport_type="streamable-http",
-                    include_capabilities=False,
-                )
+            await _get_from_streamable_http(
+                base_url=base_url,
+                headers=None,  # Should use defaults
+                transport_type="streamable-http",
+                include_capabilities=False,
+            )
 
             assert MCPClientConfig.DEFAULT_HEADERS["Accept"] == "application/json, text/event-stream"
 
@@ -941,16 +951,33 @@ class TestPerformHealthCheck:
 
     @pytest.fixture
     def mock_init_result(self):
-        """Create mock MCP initialize result."""
+        """Create a mock v2 init snapshot with snake_case attributes."""
         mock_result = Mock()
-        mock_result.protocolVersion = "2024-11-05"
-        mock_result.serverInfo = Mock()
-        mock_result.serverInfo.name = "test-server"
+        mock_result.protocol_version = "2025-11-25"
+        mock_result.server_info = Mock()
+        mock_result.server_info.name = "test-server"
         # Simulate Pydantic model that will be converted to dict
         mock_capabilities = Mock()
         mock_capabilities.model_dump = Mock(return_value={"tools": {}})
         mock_result.capabilities = mock_capabilities
         return mock_result
+
+    @staticmethod
+    def _httpx2_client_with_status(status_code: int):
+        """Patch target that injects an httpx2.MockTransport returning a fixed status.
+
+        v2 hides the HTTP status inside MCPError, so this exercises the real initialize_mcp path where
+        _ResponseRecorder captures the status off the wire.
+        """
+        import httpx2
+
+        real = httpx2.AsyncClient
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = httpx2.MockTransport(lambda request: httpx2.Response(status_code))
+            return real(*args, **kwargs)
+
+        return factory
 
     @pytest.mark.asyncio
     async def test_perform_health_check_success(self, mock_init_result):
@@ -958,7 +985,7 @@ class TestPerformHealthCheck:
         url = "https://example.com/api"
         transport = "streamable-http"
 
-        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=mock_init_result)):
+        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=(mock_init_result, None))):
             is_healthy, status, response_time, init_result = await perform_health_check(url, transport)
 
             assert is_healthy is True
@@ -995,7 +1022,7 @@ class TestPerformHealthCheck:
         """Test health check when initialization returns None."""
         url = "https://example.com/api"
 
-        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=None)):
+        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=(None, None))):
             is_healthy, status, response_time, init_result = await perform_health_check(url, "streamable-http")
 
             assert is_healthy is False
@@ -1011,16 +1038,10 @@ class TestPerformHealthCheck:
     async def test_perform_health_check_404_405_hints_transport_mismatch(self, transport, status_code):
         """A 404/405 on the initialize endpoint flags a likely config.url/config.type mismatch.
 
-        Drives the real mcp client over a mock transport: for streamable-http the SDK reports a 404
-        in-band as "Session terminated" rather than raising HTTPStatusError.
+        Drives the real mcp client over an httpx2.MockTransport. v2 hides the HTTP status inside MCPError,
+        so _ResponseRecorder captures the status off the wire for the health-check interpretation.
         """
-        real_async_client = httpx.AsyncClient
-
-        def async_client_with_status(*args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(status_code))
-            return real_async_client(*args, **kwargs)
-
-        with patch("httpx.AsyncClient", new=async_client_with_status):
+        with patch("httpx2.AsyncClient", new=self._httpx2_client_with_status(status_code)):
             is_healthy, status, _, init_result = await perform_health_check("https://example.com/v1/sse", transport)
 
         assert is_healthy is False
@@ -1029,27 +1050,16 @@ class TestPerformHealthCheck:
         assert init_result is None
 
     @pytest.mark.asyncio
-    async def test_initialize_mcp_does_not_treat_other_mcp_errors_as_404(self):
-        """Only the SDK's in-band 404 maps to InitializeEndpointNotFoundError."""
-        from mcp.shared.exceptions import McpError
-        from mcp.types import ErrorData
-
-        error = ExceptionGroup("tg", [McpError(ErrorData(code=-32602, message="Unsupported protocol version"))])
-
-        with patch("registry.core.mcp_client.streamable_http_client", side_effect=error):
-            assert await initialize_mcp("https://example.com/mcp", transport_type="streamable-http") is None
-
-    @pytest.mark.asyncio
     async def test_perform_health_check_invalid_response(self):
         """Test health check with invalid MCP response (missing fields)."""
         from registry.core.mcp_client import perform_health_check
 
-        # Mock result missing required fields (protocolVersion and serverInfo)
+        # Mock result missing required fields (protocol_version and server_info)
         invalid_result = Mock(spec=["some_other_field"])
 
         url = "https://example.com/api"
 
-        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=invalid_result)):
+        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=(invalid_result, None))):
             is_healthy, status, response_time, init_result = await perform_health_check(url, "streamable-http")
 
             assert is_healthy is False
@@ -1064,7 +1074,7 @@ class TestPerformHealthCheck:
 
         url = "https://example.com/sse"
 
-        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=mock_init_result)):
+        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(return_value=(mock_init_result, None))):
             is_healthy, status, response_time, init_result = await perform_health_check(url, "sse")
 
             assert is_healthy is True
@@ -1074,67 +1084,18 @@ class TestPerformHealthCheck:
             assert isinstance(init_result.capabilities, dict)
 
     @pytest.mark.asyncio
-    async def test_perform_health_check_401_response(self):
-        """Test health check when server returns 401 (Unauthorized) - should still be considered healthy."""
-        url = "https://example.com/api"
+    @pytest.mark.parametrize("status_code", [401, 403])
+    async def test_perform_health_check_auth_required(self, status_code):
+        """401/403 arrives as MCPError in v2; the recorder captures the status → healthy, auth-required."""
+        with patch("httpx2.AsyncClient", new=self._httpx2_client_with_status(status_code)):
+            is_healthy, status, response_time, init_result = await perform_health_check(
+                "https://example.com/mcp", "streamable-http"
+            )
 
-        # Create a mock 401 response
-        mock_response = Mock()
-        mock_response.status_code = 401
-
-        # Create HTTPStatusError with 401
-        error_401 = httpx.HTTPStatusError("401 Unauthorized", request=Mock(), response=mock_response)
-
-        # Mock initialize_mcp to raise HTTPStatusError directly (already unwrapped)
-        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(side_effect=error_401)):
-            is_healthy, status, response_time, init_result = await perform_health_check(url, "streamable-http")
-
-            assert is_healthy is True
-            assert "initialize requires authentication" in status.lower()
-            assert response_time is not None
-            assert init_result is None
-
-    @pytest.mark.asyncio
-    async def test_perform_health_check_401_direct_exception(self):
-        """Test health check with direct HTTPStatusError (without ExceptionGroup wrapper)."""
-        url = "https://example.com/api"
-
-        # Create a mock 401 response
-        mock_response = Mock()
-        mock_response.status_code = 401
-
-        # Create HTTPStatusError with 401 (direct, not wrapped)
-        error_401 = httpx.HTTPStatusError("401 Unauthorized", request=Mock(), response=mock_response)
-
-        # Mock initialize_mcp to raise direct HTTPStatusError
-        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(side_effect=error_401)):
-            is_healthy, status, response_time, init_result = await perform_health_check(url, "streamable-http")
-
-            assert is_healthy is True
-            assert "initialize requires authentication" in status.lower()
-            assert response_time is not None
-            assert init_result is None
-
-    @pytest.mark.asyncio
-    async def test_perform_health_check_403_response(self):
-        """Test health check when server returns 403 (Forbidden) - should still be considered healthy."""
-        url = "https://example.com/api"
-
-        # Create a mock 403 response
-        mock_response = Mock()
-        mock_response.status_code = 403
-
-        # Create HTTPStatusError with 403
-        error_403 = httpx.HTTPStatusError("403 Forbidden", request=Mock(), response=mock_response)
-
-        # Mock initialize_mcp to raise HTTPStatusError
-        with patch("registry.core.mcp_client.initialize_mcp", new=AsyncMock(side_effect=error_403)):
-            is_healthy, status, response_time, init_result = await perform_health_check(url, "streamable-http")
-
-            assert is_healthy is True
-            assert "initialize requires authentication" in status.lower()
-            assert response_time is not None
-            assert init_result is None
+        assert is_healthy is True
+        assert "initialize requires authentication" in status.lower()
+        assert response_time is not None
+        assert init_result is None
 
 
 class TestGetOAuthMetadataFromServer:
