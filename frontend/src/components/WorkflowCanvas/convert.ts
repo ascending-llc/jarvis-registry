@@ -61,7 +61,11 @@ const API_TO_CANVAS_TYPE: Record<string, string> = {
 
 // ─── canvas → API ─────────────────────────────────────────────────────────────
 
-export const validateCanvasNodes = (nodes: Node<NodeData>[], edges: Edge[]): string | null => {
+export const validateCanvasNodes = (
+  nodes: Node<NodeData>[],
+  edges: Edge[],
+  knownChatModelSourceIds?: ReadonlySet<string> | null,
+): string | null => {
   // Approval Gates are transient UI markers and are merged into their following execution node.
   const workflowNodes = nodes.filter(node => node.type !== 'add' && node.type !== 'gate');
   const names = new Set<string>();
@@ -74,6 +78,15 @@ export const validateCanvasNodes = (nodes: Node<NodeData>[], edges: Edge[]): str
 
     if (isExecutionNode(node) && !node.data.stepObjective?.trim()) {
       return `Step node "${name}" requires a step objective`;
+    }
+
+    if (
+      (node.type === 'mcp' || node.type === 'pool') &&
+      node.data.modelSourceId != null &&
+      knownChatModelSourceIds != null &&
+      !knownChatModelSourceIds.has(node.data.modelSourceId)
+    ) {
+      return `Step node "${name}" uses a model source that no longer exists. Pick another model or Workspace default.`;
     }
 
     const refs = node.data.refs ?? [];
@@ -123,6 +136,7 @@ const mapNodeToApi = (
 
   if (nodeType === 'step') {
     apiNode.stepObjective = data.stepObjective?.trim();
+    apiNode.modelSourceId = data.modelSourceId ?? null;
     const referencedNodeNames = (data.refs ?? []).map(refId => {
       const referencedNode = nodeMap.get(refId);
       if (!referencedNode) throw new Error(`Referenced node ${refId} does not exist`);
@@ -423,7 +437,10 @@ const resolveReferencedNodeIds = (node: InternalNode, nameToId: Map<string, stri
 
 const apiNodeToCanvas = (w: InternalNode, identity: CanvasIdentity): CanvasNode => {
   // Restore original canvas type if stored; fall back to API-type mapping
-  const canvasType: string = (w.config?.canvasType as string | undefined) ?? API_TO_CANVAS_TYPE[w.nodeType] ?? 'agent';
+  const canvasType: string =
+    (w.config?.canvasType as string | undefined) ??
+    API_TO_CANVAS_TYPE[w.nodeType] ??
+    (w.nodeType === 'step' && w.a2aPool?.length ? 'pool' : 'agent');
 
   const data = {
     label: w.name,
@@ -433,6 +450,7 @@ const apiNodeToCanvas = (w: InternalNode, identity: CanvasIdentity): CanvasNode 
   if (w.nodeType === 'step') {
     data.executorKey = w.executorKey ?? undefined;
     data.stepObjective = w.stepObjective ?? '';
+    data.modelSourceId = w.modelSourceId ?? null;
     data.refs = resolveReferencedNodeIds(w, identity.nameToId);
   } else if ((w.referencedNodeNames?.length ?? 0) > 0) {
     throw new Error(`Non-step node "${w.name}" must not reference upstream outputs`);

@@ -56,7 +56,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const { showToast } = useGlobal();
-  const { refreshWorkflowData, handleWorkflowUpdate } = useServer();
+  const { refreshWorkflowData, handleWorkflowUpdate, models, modelLoading, modelError } = useServer();
 
   const id = searchParams.get('id');
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
@@ -233,7 +233,11 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       showToast(detailLoadError ?? 'Workflow details are not ready', 'error');
       return false;
     }
-    const canvasValidationError = validateCanvasNodes(nodes, edges);
+    const knownChatModelSourceIds =
+      modelLoading || modelError != null
+        ? null
+        : new Set(models.filter(model => model.mode === 'chat').map(model => model.id));
+    const canvasValidationError = validateCanvasNodes(nodes, edges, knownChatModelSourceIds);
     if (canvasValidationError) {
       showToast(canvasValidationError, 'error');
       return false;

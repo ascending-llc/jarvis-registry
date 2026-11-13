@@ -3,7 +3,7 @@ import { useCallback, useRef, useState } from 'react';
 
 const MIN_W = 200;
 const MAX_W = 480;
-const DEFAULT_W = 264;
+const DEFAULT_W = 320;
 
 interface ResizablePanelProps {
   collapsed: boolean;

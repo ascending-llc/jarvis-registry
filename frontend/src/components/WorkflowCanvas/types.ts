@@ -40,6 +40,7 @@ export interface BaseNodeData extends Record<string, unknown> {
   onAdd?: () => void;
   refs?: string[];
   stepObjective?: string;
+  modelSourceId?: string | null;
 }
 
 /** Specific node data types */
