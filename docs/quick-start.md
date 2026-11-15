@@ -165,13 +165,17 @@ Open [http://localhost/](http://localhost/) in your browser and sign in with you
 
 With the services running and sign-in configured, you can connect tools and configure additional features.
 
-The default embedding provider is AWS Bedrock. Configure an AWS identity available inside the containers before using Bedrock-dependent vector search, reranking, or LLM workflows. The model-provider settings are documented in [`.env.example`](https://github.com/ascending-llc/jarvis-registry/blob/main/.env.example).
+To enable semantic vector search, configure an embedding model so the Registry can match natural-language inquiries to registered MCP servers and A2A agents. You can register and select a model in the Registry or configure the embedding provider through environment settings. If you use the default AWS Bedrock provider, make AWS credentials available inside the containers. See the [Model Source Management API reference](design/model-source-api.md) for model selection and [Embeddings Configuration](embeddings.md) for provider settings.
 
-### Immediate Next Steps
+### Choose Your Next Path
 
-- 🔍 **Explore the Web Interface** - Browse available MCP servers and tools
-- 🤖 **Try AI Assistant Integration** - Use tools through VS Code or your preferred AI assistant
-- 🛠️ **Add Your Own MCP Servers** - Register custom tools for your team
+After signing in, continue with the capability that best fits your use case:
+
+- **Connect AI coding assistants and chat clients** - First register the capabilities you want to expose: [MCP servers](features/mcp-gateway-registry.md) for tools and services, or [A2A agents](features/a2a-gateway-registry.md) for agent capabilities. Then connect a compatible client to the shared endpoint using the [Registry Endpoint guide](features/registry-endpoint.md).
+- **Manage private AI skills** - Create or import skills, govern access, and distribute approved skills to developer tools with the [Skill Gateway](features/skill-gateway.md).
+- **Register AI agents** - Catalog A2A agents, manage access, and make permitted agents available through the gateway with the [A2A Agent Gateway & Registry](features/a2a-gateway-registry.md).
+- **Build AI workflows** - Combine agents, MCP tools, and skills into multi-step processes with [Workflow Orchestration](features/workflow-orchestration.md).
+- **Configure AI models** - Manage model providers and select the default workflow/chat and embedding models in the [Model Source Management API reference](design/model-source-api.md).
 
 ### Enterprise Features
 
@@ -203,7 +207,7 @@ If you change a browser-facing port, update the corresponding URLs in `.env` and
 
 ### Warnings About Unset Integration Variables
 
-Variables such as `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SRE_GATEWAY_AUTH_TOKEN`, `ATLASSIAN_AUTH_TOKEN`, `ASOR_ACCESS_TOKEN`, and `ASOR_CLIENT_CREDENTIALS` belong to optional integrations. Configure them when enabling those integrations. The Entra credentials, group bindings, and application keys in this guide are required for this setup.
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are only needed if you enable the optional GitHub integration. The Entra credentials, group bindings, and application keys in this guide are required for this setup.
 
 ## Getting Help
 
