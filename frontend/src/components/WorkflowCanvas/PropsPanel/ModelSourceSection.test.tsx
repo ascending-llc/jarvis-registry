@@ -96,6 +96,8 @@ describe('ModelSourceSection states', () => {
 
     expect(trigger.textContent).toContain('Workspace default · Claude Sonnet');
     expect(screen.getByText(DEFAULT_HELP)).toBeTruthy();
+    // Only the "Workspace default" label is subtle (inherited from the trigger); the model name is not.
+    expect(within(trigger).getByText('· Claude Sonnet').className).toContain('text-[var(--jarvis-text-strong)]');
   });
 
   test('default with no workspace default configured links to the Models page', () => {

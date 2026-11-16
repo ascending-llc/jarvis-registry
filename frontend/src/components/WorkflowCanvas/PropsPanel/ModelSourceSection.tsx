@@ -111,7 +111,14 @@ export const ModelSourceSection = ({ modelSourceId, isReadOnly, onChange }: Mode
   } else {
     trigger = (
       <span className='truncate'>
-        Workspace default{defaultName ? ` · ${defaultName}` : defaultUnset ? ' · not configured' : ''}
+        Workspace default
+        {defaultName ? (
+          <span className='text-[var(--jarvis-text-strong)]' title={defaultName}>
+            {` · ${defaultName}`}
+          </span>
+        ) : defaultUnset ? (
+          ' · not configured'
+        ) : null}
       </span>
     );
     if (defaultUnset) {
