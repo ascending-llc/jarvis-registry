@@ -7,15 +7,15 @@ Run Jarvis Registry locally with Docker Compose and prebuilt images from GitHub 
 By the end of this guide, you'll have:
 
 - ✅ Jarvis Registry running locally
-- ✅ Authentication configured with Entra ID
+- ✅ Authentication configured with Entra ID, Google Workspace, or both
 - ✅ A registry ready to connect MCP servers and agents
 
 ## Prerequisites
 
-- **Identity Provider**: An Entra ID application registration and permission to configure its callback URL and ID token claims. Follow the [Entra ID setup](entra-id-setup.md) and [scope-group setup](runbooks/entra-scope-groups.md) to prepare the application, four security groups, and an account in at least one of those groups.
+- **Identity Provider**: An Entra ID or Google Workspace organization, with permission to configure an OAuth application and access groups. Follow the [Entra ID setup](entra-id-setup.md) and [scope-group setup](runbooks/entra-scope-groups.md), or [Google SSO onboarding](runbooks/google-sso-onboarding.md), for your chosen provider.
 - **Container Runtime**: Docker running, with Docker Compose v2 or later available through `docker compose`.
 - **Command Line Tools**: Git and OpenSSL available in your terminal.
-- **Network Access**: Access to GHCR, the dependency image registries, and Microsoft Entra ID.
+- **Network Access**: Access to GHCR, the dependency image registries, and your identity provider's authentication and group APIs.
 
 The `full` Compose profile includes MongoDB, Redis, Weaviate, and the observability services. Allow time and disk space for the initial image downloads. Startup time depends on your network, image cache, and machine.
 
@@ -36,11 +36,30 @@ cp .env.example .env
 
 ## Step 2: Configure Authentication Provider
 
-**Edit `.env` with your values:**
+Set the local service addresses in `.env`. These settings are shared by both providers:
 
-```bash
-# Set authentication provider to Microsoft Entra ID
+```dotenv
+REGISTRY_URL=http://localhost:7860
+REGISTRY_CLIENT_URL=http://localhost
+AUTH_SERVER_URL=http://auth-server:8888
+AUTH_SERVER_EXTERNAL_URL=http://localhost:8888
+AUTH_SERVER_API_PREFIX=
+SESSION_COOKIE_SECURE=false
+SESSION_COOKIE_DOMAIN=
+```
+
+The callback URLs below use an empty `AUTH_SERVER_API_PREFIX`. If you configure a prefix such as `/auth`, include it before `/oauth2/callback/` in the registered callback URLs.
+
+Choose one provider option below, or configure both using the instructions after the options.
+
+### Option A: Microsoft Entra ID
+
+Edit `.env` with your values:
+
+```dotenv
 AUTH_PROVIDER=entra
+ENTRA_ENABLED=true
+GOOGLE_ENABLED=false
 
 ENTRA_TENANT_ID=your_tenant_id_here
 
@@ -66,19 +85,42 @@ All four group IDs must be valid, distinct UUIDs. Follow the [scope-group setup]
 
 In the Entra app registration, open **Token configuration → Add optional claim → ID** and add `email` and `xms_edov`. First-time sign-in requires a nonempty `email` claim and `xms_edov` set to the boolean `true`. Ensure the account has an email address that Entra can verify. See [required identity claims](entra-id-setup.md#required-identity-claims-and-shared-application).
 
-Set the local service addresses in `.env`:
+In the Entra application's **Authentication** settings, add a **Web** redirect URI of `http://localhost:8888/oauth2/callback/entra`.
+
+### Option B: Google Workspace
+
+Follow [Google SSO onboarding](runbooks/google-sso-onboarding.md) to create a **Web application** OAuth client, enable the Cloud Identity API, and prepare a service account with permission to read Workspace group memberships. Register `http://localhost:8888/oauth2/callback/google` as an **Authorized redirect URI** on the same OAuth client used for `GOOGLE_CLIENT_ID` below.
+
+Edit `.env` with your values:
 
 ```dotenv
-REGISTRY_URL=http://localhost:7860
-REGISTRY_CLIENT_URL=http://localhost
-AUTH_SERVER_URL=http://auth-server:8888
-AUTH_SERVER_EXTERNAL_URL=http://localhost:8888
-AUTH_SERVER_API_PREFIX=
-SESSION_COOKIE_SECURE=false
-SESSION_COOKIE_DOMAIN=
+AUTH_PROVIDER=google
+GOOGLE_ENABLED=true
+ENTRA_ENABLED=false
+
+GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your_client_secret
+GOOGLE_ALLOWED_HD=yourcompany.com
+GOOGLE_CUSTOMER_ID=Cxxxxxxxx
+GOOGLE_SERVICE_ACCOUNT_KEY_JSON='<full service account key JSON on one line>'
+GOOGLE_GROUP_SYNC_ENABLED=true
 ```
 
-In the Entra application's **Authentication** settings, add a **Web** redirect URI of `http://localhost:8888/oauth2/callback/entra`. This matches the empty `AUTH_SERVER_API_PREFIX` above. If you configure a prefix such as `/auth`, include it in the redirect URI as well.
+Replace the service-account placeholder with the complete JSON key, retaining the single quotes and the JSON's escaped `\n` characters. `GOOGLE_CUSTOMER_ID` is your Workspace customer ID, available in **Admin Console → Account → Account settings**; it keeps group lookups within your organization.
+
+Use Workspace groups named `jarvis-registry-admin`, `jarvis-registry-power-user`, `jarvis-registry-user`, or `jarvis-registry-read-only`, with group email addresses on exactly the `GOOGLE_ALLOWED_HD` domain. Add your account to at least one appropriate group. A verified Google email alone is insufficient: browser sign-in also requires permissions from these groups. For Google-only deployments, leave the four `JARVIS_REGISTRY_*_GROUP_OBJECT_ID` values empty.
+
+### Enable Both Providers
+
+Configure the credentials, groups, and callback URLs from both options, then set:
+
+```dotenv
+ENTRA_ENABLED=true
+GOOGLE_ENABLED=true
+AUTH_PROVIDER=entra
+```
+
+`ENTRA_ENABLED` and `GOOGLE_ENABLED` control the available login buttons. `AUTH_PROVIDER` selects the single provider advertised to MCP/OAuth clients; use `entra` or `google` according to your preferred default. Keep the four Entra group Object IDs configured whenever Entra is enabled, even if `AUTH_PROVIDER=google`.
 
 ## Step 3: Generate Secret Keys
 
@@ -127,6 +169,8 @@ docker compose --profile full pull
 docker compose --profile full up -d --no-build
 ```
 
+After changing `.env`, run the same `up` command again so Compose recreates services with the updated environment. `docker compose restart` does not apply environment changes.
+
 If a published port is already in use, follow [Port Already in Use](#port-already-in-use) before starting the services.
 
 ## Step 5: Verify Installation
@@ -159,7 +203,15 @@ curl --fail http://localhost:7860/health
 curl --fail http://localhost:8888/health
 ```
 
-Open [http://localhost/](http://localhost/) in your browser and sign in with your Entra ID account.
+Check the enabled login providers:
+
+```bash
+curl --fail http://localhost:8888/oauth2/providers
+```
+
+The response should list `entra`, `google`, or both, matching your settings. Include your auth API prefix in this URL if you configured one.
+
+Open [http://localhost/](http://localhost/) in your browser and sign in with an account in one of the configured access groups. When both providers are enabled, verify each login button with an account from that provider.
 
 ## 🎉 Success! What's Next?
 
@@ -197,7 +249,7 @@ docker compose --profile full logs --tail=100 registry auth-server registry-migr
 
 If a port is already in use, change the host port in the affected service's `ports` mapping in `docker-compose.yml` to an unused port, keeping the container port unchanged. Then run `docker compose --profile full up -d --no-build` again.
 
-If you change a browser-facing port, update the corresponding URLs in `.env` and use the new port when accessing the service. Changing the auth server's external port also requires updating the Entra Web redirect URI.
+If you change a browser-facing port, update the corresponding URLs in `.env` and use the new port when accessing the service. Changing the auth server's external port also requires updating each enabled identity provider's registered redirect URI.
 
 ### Entra Sign-In Fails
 
@@ -205,9 +257,16 @@ If you change a browser-facing port, update the corresponding URLs in `.env` and
 - For an email verification error, check the ID token's `email` and `xms_edov` claims and the account's email configuration. See [required identity claims](entra-id-setup.md#required-identity-claims-and-shared-application).
 - For missing permissions, check the four group Object IDs and the account's membership using the [scope-group setup](runbooks/entra-scope-groups.md).
 
+### Google Sign-In Fails
+
+- If the Google button is missing, set `GOOGLE_ENABLED=true` and apply the `.env` change with the `up` command in Step 4.
+- For a redirect URI mismatch, check the Google OAuth client's Authorized redirect URI against the auth server's external URL, API prefix, and `/oauth2/callback/google` path.
+- For an email or domain error, use a verified Workspace account on the `GOOGLE_ALLOWED_HD` domain.
+- For missing permissions, check the Cloud Identity API, service account key and group-read permissions, Workspace customer ID, and the account's membership in a correctly named group. See [Google SSO onboarding](runbooks/google-sso-onboarding.md).
+
 ### Warnings About Unset Integration Variables
 
-`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are only needed if you enable the optional GitHub integration. The Entra credentials, group bindings, and application keys in this guide are required for this setup.
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are only needed if you enable the optional GitHub integration. Configure the credentials and groups for each enabled identity provider, along with the shared application keys in Step 3.
 
 ## Getting Help
 
