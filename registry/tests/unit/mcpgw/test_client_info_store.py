@@ -307,7 +307,8 @@ def _ctx(redis: _FakeRedis, user: dict[str, Any] | None):
     request = SimpleNamespace(state=state)
     lifespan_context = SimpleNamespace(client_info_store=store)
     request_context = SimpleNamespace(request=request, lifespan_context=lifespan_context)
-    return SimpleNamespace(request_context=request_context)
+    # These exercise the legacy (2025-11-25) Redis-cache source of get_client_params.
+    return SimpleNamespace(request_context=request_context, protocol_version="2025-11-25")
 
 
 def test_get_client_params_at_most_one_get_per_request():

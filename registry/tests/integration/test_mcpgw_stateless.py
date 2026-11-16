@@ -12,16 +12,35 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import httpx2
 import pytest
 from beanie import PydanticObjectId
 from fastapi import FastAPI
-from mcp.types import ClientCapabilities, ElicitationCapability, Implementation, UrlElicitationCapability
+from mcp import Client
+from mcp.client.session import ClientRequestContext
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.inbound import (
+    CLIENT_CAPABILITIES_META_KEY,
+    CLIENT_INFO_META_KEY,
+    PROTOCOL_VERSION_META_KEY,
+)
+from mcp.types import (
+    ClientCapabilities,
+    ElicitationCapability,
+    ElicitRequestParams,
+    ElicitResult,
+    Implementation,
+    TextContent,
+    UrlElicitationCapability,
+)
 from starlette.testclient import TestClient
 
 from registry.app_factory import create_app
+from registry.constants import URL_ELICITATION_INPUT_KEY
 from registry.core.config import settings
 from registry.mcpgw import create_gateway_mcp_app
 from registry.mcpgw.core.client_info_store import ClientInfoStore
@@ -36,6 +55,7 @@ SERVER_ID = str(PydanticObjectId())
 _MCP_PATH = "/proxy/mcpgw/mcp"
 _MCP_ACCEPT = "application/json, text/event-stream"
 _URL_ELICITATION_REQUIRED = -32042
+_MODERN_VERSION = "2026-07-28"
 
 
 @pytest.fixture(autouse=True)
@@ -276,3 +296,232 @@ def test_handshake_protocol_header_passes_the_gate(auth_headers):
         msgs = _post(pod, _tools_list(), headers)
 
     assert "result" in msgs[-1]
+
+
+# --- 2026-07-28 modern era (kill switch on) -------------------------------------------------------
+#
+# A modern client sends no `initialize`: it carries the protocol version and its capabilities in the
+# request `params._meta` envelope, matched by `MCP-Protocol-Version` / `MCP-Method` / `MCP-Name` headers,
+# and answers an `InputRequiredResult` by retrying the same `tools/call` with `inputResponses` in `params`.
+
+
+@pytest.fixture
+def _modern_gate_on(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", True)
+
+
+def _modern_headers(auth_headers: dict[str, str]) -> dict[str, str]:
+    return {
+        **auth_headers,
+        "MCP-Protocol-Version": _MODERN_VERSION,
+        "MCP-Method": "tools/call",
+        "MCP-Name": "execute_tool",
+    }
+
+
+def _modern_meta(*, url_elicitation: bool) -> dict:
+    elicitation = ElicitationCapability(url=UrlElicitationCapability()) if url_elicitation else None
+    return {
+        PROTOCOL_VERSION_META_KEY: _MODERN_VERSION,
+        CLIENT_CAPABILITIES_META_KEY: ClientCapabilities(elicitation=elicitation).model_dump(
+            mode="json", exclude_none=True
+        ),
+        CLIENT_INFO_META_KEY: Implementation(name="modern-client", version="1.0").model_dump(mode="json"),
+    }
+
+
+def _modern_post(client: TestClient, body: dict, headers: dict[str, str]) -> dict:
+    """POST a modern request and return its final JSON-RPC message. The single-exchange modern path may
+    answer with a plain JSON response or an SSE stream, so accept either."""
+    resp = client.post(_MCP_PATH, content=json.dumps(body).encode(), headers=headers)
+    assert resp.status_code == 200, resp.text
+    if resp.headers.get("content-type", "").startswith("text/event-stream"):
+        return _sse_messages(resp.text)[-1]
+    return resp.json()
+
+
+def _modern_execute_tool(*, url_elicitation: bool, input_responses: dict | None = None, request_id: int = 2) -> dict:
+    params: dict = {
+        "name": "execute_tool",
+        "arguments": {"tool_name": "tavily_search", "server_id": SERVER_ID, "arguments": {}},
+        "_meta": _modern_meta(url_elicitation=url_elicitation),
+    }
+    if input_responses is not None:
+        params["inputResponses"] = input_responses
+    return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": params}
+
+
+@pytest.mark.parametrize("include_client_info", [True, False])
+def test_modern_first_round_returns_input_required_golden_shape(
+    auth_headers: dict[str, str], _modern_gate_on: None, include_client_info: bool
+) -> None:
+    """Golden wire assertions on the raw first response: a URL-capable 2026-07-28 client gets an
+    `input_required` result in URL mode, with neither `elicitationId` nor `requestState` on the wire."""
+    redis = _FakeRedis()
+    body = _modern_execute_tool(url_elicitation=True)
+    if not include_client_info:
+        body["params"]["_meta"].pop(CLIENT_INFO_META_KEY)
+    with _pod_client(_container_stub(redis, has_consent=False)) as pod:
+        msg = _modern_post(pod, body, _modern_headers(auth_headers))
+
+    result = msg["result"]
+    assert result["resultType"] == "input_required"
+    request = result["inputRequests"][URL_ELICITATION_INPUT_KEY]
+    assert request["params"]["mode"] == "url"
+    assert "/consent/server?nonce=" in request["params"]["url"]
+    assert "elicitationId" not in request["params"]
+    assert "requestState" not in result
+    assert redis.store == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "grant_consent"),
+    [("accept", False), ("accept", True), ("decline", False), ("cancel", False), (None, False)],
+)
+async def test_modern_sdk_drives_authorization_to_terminal_result(
+    auth_headers: dict[str, str],
+    _modern_gate_on: None,
+    action: Literal["accept", "decline", "cancel"] | None,
+    grant_consent: bool,
+) -> None:
+    """The real SDK dispatches one URL prompt and retries once; incapable clients do neither."""
+    outgoing: list[dict[str, Any]] = []
+    downstream_calls: list[dict[str, Any]] = []
+    prompts: list[ElicitRequestParams] = []
+
+    async def record_request(request: httpx2.Request) -> None:
+        if request.method == "POST":
+            outgoing.append(json.loads(await request.aread()))
+
+    def downstream(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        downstream_calls.append(body)
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": "done"}]}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as proxy_client:
+        redis = _FakeRedis()
+        container = _container_stub(redis, has_consent=False, proxy_client=proxy_client)
+
+        async def answer(_ctx: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
+            assert action is not None
+            assert params.mode == "url"
+            assert "/consent/server?nonce=" in params.url
+            prompts.append(params)
+            if grant_consent:
+                container.consent_store.has_server_consent.return_value = True
+            return ElicitResult(action=action)
+
+        app = _make_pod(container)
+        async with app.router.lifespan_context(app):
+            async with httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app),
+                base_url="http://localhost",
+                headers=auth_headers,
+                event_hooks={"request": [record_request]},
+            ) as http_client:
+                async with Client(
+                    streamable_http_client(f"http://localhost{_MCP_PATH}", http_client=http_client),
+                    mode=_MODERN_VERSION,
+                    elicitation_callback=answer if action is not None else None,
+                ) as client:
+                    assert client.protocol_version == _MODERN_VERSION
+                    await client.list_tools()
+                    result = await client.call_tool(
+                        "execute_tool", {"tool_name": "tavily_search", "server_id": SERVER_ID, "arguments": {}}
+                    )
+
+    calls = [body for body in outgoing if body["method"] == "tools/call"]
+    assert all(body["method"] != "initialize" for body in outgoing)
+    assert len(calls) == (2 if action is not None else 1)
+    assert container.server_service.get_server_by_id.await_count == len(calls)
+    assert len(prompts) == (1 if action is not None else 0)
+    assert "inputResponses" not in calls[0]["params"]
+    assert all("requestState" not in body["params"] for body in calls)
+    if action is not None:
+        assert calls[1]["params"]["inputResponses"][URL_ELICITATION_INPUT_KEY]["action"] == action
+        assert calls[0]["params"]["arguments"] == calls[1]["params"]["arguments"]
+    assert len(downstream_calls) == (1 if grant_consent else 0)
+    assert result.is_error is not grant_consent
+    assert isinstance(result.content[0], TextContent)
+    if grant_consent:
+        assert result.content[0].text == "done"
+    elif action in {"decline", "cancel"}:
+        assert "declined or cancelled" in result.content[0].text
+    else:
+        assert "/consent/server?nonce=" in result.content[0].text
+    assert redis.store == {}
+
+
+def test_modern_no_url_capability_gets_fallback(auth_headers, _modern_gate_on):
+    """A 2026-07-28 client that declares no `elicitation.url` gets the plain-text fallback, not input_required."""
+    with _pod_client(_container_stub(_FakeRedis(), has_consent=False)) as pod:
+        msg = _modern_post(pod, _modern_execute_tool(url_elicitation=False), _modern_headers(auth_headers))
+
+    result = msg["result"]
+    assert result.get("resultType") != "input_required"
+    assert result["isError"] is True
+    assert "/consent/server?nonce=" in result["content"][0]["text"]
+
+
+def test_modern_retry_accept_without_consent_returns_url_text(auth_headers, _modern_gate_on):
+    """The retry re-runs the consent check (no request_state is trusted). Consent is still missing, so the
+    second round returns the URL text rather than prompting again — the server never loops."""
+    container = _container_stub(_FakeRedis(), has_consent=False)
+    with _pod_client(container) as pod:
+        first = _modern_post(pod, _modern_execute_tool(url_elicitation=True), _modern_headers(auth_headers))
+        assert first["result"]["resultType"] == "input_required"
+
+        retry = _modern_execute_tool(
+            url_elicitation=True,
+            input_responses={URL_ELICITATION_INPUT_KEY: {"action": "accept"}},
+            request_id=3,
+        )
+        second = _modern_post(pod, retry, _modern_headers(auth_headers))
+
+    result = second["result"]
+    assert result.get("resultType") != "input_required"
+    assert result["isError"] is True
+    assert "/consent/server?nonce=" in result["content"][0]["text"]
+
+
+def test_modern_retry_accept_with_consent_reaches_downstream(auth_headers, _modern_gate_on):
+    """Once consent is granted, the accepted retry reaches the (mocked) downstream server and returns its
+    result instead of another elicitation."""
+
+    def downstream(request: httpx.Request) -> httpx.Response:
+        request_id = json.loads(request.content)["id"]
+        result = {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": "done"}]}}
+        body = f"event: message\ndata: {json.dumps(result)}\n\n"
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+
+    proxy_client = httpx.AsyncClient(transport=httpx.MockTransport(downstream))
+    container = _container_stub(_FakeRedis(), has_consent=False, proxy_client=proxy_client)
+    with _pod_client(container) as pod:
+        first = _modern_post(pod, _modern_execute_tool(url_elicitation=True), _modern_headers(auth_headers))
+        assert first["result"]["resultType"] == "input_required"
+
+        # The user approved in the browser: consent is now recorded before the client's accept arrives.
+        container.consent_store.has_server_consent.return_value = True
+        retry = _modern_execute_tool(
+            url_elicitation=True,
+            input_responses={URL_ELICITATION_INPUT_KEY: {"action": "accept"}},
+            request_id=3,
+        )
+        second = _modern_post(pod, retry, _modern_headers(auth_headers))
+
+    assert second["result"]["content"][0]["text"] == "done"
+
+
+def test_modern_request_rejected_when_gate_off(auth_headers):
+    """With the kill switch off a 2026-07-28 tools/call is rejected with -32022 before the MCP app, so the
+    client renegotiates 2025-11-25 (companion to the handshake-era -32042 path above)."""
+    body = _modern_execute_tool(url_elicitation=True)
+    with _pod_client(_container_stub(_FakeRedis(), has_consent=False)) as pod:
+        resp = pod.post(_MCP_PATH, content=json.dumps(body).encode(), headers=_modern_headers(auth_headers))
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == -32022

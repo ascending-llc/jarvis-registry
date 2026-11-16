@@ -18,20 +18,20 @@ from mcp.shared.exceptions import UrlElicitationRequiredError
 from mcp.types import (
     CallToolResult,
     CancelledNotification,
-    ElicitCompleteNotification,
+    ElicitRequest,
     ElicitRequestURLParams,
     InitializeRequestParams,
+    InputRequiredResult,
     LoggingMessageNotification,
     ProgressNotification,
-    PromptListChangedNotification,
     RequestId,
-    ResourceListChangedNotification,
-    ResourceUpdatedNotification,
-    TaskStatusNotification,
     TextContent,
-    ToolListChangedNotification,
 )
-from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, LATEST_HANDSHAKE_VERSION
+from mcp_types.version import (
+    HANDSHAKE_PROTOCOL_VERSIONS,
+    LATEST_HANDSHAKE_VERSION,
+    MODERN_PROTOCOL_VERSIONS,
+)
 from pydantic import ValidationError
 
 from registry_pkgs.core.exceptions import InternalServerException
@@ -40,6 +40,7 @@ from registry_pkgs.oauth.flow_state_manager import FlowStateManager
 from registry_pkgs.oauth.types import ClientBranding, StateMetadata
 
 from ...auth.dependencies import UserContextDict
+from ...constants import URL_ELICITATION_INPUT_KEY
 from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
@@ -64,11 +65,13 @@ def _extract_authenticated_user_context(ctx: Context[McpAppContext]) -> UserCont
 def get_client_params(ctx: Context[McpAppContext]) -> InitializeRequestParams | None:
     """Load this request's cached client ``initialize`` params, at most one Redis GET per request.
 
-    In stateless mode the client params no longer live on ``ctx.session``; they are cached in Redis by
+    The source depends on the protocol era. On a 2026-07-28 request the SDK builds
+    ``ctx.session.client_params`` from the request ``_meta`` whenever the client sent ``clientInfo``, so we
+    read it there and never touch Redis (a stateless modern request caches nothing). On a 2025-11-25
+    stateless request the SDK records no client params; they are cached in Redis by
     ``ClientInfoCaptureMiddleware`` and read back here. The result is memoized on
-    ``request.state.mcp_client_params``. Returns ``None`` when the client sent no cacheable
-    ``initialize`` (missing/empty key) or the entry is absent — callers then fall back to a plain-text
-    URL and ``UNRECOGNIZED`` branding, exactly as before the gateway went stateless.
+    ``request.state.mcp_client_params``. Returns ``None`` when the client sent no cacheable client info —
+    callers then fall back to a plain-text URL and ``UNRECOGNIZED`` branding.
     """
     request = ctx.request_context.request
     if request is None:
@@ -79,11 +82,14 @@ def get_client_params(ctx: Context[McpAppContext]) -> InitializeRequestParams | 
         pass
 
     params: InitializeRequestParams | None = None
-    user_context = _extract_authenticated_user_context(ctx)
-    if user_context is not None:
-        key = ctx.request_context.lifespan_context.client_info_store.key_for(user_context)
-        if key is not None:
-            params = ctx.request_context.lifespan_context.client_info_store.load(key)
+    if ctx.protocol_version in MODERN_PROTOCOL_VERSIONS:
+        params = ctx.session.client_params
+    else:
+        user_context = _extract_authenticated_user_context(ctx)
+        if user_context is not None:
+            key = ctx.request_context.lifespan_context.client_info_store.key_for(user_context)
+            if key is not None:
+                params = ctx.request_context.lifespan_context.client_info_store.load(key)
 
     request.state.mcp_client_params = params
     return params
@@ -99,17 +105,29 @@ def _negotiated_protocol_version(requested: str | int) -> str:
     return requested if requested in HANDSHAKE_PROTOCOL_VERSIONS else LATEST_HANDSHAKE_VERSION
 
 
-def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
-    """Return whether an MCP client supports URL-mode elicitation.
+def _support_url_elicitation(ctx: Context[McpAppContext]) -> bool:
+    """Return whether this request's MCP client supports URL-mode elicitation.
 
-    URL mode requires both the declared `url` elicitation capability and a negotiated protocol version
-    that defines it. Codex (`codex-mcp-client`) declares `url` on 2025-06-18 and does not handle -32042,
-    so it gets the fallback `CallToolResult`.
+    On 2026-07-28 the client declares capabilities through the request ``_meta`` even when it omits
+    ``clientInfo``, so we read ``ctx.client_capabilities`` directly (``get_client_params`` can be ``None``
+    for a modern client that sent no ``clientInfo``). On 2025-11-25 URL mode requires both the declared
+    ``url`` elicitation capability and a negotiated protocol version that defines it, read from the cached
+    ``initialize`` params. Codex (``codex-mcp-client``) declares ``url`` on 2025-06-18 and does not handle
+    -32042, so it gets the fallback ``CallToolResult``.
 
     There are deliberately no per-client overrides keyed on clientInfo.name. Claude Code CLI and Claude
     Desktop's Chat mode both identify as "claude-code" (observed October 2026), but Claude Desktop hangs
     on a -32042 URL elicitation error response, while it handles the fallback `CallToolResult` correctly.
+    Claude Desktop's behaviour on a 2026-07-28 ``input_required`` result has not been verified.
     """
+    if ctx.protocol_version in MODERN_PROTOCOL_VERSIONS:
+        capabilities = ctx.client_capabilities
+        if capabilities is None:
+            return False
+        elicitation = capabilities.elicitation
+        return elicitation is not None and elicitation.url is not None
+
+    client_params = get_client_params(ctx)
     if client_params is None:
         return False
 
@@ -144,13 +162,59 @@ def _build_url_elicitation_result(
     human_message: str,
     *,
     elicitation_id: str | None = None,
-) -> CallToolResult:
-    """Build a URL elicitation response or fallback result for unsupported clients."""
+) -> CallToolResult | InputRequiredResult:
+    """Build a URL elicitation response or fallback result, keyed on the negotiated protocol era.
+
+    2026-07-28 delivers URL elicitation as an ``InputRequiredResult`` tool result that the client answers
+    by retrying the same call with ``input_responses``; 2025-11-25 delivers it as a ``-32042`` error
+    (``UrlElicitationRequiredError``). Both eras re-run the consent/token checks on the retry, so the
+    client's answer is never trusted and no ``request_state`` is sealed. Unsupported clients get a
+    plain-text ``CallToolResult`` fallback.
+    """
     if elicitation_id is None:
         elicitation_id = parse_elicitation_id(auth_url)
-    client_params = get_client_params(ctx)
     llm_message = llm_template.format(f"URL `{auth_url}`")
-    if elicitation_id is not None and _support_url_elicitation(client_params):
+    modern = ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
+
+    # 1. Modern retry: the client answered a prior InputRequiredResult and we only reach here because the
+    #    consent/token check failed again. Never prompt again — an auto-accepting client (Claude Code `-p`)
+    #    would otherwise loop up to the SDK's round limit, saving a pending-consent nonce each round.
+    if modern and ctx.input_responses and URL_ELICITATION_INPUT_KEY in ctx.input_responses:
+        action = getattr(ctx.input_responses[URL_ELICITATION_INPUT_KEY], "action", None)
+        if action != "accept":
+            logger.info("Modern URL elicitation retry answered %r; returning declined text.", action)
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=(
+                            "The user declined or cancelled the authorization, so the request was not "
+                            "performed. Do not retry unless the user asks you to."
+                        ),
+                    )
+                ],
+                isError=True,
+            )
+        logger.info("Modern URL elicitation retry accepted but the check still failed; returning URL text.")
+        return CallToolResult(content=[TextContent(type="text", text=llm_message)], isError=True)
+
+    supported = _support_url_elicitation(ctx)
+
+    # 2. Modern first round: deliver URL elicitation as an input_required tool result. No request_state is
+    #    sealed (the gate re-checks consent and tokens on the retry). elicitation_id stays off the wire —
+    #    it is logged here for correlation — so no 2026-07-28 response carries it.
+    if supported and modern:
+        logger.info("Sending a 2026-07-28 URL mode input_required result (elicitation id %s).", elicitation_id)
+        return InputRequiredResult(
+            input_requests={
+                URL_ELICITATION_INPUT_KEY: ElicitRequest(
+                    params=ElicitRequestURLParams(url=auth_url, message=human_message),
+                )
+            }
+        )
+
+    # 3. Legacy capable: the SDK turns this into a -32042 URL mode elicitation error response.
+    if supported and elicitation_id is not None:
         logger.info("sending back the URL mode elicitation error response with ID %s.", elicitation_id)
         raise UrlElicitationRequiredError(
             message=llm_message,
@@ -163,6 +227,8 @@ def _build_url_elicitation_result(
             ],
         )
 
+    # 4. Fallback: plain-text CallToolResult for clients that do not support URL elicitation.
+    client_params = get_client_params(ctx)
     if client_params is None:
         logger.info(
             "Not using URL mode elicitation (no cached client params, elicitation ID found: %s). "
@@ -190,15 +256,22 @@ class NotificationMethod(StrEnum):
     CANCELLED = "notifications/cancelled"
     PROGRESS = "notifications/progress"
     LOGGING_MESSAGE = "notifications/message"
-    RESOURCE_UPDATED = "notifications/resources/updated"
-    RESOURCE_LIST_CHANGED = "notifications/resources/list_changed"
-    TOOL_LIST_CHANGED = "notifications/tools/list_changed"
-    PROMPT_LIST_CHANGED = "notifications/prompts/list_changed"
-    ELICITATION_COMPLETE = "notifications/elicitation/complete"
-    TASK_STATUS = "notifications/tasks/status"
 
 
-async def forward_notification(session: ServerSession, obj: dict, *, related_request_id: RequestId | None) -> None:
+# Logging (`notifications/message`) is forwarded only on a handshake era (2025-11-25): it is deprecated as
+# of 2026-07-28 (SEP-2577) and modern clients must opt in per request, so we drop it on modern requests
+# rather than replicate the per-request level filter. An absent/unknown protocol version is treated as
+# modern for this choice (fail closed — drop logging). Everything not named in `NotificationMethod` is
+# dropped on both eras: the upstream client sees only the gateway's static tool list, so a downstream list
+# change / resource update is meaningless to it, and modern subscription delivery would need a cross-pod bus
+# the gateway does not run.
+async def forward_notification(
+    session: ServerSession,
+    obj: dict,
+    *,
+    related_request_id: RequestId | None,
+    protocol_version: str | None,
+) -> None:
     """
     Use the ServerSession.send_notification() method to **schedule** the forwarding of a notification from
     downstream MPC servers to our client. Delivery is best effort - if client doesn't make an SSE GET connection
@@ -208,6 +281,8 @@ async def forward_notification(session: ServerSession, obj: dict, *, related_req
         session: ServerSession
         obj: The parsed "data" field of a Server-Sent Event. According to MCP spec it must be of type dict[str, Any]
         related_request_id: The client request ID that the notification is related to. Optional
+        protocol_version: The request's negotiated protocol version, which decides whether a logging
+            notification is forwarded (handshake era only; an absent/unknown version drops it).
 
     Returns: None
 
@@ -219,32 +294,24 @@ async def forward_notification(session: ServerSession, obj: dict, *, related_req
 
         return
 
+    method = obj["method"]
+    # Forward logging only on a known handshake era. Modern, absent, or unknown versions fail closed (drop).
+    forward_logging = protocol_version in HANDSHAKE_PROTOCOL_VERSIONS
+
     # The notification models keep extra fields, so a leftover "jsonrpc" key would be passed twice when the SDK
     # wraps the notification in a JSONRPCNotification. Every downstream SSE notification carries it.
     obj = {key: value for key, value in obj.items() if key != "jsonrpc"}
 
     try:
-        match obj["method"]:
+        match method:
             case NotificationMethod.CANCELLED:
                 notification: Any = CancelledNotification.model_validate(obj)
             case NotificationMethod.PROGRESS:
                 notification = ProgressNotification.model_validate(obj)
-            case NotificationMethod.LOGGING_MESSAGE:
+            case NotificationMethod.LOGGING_MESSAGE if forward_logging:
                 notification = LoggingMessageNotification.model_validate(obj)
-            case NotificationMethod.RESOURCE_UPDATED:
-                notification = ResourceUpdatedNotification.model_validate(obj)
-            case NotificationMethod.RESOURCE_LIST_CHANGED:
-                notification = ResourceListChangedNotification.model_validate(obj)
-            case NotificationMethod.TOOL_LIST_CHANGED:
-                notification = ToolListChangedNotification.model_validate(obj)
-            case NotificationMethod.PROMPT_LIST_CHANGED:
-                notification = PromptListChangedNotification.model_validate(obj)
-            case NotificationMethod.ELICITATION_COMPLETE:
-                notification = ElicitCompleteNotification.model_validate(obj)
-            case NotificationMethod.TASK_STATUS:
-                notification = TaskStatusNotification.model_validate(obj)
             case _:
-                logger.error(f"unexpected notification data: {str(obj)}")
+                logger.debug("dropping downstream notification %s", method)
 
                 return
     except ValidationError as exc:

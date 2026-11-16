@@ -113,7 +113,7 @@
       "type": "gauge",
       "targets": [
         {
-          "expr": "sum(rate(mcp_tool_execution_total{status=\"success\"}[5m])) / sum(rate(mcp_tool_execution_total[5m])) * 100",
+          "expr": "sum(rate(mcp_tool_execution_total{status=\"success\"}[5m])) / sum(rate(mcp_tool_execution_total{status=~\"success|failure\"}[5m])) * 100",
           "legendFormat": "Success Rate"
         }
       ],
@@ -277,7 +277,7 @@
           "legendFormat": "Executions (1h)"
         },
         {
-          "expr": "sum(rate(mcp_tool_execution_total{status=\"success\"}[5m])) / sum(rate(mcp_tool_execution_total[5m])) * 100",
+          "expr": "sum(rate(mcp_tool_execution_total{status=\"success\"}[5m])) / sum(rate(mcp_tool_execution_total{status=~\"success|failure\"}[5m])) * 100",
           "legendFormat": "Success Rate"
         },
         {

@@ -18,6 +18,7 @@ from mcp.types import (
     CallToolResult,
     EmbeddedResource,
     ImageContent,
+    InputRequiredResult,
     TextContent,
     TextResourceContents,
 )
@@ -206,7 +207,7 @@ async def execute_agent_impl(
     agent_id: str,
     message: AgentMessageInput,
     ctx: Context[McpAppContext],
-) -> CallToolResult:
+) -> CallToolResult | InputRequiredResult:
     """
     Invoke an A2A agent and return its response.
     """
@@ -341,7 +342,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 ),
             ),
         ],
-    ) -> CallToolResult:
+    ) -> CallToolResult | InputRequiredResult:
         """Invoke an A2A agent selected through discover_agents, using its exact agent_id.
         The agent runs autonomously on the delegated task and returns its final result.
 

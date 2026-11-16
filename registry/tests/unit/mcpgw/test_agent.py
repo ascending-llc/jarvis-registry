@@ -17,8 +17,19 @@ from a2a.types import (
     TextPart,
 )
 from beanie import PydanticObjectId
-from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent, TextResourceContents
+from mcp.types import (
+    BlobResourceContents,
+    ClientCapabilities,
+    ElicitationCapability,
+    EmbeddedResource,
+    ImageContent,
+    InputRequiredResult,
+    TextContent,
+    TextResourceContents,
+    UrlElicitationCapability,
+)
 
+from registry.constants import URL_ELICITATION_INPUT_KEY
 from registry.core.config import settings
 from registry.mcpgw.tools import agent, utils
 from registry.mcpgw.tools.agent import AgentMessageInput, _convert_response, execute_agent_impl
@@ -196,6 +207,36 @@ async def test_execute_agent_without_agent_consent_returns_elicitation():
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["agent_path"] == "/test-agent"
     assert pending["elicitation_id"]
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_without_consent_modern_returns_input_required():
+    """On 2026-07-28 a consent-gated agent call delivers the URL elicitation as an input_required result,
+    not a -32042 error. The pending-consent nonce is still saved so the browser flow can complete."""
+    valid_id = str(PydanticObjectId())
+    ctx = _make_ctx(client_id=INTERACTIVE_CLIENT_ID, accessible_agent_ids=[valid_id])
+    ctx.request_context.lifespan_context.consent_store.has_agent_consent.return_value = False
+    ctx.protocol_version = "2026-07-28"
+    ctx.client_capabilities = ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability()))
+    ctx.input_responses = None
+    target_agent = _make_agent(valid_id)
+
+    with (
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
+    ):
+        mock_model.id = MagicMock()
+        mock_model.find_one = AsyncMock(return_value=target_agent)
+
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
+
+    assert isinstance(result, InputRequiredResult)
+    params = result.input_requests[URL_ELICITATION_INPUT_KEY].params
+    assert params.mode == "url"
+    assert "/consent/agent?nonce=" in params.url
+    assert result.request_state is None
+    mock_call.assert_not_awaited()
+    ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
 
 
 @pytest.mark.asyncio

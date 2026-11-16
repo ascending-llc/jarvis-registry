@@ -27,6 +27,7 @@ import logging
 
 from registry_pkgs.telemetry.metrics_client import create_metrics_client, load_metrics_config
 
+from ..constants import ExecutionOutcome
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,8 @@ def record_tool_execution(
     duration_seconds: float | None = None,
     method: str = "UNKNOWN",
     error_type: str = "none",
+    *,
+    input_required: bool = False,
 ) -> None:
     """
     Record tool execution with success rate and latency tracking.
@@ -96,11 +99,17 @@ def record_tool_execution(
         method: HTTP method (e.g., "POST", "GET") - defaults to "UNKNOWN"
         error_type: Failure-mode label (e.g., exception class name or a semantic tag like
             "server_not_found"); "none" on success. Must be a bounded, low-cardinality value.
+        input_required: The call is awaiting client input, rather than succeeding or failing.
     """
+    outcome = (
+        ExecutionOutcome.INPUT_REQUIRED
+        if input_required
+        else (ExecutionOutcome.SUCCESS if success else ExecutionOutcome.FAILURE)
+    )
     attributes = {
         "tool_name": tool_name,
         "server_name": server_name,
-        "status": "success" if success else "failure",
+        "status": outcome.value,
         "method": method,
         "error_type": error_type,
     }

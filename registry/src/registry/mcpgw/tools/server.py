@@ -21,6 +21,7 @@ from mcp.types import (
     CallToolResult,
     EmbeddedResource,
     ErrorData,
+    InputRequiredResult,
     TextContent,
     TextResourceContents,
 )
@@ -137,7 +138,9 @@ async def _downstream_tool_call(
                 raise MisimplementedSpecException("SSE tool call requires SSE endpoint URL.")
 
             async def _on_notification(obj: dict[str, Any]) -> None:
-                await forward_notification(ctx.session, obj, related_request_id=ctx.request_id)
+                await forward_notification(
+                    ctx.session, obj, related_request_id=ctx.request_id, protocol_version=ctx.protocol_version
+                )
 
             try:
                 return await call_tool_via_sse_ephemeral(
@@ -194,7 +197,12 @@ async def _downstream_tool_call(
                     match possible_event_type:
                         case "notification":
                             # If the event seems a notification, try forwarding it to our client.
-                            await forward_notification(ctx.session, obj, related_request_id=ctx.request_id)
+                            await forward_notification(
+                                ctx.session,
+                                obj,
+                                related_request_id=ctx.request_id,
+                                protocol_version=ctx.protocol_version,
+                            )
                         case "response":
                             # If the event seems a response (error or result), set response_obj to the parsed "data" field of the event.
                             # Only set once because server is not supposed to send a response unrelated to the request on this SSE stream.
@@ -374,7 +382,7 @@ async def execute_tool_impl(
     tool_name: str,
     arguments: dict[str, Any],
     server_id: str,
-) -> CallToolResult:
+) -> CallToolResult | InputRequiredResult:
     """
     Execute a specific downstream MCP tool.
 
@@ -578,7 +586,10 @@ async def execute_tool_impl(
                 f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
                 "Please follow the URL to perform re-authorization in a browser window and come back again."
             )
-            return _build_url_elicitation_result(ctx, exc.auth_url, template, human_message)
+            result = _build_url_elicitation_result(ctx, exc.auth_url, template, human_message)
+            if isinstance(result, InputRequiredResult):
+                metrics_ctx.set_input_required()
+            return result
         except ConsentRequiredException as exc:
             metrics_ctx.set_error_type("consent_required")
             template = (
@@ -590,13 +601,16 @@ async def execute_tool_impl(
                 "Jarvis Registry needs your explicit consent before this application can call the "
                 f"'{exc.server_name}' MCP server on your behalf. Please follow the URL to review and approve."
             )
-            return _build_url_elicitation_result(
+            result = _build_url_elicitation_result(
                 ctx,
                 exc.auth_url,
                 template,
                 human_message,
                 elicitation_id=exc.elicitation_id,
             )
+            if isinstance(result, InputRequiredResult):
+                metrics_ctx.set_input_required()
+            return result
         except DownstreamAuthRejectedException as exc:
             # Loop guard: a freshly issued token was rejected. Tell the LLM instead of starting another login.
             metrics_ctx.set_error_type("downstream_auth_rejected")
@@ -848,7 +862,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 )
             ),
         ],
-    ) -> CallToolResult:
+    ) -> CallToolResult | InputRequiredResult:
         """Execute one downstream MCP tool returned by discover_servers.
         Use only a result with entity_type='tool', pairing its exact tool_name and server_id.
 
