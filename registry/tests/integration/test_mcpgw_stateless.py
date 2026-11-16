@@ -163,6 +163,8 @@ def _post(client: TestClient, body: dict, headers: dict[str, str]) -> list[dict]
     resp = client.post(_MCP_PATH, content=json.dumps(body).encode(), headers=headers)
     assert resp.status_code == 200, resp.text
     assert "mcp-session-id" not in resp.headers
+    if resp.headers.get("content-type", "").startswith("application/json"):
+        return [resp.json()]
     return _sse_messages(resp.text)
 
 
@@ -233,27 +235,52 @@ def test_claude_code_without_declared_capability_gets_fallback_on_another_pod(au
     assert "/consent/server?nonce=" in msg["result"]["content"][0]["text"]
 
 
-def test_downstream_progress_notification_rides_post_sse_stream(auth_headers):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["2025-11-25", _MODERN_VERSION])
+@pytest.mark.parametrize("token", ["tok-1", 0, None])
+async def test_downstream_progress_notification_rides_post_sse_stream(
+    auth_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch, version: str, token: str | int | None
+) -> None:
     """In stateless mode a downstream progress notification reaches the client on the POST's own SSE stream,
     ahead of the tool result (the JSON-response path would drop it)."""
-    progress = {
-        "jsonrpc": "2.0",
-        "method": "notifications/progress",
-        "params": {"progressToken": "tok-1", "progress": 0.5, "total": 1.0},
-    }
+    monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", version == _MODERN_VERSION)
 
     def downstream(request: httpx.Request) -> httpx.Response:
-        request_id = json.loads(request.content)["id"]
+        downstream_body = json.loads(request.content)
+        request_id = downstream_body["id"]
+        meta = downstream_body["params"].get("_meta", {})
+        assert meta == ({"progressToken": token} if token is not None else {})
         result = {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": "done"}]}}
-        body = f"event: message\ndata: {json.dumps(progress)}\n\nevent: message\ndata: {json.dumps(result)}\n\n"
+        body = ""
+        # Like Agno's ctx.report_progress(), emit only when the downstream request supplied a token.
+        if "progressToken" in meta:
+            progress = {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": meta["progressToken"], "progress": 0.5, "total": 1.0},
+            }
+            body += f"event: message\ndata: {json.dumps(progress)}\n\n"
+        cancelled = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": request_id}}
+        body += f"event: message\ndata: {json.dumps(cancelled)}\n\nevent: message\ndata: {json.dumps(result)}\n\n"
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
 
-    proxy_client = httpx.AsyncClient(transport=httpx.MockTransport(downstream))
-    with _pod_client(_container_stub(_FakeRedis(), has_consent=True, proxy_client=proxy_client)) as pod:
-        msgs = _post(pod, _execute_tool(progress_token="tok-1"), auth_headers)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as proxy_client:
+        with _pod_client(_container_stub(_FakeRedis(), has_consent=True, proxy_client=proxy_client)) as pod:
+            if version == _MODERN_VERSION:
+                body = _modern_execute_tool(url_elicitation=False)
+                headers = _modern_headers(auth_headers)
+            else:
+                body = _execute_tool()
+                headers = auth_headers
+            meta = body["params"].setdefault("_meta", {})
+            meta["traceparent"] = "00-11111111111111111111111111111111-2222222222222222-01"
+            if token is not None:
+                meta["progressToken"] = token
+            msgs = _post(pod, body, headers)
 
-    assert [m.get("method") for m in msgs[:-1]] == ["notifications/progress"]
-    assert msgs[0]["params"]["progressToken"] == "tok-1"
+    assert [m.get("method") for m in msgs[:-1]] == (["notifications/progress"] if token is not None else [])
+    if token is not None:
+        assert msgs[0]["params"]["progressToken"] == token
     assert msgs[-1]["result"]["content"][0]["text"] == "done"
 
 

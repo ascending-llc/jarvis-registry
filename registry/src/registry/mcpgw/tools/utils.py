@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
@@ -17,7 +17,6 @@ from mcp.server.session import ServerSession
 from mcp.shared.exceptions import UrlElicitationRequiredError
 from mcp.types import (
     CallToolResult,
-    CancelledNotification,
     ElicitRequest,
     ElicitRequestURLParams,
     InitializeRequestParams,
@@ -252,8 +251,24 @@ def _build_url_elicitation_result(
     )
 
 
+def get_progress_token(ctx: Context[McpAppContext]) -> str | int | None:
+    """Read only a valid progress token from this request's metadata."""
+    meta = getattr(ctx.request_context, "meta", None)
+    if not isinstance(meta, dict):
+        return None
+    raw_params = getattr(ctx.request_context, "params", None)
+    if isinstance(raw_params, dict):
+        raw_meta = raw_params.get("_meta")
+        if isinstance(raw_meta, dict) and type(raw_meta.get("progressToken")) not in (str, int):
+            # Pydantic can coerce booleans/floats to integers; the original wire token must also be valid.
+            return None
+    # The SDK's validated RequestParamsMeta uses snake_case keys, even though the wire uses camelCase.
+    token = meta.get("progress_token")
+    # bool is an int subclass, but is not a protocol progress token.
+    return token if type(token) in (str, int) else None
+
+
 class NotificationMethod(StrEnum):
-    CANCELLED = "notifications/cancelled"
     PROGRESS = "notifications/progress"
     LOGGING_MESSAGE = "notifications/message"
 
@@ -265,17 +280,19 @@ class NotificationMethod(StrEnum):
 # dropped on both eras: the upstream client sees only the gateway's static tool list, so a downstream list
 # change / resource update is meaningless to it, and modern subscription delivery would need a cross-pod bus
 # the gateway does not run.
+# Cancellation is not a tool-status notification: legacy server cancellations refer to server-initiated
+# requests we do not relay; modern server cancellations may only terminate subscriptions we do not expose.
 async def forward_notification(
     session: ServerSession,
     obj: dict,
     *,
     related_request_id: RequestId | None,
     protocol_version: str | None,
+    progress_token: str | int | None,
 ) -> None:
     """
-    Use the ServerSession.send_notification() method to **schedule** the forwarding of a notification from
-    downstream MPC servers to our client. Delivery is best effort - if client doesn't make an SSE GET connection
-    or doesn't make that connection in time, notification might be lost.
+    Forward supported downstream notifications on the originating POST's response stream.
+    Delivery is best effort; notifications do not require a separate SSE GET connection.
 
     Args:
         session: ServerSession
@@ -283,6 +300,8 @@ async def forward_notification(
         related_request_id: The client request ID that the notification is related to. Optional
         protocol_version: The request's negotiated protocol version, which decides whether a logging
             notification is forwarded (handshake era only; an absent/unknown version drops it).
+        progress_token: The token supplied by the upstream request and passed to the downstream request.
+            Progress without a matching token is dropped.
 
     Returns: None
 
@@ -304,10 +323,16 @@ async def forward_notification(
 
     try:
         match method:
-            case NotificationMethod.CANCELLED:
-                notification: Any = CancelledNotification.model_validate(obj)
             case NotificationMethod.PROGRESS:
                 notification = ProgressNotification.model_validate(obj)
+                received_token = obj["params"].get("progressToken")
+                if (
+                    progress_token is None
+                    or type(received_token) is not type(progress_token)
+                    or received_token != progress_token
+                ):
+                    logger.debug("dropping downstream progress notification with no matching request token")
+                    return
             case NotificationMethod.LOGGING_MESSAGE if forward_logging:
                 notification = LoggingMessageNotification.model_validate(obj)
             case _:

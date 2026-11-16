@@ -69,6 +69,7 @@ from .utils import (
     _get_state_metadata,
     forward_notification,
     get_client_params,
+    get_progress_token,
     get_target_url,
     parse_data_field,
 )
@@ -139,7 +140,11 @@ async def _downstream_tool_call(
 
             async def _on_notification(obj: dict[str, Any]) -> None:
                 await forward_notification(
-                    ctx.session, obj, related_request_id=ctx.request_id, protocol_version=ctx.protocol_version
+                    ctx.session,
+                    obj,
+                    related_request_id=ctx.request_context.request_id,
+                    protocol_version=ctx.protocol_version,
+                    progress_token=get_progress_token(ctx),
                 )
 
             try:
@@ -200,8 +205,9 @@ async def _downstream_tool_call(
                             await forward_notification(
                                 ctx.session,
                                 obj,
-                                related_request_id=ctx.request_id,
+                                related_request_id=ctx.request_context.request_id,
                                 protocol_version=ctx.protocol_version,
+                                progress_token=get_progress_token(ctx),
                             )
                         case "response":
                             # If the event seems a response (error or result), set response_obj to the parsed "data" field of the event.
@@ -541,6 +547,10 @@ async def execute_tool_impl(
                 "method": "tools/call",
                 "params": {"name": tool_name, "arguments": arguments},
             }
+            progress_token = get_progress_token(ctx)
+            if progress_token is not None:
+                # Forward only progress metadata; client trace context and protocol-era metadata stay local.
+                mcp_request_body["params"]["_meta"] = {"progressToken": progress_token}
             logger.info(f"MCP JSON-RPC request body: {json.dumps(mcp_request_body, indent=2)}")
 
             resp_obj = await _call_with_oauth_recovery(

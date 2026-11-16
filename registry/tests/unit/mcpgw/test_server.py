@@ -665,6 +665,7 @@ _LOGGING_NOTIFICATION = {
     "params": {"level": "info", "data": "downstream log line"},
 }
 _TOOLS_LIST_CHANGED_NOTIFICATION = {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}
+_CANCELLED_NOTIFICATION = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "req-1"}}
 
 
 @pytest.mark.asyncio
@@ -680,6 +681,8 @@ _TOOLS_LIST_CHANGED_NOTIFICATION = {"jsonrpc": "2.0", "method": "notifications/t
         # Downstream list-change notifications are dropped on both eras.
         ("2025-11-25", _TOOLS_LIST_CHANGED_NOTIFICATION, False),
         ("2026-07-28", _TOOLS_LIST_CHANGED_NOTIFICATION, False),
+        ("2025-11-25", _CANCELLED_NOTIFICATION, False),
+        ("2026-07-28", _CANCELLED_NOTIFICATION, False),
         # An absent/unknown protocol version fails closed for logging but still forwards progress.
         (None, _LOGGING_NOTIFICATION, False),
         (None, _PROGRESS_NOTIFICATION, True),
@@ -690,10 +693,62 @@ async def test_forward_notification_filters_by_era(protocol_version, notificatio
     session.send_notification = AsyncMock()
 
     await utils.forward_notification(
-        session, dict(notification), related_request_id="req-1", protocol_version=protocol_version
+        session, dict(notification), related_request_id="req-1", protocol_version=protocol_version, progress_token="tok"
     )
 
     assert session.send_notification.await_count == (1 if forwarded else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["2025-11-25", "2026-07-28"])
+@pytest.mark.parametrize(
+    ("expected", "received", "forwarded"),
+    [
+        (None, "tok", False),
+        ("tok", "wrong", False),
+        (0, "0", False),
+        (0, False, False),
+        (0, 0.0, False),
+        (0, 0, True),
+        ("tok", "tok", True),
+        ("", "", True),
+    ],
+)
+async def test_forward_progress_requires_matching_token(
+    version: str, expected: str | int | None, received: str | int | float | bool, forwarded: bool
+) -> None:
+    session = SimpleNamespace(send_notification=AsyncMock())
+    notification = {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {"progressToken": received, "progress": 1},
+    }
+    await utils.forward_notification(
+        session, notification, related_request_id=1, protocol_version=version, progress_token=expected
+    )
+    assert session.send_notification.await_count == int(forwarded)
+    if forwarded:
+        sent, request_id = session.send_notification.await_args.args
+        assert sent.params.progress_token == expected
+        assert request_id == 1
+
+
+@pytest.mark.parametrize("token", ["tok", "", 0, None, True, 1.5, {}])
+def test_get_progress_token_validates_request_metadata(token: object) -> None:
+    ctx = SimpleNamespace(request_context=SimpleNamespace(meta={"progress_token": token}))
+    expected = token if type(token) in (str, int) else None
+    assert utils.get_progress_token(ctx) == expected
+
+
+@pytest.mark.parametrize("token", ["tok", "", 0, True, False, 0.0])
+def test_get_progress_token_preserves_wire_type(token: str | int | float | bool) -> None:
+    from mcp.types import RequestParams
+
+    params = {"_meta": {"progressToken": token}}
+    ctx = SimpleNamespace(
+        request_context=SimpleNamespace(meta=RequestParams.model_validate(params).meta, params=params)
+    )
+    assert utils.get_progress_token(ctx) == (token if type(token) in (str, int) else None)
 
 
 @pytest.mark.asyncio
