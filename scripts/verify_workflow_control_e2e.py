@@ -1072,6 +1072,7 @@ async def module_e(workflow_service, control_service, acl_service, queue, runner
 
     db = MongoDB.get_database()
     sessions_before = await db.get_collection("agno_workflow_sessions").count_documents({"session_id": run_id})
+    agno_runs_before = await db.get_collection("agno_workflow_sessions_runs").count_documents({"session_id": run_id})
 
     # Update workflow once so a WorkflowVersion row exists.
     await workflow_service.update_workflow(
@@ -1090,12 +1091,16 @@ async def module_e(workflow_service, control_service, acl_service, queue, runner
     runs_left = await WorkflowRun.find(WorkflowRun.workflow_definition_id == hitl_wf.id).count()
     versions_left = await WorkflowVersion.find(WorkflowVersion.workflow_id == hitl_wf.id).count()
     sessions_left = await db.get_collection("agno_workflow_sessions").count_documents({"session_id": run_id})
+    agno_runs_left = await db.get_collection("agno_workflow_sessions_runs").count_documents({"session_id": run_id})
 
-    all_clean = def_left is None and runs_left == 0 and versions_left == 0 and sessions_left == 0
+    all_clean = (
+        def_left is None and runs_left == 0 and versions_left == 0 and sessions_left == 0 and agno_runs_left == 0
+    )
     r.check(
         "E1 DELETE cascades to definitions/runs/versions/agno_sessions",
         all_clean,
-        f"def={def_left is None} runs={runs_left} versions={versions_left} agno_sessions={sessions_left} (before={sessions_before})",
+        f"def={def_left is None} runs={runs_left} versions={versions_left} agno_sessions={sessions_left} "
+        f"agno_runs={agno_runs_left} (sessions_before={sessions_before} agno_runs_before={agno_runs_before})",
     )
     await _await_or_cancel(task)
 
@@ -1803,6 +1808,9 @@ async def cleanup() -> None:
             await db.get_collection("node_runs").delete_many({"workflow_run_id": {"$in": run_ids}})
             await db.get_collection("workflow_runs").delete_many({"_id": {"$in": run_ids}})
             await db.get_collection("agno_workflow_sessions").delete_many(
+                {"session_id": {"$in": [str(rid) for rid in run_ids]}}
+            )
+            await db.get_collection("agno_workflow_sessions_runs").delete_many(
                 {"session_id": {"$in": [str(rid) for rid in run_ids]}}
             )
         await db.get_collection("workflow_versions").delete_many({"workflow_id": {"$in": wf_ids}})

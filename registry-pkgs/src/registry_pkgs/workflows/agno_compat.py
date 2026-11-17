@@ -1,4 +1,4 @@
-"""Narrow compatibility fixes for the registry's agno 2.7.2 execution path."""
+"""Narrow compatibility fixes for the registry's agno 3.0.x execution path."""
 
 from typing import Any
 
@@ -12,7 +12,7 @@ from agno.workflow.types import WorkflowExecutionInput
 class RegistryWorkflow(Workflow):
     """Honor stop signals after manual routing in async, non-streaming runs.
 
-    Agno 2.7.2's special router-selection continuation skips its stop check.
+    Agno 3.0.x's special router-selection continuation skips its stop check.
     Bind the user's choice to the selector instead, then reuse the ordinary
     continuation path, including output review, stop handling and persistence.
     Revisit this adapter when upgrading agno; the registry uses neither sync

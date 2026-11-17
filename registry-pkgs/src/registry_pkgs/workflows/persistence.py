@@ -23,6 +23,14 @@ from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY, is_skip_tole
 
 logger = logging.getLogger(__name__)
 
+# agno stores each workflow session here, and (since agno 3) each run as its own
+# document in a separate runs collection. These two names are the DB contract shared
+# by the syncer and every cleanup path that deletes agno state. The syncer passes
+# both to agno explicitly, so the cascade deletes never depend on agno's default
+# runs-collection naming.
+AGNO_SESSION_COLLECTION = "agno_workflow_sessions"
+AGNO_RUNS_COLLECTION = f"{AGNO_SESSION_COLLECTION}_runs"
+
 _STATUS_MAP: dict[RunStatus, WorkflowRunStatus] = {
     RunStatus.completed: WorkflowRunStatus.COMPLETED,
     RunStatus.error: WorkflowRunStatus.FAILED,
@@ -51,40 +59,78 @@ class WorkflowRunSyncer(AsyncMongoDb):
         node_by_name: dict[str, WorkflowNode],
         db_client: Any,
         db_name: str,
-        session_collection: str = "agno_workflow_sessions",
+        session_collection: str = AGNO_SESSION_COLLECTION,
         run_writer: RunStateWriter | None = None,
+        runs_collection: str = AGNO_RUNS_COLLECTION,
     ) -> None:
         super().__init__(
             db_client=db_client,
             db_name=db_name,
             session_collection=session_collection,
+            runs_collection=runs_collection,
         )
         self._workflow_run = workflow_run
         self._node_by_name = node_by_name
         self._run_writer = run_writer or RunStateWriter(workflow_run.id)
+        # Set once agno calls upsert_session. The upsert_run guard checks only that
+        # the first persist went through upsert_session (and so our Beanie sync).
+        self._saw_upsert_session = False
 
     @override
     async def upsert_session(
         self,
         session: Session,
         deserialize: bool | None = True,
-        mongo_session: AsyncClientSession | None = None,
     ) -> Session | dict[str, Any] | None:
         """Persist agno session, then mirror the latest run into Beanie."""
+        self._saw_upsert_session = True
         result = await super().upsert_session(session, deserialize=deserialize)
         if isinstance(session, WorkflowSession) and session.runs:
             session_data: dict[str, Any] = session.session_data or {}
             try:
+                # agno 3 no longer threads an ambient client session here, so the
+                # sync opens its own transaction for terminal writes (session=None).
                 await self._sync_to_beanie(
                     session.runs[-1],
                     session_data=session_data,
-                    session=mongo_session,
+                    session=None,
                 )
             except Exception as e:
                 logger.exception(
                     "WorkflowRunSyncer: failed to sync run %s to Beanie, error: %s", self._workflow_run.id, e
                 )
         return result
+
+    @override
+    async def upsert_run(
+        self,
+        run: Any,
+        session_id: str,
+        user_id: str | None = None,
+        run_index: int | None = None,
+    ) -> None:
+        """Persist the agno run document, guarding agno 3's persistence ordering.
+
+        Our Beanie sync runs off ``upsert_session``, which agno calls before
+        ``asave_run`` on every non-streaming persist. If the first save of this
+        syncer's session arrives here instead (agno reordered persistence, or
+        saved a run without its session), ``WorkflowRun`` state could silently
+        freeze, so this logs at ``error`` and refuses the write.
+
+        The ``RuntimeError`` does not fail the workflow run: agno's
+        ``Workflow.asave_run`` catches every exception from ``db.upsert_run`` and
+        only logs a warning. The guard's effect is therefore the error log plus a
+        skipped run-document write for that persist. It is a one-shot check: once
+        ``upsert_session`` has been seen, later calls are not re-checked.
+        """
+        if not self._saw_upsert_session:
+            message = (
+                f"WorkflowRunSyncer.upsert_run called for run {self._workflow_run.id} "
+                "without a preceding upsert_session; agno persistence ordering changed"
+            )
+            logger.error(message)
+            raise RuntimeError(message)
+        await super().upsert_run(run, session_id, user_id=user_id, run_index=run_index)
 
     @override
     async def upsert_sessions(

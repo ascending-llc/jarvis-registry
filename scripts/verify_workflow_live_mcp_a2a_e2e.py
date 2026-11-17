@@ -210,6 +210,9 @@ async def _cleanup(workflow_id: PydanticObjectId, user_id: str) -> None:
         await db.get_collection("agno_workflow_sessions").delete_many(
             {"session_id": {"$in": [str(r) for r in run_ids]}}
         )
+        await db.get_collection("agno_workflow_sessions_runs").delete_many(
+            {"session_id": {"$in": [str(r) for r in run_ids]}}
+        )
     await db.get_collection("workflow_definitions").delete_many({"_id": workflow_id})
     await db.get_collection("aclentries").delete_many(
         {

@@ -61,6 +61,7 @@ _COL_VERSIONS = "workflow_versions"
 _COL_RUNS = "workflow_runs"
 _COL_NODE_RUNS = "node_runs"
 _COL_SESSIONS = "agno_workflow_sessions"
+_COL_AGNO_RUNS = "agno_workflow_sessions_runs"
 
 
 def _col(name: str) -> Any:
@@ -75,12 +76,14 @@ class PurgePlan:
     run_count: int = 0
     node_run_count: int = 0
     session_count: int = 0
+    agno_run_count: int = 0
 
 
 @dataclass
 class PurgeOutcome:
     node_runs_deleted: int = 0
     sessions_deleted: int = 0
+    agno_runs_deleted: int = 0
     runs_deleted: int = 0
     versions_deleted: int = 0
     definitions_deleted: int = 0
@@ -122,6 +125,7 @@ async def collect_plan(workflow_id: str | None) -> PurgePlan:
         plan.node_run_count = await _col(_COL_NODE_RUNS).count_documents({"workflow_run_id": {"$in": run_ids}})
         session_ids = [str(rid) for rid in run_ids]
         plan.session_count = await _col(_COL_SESSIONS).count_documents({"session_id": {"$in": session_ids}})
+        plan.agno_run_count = await _col(_COL_AGNO_RUNS).count_documents({"session_id": {"$in": session_ids}})
 
     plan.version_count = await _col(_COL_VERSIONS).count_documents({"workflow_id": {"$in": wf_ids}})
 
@@ -132,7 +136,8 @@ async def apply_purge(plan: PurgePlan) -> PurgeOutcome:
     """Delete everything in the plan using raw motor queries.
 
     Order mirrors WorkflowService.delete_workflow:
-      NodeRun → agno_workflow_sessions → WorkflowRun → WorkflowVersion → WorkflowDefinition
+      NodeRun → agno_workflow_sessions → agno_workflow_sessions_runs → WorkflowRun
+      → WorkflowVersion → WorkflowDefinition
     """
     outcome = PurgeOutcome()
 
@@ -165,6 +170,14 @@ async def apply_purge(plan: PurgePlan) -> PurgeOutcome:
             outcome.sessions_deleted = result.deleted_count
         except Exception as exc:
             outcome.errors.append(f"agno_workflow_sessions delete: {exc}")
+            return outcome
+
+        # 3b. agno per-run documents (agno 3) — also keyed by str(run_id).
+        try:
+            result = await _col(_COL_AGNO_RUNS).delete_many({"session_id": {"$in": session_ids}})
+            outcome.agno_runs_deleted = result.deleted_count
+        except Exception as exc:
+            outcome.errors.append(f"agno_workflow_sessions_runs delete: {exc}")
             return outcome
 
         # 4. WorkflowRun documents.
@@ -204,6 +217,7 @@ def _print_plan(plan: PurgePlan, *, workflow_id: str | None) -> None:
     print(f"WorkflowRuns:             {plan.run_count}")
     print(f"NodeRuns:                 {plan.node_run_count}")
     print(f"agno_workflow_sessions:   {plan.session_count}")
+    print(f"agno_..._sessions_runs:   {plan.agno_run_count}")
     print("=" * 70)
     if plan.workflow_docs:
         print("\n-- WorkflowDefinitions --")
@@ -220,6 +234,7 @@ def _print_outcome(outcome: PurgeOutcome) -> None:
     print("=" * 70)
     print(f"NodeRuns deleted:               {outcome.node_runs_deleted}")
     print(f"agno_workflow_sessions deleted: {outcome.sessions_deleted}")
+    print(f"agno sessions_runs deleted:     {outcome.agno_runs_deleted}")
     print(f"WorkflowRuns deleted:           {outcome.runs_deleted}")
     print(f"WorkflowVersions deleted:       {outcome.versions_deleted}")
     print(f"WorkflowDefinitions deleted:    {outcome.definitions_deleted}")

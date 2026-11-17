@@ -41,6 +41,7 @@ from registry_pkgs.models.workflow import (
     WorkflowVersion,
 )
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
+from registry_pkgs.workflows.persistence import AGNO_RUNS_COLLECTION, AGNO_SESSION_COLLECTION
 from registry_pkgs.workflows.run_lease import workflow_run_lease_repository
 from registry_pkgs.workflows.runner import definition_from_snapshot
 from registry_pkgs.workflows.types import BUILTIN_EXECUTOR_KEYS
@@ -645,10 +646,18 @@ class WorkflowService:
                 # orphan documents (and user input data) behind.
                 session_ids = [str(rid) for rid in run_ids]
                 db = MongoDB.get_database()
-                result = await db.get_collection("agno_workflow_sessions").delete_many(
+                result = await db.get_collection(AGNO_SESSION_COLLECTION).delete_many(
                     {"session_id": {"$in": session_ids}}
                 )
                 logger.info(f"Deleted {result.deleted_count} agno_workflow_sessions for workflow {workflow_id}")
+                # agno 3 stores each run (including HITL user input) as its own
+                # document in the sibling runs collection; delete those too.
+                runs_result = await db.get_collection(AGNO_RUNS_COLLECTION).delete_many(
+                    {"session_id": {"$in": session_ids}}
+                )
+                logger.info(
+                    f"Deleted {runs_result.deleted_count} agno_workflow_sessions_runs for workflow {workflow_id}"
+                )
 
                 await WorkflowRun.find({"_id": {"$in": run_ids}}).delete()
                 logger.info(f"Deleted {len(run_ids)} workflow runs and their node runs for workflow {workflow_id}")
