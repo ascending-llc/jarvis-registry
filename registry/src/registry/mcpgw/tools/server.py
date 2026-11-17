@@ -557,7 +557,7 @@ async def execute_tool_impl(
                     f"code {error_data.code}, messsage: {error_data.message}, data: {str(error_data.data)}"
                 )
 
-                raise MCPError(error_data)
+                raise MCPError.from_error_data(error_data)
             elif "result" in resp_obj:
                 result = CallToolResult.model_validate(resp_obj["result"])
                 if result.is_error:
