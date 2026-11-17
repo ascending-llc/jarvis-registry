@@ -23,6 +23,7 @@ from mcp.types import (
     TextResourceContents,
 )
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -37,6 +38,7 @@ from .utils import (
     _build_url_elicitation_result,
     _extract_authenticated_user_context,
     _get_state_metadata,
+    authorization_declined_result,
     get_client_params,
 )
 
@@ -239,6 +241,10 @@ async def execute_agent_impl(
         )
         return _error_result(f"Access denied: agent {agent_id!r} is not in your accessible set.")
 
+    declined = authorization_declined_result(ctx)
+    if declined is not None:
+        return declined
+
     # 4. Transport capability
     try:
         raise_if_iam_unsupported(agent)
@@ -248,9 +254,8 @@ async def execute_agent_impl(
 
     # 5. Per-agent user consent
     client_id = user_context["client_id"]
-    if not is_consent_exempt(
-        client_id, settings.headless_agent_client_id
-    ) and not lifespan.consent_store.has_agent_consent(
+    if not is_consent_exempt(client_id, settings.headless_agent_client_id) and not await run_in_threadpool(
+        lifespan.consent_store.has_agent_consent,
         user_id,
         client_id,
         agent.path,
@@ -258,7 +263,8 @@ async def execute_agent_impl(
         nonce = secrets.token_urlsafe(32)
         elicitation_id = str(uuid.uuid4())
         state_metadata = _get_state_metadata(get_client_params(ctx))
-        lifespan.pending_consent_store.save(
+        await run_in_threadpool(
+            lifespan.pending_consent_store.save,
             nonce,
             {
                 "user_id": user_id,

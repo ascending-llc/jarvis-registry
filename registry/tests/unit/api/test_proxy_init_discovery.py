@@ -12,6 +12,7 @@ from starlette.requests import Request
 
 from registry.api.proxy_routes import proxy_to_mcp_server
 from registry.core.config import settings
+from registry.core.proxy_call import ProxyCall
 from registry_pkgs.core.exceptions import UrlElicitationRequiredException
 
 USER_ID = "507f1f77bcf86cd799439011"
@@ -50,10 +51,10 @@ def raise_elicitation(monkeypatch):
     monkeypatch.setattr("registry.api.proxy_routes.build_authenticated_headers", _raise)
 
 
-@pytest.mark.parametrize("method", ["initialize", "tools/list"])
+@pytest.mark.parametrize("method", ["initialize", "server/discover", "tools/list"])
 async def test_init_methods_return_401_with_discovery_header(raise_elicitation, method):
     resp = await proxy_to_mcp_server(
-        1,
+        ProxyCall.from_message(1, method, {}, b"{}", None),
         request=_request(),
         target_url="http://backend/mcp",
         auth_context=_AUTH_CONTEXT,
@@ -61,7 +62,6 @@ async def test_init_methods_return_401_with_discovery_header(raise_elicitation, 
         oauth_service=Mock(),
         proxy_client=Mock(),
         redis_client=Mock(),
-        mcp_method=method,
     )
     assert resp.status_code == 401
     www = resp.headers["WWW-Authenticate"]
@@ -75,9 +75,10 @@ async def test_init_methods_return_401_with_discovery_header(raise_elicitation, 
     assert "error=" not in www
 
 
-async def test_tool_call_still_returns_elicitation(raise_elicitation):
+@pytest.mark.parametrize("method", ["tools/call", "resources/list", "resources/templates/list", "prompts/list"])
+async def test_tool_call_still_returns_elicitation(raise_elicitation, method):
     resp = await proxy_to_mcp_server(
-        1,
+        ProxyCall.from_message(1, method, {}, b"{}", None),
         request=_request(),
         target_url="http://backend/mcp",
         auth_context=_AUTH_CONTEXT,
@@ -85,7 +86,6 @@ async def test_tool_call_still_returns_elicitation(raise_elicitation):
         oauth_service=Mock(),
         proxy_client=Mock(),
         redis_client=Mock(),
-        mcp_method="tools/call",
     )
     # Non-handshake methods keep the HTTP 200 + JSON-RPC -32042 URL-mode elicitation.
     assert resp.status_code == 200
