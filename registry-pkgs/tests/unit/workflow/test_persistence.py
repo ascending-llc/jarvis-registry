@@ -103,7 +103,11 @@ class TestWorkflowPersistence:
         assert "WorkflowRunSyncer should not call upsert_sessions at all" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_upsert_run_without_prior_upsert_session_raises(self, caplog):
+    async def test_upsert_run_without_prior_upsert_session_logs_and_refuses_write(
+        self, caplog, monkeypatch: pytest.MonkeyPatch
+    ):
+        super_upsert_run = AsyncMock(return_value=None)
+        monkeypatch.setattr(persistence.AsyncMongoDb, "upsert_run", super_upsert_run)
         sync = _sync_with_fake_run()
         caplog.set_level(logging.ERROR)
 
@@ -111,6 +115,41 @@ class TestWorkflowPersistence:
             await sync.upsert_run(WorkflowRunOutput(content="x"), session_id="session-1")
 
         assert "agno persistence ordering changed" in caplog.text
+        super_upsert_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upsert_run_guard_error_is_swallowed_by_agno_asave_run(self, caplog, monkeypatch: pytest.MonkeyPatch):
+        # Pins the documented contract: agno's Workflow.asave_run catches the guard's
+        # RuntimeError, so a reorder is surfaced by our error log, not a failed run.
+        from agno.workflow import Workflow
+
+        super_upsert_run = AsyncMock(return_value=None)
+        monkeypatch.setattr(persistence.AsyncMongoDb, "upsert_run", super_upsert_run)
+        monkeypatch.setattr("agno.run.status_persist.apersist_worker_owned_run", AsyncMock(return_value=False))
+        sync = _sync_with_fake_run()
+        workflow = Workflow(name="guard", db=sync, steps=[], telemetry=False)
+        caplog.set_level(logging.ERROR)
+
+        await workflow.asave_run(run=WorkflowRunOutput(content="x"), session_id="session-1")
+
+        assert "agno persistence ordering changed" in caplog.text
+        super_upsert_run.assert_not_awaited()
+
+    def test_syncer_passes_explicit_session_and_runs_collections(self):
+        # The cascade deletes and scripts target these literal names; the syncer must
+        # pin both rather than rely on agno's default "<session>_runs" derivation.
+        from pymongo import AsyncMongoClient
+
+        client = AsyncMongoClient("mongodb://localhost:1", connect=False)
+        sync = persistence.WorkflowRunSyncer(
+            workflow_run=SimpleNamespace(id=PydanticObjectId()),
+            node_by_name={},
+            db_client=client,
+            db_name="unit",
+        )
+
+        assert sync.session_table_name == persistence.AGNO_SESSION_COLLECTION == "agno_workflow_sessions"
+        assert sync.runs_table_name == persistence.AGNO_RUNS_COLLECTION == "agno_workflow_sessions_runs"
 
     @pytest.mark.asyncio
     async def test_upsert_run_delegates_after_upsert_session(self, monkeypatch: pytest.MonkeyPatch):
