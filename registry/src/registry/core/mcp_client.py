@@ -9,7 +9,8 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,7 +24,6 @@ from httpx_sse import EventSource
 from mcp import Client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared._httpx_utils import create_mcp_http_client
 from redis import Redis
 
 from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
@@ -37,6 +37,9 @@ from .mcp_config import MCPClientConfig
 from .server_strategies import get_server_strategy
 
 logger = logging.getLogger(__name__)
+
+# Same as the mcp SDK's default transport client timeout: 30 s for connect/write/pool, 300 s per SSE read.
+_SSE_DEFAULT_TIMEOUT = httpx2.Timeout(30.0, read=300.0)
 
 
 # ========== Session Management ==========
@@ -345,12 +348,16 @@ class _InitResult:
 
 
 class _ResponseRecorder:
-    """Record the first HTTP response's status code and ``mcp-session-id`` header.
+    """Record the first non-redirect HTTP response's status code and ``mcp-session-id`` header.
 
     In v2 the transport no longer surfaces HTTP status as an ``httpx.HTTPStatusError`` — a 401/403
     arrives as ``MCPError`` and a 404 as a JSON-RPC error, so the status disappears. This httpx2
     ``event_hooks["response"]`` hook captures the status (for health-check outcomes) and the session id
     (for ``requiresInit``) directly off the wire, before any error swallows them.
+
+    v2 transports follow same-origin redirects themselves, one ``client.send`` per hop, so the hook also
+    fires on each 3xx. Those are skipped: the response that answers ``initialize`` (or the GET that opens
+    the SSE stream) is the first non-redirect one.
     """
 
     def __init__(self) -> None:
@@ -358,7 +365,7 @@ class _ResponseRecorder:
         self.session_id: str | None = None
 
     async def __call__(self, response: httpx2.Response) -> None:
-        if self.status_code is None:
+        if self.status_code is None and not response.is_redirect:
             self.status_code = response.status_code
             self.session_id = response.headers.get("mcp-session-id")
 
@@ -396,20 +403,19 @@ async def initialize_mcp(
             async with httpx2.AsyncClient(
                 headers=headers, timeout=30.0, event_hooks={"response": [recorder]}
             ) as http_client:
-                async with Client(
-                    streamable_http_client(url=mcp_url, http_client=http_client), mode="legacy"
+                async with _connect_legacy_client(
+                    streamable_http_client(url=mcp_url, http_client=http_client)
                 ) as session:
                     logger.info(f"MCP initialization successful for {target_url}")
                     return _snapshot_init(session), recorder.status_code
 
         elif transport_type == "sse":
-            async with Client(
+            async with _connect_legacy_client(
                 sse_client(
                     mcp_url,
                     headers=headers,
                     httpx_client_factory=_mcp_sse_client_factory(recorder),
-                ),
-                mode="legacy",
+                )
             ) as session:
                 logger.info(f"MCP initialization successful for {target_url}")
                 return _snapshot_init(session), recorder.status_code
@@ -417,9 +423,20 @@ async def initialize_mcp(
             logger.error(f"Unsupported transport type: {transport_type}")
             return None, None
 
-    except Exception as e:
-        logger.debug(f"MCP initialization failed for {target_url}: {type(e).__name__} - {e}")
+    except TimeoutError:
+        logger.error(
+            f"MCP initialization timed out for {target_url} after {MCPClientConfig.INIT_TIMEOUT}s "
+            f"(first HTTP status: {recorder.status_code})"
+        )
         return None, recorder.status_code
+    except Exception as e:
+        status_code = recorder.status_code
+        if status_code is not None and status_code >= HTTPStatus.BAD_REQUEST:
+            # An HTTP error status is an outcome the caller interprets (e.g. 401 → auth required).
+            logger.debug(f"HTTP error {status_code} during MCP initialization for {target_url}: {type(e).__name__}")
+        else:
+            logger.error(f"MCP initialization failed for {target_url}: {type(e).__name__} - {e}")
+        return None, status_code
 
 
 def _snapshot_init(session: Client) -> _InitResult:
@@ -428,6 +445,21 @@ def _snapshot_init(session: Client) -> _InitResult:
         server_info=session.server_info,
         capabilities=session.server_capabilities,
     )
+
+
+@asynccontextmanager
+async def _connect_legacy_client(transport: Any) -> AsyncIterator[Client]:
+    """Enter a ``mode="legacy"`` ``mcp.Client`` with the handshake bounded by ``INIT_TIMEOUT``.
+
+    ``Client.__aenter__`` runs ``initialize`` with no session-level timeout (``read_timeout_seconds`` is
+    None), so a server that never answers is limited only by the HTTP read timeout: 300 s per event on
+    SSE, and unbounded when the server sends keepalives. Only the handshake is bounded here; later
+    requests keep their own ``TOOLS_TIMEOUT``. Raises ``TimeoutError`` when the handshake overruns.
+    """
+    async with AsyncExitStack() as stack:
+        async with asyncio.timeout(MCPClientConfig.INIT_TIMEOUT):
+            client = await stack.enter_async_context(Client(transport, mode="legacy"))
+        yield client
 
 
 async def perform_health_check(
@@ -728,16 +760,25 @@ async def _rewrite_sse_request_url(request: httpx2.Request) -> None:
 def _mcp_sse_client_factory(recorder: _ResponseRecorder | None = None):
     """Build an httpx2 client factory for ``sse_client`` with the mount-path rewrite hook.
 
-    Reuses the SDK's ``create_mcp_http_client`` (so its own defaults stand) and attaches the request
-    hook; when a recorder is given, also attaches it as a response hook to capture status/session id.
+    Matches the SDK's default factory (headers, auth and timeout only) and adds the request hook; when a
+    recorder is given, also attaches it as a response hook to capture status/session id. ``sse_client``
+    always passes ``timeout``, so the fallback mirrors the SDK default only for completeness.
     """
 
-    def factory(headers=None, auth=None, timeout=None) -> httpx2.AsyncClient:
-        client = create_mcp_http_client(headers=headers, auth=auth, timeout=timeout)
-        client.event_hooks["request"].append(_rewrite_sse_request_url)
-        if recorder is not None:
-            client.event_hooks["response"].append(recorder)
-        return client
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
+    ) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(
+            headers=headers,
+            auth=auth,
+            timeout=timeout or _SSE_DEFAULT_TIMEOUT,
+            event_hooks={
+                "request": [_rewrite_sse_request_url],
+                "response": [recorder] if recorder is not None else [],
+            },
+        )
 
     return factory
 
@@ -877,7 +918,7 @@ async def _get_from_streamable_http(
         async with httpx2.AsyncClient(
             headers=headers, timeout=30.0, auth=httpx_auth, event_hooks={"response": [recorder]}
         ) as http_client:
-            async with Client(streamable_http_client(url=mcp_url, http_client=http_client), mode="legacy") as session:
+            async with _connect_legacy_client(streamable_http_client(url=mcp_url, http_client=http_client)) as session:
                 init_result = _snapshot_init(session)
                 tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
 
@@ -1005,14 +1046,13 @@ async def _get_from_sse(
         # v2's sse_client uses httpx2, so the old global monkey-patch no longer applies. The client
         # factory attaches a per-client request hook that rewrites the mount-path POST-back URL, and
         # auth is honoured (passed through instead of logged as ignored).
-        async with Client(
+        async with _connect_legacy_client(
             sse_client(
                 mcp_server_url,
                 headers=headers,
                 auth=httpx_auth,
                 httpx_client_factory=_mcp_sse_client_factory(),
-            ),
-            mode="legacy",
+            )
         ) as session:
             init_result = _snapshot_init(session)
             tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
