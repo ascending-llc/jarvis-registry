@@ -65,13 +65,15 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
             if container is None:
                 raise RuntimeError("Registry container is not initialized")
             cached_context = McpAppContext(
-                proxy_client=container.mcpgw_proxy_client,
+                downstream_transport=container.mcpgw_downstream_transport,
+                downstream_call_limiter=container.mcpgw_downstream_call_limiter,
+                downstream_response_cache=container.mcpgw_downstream_response_cache,
+                downstream_era_cache=container.downstream_era_cache,
                 a2a_client_registry=container.a2a_client_registry,
                 server_service=container.server_service,
                 mcp_server_repo=container.mcp_server_repo,
                 a2a_agent_repo=container.a2a_agent_repo,
                 search_service=container.search_service,
-                mcp_client_service=container.mcp_client_service,
                 oauth_service=container.oauth_service,
                 client_info_store=container.client_info_store,
                 redis_client=container.redis_client,

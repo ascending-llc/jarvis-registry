@@ -35,7 +35,9 @@ async def _gateway_session() -> AsyncIterator[Client]:
         "mcp_server_repo",
         "a2a_agent_repo",
         "search_service",
-        "mcp_client_service",
+        "mcpgw_downstream_response_cache",
+        "mcpgw_downstream_call_limiter",
+        "downstream_era_cache",
         "oauth_service",
         "client_info_store",
         "redis_client",
@@ -50,7 +52,7 @@ async def _gateway_session() -> AsyncIterator[Client]:
     async with httpx.AsyncClient(transport=httpx.MockTransport(reject_request)) as proxy_client:
         container = cast(
             "RegistryContainer",
-            SimpleNamespace(mcpgw_proxy_client=proxy_client, **{name: object() for name in dependencies}),
+            SimpleNamespace(mcpgw_downstream_transport=proxy_client, **{name: object() for name in dependencies}),
         )
         app = gateway.create_gateway_mcp_app(container_provider=lambda: container)
         # v2: drive the in-process server through mcp.Client in legacy mode (negotiates 2025-11-25).

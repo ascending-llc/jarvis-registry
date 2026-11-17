@@ -16,12 +16,12 @@ from types import SimpleNamespace
 from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
 import httpx2
 import pytest
 from beanie import PydanticObjectId
 from fastapi import FastAPI
 from mcp import Client
+from mcp.client.caching import InMemoryResponseCacheStore
 from mcp.client.session import ClientRequestContext, ElicitationFnT
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.inbound import (
@@ -44,10 +44,12 @@ from starlette.testclient import TestClient
 from registry.app_factory import create_app
 from registry.constants import URL_ELICITATION_INPUT_KEY
 from registry.core.config import settings
+from registry.core.mcp_downstream import DownstreamCallLimiter, DownstreamEraCache
 from registry.mcpgw import create_gateway_mcp_app
 from registry.mcpgw.core.client_info_store import ClientInfoStore
 from registry.mcpgw.tools import server as server_tools
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
+from tests.mcp_downstream_support import sdk_endpoint
 
 pytestmark = [pytest.mark.integration]
 
@@ -89,6 +91,9 @@ class _FakeRedis:
     def get(self, key: str) -> str | None:
         return self.store.get(key)
 
+    def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
 
 def _server_doc() -> SimpleNamespace:
     return SimpleNamespace(
@@ -105,7 +110,7 @@ def _container_stub(
     redis: _FakeRedis,
     *,
     has_consent: bool,
-    proxy_client: httpx.AsyncClient | None = None,
+    downstream_transport: httpx2.AsyncBaseTransport | None = None,
 ) -> SimpleNamespace:
     """A per-pod container: its own ClientInfoStore and mocks, sharing only the Redis stand-in."""
     server_service = MagicMock()
@@ -115,13 +120,15 @@ def _container_stub(
     consent_store = MagicMock()
     consent_store.has_server_consent.return_value = has_consent
     return SimpleNamespace(
-        mcpgw_proxy_client=proxy_client or MagicMock(),
+        mcpgw_downstream_transport=downstream_transport or MagicMock(),
+        mcpgw_downstream_call_limiter=DownstreamCallLimiter(100),
+        mcpgw_downstream_response_cache=InMemoryResponseCacheStore(),
+        downstream_era_cache=DownstreamEraCache(redis, settings.redis_key_prefix),
         a2a_client_registry=MagicMock(),
         server_service=server_service,
         mcp_server_repo=MagicMock(),
         a2a_agent_repo=MagicMock(),
         search_service=MagicMock(),
-        mcp_client_service=MagicMock(),
         oauth_service=MagicMock(),
         client_info_store=ClientInfoStore(redis, settings.redis_key_prefix, settings.jwt_token_config),
         redis_client=MagicMock(),
@@ -247,38 +254,26 @@ async def test_downstream_progress_notification_rides_post_sse_stream(
     ahead of the tool result (the JSON-response path would drop it)."""
     monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", version == _MODERN_VERSION)
 
-    def downstream(request: httpx.Request) -> httpx.Response:
-        downstream_body = json.loads(request.content)
-        request_id = downstream_body["id"]
-        meta = downstream_body["params"].get("_meta", {})
-        assert meta == ({"progressToken": token} if token is not None else {})
-        result = {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": "done"}]}}
-        body = ""
-        # Like Agno's ctx.report_progress(), emit only when the downstream request supplied a token.
-        if "progressToken" in meta:
-            progress = {
-                "jsonrpc": "2.0",
-                "method": "notifications/progress",
-                "params": {"progressToken": meta["progressToken"], "progress": 0.5, "total": 1.0},
-            }
-            body += f"event: message\ndata: {json.dumps(progress)}\n\n"
-        cancelled = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": request_id}}
-        body += f"event: message\ndata: {json.dumps(cancelled)}\n\nevent: message\ndata: {json.dumps(result)}\n\n"
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as proxy_client:
-        with _pod_client(_container_stub(_FakeRedis(), has_consent=True, proxy_client=proxy_client)) as pod:
-            if version == _MODERN_VERSION:
-                body = _modern_execute_tool(url_elicitation=False)
-                headers = _modern_headers(auth_headers)
-            else:
-                body = _execute_tool()
-                headers = auth_headers
-            meta = body["params"].setdefault("_meta", {})
-            meta["traceparent"] = "00-11111111111111111111111111111111-2222222222222222-01"
-            if token is not None:
-                meta["progressToken"] = token
-            msgs = _post(pod, body, headers)
+    async with sdk_endpoint(progress=True) as downstream:
+        container = _container_stub(_FakeRedis(), has_consent=True, downstream_transport=downstream)
+        app = _make_pod(container)
+        async with app.router.lifespan_context(app):
+            async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://localhost") as pod:
+                if version == _MODERN_VERSION:
+                    body, headers = _modern_execute_tool(url_elicitation=False), _modern_headers(auth_headers)
+                else:
+                    body, headers = _execute_tool(), auth_headers
+                meta = body["params"].setdefault("_meta", {})
+                meta["traceparent"] = "00-11111111111111111111111111111111-2222222222222222-01"
+                if token is not None:
+                    meta["progressToken"] = token
+                response = await pod.post(_MCP_PATH, json=body, headers=headers)
+                assert response.status_code == 200
+                msgs = (
+                    [response.json()]
+                    if response.headers.get("content-type", "").startswith("application/json")
+                    else _sse_messages(response.text)
+                )
 
     assert [m.get("method") for m in msgs[:-1]] == (["notifications/progress"] if token is not None else [])
     if token is not None:
@@ -424,24 +419,15 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
 ) -> None:
     """The real SDK dispatches one URL prompt and retries once; incapable clients do neither."""
     outgoing: list[dict[str, Any]] = []
-    downstream_calls: list[dict[str, Any]] = []
     prompts: list[ElicitRequestParams] = []
 
     async def record_request(request: httpx2.Request) -> None:
         if request.method == "POST":
             outgoing.append(json.loads(await request.aread()))
 
-    def downstream(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        downstream_calls.append(body)
-        return httpx.Response(
-            200,
-            json={"jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": "done"}]}},
-        )
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as proxy_client:
+    async with sdk_endpoint() as downstream:
         redis = _FakeRedis()
-        container = _container_stub(redis, has_consent=False, proxy_client=proxy_client)
+        container = _container_stub(redis, has_consent=False, downstream_transport=downstream)
 
         async def answer(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
             assert action is not None
@@ -482,7 +468,7 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
         assert calls[1]["params"]["inputResponses"][URL_ELICITATION_INPUT_KEY]["action"] == action
         assert calls[0]["params"]["arguments"] == calls[1]["params"]["arguments"]
     executes = grant_consent and action == "accept"
-    assert len(downstream_calls) == int(executes)
+    assert downstream.count("tools/call") == int(executes)
     assert isinstance(result, CallToolResult)
     assert result.is_error is not executes
     assert isinstance(result.content[0], TextContent)
@@ -492,7 +478,7 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
         assert "declined or cancelled" in result.content[0].text
     else:
         assert "/consent/server?nonce=" in result.content[0].text
-    assert redis.store == {}
+    assert redis.store == ({f"{settings.redis_key_prefix}:mcp_era:{SERVER_ID}": _MODERN_VERSION} if executes else {})
 
 
 def test_modern_no_url_capability_gets_fallback(auth_headers, _modern_gate_on):
@@ -527,32 +513,25 @@ def test_modern_retry_accept_without_consent_returns_url_text(auth_headers, _mod
     assert "/consent/server?nonce=" in result["content"][0]["text"]
 
 
-def test_modern_retry_accept_with_consent_reaches_downstream(auth_headers, _modern_gate_on):
-    """Once consent is granted, the accepted retry reaches the (mocked) downstream server and returns its
-    result instead of another elicitation."""
-
-    def downstream(request: httpx.Request) -> httpx.Response:
-        request_id = json.loads(request.content)["id"]
-        result = {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": "done"}]}}
-        body = f"event: message\ndata: {json.dumps(result)}\n\n"
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
-
-    proxy_client = httpx.AsyncClient(transport=httpx.MockTransport(downstream))
-    container = _container_stub(_FakeRedis(), has_consent=False, proxy_client=proxy_client)
-    with _pod_client(container) as pod:
-        first = _modern_post(pod, _modern_execute_tool(url_elicitation=True), _modern_headers(auth_headers))
-        assert first["result"]["resultType"] == "input_required"
-
-        # The user approved in the browser: consent is now recorded before the client's accept arrives.
-        container.consent_store.has_server_consent.return_value = True
-        retry = _modern_execute_tool(
-            url_elicitation=True,
-            input_responses={URL_ELICITATION_INPUT_KEY: {"action": "accept"}},
-            request_id=3,
-        )
-        second = _modern_post(pod, retry, _modern_headers(auth_headers))
-
-    assert second["result"]["content"][0]["text"] == "done"
+async def test_modern_retry_accept_with_consent_reaches_downstream(auth_headers, _modern_gate_on):
+    async with sdk_endpoint() as downstream:
+        container = _container_stub(_FakeRedis(), has_consent=False, downstream_transport=downstream)
+        app = _make_pod(container)
+        async with app.router.lifespan_context(app):
+            async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://localhost") as pod:
+                first = await pod.post(
+                    _MCP_PATH, json=_modern_execute_tool(url_elicitation=True), headers=_modern_headers(auth_headers)
+                )
+                assert first.json()["result"]["resultType"] == "input_required"
+                container.consent_store.has_server_consent.return_value = True
+                retry = _modern_execute_tool(
+                    url_elicitation=True,
+                    input_responses={URL_ELICITATION_INPUT_KEY: {"action": "accept"}},
+                    request_id=3,
+                )
+                second = await pod.post(_MCP_PATH, json=retry, headers=_modern_headers(auth_headers))
+                assert second.json()["result"]["content"][0]["text"] == "done"
+        assert downstream.count("tools/call") == 1
 
 
 def test_modern_request_rejected_when_gate_off(auth_headers):
@@ -673,8 +652,6 @@ async def test_oauth_sdk_authorization_and_recovery(
     # Only the external OAuth service and HTTP target are boundary stand-ins.
     monkeypatch.setattr(server_tools, "build_authenticated_headers", build_authenticated_headers)
     authorized = via_401
-    rejected = False
-    sends: list[dict[str, Any]] = []
     prompts: list[ElicitRequestParams] = []
     get_tokens = AsyncMock()
 
@@ -687,29 +664,12 @@ async def test_oauth_sdk_authorization_and_recovery(
         nonlocal authorized
         authorized = False
 
-    def downstream(request: httpx.Request) -> httpx.Response:
-        nonlocal rejected
-        message = json.loads(request.content)
-        sends.append(message)
-        assert request.headers["authorization"] == "Bearer test-token"
-        if via_401 and not rejected:
-            rejected = True
-            return httpx.Response(
-                401,
-                json={"error": "expired"},
-                headers={"www-authenticate": 'Bearer resource_metadata="https://downstream.example/metadata"'},
-            )
-        return httpx.Response(
-            200,
-            json={
-                "jsonrpc": "2.0",
-                "id": message["id"],
-                "result": {"content": [{"type": "text", "text": "oauth-done"}]},
-            },
-        )
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as proxy:
-        container = _container_stub(_FakeRedis(), has_consent=True, proxy_client=proxy)
+    async with sdk_endpoint(result=CallToolResult(content=[TextContent(type="text", text="oauth-done")])) as downstream:
+        if via_401:
+            downstream.failure_method = "tools/list"
+            downstream.fail_once = True
+            downstream.challenge = 'Bearer resource_metadata="https://downstream.example/metadata"'
+        container = _container_stub(_FakeRedis(), has_consent=True, downstream_transport=downstream)
         target = _server_doc()
         target.mcp_auth_mode = server_tools.McpAuthMode.OAUTH
         target.config["requiresOAuth"] = True
@@ -733,7 +693,8 @@ async def test_oauth_sdk_authorization_and_recovery(
         assert isinstance(result, CallToolResult)
         assert result.is_error is not executes
         assert len(prompts) == 1
-        assert len(sends) == int(via_401) + int(executes)
+        assert downstream.count("tools/call") == int(executes)
+        assert all(h["authorization"] == "Bearer test-token" for h in downstream.headers)
         assert get_tokens.await_count == (int(via_401) + 1 + int(action == "accept"))
         assert container.oauth_service.recover_from_unauthorized.await_count == int(via_401)
         if via_401:
@@ -749,7 +710,11 @@ async def test_oauth_sdk_authorization_and_recovery(
             assert "https://login.example/authorize" in result.content[0].text
         else:
             assert "declined or cancelled" in result.content[0].text
-        assert all(URL_ELICITATION_INPUT_KEY not in send["params"].get("inputResponses", {}) for send in sends)
+        assert all(
+            URL_ELICITATION_INPUT_KEY not in send["params"].get("inputResponses", {})
+            for send in downstream.messages
+            if send["method"] == "tools/call"
+        )
 
 
 async def test_sdk_auto_with_gate_off_negotiates_legacy_and_elicits(

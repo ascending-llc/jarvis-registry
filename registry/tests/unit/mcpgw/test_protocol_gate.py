@@ -21,7 +21,9 @@ _GATEWAY_DEPS = (
     "mcp_server_repo",
     "a2a_agent_repo",
     "search_service",
-    "mcp_client_service",
+    "mcpgw_downstream_response_cache",
+    "mcpgw_downstream_call_limiter",
+    "downstream_era_cache",
     "oauth_service",
     "client_info_store",
     "redis_client",
@@ -155,7 +157,9 @@ async def test_sdk_auto_client_falls_back_to_2025_11_25_against_gated_app(monkey
         raise AssertionError(f"Unexpected outgoing request: {request.method} {request.url}")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(_reject)) as proxy_client:
-        container = SimpleNamespace(mcpgw_proxy_client=proxy_client, **{name: object() for name in _GATEWAY_DEPS})
+        container = SimpleNamespace(
+            mcpgw_downstream_transport=proxy_client, **{name: object() for name in _GATEWAY_DEPS}
+        )
         app = create_gateway_mcp_app(container_provider=lambda: container)
         streamable = app.streamable_http_app(
             stateless_http=True,

@@ -5,38 +5,38 @@ MCP Gateway Registry API Tools
 - execute_prompt: Execute prompts from any MCP server
 """
 
-import json
 import logging
 import secrets
 from collections.abc import Callable
-from http import HTTPStatus
 from typing import Annotated, Any
 from uuid import uuid4
 
 from beanie import PydanticObjectId
-from httpx_sse import EventSource
 from mcp.server.mcpserver import Context
-from mcp.shared.exceptions import MCPError
+from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
 from mcp.types import (
+    URL_ELICITATION_REQUIRED,
     CallToolResult,
+    ElicitRequest,
+    ElicitRequestURLParams,
     EmbeddedResource,
-    ErrorData,
     InputRequiredResult,
+    LoggingMessageNotification,
+    LoggingMessageNotificationParams,
     TextContent,
     TextResourceContents,
 )
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from opentelemetry import baggage
-from pydantic import Field
+from pydantic import Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from registry_pkgs.core.exceptions import (
     ConsentRequiredException,
     DownstreamAuthRejectedException,
-    DownstreamHttpFailureException,
     DownstreamUnauthorizedException,
     InternalServerException,
     McpGatewayException,
-    MisimplementedSpecException,
     UrlElicitationRequiredException,
 )
 from registry_pkgs.models import ResourceType
@@ -51,7 +51,8 @@ from registry_pkgs.telemetry.trace_propagation import (
 
 from ...auth.dependencies import UserContextDict
 from ...core.config import settings
-from ...core.mcp_client import call_tool_via_sse_ephemeral
+from ...core.mcp_config import MCPTransport
+from ...core.mcp_downstream import DownstreamCallUnauthorized, call_downstream_tool
 from ...core.telemetry_decorators import (
     PromptExecutionMetricsContext,
     ResourceAccessMetricsContext,
@@ -69,11 +70,9 @@ from .utils import (
     _extract_authenticated_user_context,
     _get_state_metadata,
     authorization_declined_result,
-    forward_notification,
     get_client_params,
     get_progress_token,
     get_target_url,
-    parse_data_field,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,10 +89,6 @@ def _get_server_service(ctx: Context[McpAppContext]):
     return ctx.request_context.lifespan_context.server_service
 
 
-def _get_mcp_client_service(ctx: Context[McpAppContext]):
-    return ctx.request_context.lifespan_context.mcp_client_service
-
-
 async def _user_can_view_server(
     acl_service: ACLService,
     user_id: str,
@@ -104,148 +99,6 @@ async def _user_can_view_server(
         resource_type=ResourceType.MCPSERVER.value,
     )
     return str(server_id) in accessible
-
-
-async def _downstream_tool_call(
-    ctx: Context[McpAppContext],
-    url: str,
-    body: dict[str, Any],
-    headers: dict[str, str],
-    transport_type: str = "streamable-http",
-    sse_url: str | None = None,
-) -> dict:
-    """
-    Make a tool call to downstream MCP. This function only handles making the HTTP POST request and parsing the response,
-    so url, request body, and request headers must be passed in explicitly.
-
-    Args:
-        ctx: The mcp.server.mcpserver.Context object that can be DI'ed into a tool call handler function.
-        url: Downstream MCP URL
-        body: The raw JSON-RPC request body for the tool call
-        headers: All HTTP headers for the tool call POST request
-
-    Returns: A Python dictionary parsed from the JSON-RPC response to the tool call.
-
-    Raises:
-        DownstreamHttpFailureException: When the HTTP request receives a >=300 status code
-        MisimplementedSpecException: When the response deviates from the 2025-11-25 MCP spec
-        InternalServerException: Other unknown or rare runtime exceptions
-    """
-    client = ctx.request_context.lifespan_context.proxy_client
-
-    response_obj: dict | None = None
-
-    try:
-        if transport_type == "sse":
-            if not sse_url:
-                raise MisimplementedSpecException("SSE tool call requires SSE endpoint URL.")
-
-            async def _on_notification(obj: dict[str, Any]) -> None:
-                await forward_notification(
-                    ctx.session,
-                    obj,
-                    related_request_id=ctx.request_context.request_id,
-                    protocol_version=ctx.protocol_version,
-                    progress_token=get_progress_token(ctx),
-                )
-
-            try:
-                return await call_tool_via_sse_ephemeral(
-                    http_client=client,
-                    sse_url=sse_url,
-                    headers=headers,
-                    request_body=body,
-                    on_notification=_on_notification,
-                    timeout_seconds=30,
-                )
-            except ConnectionError as exc:
-                logger.error(str(exc))
-                raise DownstreamHttpFailureException("Error calling downstream MCP server over SSE.") from exc
-            except TimeoutError as exc:
-                raise MisimplementedSpecException(
-                    "Timed out waiting for SSE JSON-RPC response after tool POST (30s)."
-                ) from exc
-            except ValueError as exc:
-                raise MisimplementedSpecException(str(exc)) from exc
-
-        async with client.stream("POST", url, json=body, headers=headers) as resp:
-            if not resp.is_success:
-                raw_body = await resp.aread()
-
-                logger.error(
-                    f"Error calling downstream MCP: status code: {resp.status_code}, body: {raw_body.decode('utf-8')}"
-                )
-
-                if resp.status_code == HTTPStatus.UNAUTHORIZED:
-                    raise DownstreamUnauthorizedException(
-                        _DOWNSTREAM_FAILURE_MESSAGE, www_authenticate=resp.headers.get("WWW-Authenticate")
-                    )
-                raise DownstreamHttpFailureException(_DOWNSTREAM_FAILURE_MESSAGE)
-            elif resp.headers.get("content-type", "").startswith("application/json"):
-                # If content-type is application/json, read the whole response body and return the parsed dictionary.
-                raw_body = await resp.aread()
-
-                response_obj = json.loads(raw_body.decode("utf-8"))
-
-                if not isinstance(response_obj, dict):
-                    raise MisimplementedSpecException(
-                        "Dowstream MCP responded with content-type application/json to a tool call, "
-                        "but the response body is not a valid JSON object."
-                    )
-
-                return response_obj
-            elif resp.headers.get("content-type", "").startswith("text/event-stream"):
-                # Server decided to upgrade to SSE stream, use an EventSource parse the events.
-                event_source = EventSource(resp)
-
-                async for event in event_source.aiter_sse():
-                    obj, possible_event_type = parse_data_field(event)
-
-                    match possible_event_type:
-                        case "notification":
-                            # If the event seems a notification, try forwarding it to our client.
-                            await forward_notification(
-                                ctx.session,
-                                obj,
-                                related_request_id=ctx.request_context.request_id,
-                                protocol_version=ctx.protocol_version,
-                                progress_token=get_progress_token(ctx),
-                            )
-                        case "response":
-                            # If the event seems a response (error or result), set response_obj to the parsed "data" field of the event.
-                            # Only set once because server is not supposed to send a response unrelated to the request on this SSE stream.
-                            # After finding the response, we should continue the async for loop to exhaust the response body and
-                            # avoid leaking TCP connection resources. If a server is well-implemented according to spec,
-                            # it should end the SSE stream after sending the response anyway.
-                            # Reference: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
-                            if response_obj is None:
-                                response_obj = obj
-                        case _:
-                            # With an irrelevant event, just log it.
-                            # NOTE: We are NOT handling reconnect/retry primers from the server.
-                            logger.error(f"irrelevant SSE event - data: {event.data}")
-
-                if response_obj is None:
-                    raise MisimplementedSpecException(
-                        "Downstream MCP server responded to a tool call POST request with SSE stream, "
-                        "ended the stream without disconnection, but did not include a JSON-RPC response."
-                    )
-
-                return response_obj
-            else:
-                raise MisimplementedSpecException(
-                    "Downstream MCP server did not reply with a Content-Type of application/json or text/event-stream, "
-                    "disregarding the Accept header of the request."
-                )
-    except McpGatewayException as exc:
-        logger.error(str(exc))
-
-        raise
-    except Exception as exc:
-        msg = "unexpected exception when making downstream tool call"
-        logger.exception(msg)  # Want stack trace here.
-
-        raise InternalServerException(msg) from exc
 
 
 def _bearer_token(headers: dict[str, str]) -> str:
@@ -263,18 +116,33 @@ def _auth_changed_result(server_name: str) -> CallToolResult:
     )
 
 
+def _downstream_input_result(
+    requests: list[ElicitRequestURLParams],
+    *,
+    has_other: bool = False,
+) -> CallToolResult:
+    lines = [
+        f"{request.message} Show the user this URL: {request.url}. Retry after the user finishes."
+        for request in requests
+    ]
+    if has_other or not lines:
+        lines.append("The downstream server asked for interactive input that Jarvis Registry cannot relay.")
+    return CallToolResult(content=[TextContent(type="text", text="\n".join(lines))], isError=True)
+
+
 async def _call_with_oauth_recovery(
     ctx: Context[McpAppContext],
     *,
     server: ExtendedMCPServer,
     user_context: UserContextDict,
-    session_key: str,
     target_url: str,
     base_headers: dict[str, str],
     ctx_baggage: Any,
-    body: dict[str, Any],
-) -> dict | CallToolResult:
-    """Build headers, initialize the session if needed and call the tool, recovering from a downstream 401.
+    tool_name: str,
+    arguments: dict[str, Any] | None,
+    metrics_ctx: ToolExecutionMetricsContext,
+) -> CallToolResult | InputRequiredResult:
+    """Build fresh headers and call through the SDK, recovering once from a downstream 401.
 
     For OAuth servers, a 401 (on session init or the call) gets one refresh and one retry; a 401 on
     the retry goes to the loop guard (``recover_from_unauthorized`` with ``is_retry=True``). At most
@@ -283,7 +151,7 @@ async def _call_with_oauth_recovery(
     a third send.
 
     Returns:
-        The downstream JSON-RPC response object, or a ``CallToolResult`` error for the send limit.
+        The typed downstream result, or a ``CallToolResult`` error for the send limit.
 
     Raises:
         UrlElicitationRequiredException: The header rebuild requires an interactive login.
@@ -291,9 +159,7 @@ async def _call_with_oauth_recovery(
     """
     lifespan = ctx.request_context.lifespan_context
     oauth_service = lifespan.oauth_service
-    mcp_client_service = _get_mcp_client_service(ctx)
-    requires_init = server.config.get("requiresInit", True)
-    transport_type = server.config.get("type", "streamable-http")
+    transport_type = MCPTransport(server.config.get("type", MCPTransport.STREAMABLE_HTTP))
     state_metadata = _get_state_metadata(get_client_params(ctx))
     oauth_enabled = server.mcp_auth_mode is McpAuthMode.OAUTH
 
@@ -311,60 +177,48 @@ async def _call_with_oauth_recovery(
 
     sent_headers: dict[str, str] = {}
 
-    async def send() -> dict:
+    async def on_progress(progress: float, total: float | None, message: str | None) -> None:
+        try:
+            await ctx.report_progress(progress, total, message)
+        except Exception:
+            logger.exception("Unable to forward downstream progress")
+
+    async def on_log(params: LoggingMessageNotificationParams) -> None:
+        try:
+            await ctx.session.send_notification(
+                LoggingMessageNotification(params=params), related_request_id=ctx.request_context.request_id
+            )
+        except Exception:
+            logger.exception("Unable to forward downstream log")
+
+    async def send() -> CallToolResult | InputRequiredResult:
         nonlocal sent_headers
-        additional_headers = dict(base_headers)
-        # Session management logic - only for streamable-http when initialization is required.
-        # For SSE we intentionally do not persist/reuse session IDs or messages URLs.
-        # Each SSE tool call opens a fresh stream and completes within _downstream_tool_call.
-        if requires_init and transport_type != "sse":
-            # Key format: "user_id:server_id" to track per-user, per-server sessions
-            session_info = mcp_client_service.get_session(session_key)
-            stored_session_id = None
-
-            if session_info:
-                # Existing session found - check if it's initialized
-                stored_session_id, session_initialized = session_info
-
-                if session_initialized:
-                    additional_headers["mcp-Session-Id"] = stored_session_id
-                    logger.info(f"Reusing initialized session for {server.serverName}: {stored_session_id}")
-
-            if not stored_session_id:
-                sent_headers = await build_headers(additional_headers)
-                session_id = await mcp_client_service.initialize_mcp_session(
-                    target_url,
-                    sent_headers,
-                    session_key,
-                    transport_type,
-                )
-
-                if session_id:
-                    additional_headers["mcp-Session-Id"] = session_id
-                else:
-                    logger.warning("Failed to initialize session, will attempt tool call without session")
-        elif transport_type == "sse":
-            logger.debug("SSE transport selected: using per-call ephemeral downstream session")
-        else:
-            logger.debug("Stateless server (requiresInit=False), skipping session management")
-
-        # Build final authenticated headers with session ID (if applicable)
-        sent_headers = await build_headers(additional_headers)
-        return await _downstream_tool_call(
-            ctx,
-            target_url,
-            body,
-            sent_headers,
+        sent_headers = await build_headers(dict(base_headers))
+        return await call_downstream_tool(
+            url=target_url,
             transport_type=transport_type,
-            sse_url=target_url if transport_type == "sse" else None,
+            server_id=str(server.id),
+            user_id=user_context["user_id"],
+            headers=sent_headers,
+            tool_name=tool_name,
+            arguments=arguments,
+            downstream_transport=lifespan.downstream_transport,
+            call_limiter=lifespan.downstream_call_limiter,
+            response_cache=lifespan.downstream_response_cache,
+            era_cache=lifespan.downstream_era_cache,
+            on_progress=on_progress if get_progress_token(ctx) is not None else None,
+            on_log=on_log if ctx.protocol_version in HANDSHAKE_PROTOCOL_VERSIONS else None,
         )
 
     is_retry = False
     while True:
         try:
-            return await send()
+            result = await send()
+            if isinstance(result, CallToolResult) and result.is_error:
+                metrics_ctx.set_error_type("downstream_tool_error")
+            return result
         except DownstreamUnauthorizedException as exc:
-            if not oauth_enabled:
+            if not oauth_enabled or (isinstance(exc, DownstreamCallUnauthorized) and not exc.oauth_retry_safe):
                 raise
             logger.info(f"Downstream {server.serverName} answered 401 (retry={is_retry}); running OAuth recovery")
             await oauth_service.recover_from_unauthorized(
@@ -374,12 +228,11 @@ async def _call_with_oauth_recovery(
                 www_authenticate=exc.www_authenticate,
                 is_retry=is_retry,
             )
-            # A new token (refreshed or rebuilt) must not ride on a session opened with the rejected one.
-            mcp_client_service.clear_session(session_key)
             if is_retry:
                 # Send limit: a rebuild that raises (login required) propagates; one that yields a
                 # token is not sent.
                 await build_headers(dict(base_headers))
+                metrics_ctx.set_error_type("downstream_auth_changed")
                 return _auth_changed_result(server.serverName)
             is_retry = True
 
@@ -549,50 +402,38 @@ async def execute_tool_impl(
                 BAGGAGE_KEY_MCP_SERVER_ID, bounded_baggage_value(server_id), context=ctx_baggage
             )
 
-            # Build MCP JSON-RPC request
-            mcp_request_body = {
-                "jsonrpc": "2.0",
-                "id": ctx.request_context.request_id,  # Forward the "id" field from clients of mcpgw to downstream MCPs.
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": arguments},
-            }
-            progress_token = get_progress_token(ctx)
-            if progress_token is not None:
-                # Forward only progress metadata; client trace context and protocol-era metadata stay local.
-                mcp_request_body["params"]["_meta"] = {"progressToken": progress_token}
-            logger.info(f"MCP JSON-RPC request body: {json.dumps(mcp_request_body, indent=2)}")
-
-            resp_obj = await _call_with_oauth_recovery(
-                ctx,
-                server=server,
-                user_context=user_context,
-                session_key=f"{user_id}:{server_id}",
-                target_url=target_url,
-                base_headers=additional_headers,
-                ctx_baggage=ctx_baggage,
-                body=mcp_request_body,
-            )
-            if isinstance(resp_obj, CallToolResult):
-                metrics_ctx.set_error_type("downstream_auth_changed")
-                return resp_obj
-
-            if "error" in resp_obj:
-                error_data = ErrorData.model_validate(resp_obj["error"])
-
-                logger.error(
-                    "Downstream MCP server returned an error response: "
-                    f"code {error_data.code}, messsage: {error_data.message}, data: {str(error_data.data)}"
+            try:
+                result = await _call_with_oauth_recovery(
+                    ctx,
+                    server=server,
+                    user_context=user_context,
+                    target_url=target_url,
+                    base_headers=additional_headers,
+                    ctx_baggage=ctx_baggage,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    metrics_ctx=metrics_ctx,
                 )
-
-                raise MCPError(error_data)
-            elif "result" in resp_obj:
-                result = CallToolResult.model_validate(resp_obj["result"])
-                if result.is_error:
-                    metrics_ctx.set_error_type("downstream_tool_error")
-                metrics_ctx.set_success(not result.is_error)
-                return result
-            else:
-                raise MisimplementedSpecException("Downstream MCP did not return a JSONRPCResponse message.")
+            except MCPError as exc:
+                if exc.code != URL_ELICITATION_REQUIRED:
+                    raise
+                try:
+                    requests = UrlElicitationRequiredError.from_error(exc.error).elicitations
+                except (ValidationError, ValueError, TypeError, AttributeError):
+                    requests = []
+                metrics_ctx.set_error_type("downstream_input_required")
+                return _downstream_input_result(requests)
+            if isinstance(result, InputRequiredResult):
+                requests = [
+                    request.params
+                    for request in (result.input_requests or {}).values()
+                    if isinstance(request, ElicitRequest) and isinstance(request.params, ElicitRequestURLParams)
+                ]
+                metrics_ctx.set_error_type("downstream_input_required")
+                has_other = len(requests) != len(result.input_requests or {}) or not requests
+                return _downstream_input_result(requests, has_other=has_other)
+            metrics_ctx.set_success(not result.is_error)
+            return result
         except UrlElicitationRequiredException as exc:
             # Re-auth required: a handled failure mode, not a downstream/internal error.
             metrics_ctx.set_error_type("url_elicitation")

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
-from httpx import AsyncClient
+from httpx2 import AsyncBaseTransport
+from mcp.client.caching import InMemoryResponseCacheStore
 from redis import Redis
 
 from registry_pkgs.core.config import JwtSigningConfig
@@ -9,7 +10,7 @@ from registry_pkgs.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
-from ...core.mcp_client import MCPClientService
+from ...core.mcp_downstream import DownstreamCallLimiter, DownstreamEraCache
 from ...services.access_control_service import ACLService
 from ...services.federation.a2a_client_registry import A2AClientRegistry
 from ...services.search.service import SearchService
@@ -21,13 +22,15 @@ from .client_info_store import ClientInfoStore
 class McpAppContext:
     """MCP application context with typed dependencies."""
 
-    proxy_client: AsyncClient
+    downstream_transport: AsyncBaseTransport
+    downstream_call_limiter: DownstreamCallLimiter
+    downstream_response_cache: InMemoryResponseCacheStore
+    downstream_era_cache: DownstreamEraCache
     a2a_client_registry: A2AClientRegistry
     server_service: ServerServiceV1
     mcp_server_repo: MCPServerRepository
     a2a_agent_repo: A2AAgentRepository
     search_service: SearchService
-    mcp_client_service: MCPClientService
     oauth_service: MCPOAuthService
     client_info_store: ClientInfoStore
     redis_client: Redis

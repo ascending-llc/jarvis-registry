@@ -19,6 +19,7 @@ from opentelemetry.sdk.trace import TracerProvider
 
 from registry.constants import URL_ELICITATION_INPUT_KEY
 from registry.core.config import settings
+from registry.core.mcp_downstream import DownstreamCallLimiter
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
@@ -65,7 +66,10 @@ def _make_ctx(
     lifespan_context = SimpleNamespace(
         acl_service=acl_service,
         server_service=server_service,
-        mcp_client_service=MagicMock(),
+        downstream_transport=MagicMock(),
+        downstream_call_limiter=DownstreamCallLimiter(100),
+        downstream_response_cache=MagicMock(),
+        downstream_era_cache=MagicMock(),
         oauth_service=MagicMock(),
         redis_client=MagicMock(),
         client_info_store=MagicMock(),
@@ -357,7 +361,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
     ctx.request_context.request.state.user["client_id"] = settings.headless_agent_client_id
     downstream_call = AsyncMock()
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
@@ -376,7 +380,7 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
         "acl unavailable"
     )
     downstream_call = AsyncMock()
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
@@ -767,7 +771,7 @@ async def test_modern_authorization_metric_distinguishes_pending_and_terminal_re
     lifespan.server_service.get_server_by_id.return_value = _make_server(server_id)
     lifespan.consent_store.has_server_consent.return_value = reason != "consent"
     downstream = AsyncMock()
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream)
     monkeypatch.setattr(server, "record_server_request", lambda *args: None)
     if reason == "oauth":
         monkeypatch.setattr(
@@ -804,7 +808,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     ctx.request_context.request.state.user["client_id"] = INTERACTIVE_CLIENT_ID
     ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
     downstream_call = AsyncMock()
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
@@ -833,7 +837,7 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     ctx.request_context.request.state.user["client_id"] = INTERACTIVE_CLIENT_ID
     ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
     downstream_call = AsyncMock()
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
     monkeypatch.setattr(utils, "_support_url_elicitation", lambda _client_params: True)
 
     with pytest.raises(utils.UrlElicitationRequiredError) as exc_info:
@@ -868,8 +872,8 @@ async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
     monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
     monkeypatch.setattr(
         server,
-        "_downstream_tool_call",
-        AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}}),
+        "call_downstream_tool",
+        AsyncMock(return_value=CallToolResult.model_validate({"content": [{"type": "text", "text": "ok"}]})),
     )
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
@@ -887,52 +891,18 @@ async def test_execute_tool_impl_injects_trace_context_into_downstream_headers(m
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
     monkeypatch.setattr(server, "record_server_request", MagicMock())
     monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={"Authorization": "Bearer x"}))
-    downstream_call = AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}})
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    downstream_call = AsyncMock(
+        return_value=CallToolResult.model_validate({"content": [{"type": "text", "text": "ok"}]})
+    )
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
     assert not result.is_error
-    headers = downstream_call.await_args.args[3]
+    headers = downstream_call.await_args.kwargs["headers"]
     assert "traceparent" in headers
     assert f"{BAGGAGE_KEY_MCP_TOOL_NAME}=tavily_search" in headers["baggage"]
     assert f"{BAGGAGE_KEY_MCP_SERVER_ID}={server_id}" in headers["baggage"]
-
-
-@pytest.mark.asyncio
-async def test_execute_tool_impl_injects_trace_context_into_session_init(monkeypatch):
-    if not isinstance(trace.get_tracer_provider(), TracerProvider):
-        trace.set_tracer_provider(TracerProvider())
-
-    server_id = str(PydanticObjectId())
-    ctx = _make_ctx(accessible_server_ids=[server_id])
-    srv = _make_server(server_id)
-    srv.config["requiresInit"] = True  # force the downstream session-init HTTP call
-    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = srv
-
-    mcp_client = ctx.request_context.lifespan_context.mcp_client_service
-    mcp_client.get_session.return_value = None  # no stored session -> initialize
-    init_session = AsyncMock(return_value="sess-123")
-    mcp_client.initialize_mcp_session = init_session
-
-    monkeypatch.setattr(server, "record_server_request", MagicMock())
-    monkeypatch.setattr(
-        server, "build_authenticated_headers", AsyncMock(side_effect=lambda **kw: dict(kw["additional_headers"]))
-    )
-    monkeypatch.setattr(
-        server,
-        "_downstream_tool_call",
-        AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}}),
-    )
-
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
-
-    assert not result.is_error
-    # initialize_mcp_session(target_url, init_headers, session_key, transport_type)
-    init_headers = init_session.await_args.args[1]
-    assert "traceparent" in init_headers
-    assert f"{BAGGAGE_KEY_MCP_TOOL_NAME}=tavily_search" in init_headers["baggage"]
-    assert f"{BAGGAGE_KEY_MCP_SERVER_ID}={server_id}" in init_headers["baggage"]
 
 
 @pytest.mark.asyncio
@@ -944,8 +914,10 @@ async def test_execute_tool_impl_headless_agent_bypasses_server_consent(monkeypa
     ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
     monkeypatch.setattr(server, "record_server_request", MagicMock())
     monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
-    downstream_call = AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}})
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    downstream_call = AsyncMock(
+        return_value=CallToolResult.model_validate({"content": [{"type": "text", "text": "ok"}]})
+    )
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
@@ -965,8 +937,10 @@ async def test_execute_tool_impl_downstream_tool_error_records_error_type(monkey
     monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
     monkeypatch.setattr(
         server,
-        "_downstream_tool_call",
-        AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "boom"}], "isError": True}}),
+        "call_downstream_tool",
+        AsyncMock(
+            return_value=CallToolResult.model_validate({"content": [{"type": "text", "text": "boom"}], "isError": True})
+        ),
     )
 
     with patch(f"{DECORATORS_PATH}._record_tool_execution") as mock_record:
@@ -987,7 +961,7 @@ async def test_execute_tool_impl_disabled_tool_returns_error(monkeypatch):
         server_id, disabled_tools=["tavily_search"]
     )
     downstream_call = AsyncMock()
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
@@ -1012,8 +986,10 @@ async def test_execute_tool_impl_enabled_tool_not_blocked(monkeypatch):
     )
     monkeypatch.setattr(server, "record_server_request", MagicMock())
     monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
-    downstream_call = AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}})
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    downstream_call = AsyncMock(
+        return_value=CallToolResult.model_validate({"content": [{"type": "text", "text": "ok"}]})
+    )
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
@@ -1025,7 +1001,7 @@ async def test_execute_tool_impl_enabled_tool_not_blocked(monkeypatch):
 # Downstream 401 recovery (AS-1929)
 # ----------------------------------------------------------------------
 
-_OK = {"result": {"content": [{"type": "text", "text": "ok"}]}}
+_OK = CallToolResult.model_validate({"content": [{"type": "text", "text": "ok"}]})
 
 
 def _oauth_setup(monkeypatch, *, requires_init: bool = False):
@@ -1035,8 +1011,7 @@ def _oauth_setup(monkeypatch, *, requires_init: bool = False):
     srv = _make_server(server_id, auth_mode=McpAuthMode.OAUTH)
     srv.config["requiresInit"] = requires_init
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = srv
-    mcp_client = ctx.request_context.lifespan_context.mcp_client_service
-    mcp_client.get_session.return_value = None
+    mcp_client = None
     oauth_service = ctx.request_context.lifespan_context.oauth_service
     oauth_service.recover_from_unauthorized = AsyncMock(return_value=None)
     monkeypatch.setattr(server, "record_server_request", MagicMock())
@@ -1065,16 +1040,15 @@ async def test_tool_401_then_refresh_retries_once_with_new_token(monkeypatch):
 
     oauth_service.recover_from_unauthorized.side_effect = refreshed
     downstream = AsyncMock(side_effect=[_unauthorized(), _OK])
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream)
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
     assert not result.is_error
     assert downstream.await_count == 2
-    assert downstream.await_args_list[1].args[3]["Authorization"] == "Bearer t2"
+    assert downstream.await_args_list[1].kwargs["headers"]["Authorization"] == "Bearer t2"
     kwargs = oauth_service.recover_from_unauthorized.await_args.kwargs
     assert kwargs == {"rejected_access_token": "t1", "www_authenticate": "Bearer x", "is_retry": False}
-    mcp_client.clear_session.assert_called_once_with(f"507f1f77bcf86cd799439011:{server_id}")
 
 
 @pytest.mark.asyncio
@@ -1087,7 +1061,7 @@ async def test_tool_401_then_failed_refresh_returns_url_elicitation(monkeypatch)
 
     oauth_service.recover_from_unauthorized.side_effect = failed
     downstream = AsyncMock(side_effect=[_unauthorized()])
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream)
     elicitation_result = CallToolResult(content=[TextContent(type="text", text="open the URL")], isError=True)
     elicitation = MagicMock(return_value=elicitation_result)
     monkeypatch.setattr(server, "_build_url_elicitation_result", elicitation)
@@ -1112,7 +1086,7 @@ async def test_tool_second_401_loop_guard_returns_error_result(monkeypatch):
 
     oauth_service.recover_from_unauthorized.side_effect = recover
     downstream = AsyncMock(side_effect=[_unauthorized(), _unauthorized()])
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream)
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
@@ -1132,35 +1106,14 @@ async def test_tool_recovery_none_but_rebuild_has_token_retries_then_limits_send
 
     oauth_service.recover_from_unauthorized.side_effect = other_pod_refreshed
     downstream = AsyncMock(side_effect=[_unauthorized(), _unauthorized(), _OK])
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream)
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
     assert result.is_error
     assert result.content[0].text == "Authorization for github changed during this call; retry it."
     assert downstream.await_count == 2  # no third send
-    assert downstream.await_args_list[1].args[3]["Authorization"] == "Bearer t-other"
-
-
-@pytest.mark.asyncio
-async def test_tool_401_during_session_init_reaches_recovery(monkeypatch):
-    server_id, ctx, _, mcp_client, oauth_service, tokens = _oauth_setup(monkeypatch, requires_init=True)
-
-    async def refreshed(*args, **kwargs):
-        tokens[0] = "t2"
-        return "t2"
-
-    oauth_service.recover_from_unauthorized.side_effect = refreshed
-    mcp_client.initialize_mcp_session = AsyncMock(side_effect=[_unauthorized(), "sess-2"])
-    downstream = AsyncMock(return_value=_OK)
-    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
-
-    result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
-
-    assert not result.is_error
-    assert oauth_service.recover_from_unauthorized.await_args.kwargs["rejected_access_token"] == "t1"
-    assert downstream.await_args.args[3]["mcp-Session-Id"] == "sess-2"
-    assert downstream.await_args.args[3]["Authorization"] == "Bearer t2"
+    assert downstream.await_args_list[1].kwargs["headers"]["Authorization"] == "Bearer t-other"
 
 
 @pytest.mark.asyncio
@@ -1171,28 +1124,12 @@ async def test_tool_401_for_non_oauth_server_is_not_recovered(monkeypatch):
     ctx.request_context.lifespan_context.oauth_service.recover_from_unauthorized = AsyncMock()
     monkeypatch.setattr(server, "record_server_request", MagicMock())
     monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={"Authorization": "Bearer k"}))
-    monkeypatch.setattr(server, "_downstream_tool_call", AsyncMock(side_effect=_unauthorized()))
+    monkeypatch.setattr(server, "call_downstream_tool", AsyncMock(side_effect=_unauthorized()))
 
     with pytest.raises(DownstreamHttpFailureException):
         await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
     ctx.request_context.lifespan_context.oauth_service.recover_from_unauthorized.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_downstream_tool_call_raises_unauthorized_with_challenge():
-    import httpx
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(401, headers={"WWW-Authenticate": 'Bearer resource_metadata="https://x"'})
-
-    ctx = MagicMock()
-    ctx.request_context.lifespan_context.proxy_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-    with pytest.raises(DownstreamUnauthorizedException) as exc_info:
-        await server._downstream_tool_call(ctx, "https://mcp.example.com/mcp", {}, {})
-
-    assert exc_info.value.www_authenticate == 'Bearer resource_metadata="https://x"'
 
 
 def test_create_mcp_app_drops_otel_middleware_and_disables_subscriptions():
@@ -1219,13 +1156,15 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
 
     proxy_client = object()
     container = SimpleNamespace(
-        mcpgw_proxy_client=proxy_client,
+        mcpgw_downstream_transport=proxy_client,
+        mcpgw_downstream_call_limiter=DownstreamCallLimiter(100),
+        mcpgw_downstream_response_cache=object(),
+        downstream_era_cache=object(),
         a2a_client_registry=MagicMock(),
         server_service=MagicMock(),
         mcp_server_repo=MagicMock(),
         a2a_agent_repo=MagicMock(),
         search_service=MagicMock(),
-        mcp_client_service=MagicMock(),
         oauth_service=MagicMock(),
         client_info_store=MagicMock(),
         redis_client=MagicMock(),
@@ -1247,7 +1186,225 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
             pass
 
     assert ctx1 is ctx2
-    assert ctx1.proxy_client is proxy_client
-    assert ctx2.proxy_client is proxy_client
+    assert ctx1.downstream_call_limiter is container.mcpgw_downstream_call_limiter
+    assert ctx2.downstream_call_limiter is ctx1.downstream_call_limiter
+    assert ctx1.downstream_transport is proxy_client
+    assert ctx2.downstream_transport is proxy_client
     # The container is resolved only on the first entry; the context is cached thereafter.
     assert calls["n"] == 1
+
+
+@pytest.mark.parametrize("kind", ["url", "state_only", "form", "legacy_url", "malformed_legacy"])
+async def test_downstream_interactive_input_is_terminal_text(monkeypatch, kind):
+    from mcp.shared.exceptions import MCPError
+    from mcp.types import ElicitRequest, ElicitRequestFormParams, ElicitRequestURLParams
+
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id], protocol_version="2026-07-28")
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    url = "https://downstream.example/login"
+    if kind == "url":
+        outcome = InputRequiredResult(
+            input_requests={"login": ElicitRequest(params=ElicitRequestURLParams(url=url, message="Sign in"))}
+        )
+    elif kind == "form":
+        outcome = InputRequiredResult(
+            input_requests={
+                "form": ElicitRequest(
+                    params=ElicitRequestFormParams(
+                        message="Fill form", requested_schema={"type": "object", "properties": {}}
+                    )
+                )
+            }
+        )
+    elif kind == "state_only":
+        outcome = InputRequiredResult(request_state="opaque-state")
+    else:
+        outcome = MCPError(
+            -32042,
+            "login required",
+            {"elicitations": [{"mode": "url", "url": url, "message": "Sign in", "elicitationId": "id"}]}
+            if kind == "legacy_url"
+            else {"elicitations": 2},
+        )
+    downstream = AsyncMock(side_effect=outcome) if isinstance(outcome, Exception) else AsyncMock(return_value=outcome)
+    monkeypatch.setattr(server, "call_downstream_tool", downstream)
+    with patch(f"{DECORATORS_PATH}._record_tool_execution") as record:
+        result = await execute_tool_impl(ctx, "search", {}, server_id)
+    assert isinstance(result, CallToolResult) and result.is_error
+    text = result.content[0].text
+    assert (url in text) == (kind in {"url", "legacy_url"})
+    assert "opaque-state" not in text
+    assert record.call_args.kwargs["error_type"] == "downstream_input_required"
+    downstream.assert_awaited_once()
+
+
+@pytest.mark.parametrize("version", ["2025-11-25", "2026-07-28", None])
+@pytest.mark.parametrize("token", [None, 0, ""])
+async def test_sdk_callbacks_remap_progress_and_filter_logging(monkeypatch, version, token):
+    from mcp.types import LoggingMessageNotificationParams
+
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id], protocol_version=version)
+    ctx.request_context.meta = {"progress_token": token}
+    ctx.report_progress = AsyncMock()
+    ctx.session.send_notification = AsyncMock()
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+
+    async def downstream(**kwargs):
+        if token is None:
+            assert kwargs["on_progress"] is None
+        else:
+            await kwargs["on_progress"](0.5, 1.0, "working")
+        if version == "2025-11-25":
+            await kwargs["on_log"](LoggingMessageNotificationParams(level="info", data="log"))
+        else:
+            assert kwargs["on_log"] is None
+        return CallToolResult(content=[TextContent(type="text", text="ok")])
+
+    monkeypatch.setattr(server, "call_downstream_tool", downstream)
+    with patch(f"{DECORATORS_PATH}._record_tool_execution") as record:
+        assert not (await execute_tool_impl(ctx, "search", {}, server_id)).is_error
+    assert record.call_args.kwargs["success"] is True
+    assert record.call_args.kwargs["error_type"] == "none"
+    assert ctx.report_progress.await_count == int(token is not None)
+    assert ctx.session.send_notification.await_count == int(version == "2025-11-25")
+    if version == "2025-11-25":
+        assert ctx.session.send_notification.await_args.kwargs["related_request_id"] == "req-1"
+
+
+@pytest.mark.parametrize("failure", ["initialize", "prefetch", "tool", "post_execution_list"])
+async def test_real_sdk_oauth_recovery_respects_execution_phase(monkeypatch, failure) -> None:
+    import json
+
+    import httpx2
+    from mcp.client.caching import InMemoryResponseCacheStore
+    from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
+
+    from registry.core.mcp_downstream import DownstreamCallUnauthorized, DownstreamEraCache
+    from registry.core.mcp_transport import DownstreamPhase
+
+    server_id, ctx, srv, _, oauth, tokens = _oauth_setup(monkeypatch)
+    redis = MemoryRedis()
+    redis.values[f"test:mcp_era:{server_id}"] = "legacy"
+
+    async def refresh(*args, **kwargs) -> None:
+        tokens[0] = "t2"
+
+    oauth.recover_from_unauthorized.side_effect = refresh
+    async with sdk_endpoint(era="legacy") as transport:
+        original = transport.handle_async_request
+        list_count = 0
+        rejected = False
+        tool_sends = 0
+
+        async def handle(request: httpx2.Request) -> httpx2.Response:
+            nonlocal list_count, rejected, tool_sends
+            body = json.loads(await request.aread()) if request.method == "POST" else {}
+            method = body.get("method")
+            if method == "tools/call":
+                tool_sends += 1
+            if method == "tools/list":
+                list_count += 1
+                if failure == "post_execution_list" and list_count == 1:
+                    # A callable tool can disappear from the listing or be omitted by a stale listing.
+                    return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"tools": []}})
+            target = {
+                "initialize": "initialize",
+                "prefetch": "tools/list",
+                "tool": "tools/call",
+                "post_execution_list": "tools/list",
+            }[failure]
+            reject = method == target and not rejected
+            if failure == "post_execution_list":
+                reject = reject and list_count == 2
+            if reject:
+                rejected = True
+                return httpx2.Response(401, headers={"www-authenticate": "Bearer phase-test"})
+            return await original(request)
+
+        monkeypatch.setattr(transport, "handle_async_request", handle)
+        lifespan = ctx.request_context.lifespan_context
+        lifespan.downstream_transport = transport
+        lifespan.downstream_response_cache = InMemoryResponseCacheStore()
+        lifespan.downstream_era_cache = DownstreamEraCache(redis, "test")
+        srv.config["url"] = "http://downstream/mcp"
+        if failure == "post_execution_list":
+            with pytest.raises(DownstreamCallUnauthorized) as error:
+                await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+            assert error.value.phase == DownstreamPhase.RESULT_VALIDATION
+            assert error.value.method == "tools/list"
+            assert error.value.www_authenticate == "Bearer phase-test"
+            assert not error.value.oauth_retry_safe
+            oauth.recover_from_unauthorized.assert_not_awaited()
+            assert tool_sends == 1
+        else:
+            result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+            assert not result.is_error
+            oauth.recover_from_unauthorized.assert_awaited_once()
+            assert tool_sends == (2 if failure == "tool" else 1)
+            assert oauth.recover_from_unauthorized.await_args.kwargs["www_authenticate"] == "Bearer phase-test"
+        # Regardless of where 401 occurs, the real tool executes exactly once.
+        assert transport.count("tools/call") == 1
+
+
+@pytest.mark.parametrize("pagination", [False, True], ids=["first-page-stalled", "endless-unique-cursors"])
+async def test_tool_list_deadline_stops_before_execution_without_oauth_recovery(monkeypatch, pagination) -> None:
+    import asyncio
+    import json
+
+    import httpx2
+    from mcp.client.caching import InMemoryResponseCacheStore
+    from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
+
+    from registry.core.mcp_config import MCPClientConfig
+    from registry.core.mcp_downstream import DownstreamEraCache
+
+    monkeypatch.setattr(MCPClientConfig, "TOOLS_TIMEOUT", 0.1)
+    server_id, ctx, srv, _, oauth, _ = _oauth_setup(monkeypatch)
+    redis = MemoryRedis()
+    redis.values[f"test:mcp_era:{server_id}"] = "legacy"
+    pages = []
+    cancelled = asyncio.Event()
+    async with sdk_endpoint(era="legacy") as transport:
+        original = transport.handle_async_request
+
+        async def handle(request: httpx2.Request) -> httpx2.Response:
+            body = json.loads(await request.aread()) if request.method == "POST" else {}
+            if body.get("method") != "tools/list":
+                return await original(request)
+            pages.append(body.get("params", {}).get("cursor"))
+            try:
+                if not pagination:
+                    await asyncio.Event().wait()
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return httpx2.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {"tools": [], "nextCursor": f"page-{len(pages)}"},
+                },
+            )
+
+        monkeypatch.setattr(transport, "handle_async_request", handle)
+        lifespan = ctx.request_context.lifespan_context
+        lifespan.downstream_transport = transport
+        lifespan.downstream_response_cache = InMemoryResponseCacheStore()
+        lifespan.downstream_era_cache = DownstreamEraCache(redis, "test")
+        srv.config["url"] = "http://downstream/mcp"
+        async with asyncio.timeout(5):
+            with pytest.raises(DownstreamHttpFailureException, match="Timed out fetching.*tool list"):
+                await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+        assert cancelled.is_set()
+        assert pages.count(None) == 1  # No second attempt starting at page one.
+        assert len(pages) > 1 if pagination else len(pages) == 1
+        assert transport.count("tools/call") == 0
+        assert transport.count("initialize") == 1
+        assert transport.closed == 0
+        oauth.recover_from_unauthorized.assert_not_awaited()
