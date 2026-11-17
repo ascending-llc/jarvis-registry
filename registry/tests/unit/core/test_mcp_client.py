@@ -51,10 +51,10 @@ async def test_rewrite_sse_request_url_strips_mount_path():
     """The v2 request hook (replacing the old httpx monkey-patch) rewrites the mount-path POST-back URL."""
     import httpx2
 
-    from registry.core.mcp_client import _rewrite_sse_request_url
+    from registry.core.mcp_transport import rewrite_sse_request_url
 
     req = httpx2.Request("POST", "http://host:8000/fininfo/messages/?session_id=abc")
-    await _rewrite_sse_request_url(req)
+    await rewrite_sse_request_url(req)
     assert str(req.url) == "http://host:8000/messages/?session_id=abc"
 
 
@@ -64,31 +64,31 @@ async def test_rewrite_sse_request_url_strips_mount_path():
 async def test_rewrite_sse_request_url_leaves_non_messages_url_untouched():
     import httpx2
 
-    from registry.core.mcp_client import _rewrite_sse_request_url
+    from registry.core.mcp_transport import rewrite_sse_request_url
 
     req = httpx2.Request("GET", "http://host:8000/sse")
-    await _rewrite_sse_request_url(req)
+    await rewrite_sse_request_url(req)
     assert str(req.url) == "http://host:8000/sse"
 
 
 @pytest.mark.unit
 @pytest.mark.core
 @pytest.mark.asyncio
-async def test_mcp_sse_client_factory_attaches_hook_and_optional_recorder():
+async def test_create_sse_client_factory_attaches_hook_and_optional_recorder():
     """The SSE factory attaches the mount-path rewrite hook, and the recorder only when provided."""
-    from registry.core.mcp_client import _mcp_sse_client_factory, _ResponseRecorder, _rewrite_sse_request_url
+    from registry.core.mcp_transport import ResponseRecorder, create_sse_client_factory, rewrite_sse_request_url
 
-    recorder = _ResponseRecorder()
-    client = _mcp_sse_client_factory(recorder)(headers={"a": "b"}, auth=None, timeout=None)
+    recorder = ResponseRecorder()
+    client = create_sse_client_factory(recorder)(headers={"a": "b"}, auth=None, timeout=None)
     try:
-        assert _rewrite_sse_request_url in client.event_hooks["request"]
+        assert rewrite_sse_request_url in client.event_hooks["request"]
         assert recorder in client.event_hooks["response"]
     finally:
         await client.aclose()
 
-    client2 = _mcp_sse_client_factory()(headers=None, auth=None, timeout=None)
+    client2 = create_sse_client_factory()(headers=None, auth=None, timeout=None)
     try:
-        assert _rewrite_sse_request_url in client2.event_hooks["request"]
+        assert rewrite_sse_request_url in client2.event_hooks["request"]
         assert recorder not in client2.event_hooks["response"]
     finally:
         await client2.aclose()

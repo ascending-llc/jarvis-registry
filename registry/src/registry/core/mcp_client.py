@@ -23,7 +23,6 @@ from httpx_sse import EventSource
 from mcp import Client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared._httpx_utils import create_mcp_http_client
 from redis import Redis
 
 from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
@@ -33,7 +32,9 @@ from registry_pkgs.oauth.errors import OAuthDiscoveryError
 from .config import settings
 
 # Internal imports
-from .mcp_config import MCPClientConfig
+from .mcp_config import MCPClientConfig, MCPTransport
+from .mcp_downstream import DownstreamEraCache
+from .mcp_transport import ResponseRecorder, create_sse_client_factory
 from .server_strategies import get_server_strategy
 
 logger = logging.getLogger(__name__)
@@ -344,34 +345,23 @@ class _InitResult:
     capabilities: Any
 
 
-class _ResponseRecorder:
-    """Record the first HTTP response's status code and ``mcp-session-id`` header.
-
-    In v2 the transport no longer surfaces HTTP status as an ``httpx.HTTPStatusError`` — a 401/403
-    arrives as ``MCPError`` and a 404 as a JSON-RPC error, so the status disappears. This httpx2
-    ``event_hooks["response"]`` hook captures the status (for health-check outcomes) and the session id
-    (for ``requiresInit``) directly off the wire, before any error swallows them.
-    """
-
-    def __init__(self) -> None:
-        self.status_code: int | None = None
-        self.session_id: str | None = None
-
-    async def __call__(self, response: httpx2.Response) -> None:
-        if self.status_code is None:
-            self.status_code = response.status_code
-            self.session_id = response.headers.get("mcp-session-id")
+_ResponseRecorder = ResponseRecorder
 
 
 async def initialize_mcp(
-    target_url: str, headers: dict[str, str] = None, transport_type: str = "streamable-http"
+    target_url: str,
+    headers: dict[str, str] = None,
+    transport_type: MCPTransport = MCPTransport.STREAMABLE_HTTP,
+    *,
+    server_id: str | None = None,
+    era_cache: DownstreamEraCache | None = None,
 ) -> tuple[_InitResult | None, int | None]:
     """
     Perform MCP initialization using the v2 ``mcp.Client`` and return the handshake result.
 
     This is a pure transport layer function that performs the MCP initialize handshake. It returns a
     ``(_InitResult | None, status_code | None)`` tuple: the init snapshot (or None on failure) and the
-    first HTTP response's status code recorded off the wire, since v2 hides the HTTP status inside
+    latest RPC response's status code recorded off the wire, since v2 hides the HTTP status inside
     ``MCPError``. The caller interprets both (e.g. for health checks).
 
     Args:
@@ -384,6 +374,8 @@ async def initialize_mcp(
     if headers is None:
         headers = MCPClientConfig.DEFAULT_HEADERS.copy()
 
+    transport_type = MCPTransport(transport_type)
+
     # Prepare URL based on transport type
     strategy = get_server_strategy({"type": transport_type})
     mcp_url = strategy.modify_url(target_url)
@@ -392,26 +384,28 @@ async def initialize_mcp(
 
     recorder = _ResponseRecorder()
     try:
-        if transport_type == "streamable-http":
+        if transport_type == MCPTransport.STREAMABLE_HTTP:
             async with httpx2.AsyncClient(
-                headers=headers, timeout=30.0, event_hooks={"response": [recorder]}
+                headers=headers, timeout=30.0, event_hooks={"request": [recorder.on_request], "response": [recorder]}
             ) as http_client:
-                async with Client(
-                    streamable_http_client(url=mcp_url, http_client=http_client), mode="legacy"
-                ) as session:
+                async with Client(streamable_http_client(url=mcp_url, http_client=http_client), mode="auto") as session:
                     logger.info(f"MCP initialization successful for {target_url}")
+                    if era_cache:
+                        await era_cache.record(server_id, session.protocol_version)
                     return _snapshot_init(session), recorder.status_code
 
-        elif transport_type == "sse":
+        elif transport_type == MCPTransport.SSE:
             async with Client(
                 sse_client(
                     mcp_url,
                     headers=headers,
-                    httpx_client_factory=_mcp_sse_client_factory(recorder),
+                    httpx_client_factory=create_sse_client_factory(recorder),
                 ),
-                mode="legacy",
+                mode="auto",
             ) as session:
                 logger.info(f"MCP initialization successful for {target_url}")
+                if era_cache:
+                    await era_cache.record(server_id, session.protocol_version)
                 return _snapshot_init(session), recorder.status_code
         else:
             logger.error(f"Unsupported transport type: {transport_type}")
@@ -432,7 +426,10 @@ def _snapshot_init(session: Client) -> _InitResult:
 
 async def perform_health_check(
     url: str,
-    transport: str = "streamable-http",
+    transport: MCPTransport = MCPTransport.STREAMABLE_HTTP,
+    *,
+    server_id: str | None = None,
+    era_cache: DownstreamEraCache | None = None,
 ) -> tuple[bool, str, int | None, Any | None]:
     """
     Perform health check on an MCP server URL.
@@ -455,6 +452,8 @@ async def perform_health_check(
     if not url:
         return False, "No URL provided", None, None
 
+    transport = MCPTransport(transport)
+
     # Skip health checks for stdio transport
     if transport == MCPClientConfig.TRANSPORT_STDIO:
         logger.info(f"Skipping health check for stdio transport: {url}")
@@ -473,8 +472,13 @@ async def perform_health_check(
     start_time = datetime.now(UTC)
 
     # Attempt MCP initialization. v2 hides the HTTP status inside MCPError, so initialize_mcp records
-    # the first response's status off the wire and returns it alongside the init snapshot.
-    init_result, http_status_code = await initialize_mcp(target_url=url, headers=headers, transport_type=transport)
+    # the latest RPC response's status off the wire and returns it alongside the init snapshot.
+    init_result, http_status_code = await initialize_mcp(
+        target_url=url,
+        headers=headers,
+        transport_type=transport,
+        **({"server_id": server_id, "era_cache": era_cache} if era_cache else {}),
+    )
 
     # Calculate response time
     end_time = datetime.now(UTC)
@@ -531,7 +535,7 @@ async def _initialize_mcp_session(
     target_url: str,
     headers: dict[str, str],
     session_key: str,
-    transport_type: str = "streamable-http",
+    transport_type: MCPTransport = MCPTransport.STREAMABLE_HTTP,
     redis_client: Redis | None = None,
 ) -> str | None:
     """
@@ -556,7 +560,7 @@ async def _initialize_mcp_session(
     initialized_notification = deepcopy(_MCP_INITIALIZED_NOTIFICATION)
 
     try:
-        if transport_type == "streamable-http":
+        if transport_type == MCPTransport.STREAMABLE_HTTP:
             return await _initialize_mcp_session_http(
                 target_url=target_url,
                 headers=headers,
@@ -684,65 +688,7 @@ def normalize_sse_endpoint_url(endpoint_url: str) -> str:
     return endpoint_url
 
 
-def normalize_sse_endpoint_url_for_request(url_str: str) -> str:
-    """
-    Normalize URLs in HTTP requests by removing mount paths.
-    Example: http://localhost:8000/currenttime/messages/... -> http://localhost:8000/messages/...
-    """
-    if "/messages/" not in url_str:
-        return url_str
-
-    # Pattern to match URLs like http://host:port/mount_path/messages/...
-
-    pattern = r"(https?://[^/]+)/([^/]+)(/messages/.*)"
-    match = re.match(pattern, url_str)
-
-    if match:
-        base_url = match.group(1)  # http://host:port
-        mount_path = match.group(2)  # currenttime, fininfo, etc.
-        messages_path = match.group(3)  # /messages/...
-
-        # Skip common paths that aren't mount paths
-        if mount_path in ["api", "static", "health"]:
-            return url_str
-
-        normalized = f"{base_url}{messages_path}"
-        logger.debug(f"Normalized request URL: {url_str} -> {normalized}")
-        return normalized
-
-    return url_str
-
-
-async def _rewrite_sse_request_url(request: httpx2.Request) -> None:
-    """httpx2 request hook that strips SSE mount-path prefixes off the POST-back URL.
-
-    v2's ``sse_client`` uses httpx2, so the old process-wide monkey-patch of ``httpx.AsyncClient.request``
-    silently stopped applying. This per-client hook replaces it (and removes the non-concurrency-safe
-    global patch).
-    """
-    url_str = str(request.url)
-    if MCPClientConfig.ENDPOINT_MESSAGES in url_str:
-        request.url = httpx2.URL(normalize_sse_endpoint_url_for_request(url_str))
-
-
-def _mcp_sse_client_factory(recorder: _ResponseRecorder | None = None):
-    """Build an httpx2 client factory for ``sse_client`` with the mount-path rewrite hook.
-
-    Reuses the SDK's ``create_mcp_http_client`` (so its own defaults stand) and attaches the request
-    hook; when a recorder is given, also attaches it as a response hook to capture status/session id.
-    """
-
-    def factory(headers=None, auth=None, timeout=None) -> httpx2.AsyncClient:
-        client = create_mcp_http_client(headers=headers, auth=auth, timeout=timeout)
-        client.event_hooks["request"].append(_rewrite_sse_request_url)
-        if recorder is not None:
-            client.event_hooks["response"].append(recorder)
-        return client
-
-    return factory
-
-
-async def detect_server_transport(base_url: str) -> str:
+async def detect_server_transport(base_url: str) -> MCPTransport:
     """
     Detect which transport a server supports by testing endpoints.
     Returns the preferred transport type.
@@ -779,13 +725,15 @@ async def detect_server_transport(base_url: str) -> str:
     return MCPClientConfig.TRANSPORT_HTTP
 
 
-async def get_tools_from_server_with_transport(base_url: str, transport: str = "auto") -> list[dict] | None:
+async def get_tools_from_server_with_transport(
+    base_url: str, transport: MCPTransport | None = None
+) -> list[dict] | None:
     """
     Connects to an MCP server using the specified transport, lists tools, and returns their details.
 
     Args:
         base_url: The base URL of the MCP server (e.g., http://localhost:8000).
-        transport: Transport type ("streamable-http", "sse", or "auto")
+        transport: Transport type ("streamable-http", "sse", or None for auto-detection)
 
     Returns:
         A list of tool detail dictionaries, or None if connection/retrieval fails.
@@ -795,7 +743,7 @@ async def get_tools_from_server_with_transport(base_url: str, transport: str = "
         return None
 
     # Auto-detect transport if needed
-    if transport == "auto":
+    if transport is None:
         transport = await detect_server_transport(base_url)
 
     logger.info(f"Attempting to connect to MCP server at {base_url} using {transport} transport...")
@@ -830,11 +778,13 @@ def _is_requires_init(session_id: str | None) -> bool:
 async def _get_from_streamable_http(
     base_url: str,
     headers: dict[str, str] = None,
-    transport_type: str = "streamable-http",
+    transport_type: MCPTransport = MCPTransport.STREAMABLE_HTTP,
     include_capabilities: bool = True,
     include_resources: bool = True,
     include_prompts: bool = True,
     httpx_auth: Any = None,
+    server_id: str | None = None,
+    era_cache: DownstreamEraCache | None = None,
 ) -> MCPServerData:
     """
     Consolidated method to get tools, resources, prompts, and optionally capabilities using streamable-http transport.
@@ -875,9 +825,14 @@ async def _get_from_streamable_http(
         # since v2's streamable_http_client no longer yields get_session_id.
         recorder = _ResponseRecorder()
         async with httpx2.AsyncClient(
-            headers=headers, timeout=30.0, auth=httpx_auth, event_hooks={"response": [recorder]}
+            headers=headers,
+            timeout=30.0,
+            auth=httpx_auth,
+            event_hooks={"request": [recorder.on_request], "response": [recorder]},
         ) as http_client:
-            async with Client(streamable_http_client(url=mcp_url, http_client=http_client), mode="legacy") as session:
+            async with Client(streamable_http_client(url=mcp_url, http_client=http_client), mode="auto") as session:
+                if era_cache:
+                    await era_cache.record(server_id, session.protocol_version)
                 init_result = _snapshot_init(session)
                 tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
 
@@ -942,7 +897,7 @@ async def _get_from_streamable_http(
 
 
 async def _get_tools_streamable_http(
-    base_url: str, headers: dict[str, str] = None, transport_type: str = "streamable-http"
+    base_url: str, headers: dict[str, str] = None, transport_type: MCPTransport = MCPTransport.STREAMABLE_HTTP
 ) -> list[dict] | None:
     """
     Get tools using streamable-http transport (legacy method, without capabilities, resources, or prompts).
@@ -957,11 +912,13 @@ async def _get_tools_streamable_http(
 async def _get_from_sse(
     base_url: str,
     headers: dict[str, str] = None,
-    transport_type: str = "sse",
+    transport_type: MCPTransport = MCPTransport.SSE,
     include_capabilities: bool = True,
     include_resources: bool = True,
     include_prompts: bool = True,
     httpx_auth: Any = None,
+    server_id: str | None = None,
+    era_cache: DownstreamEraCache | None = None,
 ) -> MCPServerData:
     """
     Consolidated method to get tools, resources, prompts, and optionally capabilities using SSE transport.
@@ -1010,10 +967,12 @@ async def _get_from_sse(
                 mcp_server_url,
                 headers=headers,
                 auth=httpx_auth,
-                httpx_client_factory=_mcp_sse_client_factory(),
+                httpx_client_factory=create_sse_client_factory(),
             ),
-            mode="legacy",
+            mode="auto",
         ) as session:
+            if era_cache:
+                await era_cache.record(server_id, session.protocol_version)
             init_result = _snapshot_init(session)
             tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
 
@@ -1077,7 +1036,7 @@ async def _get_from_sse(
 
 
 async def _get_tools_sse(
-    base_url: str, headers: dict[str, str] = None, transport_type: str = "sse"
+    base_url: str, headers: dict[str, str] = None, transport_type: MCPTransport = MCPTransport.SSE
 ) -> list[dict] | None:
     """
     Get tools using SSE transport (legacy method, without capabilities, resources, or prompts).
@@ -1258,10 +1217,12 @@ def _extract_prompt_details(prompts_response) -> list[dict]:
 async def get_tools_and_capabilities_from_server(
     base_url: str,
     headers: dict[str, str] = None,
-    transport_type: str = None,
+    transport_type: MCPTransport | None = None,
     include_resources: bool = True,
     include_prompts: bool = True,
     httpx_auth: Any = None,
+    server_id: str | None = None,
+    era_cache: DownstreamEraCache | None = None,
 ) -> MCPServerData:
     """
     Get tools, resources, prompts, and capabilities from server.
@@ -1291,11 +1252,13 @@ async def get_tools_and_capabilities_from_server(
     # Auto-detect transport if not provided
     if transport_type is None:
         transport_type = await detect_server_transport(base_url)
+    else:
+        transport_type = MCPTransport(transport_type)
 
     logger.info(f"Attempting to connect to MCP server at {base_url} using {transport_type} transport...")
 
     try:
-        if transport_type == MCPClientConfig.TRANSPORT_HTTP or transport_type == "streamable-http":
+        if transport_type == MCPTransport.STREAMABLE_HTTP:
             return await _get_from_streamable_http(
                 base_url,
                 headers,
@@ -1304,8 +1267,9 @@ async def get_tools_and_capabilities_from_server(
                 include_resources=include_resources,
                 include_prompts=include_prompts,
                 httpx_auth=httpx_auth,
+                **({"server_id": server_id, "era_cache": era_cache} if era_cache else {}),
             )
-        elif transport_type == MCPClientConfig.TRANSPORT_SSE or transport_type == "sse":
+        elif transport_type == MCPTransport.SSE:
             return await _get_from_sse(
                 base_url,
                 headers,
@@ -1314,6 +1278,7 @@ async def get_tools_and_capabilities_from_server(
                 include_resources=include_resources,
                 include_prompts=include_prompts,
                 httpx_auth=httpx_auth,
+                **({"server_id": server_id, "era_cache": era_cache} if era_cache else {}),
             )
         else:
             logger.error(f"Unsupported transport type: {transport_type}")
@@ -1380,7 +1345,7 @@ class MCPClientService:
         target_url: str,
         headers: dict[str, str],
         session_key: str,
-        transport_type: str = "streamable-http",
+        transport_type: MCPTransport = MCPTransport.STREAMABLE_HTTP,
     ) -> str | None:
         return await _initialize_mcp_session(
             target_url,

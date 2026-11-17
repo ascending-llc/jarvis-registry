@@ -21,6 +21,7 @@ from registry_pkgs.oauth.errors import OAuthReAuthRequiredError
 
 from ....auth.dependencies import CurrentUser
 from ....core.mcp_client import perform_health_check
+from ....core.mcp_config import MCPTransport
 from ....core.telemetry_decorators import track_registry_operation
 from ....deps import get_acl_service, get_mcp_service, get_server_service, get_status_resolver
 from ....schemas.acl_schema import ResourcePermissions
@@ -287,7 +288,7 @@ async def check_server_connection(
         # Perform health check
         is_healthy, status_msg, response_time_ms, init_result = await perform_health_check(
             url=data.url,
-            transport=data.transport or "streamable-http",
+            transport=data.transport or MCPTransport.STREAMABLE_HTTP,
         )
 
         if not is_healthy:

@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer
 
+from ..core.mcp_config import MCPTransport
 from ..schemas.acl_schema import ResourcePermissions
 from ..schemas.case_conversion import APIBaseModel
 from ..utils.crypto_utils import decrypt_auth_fields
@@ -144,7 +145,9 @@ class ServerConnectionTestRequest(APIBaseModel):
     """Request schema for testing connection to an MCP server URL"""
 
     url: str = Field(..., description="MCP server URL to test connection")
-    transport: str | None = Field(default="streamable-http", description="Transport type (streamable-http, sse, stdio)")
+    transport: MCPTransport | None = Field(
+        default=MCPTransport.STREAMABLE_HTTP, description="Transport type (streamable-http, sse, stdio)"
+    )
 
 
 # ==================== Response Schemas ====================

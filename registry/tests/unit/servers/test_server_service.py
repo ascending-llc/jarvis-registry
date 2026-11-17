@@ -166,6 +166,8 @@ class TestFetchRegistrationCapabilities:
             transport_type=transport_type,
             include_resources=True,
             include_prompts=True,
+            server_id=str(server.id),
+            era_cache=service.downstream_era_cache,
         )
         headers = fetch.call_args.kwargs["headers"]
         assert headers["Authorization"] == "Bearer test-only"

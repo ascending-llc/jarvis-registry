@@ -142,6 +142,7 @@ class TestAgentCoreRuntimeInvoker:
         invoke_mock.assert_awaited_once()
         assert invoke_mock.await_args.kwargs["method"] == "initialize"
         assert invoke_mock.await_args.kwargs["params"]["clientInfo"]["name"] == "mcp-gateway-registry"
+        assert invoke_mock.await_args.kwargs["params"]["protocolVersion"] == "2025-11-25"
         notification_mock.assert_awaited_once()
         assert notification_mock.await_args.kwargs["method"] == "notifications/initialized"
         assert notification_mock.await_args.kwargs["mcp_session_id"] == "mcp-session-1"
