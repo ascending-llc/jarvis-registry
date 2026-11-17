@@ -247,7 +247,16 @@ docker compose --profile full logs --tail=100 registry auth-server registry-migr
 
 ### Port Already in Use
 
-If a port is already in use, change the host port in the affected service's `ports` mapping in `docker-compose.yml` to an unused port, keeping the container port unchanged. Then run `docker compose --profile full up -d --no-build` again.
+If a port is already in use, remap the host port in `docker-compose.override.yml` instead of editing the tracked `docker-compose.yml`. Keep the container port unchanged and replace the service's whole `ports` list with `!override`, which requires Docker Compose 2.24.4 or later. Without it, Compose appends your mapping to the original one and the conflicting port is still published. For example, to move MongoDB to host port 27018, merge this into the file's `services` mapping:
+
+```yaml
+services:
+  registry-mongodb:
+    ports: !override
+      - "27018:27017"
+```
+
+List every mapping you want to keep for that service, since `!override` replaces the whole list. Then run `docker compose --profile full up -d --no-build` again.
 
 If you change a browser-facing port, update the corresponding URLs in `.env` and use the new port when accessing the service. Changing the auth server's external port also requires updating each enabled identity provider's registered redirect URI.
 
