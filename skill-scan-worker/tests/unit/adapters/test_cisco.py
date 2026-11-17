@@ -193,8 +193,14 @@ def test_invocation_bedrock_plain_id() -> None:
     assert inv.env["AWS_REGION"] == "us-east-1"
 
 
-def test_invocation_bedrock_aip_arn_uses_converse() -> None:
-    arn = "arn:aws:bedrock:us-east-1:1:application-inference-profile/p"
+@pytest.mark.parametrize(
+    "arn",
+    [
+        "arn:aws:bedrock:us-east-1:1:application-inference-profile/p",
+        "arn:aws:bedrock:us-east-1:1:inference-profile/global.openai.gpt-6.1-sol",
+    ],
+)
+def test_invocation_bedrock_inference_profile_arn_uses_converse(arn: str) -> None:
     inv = _ADAPTER.build_invocation(Path("/skill"), Path("/out.json"), _bedrock_llm(arn))
     assert inv.env["SKILL_SCANNER_LLM_MODEL"] == f"bedrock/converse/{arn}"
 

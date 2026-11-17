@@ -7,10 +7,20 @@ process. ``model_resolution`` re-exports this for its own callers.
 
 from __future__ import annotations
 
-_BEDROCK_APPLICATION_INFERENCE_PROFILE = ":application-inference-profile/"
+import re
+
+# Matches both application inference profiles (``:application-inference-profile/<id>``) and system-defined
+# cross-region profiles (``:inference-profile/<geo>.<model>``).
+_BEDROCK_INFERENCE_PROFILE_ARN = re.compile(r"^arn:[^:]+:bedrock:.*:(?:application-)?inference-profile/")
 
 
 def bedrock_litellm_model_id(model_id_or_arn: str) -> str:
-    """Return the LiteLLM route for a Bedrock model or application inference profile."""
-    route = "bedrock/converse/" if _BEDROCK_APPLICATION_INFERENCE_PROFILE in model_id_or_arn else "bedrock/"
+    """Return the LiteLLM route for a Bedrock model id or inference profile ARN.
+
+    Inference profile ARNs are pinned to Converse, which every profile-capable model serves. Without the
+    pin, LiteLLM picks the route from its own model list, which can't see the model behind an application
+    profile ARN and, before 1.108, routed a system profile ARN of a model missing from that list
+    (``.../inference-profile/global.openai.gpt-6.1-sol``) to InvokeModel, which such models don't serve.
+    """
+    route = "bedrock/converse/" if _BEDROCK_INFERENCE_PROFILE_ARN.match(model_id_or_arn) else "bedrock/"
     return f"{route}{model_id_or_arn}"

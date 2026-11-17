@@ -273,6 +273,12 @@
   padding: 2px 7px;
   border-radius: 3px;
 }
+.node-badge.model-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .node-badge.gate {
   background: var(--jarvis-warning-soft);
   color: var(--jarvis-warning);
