@@ -45,10 +45,6 @@ services:
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-True}
       - REGISTRY_INTERNAL_URL=${REGISTRY_INTERNAL_URL:-http://localhost:7860}
-      # External Registry Configuration
-      - EXTERNAL_REGISTRY_TAGS=${EXTERNAL_REGISTRY_TAGS:-anthropic-registry,workday-asor}
-      - ASOR_ACCESS_TOKEN=${ASOR_ACCESS_TOKEN:-}
-      - ASOR_CLIENT_CREDENTIALS=${ASOR_CLIENT_CREDENTIALS:-}
       - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
       # Sends logs to OpenTelemetry Collector
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
