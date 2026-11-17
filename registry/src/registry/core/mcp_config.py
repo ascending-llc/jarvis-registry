@@ -5,7 +5,14 @@ Centralized configuration constants for MCP client operations.
 Eliminates hardcoded values scattered across the codebase.
 """
 
+from enum import StrEnum
 from types import MappingProxyType
+
+
+class MCPTransport(StrEnum):
+    STREAMABLE_HTTP = "streamable-http"
+    SSE = "sse"
+    STDIO = "stdio"
 
 
 class MCPClientConfig:
@@ -18,9 +25,15 @@ class MCPClientConfig:
     OAUTH_METADATA_TIMEOUT = 10.0
 
     # Transport types
-    TRANSPORT_HTTP = "streamable-http"
-    TRANSPORT_SSE = "sse"
-    TRANSPORT_STDIO = "stdio"
+    TRANSPORT_HTTP = MCPTransport.STREAMABLE_HTTP
+    TRANSPORT_SSE = MCPTransport.SSE
+    TRANSPORT_STDIO = MCPTransport.STDIO
+
+    # Reserve GET + active POST + cleanup/cancellation traffic per in-flight SDK call.
+    DOWNSTREAM_MAX_CONNECTIONS = 100
+    DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS = 20
+    DOWNSTREAM_CONNECTIONS_PER_CALL = 3
+    DOWNSTREAM_QUEUE_TIMEOUT_SECONDS = 30.0
 
     # Endpoint paths
     ENDPOINT_MCP = "/mcp"
