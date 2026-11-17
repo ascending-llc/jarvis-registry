@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from agno.media import File, Image
+from agno.run.base import RunStatus
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.types import OnError
 from beanie import PydanticObjectId
@@ -616,6 +617,87 @@ class TestStepConfig:
         )
 
         assert workflow.steps[0].human_review.on_error == OnError.skip
+
+
+@pytest.mark.unit
+class TestStepErrorPolicyAtRuntime:
+    """Run compiled workflows through agno to prove it honours ``HumanReview.on_error``.
+
+    agno reads a step's error policy only when ``step.execute`` raises; a returned
+    ``StepOutput(success=False)`` never reaches it. These workflows compile without a
+    ``directive_queue`` (so no ``with_control`` wrapper turns the exception into a
+    failed output) and without a DB, so a raising executor goes straight to agno's
+    ``on_error`` branch. Attribute assertions alone would miss an agno upgrade that
+    stops reading the policy from ``HumanReview``.
+    """
+
+    @staticmethod
+    def _compile(on_error: str, human_review: HumanReviewSpec | None, calls: list[str]):
+        def _ok(name: str):
+            async def _run(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+                calls.append(name)
+                return StepOutput(content="ok")
+
+            return _run
+
+        async def _boom(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+            raise RuntimeError("boom")
+
+        failing = _step_node("second", "boom")
+        failing.step_config = StepConfig(on_error=on_error)
+        failing.human_review = human_review
+        definition = _workflow_definition([_step_node("first", "first"), failing, _step_node("third", "third")])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry=_node_keyed_registry(
+                definition, {"first": _ok("first"), "boom": _boom, "third": _ok("third")}
+            ),
+        )
+        workflow.telemetry = False
+        return workflow
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "human_review",
+        [None, HumanReviewSpec(requires_output_review=True)],
+        ids=["no_hitl", "hitl_output_review"],
+    )
+    async def test_on_error_fail_stops_the_run(self, human_review: HumanReviewSpec | None):
+        calls: list[str] = []
+        workflow = self._compile("fail", human_review, calls)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await workflow.arun(input="go")
+
+        # Had agno fallen back to its default HumanReview(on_error=skip), "third" would
+        # run (no HITL) or the run would pause for output review (HITL).
+        assert calls == ["first"]
+
+    @pytest.mark.asyncio
+    async def test_on_error_skip_records_skip_and_continues(self):
+        calls: list[str] = []
+        workflow = self._compile("skip", None, calls)
+
+        result = await workflow.arun(input="go")
+
+        assert result.status == RunStatus.completed
+        assert calls == ["first", "third"]
+        skipped = result.step_results[1]
+        assert skipped.success is False
+        assert "boom" in (skipped.error or "")
+
+    @pytest.mark.asyncio
+    async def test_on_error_skip_with_hitl_does_not_fail_the_run(self):
+        calls: list[str] = []
+        workflow = self._compile("skip", HumanReviewSpec(requires_output_review=True), calls)
+
+        result = await workflow.arun(input="go")
+
+        # The skipped output still goes to the configured output review.
+        assert result.status == RunStatus.paused
+        assert calls == ["first"]
+        assert result.step_results[1].success is False
 
 
 @pytest.mark.unit

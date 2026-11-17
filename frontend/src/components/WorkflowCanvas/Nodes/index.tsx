@@ -1,6 +1,7 @@
 import type { Node, NodeProps } from '@xyflow/react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import { useContext, useEffect } from 'react';
+import { useServer } from '@/contexts/ServerContext';
 import { CanvasActionsContext } from '../CanvasView';
 import { useWorkflowNodeRuntime } from '../runtime/WorkflowRuntimeContext';
 import { GateApprovalToolbar } from './GateApprovalToolbar';
@@ -32,6 +33,22 @@ const Header: React.FC<HeaderProps> = ({ nodeId, iconClass, iconLabel, title, do
   );
 };
 
+const ModelBadge = ({ sourceId }: { sourceId: string }) => {
+  const { models, modelLoading, modelError } = useServer();
+  const ready = !modelLoading && modelError == null;
+  const model = ready ? models.find(source => source.mode === 'chat' && source.id === sourceId) : undefined;
+  const deleted = ready && !model;
+
+  return (
+    <span
+      className={`node-badge model-badge font-mono ${deleted ? 'orange' : 'gray'}`}
+      title={deleted ? 'Model source no longer exists' : model ? `Model: ${model.displayName}` : sourceId}
+    >
+      {deleted ? '⚠ model deleted' : `◆ ${model?.displayName ?? 'model'}`}
+    </span>
+  );
+};
+
 /** MCP Server node. */
 export const McpNode: React.FC<NodeProps<Node<import('../types').McpNodeData>>> = ({ id, data, selected }) => {
   return (
@@ -39,6 +56,11 @@ export const McpNode: React.FC<NodeProps<Node<import('../types').McpNodeData>>> 
       <Handle type='target' position={Position.Left} />
       <Header nodeId={id} iconClass='mcp' iconLabel='MCP' title={data.label} dotClass='mcp' />
       <div className='node-body'>{data.description}</div>
+      {data.modelSourceId != null && (
+        <div className='node-footer'>
+          <ModelBadge sourceId={data.modelSourceId} />
+        </div>
+      )}
       <Handle type='source' position={Position.Right} />
     </div>
   );
@@ -269,6 +291,7 @@ export const PoolNode: React.FC<NodeProps<Node<import('../types').PoolNodeData>>
             {typeof a === 'string' ? a : a?.label}
           </span>
         ))}
+        {data.modelSourceId != null && <ModelBadge sourceId={data.modelSourceId} />}
         {remaining > 0 && <span className='node-hint font-mono'>+ add up to {remaining}</span>}
       </div>
       <Handle type='source' position={Position.Right} />

@@ -5,8 +5,6 @@ services:
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
-    environment:
-      - LANGFUSE_OTLP_AUTHORIZATION=${LANGFUSE_OTLP_AUTHORIZATION:-}
     ports:
       - "4318:4318"   # OTLP HTTP receiver
       - "4317:4317"   # OTLP gRPC receiver
@@ -40,17 +38,8 @@ services:
         aliases:
           - registry-backend
     environment:
-      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
-      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-True}
-      - SRE_GATEWAY_AUTH_TOKEN=${SRE_GATEWAY_AUTH_TOKEN}
-      - ATLASSIAN_AUTH_TOKEN=${ATLASSIAN_AUTH_TOKEN}
-      - REGISTRY_INTERNAL_URL=${REGISTRY_INTERNAL_URL:-http://localhost:7860}
-      # External Registry Configuration
-      - EXTERNAL_REGISTRY_TAGS=${EXTERNAL_REGISTRY_TAGS:-anthropic-registry,workday-asor}
-      - ASOR_ACCESS_TOKEN=${ASOR_ACCESS_TOKEN}
-      - ASOR_CLIENT_CREDENTIALS=${ASOR_CLIENT_CREDENTIALS}
       - MONGO_URI=mongodb://registry-mongodb:27017/jarvis
       # Sends logs to OpenTelemetry Collector
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}

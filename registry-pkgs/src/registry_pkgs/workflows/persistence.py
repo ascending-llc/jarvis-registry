@@ -24,8 +24,10 @@ from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY, is_skip_tole
 logger = logging.getLogger(__name__)
 
 # agno stores each workflow session here, and (since agno 3) each run as its own
-# document in a sibling "<session>_runs" collection. These two names are the DB
-# contract shared by the syncer and every cleanup path that deletes agno state.
+# document in a separate runs collection. These two names are the DB contract shared
+# by the syncer and every cleanup path that deletes agno state. The syncer passes
+# both to agno explicitly, so the cascade deletes never depend on agno's default
+# runs-collection naming.
 AGNO_SESSION_COLLECTION = "agno_workflow_sessions"
 AGNO_RUNS_COLLECTION = f"{AGNO_SESSION_COLLECTION}_runs"
 
@@ -59,17 +61,19 @@ class WorkflowRunSyncer(AsyncMongoDb):
         db_name: str,
         session_collection: str = AGNO_SESSION_COLLECTION,
         run_writer: RunStateWriter | None = None,
+        runs_collection: str = AGNO_RUNS_COLLECTION,
     ) -> None:
         super().__init__(
             db_client=db_client,
             db_name=db_name,
             session_collection=session_collection,
+            runs_collection=runs_collection,
         )
         self._workflow_run = workflow_run
         self._node_by_name = node_by_name
         self._run_writer = run_writer or RunStateWriter(workflow_run.id)
-        # Set once agno calls upsert_session; the upsert_run guard relies on agno
-        # persisting the session (and so firing our Beanie sync) before each run.
+        # Set once agno calls upsert_session. The upsert_run guard checks only that
+        # the first persist went through upsert_session (and so our Beanie sync).
         self._saw_upsert_session = False
 
     @override
@@ -108,9 +112,16 @@ class WorkflowRunSyncer(AsyncMongoDb):
         """Persist the agno run document, guarding agno 3's persistence ordering.
 
         Our Beanie sync runs off ``upsert_session``, which agno calls before
-        ``asave_run`` on every non-streaming persist. If that order ever changes
-        (e.g. a run is saved without its session), ``WorkflowRun`` state would
-        silently freeze — so fail loudly instead of degrading quietly.
+        ``asave_run`` on every non-streaming persist. If the first save of this
+        syncer's session arrives here instead (agno reordered persistence, or
+        saved a run without its session), ``WorkflowRun`` state could silently
+        freeze, so this logs at ``error`` and refuses the write.
+
+        The ``RuntimeError`` does not fail the workflow run: agno's
+        ``Workflow.asave_run`` catches every exception from ``db.upsert_run`` and
+        only logs a warning. The guard's effect is therefore the error log plus a
+        skipped run-document write for that persist. It is a one-shot check: once
+        ``upsert_session`` has been seen, later calls are not re-checked.
         """
         if not self._saw_upsert_session:
             message = (
