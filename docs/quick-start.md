@@ -264,10 +264,6 @@ If you change a browser-facing port, update the corresponding URLs in `.env` and
 - For an email or domain error, use a verified Workspace account on the `GOOGLE_ALLOWED_HD` domain.
 - For missing permissions, check the Cloud Identity API, service account key and group-read permissions, Workspace customer ID, and the account's membership in a correctly named group. See [Google SSO onboarding](runbooks/google-sso-onboarding.md).
 
-### Warnings About Unset Integration Variables
-
-`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are only needed if you enable the optional GitHub integration. Configure the credentials and groups for each enabled identity provider, along with the shared application keys in Step 3.
-
 ## Getting Help
 
 - 🐛 **[GitHub Issues](https://github.com/ascending-llc/jarvis-registry/issues)** - Bug reports and feature requests
