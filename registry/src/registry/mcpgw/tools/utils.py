@@ -12,13 +12,10 @@ from uuid import UUID
 
 from bson import ObjectId
 from httpx_sse import ServerSentEvent
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.server.session import ServerSession
 from mcp.shared.exceptions import UrlElicitationRequiredError
-from mcp.shared.session import RequestId
-from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import (
-    LATEST_PROTOCOL_VERSION,
     CallToolResult,
     CancelledNotification,
     ElicitCompleteNotification,
@@ -27,12 +24,14 @@ from mcp.types import (
     LoggingMessageNotification,
     ProgressNotification,
     PromptListChangedNotification,
+    RequestId,
     ResourceListChangedNotification,
     ResourceUpdatedNotification,
     TaskStatusNotification,
     TextContent,
     ToolListChangedNotification,
 )
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, LATEST_HANDSHAKE_VERSION
 from pydantic import ValidationError
 
 from registry_pkgs.core.exceptions import InternalServerException
@@ -49,7 +48,7 @@ logger = logging.getLogger(__name__)
 _URL_ELICITATION_MIN_PROTOCOL_VERSION = "2025-11-25"
 
 
-def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContext]) -> UserContextDict | None:
+def _extract_authenticated_user_context(ctx: Context[McpAppContext]) -> UserContextDict | None:
     try:
         user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
     except AttributeError:
@@ -62,7 +61,7 @@ def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContex
     return user_context
 
 
-def get_client_params(ctx: Context[ServerSession, McpAppContext]) -> InitializeRequestParams | None:
+def get_client_params(ctx: Context[McpAppContext]) -> InitializeRequestParams | None:
     """Load this request's cached client ``initialize`` params, at most one Redis GET per request.
 
     In stateless mode the client params no longer live on ``ctx.session``; they are cached in Redis by
@@ -93,10 +92,11 @@ def get_client_params(ctx: Context[ServerSession, McpAppContext]) -> InitializeR
 def _negotiated_protocol_version(requested: str | int) -> str:
     """Return the protocol version the session speaks, given the version the client requested.
 
-    Mirrors the SDK's negotiation in ``ServerSession._received_request``: a supported version is echoed
-    back, anything else (including future or unknown versions) resolves to ``LATEST_PROTOCOL_VERSION``.
+    Mirrors v2's handshake negotiation: a handshake version is echoed back, anything else (including
+    the modern ``2026-07-28`` era and unknown versions) is counter-offered ``LATEST_HANDSHAKE_VERSION``
+    (``2025-11-25``). v2's ``LATEST_PROTOCOL_VERSION`` is ``2026-07-28``, which handshake must not return.
     """
-    return requested if requested in SUPPORTED_PROTOCOL_VERSIONS else LATEST_PROTOCOL_VERSION
+    return requested if requested in HANDSHAKE_PROTOCOL_VERSIONS else LATEST_HANDSHAKE_VERSION
 
 
 def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
@@ -118,7 +118,7 @@ def _support_url_elicitation(client_params: InitializeRequestParams | None) -> b
         return False
 
     # Safe as a string comparison: the negotiated value is always a YYYY-MM-DD revision from the SDK's list.
-    return _negotiated_protocol_version(client_params.protocolVersion) >= _URL_ELICITATION_MIN_PROTOCOL_VERSION
+    return _negotiated_protocol_version(client_params.protocol_version) >= _URL_ELICITATION_MIN_PROTOCOL_VERSION
 
 
 def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata:
@@ -126,7 +126,7 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     if client_params is None:
         return {"client_branding": ClientBranding.UNRECOGNIZED}
 
-    name = client_params.clientInfo.name.strip().lower()
+    name = client_params.client_info.name.strip().lower()
     if name == "visual studio code":
         branding = ClientBranding.VSCODE
     elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
@@ -138,7 +138,7 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
 
 
 def _build_url_elicitation_result(
-    ctx: Context[ServerSession, McpAppContext],
+    ctx: Context[McpAppContext],
     auth_url: str,
     llm_template: str,
     human_message: str,
@@ -174,9 +174,9 @@ def _build_url_elicitation_result(
         logger.info(
             "Not using URL mode elicitation (client %r %r, requested protocol version %r, declared url: %s, "
             "elicitation ID found: %s). Sending back a tool call result with the URL.",
-            client_params.clientInfo.name,
-            client_params.clientInfo.version,
-            client_params.protocolVersion,
+            client_params.client_info.name,
+            client_params.client_info.version,
+            client_params.protocol_version,
             elicitation is not None and elicitation.url is not None,
             elicitation_id is not None,
         )

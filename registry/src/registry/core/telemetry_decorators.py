@@ -318,7 +318,7 @@ class ToolExecutionMetricsContext(_ExecutionMetricsContext):
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
             result = await proxy_tool_call(...)
-            ctx.set_success(not result.isError)
+            ctx.set_success(not result.is_error)
             return result
     """
 
@@ -362,7 +362,7 @@ class ResourceAccessMetricsContext(_ExecutionMetricsContext):
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
             result = await read_resource(...)
-            ctx.set_success(not result.isError)
+            ctx.set_success(not result.is_error)
             return result
     """
 
@@ -384,7 +384,7 @@ class PromptExecutionMetricsContext(_ExecutionMetricsContext):
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
             result = await execute_prompt(...)
-            ctx.set_success(not result.isError)
+            ctx.set_success(not result.is_error)
             return result
     """
 

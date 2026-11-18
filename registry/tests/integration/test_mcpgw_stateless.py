@@ -253,3 +253,26 @@ def test_stale_session_id_is_served_not_404(auth_headers):
         msgs = _post(pod, _tools_list(), headers)
 
     assert "result" in msgs[-1], "stale-session SSE body was truncated/cancelled"
+
+
+def test_modern_protocol_header_rejected_when_gate_off(auth_headers):
+    """With the kill switch off, a 2026-07-28 request to the gateway is rejected with -32022 before it
+    reaches the MCP app, so clients fall back to 2025-11-25."""
+    headers = {**auth_headers, "MCP-Protocol-Version": "2026-07-28"}
+    with _pod_client(_container_stub(_FakeRedis(), has_consent=True)) as pod:
+        resp = pod.post(_MCP_PATH, content=json.dumps(_tools_list()).encode(), headers=headers)
+
+    assert resp.status_code == 400
+    payload = resp.json()
+    assert payload["id"] == 2
+    assert payload["error"]["code"] == -32022
+    assert payload["error"]["data"]["requested"] == "2026-07-28"
+
+
+def test_handshake_protocol_header_passes_the_gate(auth_headers):
+    """A handshake-era header is not gated; the request reaches the MCP app and is served."""
+    headers = {**auth_headers, "MCP-Protocol-Version": "2025-11-25"}
+    with _pod_client(_container_stub(_FakeRedis(), has_consent=True)) as pod:
+        msgs = _post(pod, _tools_list(), headers)
+
+    assert "result" in msgs[-1]

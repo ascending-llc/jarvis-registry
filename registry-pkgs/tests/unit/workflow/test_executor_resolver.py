@@ -560,8 +560,11 @@ class TestA2AExecutor:
                         kind="file",
                         file=FileWithBytes(
                             bytes="emlw",
-                            mimeType="application/zip",
-                            name="bundle.zip",
+                            # application/x-tar is not in agno 3.1.12's File.valid_mime_types(), so the
+                            # executor keeps it in file_type rather than mime_type. (agno 3.1.12 added
+                            # application/zip to the valid set, so it would pass straight through.)
+                            mimeType="application/x-tar",
+                            name="bundle.tar",
                         ),
                     )
                 ),
@@ -575,9 +578,9 @@ class TestA2AExecutor:
 
         output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
 
-        assert output.files and output.files[0].filename == "bundle.zip"
+        assert output.files and output.files[0].filename == "bundle.tar"
         assert output.files[0].mime_type is None
-        assert output.files[0].file_type == "application/zip"
+        assert output.files[0].file_type == "application/x-tar"
 
 
 @pytest.mark.unit

@@ -307,10 +307,10 @@ async def check_server_connection(
         capabilities = None
 
         if init_result:
-            if hasattr(init_result, "serverInfo") and hasattr(init_result.serverInfo, "name"):
-                server_name = init_result.serverInfo.name
-            if hasattr(init_result, "protocolVersion"):
-                protocol_version = init_result.protocolVersion
+            if hasattr(init_result, "server_info") and hasattr(init_result.server_info, "name"):
+                server_name = init_result.server_info.name
+            if hasattr(init_result, "protocol_version"):
+                protocol_version = init_result.protocol_version
             if hasattr(init_result, "capabilities"):
                 capabilities = init_result.capabilities
 

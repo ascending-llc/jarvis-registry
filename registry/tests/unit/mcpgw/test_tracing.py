@@ -51,7 +51,7 @@ def _make_ctx():
         }
     )
     # Seed the per-request memo so get_client_params() returns these params without a Redis GET.
-    state.mcp_client_params = SimpleNamespace(clientInfo=Implementation(name="Claude Code", version="1.2.3"))
+    state.mcp_client_params = SimpleNamespace(client_info=Implementation(name="Claude Code", version="1.2.3"))
     request_context = SimpleNamespace(request=SimpleNamespace(state=state))
     return SimpleNamespace(
         request_context=request_context,
@@ -262,10 +262,11 @@ def test_trace_projection_preserves_selected_business_data() -> None:
 @pytest.mark.telemetry
 def test_trace_projection_covers_current_protocol_models() -> None:
     excluded_fields = {
-        Annotations: set(),
+        # v2 adds last_modified to Annotations and result_type to CallToolResult.
+        Annotations: {"last_modified"},
         AudioContent: {"data", "meta"},
         BlobResourceContents: {"blob", "meta"},
-        CallToolResult: {"meta"},
+        CallToolResult: {"meta", "result_type"},
         DataPart: {"metadata"},
         EmbeddedResource: {"meta"},
         FilePart: {"metadata"},
@@ -309,7 +310,11 @@ def test_trace_projection_covers_current_protocol_models() -> None:
 @pytest.mark.telemetry
 @pytest.mark.asyncio
 async def test_tool_trace_records_caller_target_and_complete_io() -> None:
-    result = CallToolResult(content=[TextContent(type="text", text="completed")])
+    result = CallToolResult(
+        content=[TextContent(type="text", text="completed")],
+        is_error=False,
+        structured_content={"ok": True},
+    )
 
     @trace_tool_execution
     async def execute(ctx, tool_name, arguments, server_id):
@@ -365,7 +370,11 @@ async def test_tool_trace_records_caller_target_and_complete_io() -> None:
     }
     span.set_attribute.assert_any_call("registry.operation.success", True)
     output_calls = [call for call in span.set_attribute.call_args_list if call.args[0] == "langfuse.observation.output"]
-    assert json.loads(output_calls[0].args[1])["content"][0]["text"] == "completed"
+    output_value = json.loads(output_calls[0].args[1])
+    assert output_value["content"][0]["text"] == "completed"
+    # The projected output keeps the v1 camelCase keys via the model's serialization aliases.
+    assert output_value["isError"] is False
+    assert output_value["structuredContent"] == {"ok": True}
 
 
 @pytest.mark.unit
