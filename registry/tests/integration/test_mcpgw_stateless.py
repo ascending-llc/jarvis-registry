@@ -40,11 +40,12 @@ from mcp.types import (
 from starlette.testclient import TestClient
 
 from registry.app_factory import create_app
-from registry.constants import URL_ELICITATION_INPUT_KEY
+from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.mcpgw import create_gateway_mcp_app
 from registry.mcpgw.core.client_info_store import ClientInfoStore
 from registry.mcpgw.tools import server as server_tools
+from registry_pkgs.core.exceptions import UrlElicitationRequiredException
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 
 pytestmark = [pytest.mark.integration]
@@ -393,7 +394,7 @@ def test_modern_first_round_returns_input_required_golden_shape(
 
     result = msg["result"]
     assert result["resultType"] == "input_required"
-    request = result["inputRequests"][URL_ELICITATION_INPUT_KEY]
+    request = result["inputRequests"][UrlElicitationInputKey.CONSENT]
     assert request["params"]["mode"] == "url"
     assert "/consent/server?nonce=" in request["params"]["url"]
     assert "elicitationId" not in request["params"]
@@ -469,7 +470,7 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
     assert "inputResponses" not in calls[0]["params"]
     assert all("requestState" not in body["params"] for body in calls)
     if action is not None:
-        assert calls[1]["params"]["inputResponses"][URL_ELICITATION_INPUT_KEY]["action"] == action
+        assert calls[1]["params"]["inputResponses"][UrlElicitationInputKey.CONSENT]["action"] == action
         assert calls[0]["params"]["arguments"] == calls[1]["params"]["arguments"]
     assert len(downstream_calls) == (1 if grant_consent else 0)
     assert result.is_error is not grant_consent
@@ -481,6 +482,88 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
     else:
         assert "/consent/server?nonce=" in result.content[0].text
     assert redis.store == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("complete_oauth", [True, False])
+async def test_modern_sdk_prompts_once_per_check_through_consent_then_oauth(
+    auth_headers: dict[str, str],
+    _modern_gate_on: None,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_oauth: bool,
+) -> None:
+    """First use of an OAuth-backed server: the consent prompt is answered, the retry then fails the OAuth
+    check and gets its own URL prompt (not text). If the OAuth check still fails after its own prompt, the
+    third round returns text, so the chain stops at three calls."""
+    outgoing: list[dict[str, Any]] = []
+    prompts: list[str] = []
+    tokens = {"present": False}
+
+    async def record_request(request: httpx2.Request) -> None:
+        if request.method == "POST":
+            outgoing.append(json.loads(await request.aread()))
+
+    async def headers_or_reauth(*, additional_headers: dict[str, str], **_kwargs) -> dict[str, str]:
+        if not tokens["present"]:
+            raise UrlElicitationRequiredException(
+                "authorize", auth_url="https://registry.example/oauth/authorize?state=s", server_name="github"
+            )
+        return dict(additional_headers)
+
+    monkeypatch.setattr(server_tools, "build_authenticated_headers", headers_or_reauth)
+
+    def downstream(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": "done"}]}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as proxy_client:
+        container = _container_stub(_FakeRedis(), has_consent=False, proxy_client=proxy_client)
+
+        async def answer(_ctx: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
+            prompts.append(params.url)
+            if "/consent/server?nonce=" in params.url:
+                container.consent_store.has_server_consent.return_value = True
+            elif complete_oauth:
+                tokens["present"] = True
+            return ElicitResult(action="accept")
+
+        app = _make_pod(container)
+        async with app.router.lifespan_context(app):
+            async with httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app),
+                base_url="http://localhost",
+                headers=auth_headers,
+                event_hooks={"request": [record_request]},
+            ) as http_client:
+                async with Client(
+                    streamable_http_client(f"http://localhost{_MCP_PATH}", http_client=http_client),
+                    mode=_MODERN_VERSION,
+                    elicitation_callback=answer,
+                ) as client:
+                    result = await client.call_tool(
+                        "execute_tool", {"tool_name": "tavily_search", "server_id": SERVER_ID, "arguments": {}}
+                    )
+
+    calls = [body for body in outgoing if body["method"] == "tools/call"]
+    assert len(prompts) == 2
+    assert "/consent/server?nonce=" in prompts[0]
+    assert prompts[1] == "https://registry.example/oauth/authorize?state=s"
+    assert [set(body["params"].get("inputResponses", {})) for body in calls[:2]] == [
+        set(),
+        {UrlElicitationInputKey.CONSENT},
+    ]
+    assert len(calls) == 3
+    assert isinstance(result.content[0], TextContent)
+    if complete_oauth:
+        assert result.is_error is not True
+        assert result.content[0].text == "done"
+    else:
+        assert set(calls[2]["params"]["inputResponses"]) == {UrlElicitationInputKey.AUTHORIZATION}
+        assert result.is_error is True
+        assert "https://registry.example/oauth/authorize?state=s" in result.content[0].text
 
 
 def test_modern_no_url_capability_gets_fallback(auth_headers, _modern_gate_on):
@@ -504,7 +587,7 @@ def test_modern_retry_accept_without_consent_returns_url_text(auth_headers, _mod
 
         retry = _modern_execute_tool(
             url_elicitation=True,
-            input_responses={URL_ELICITATION_INPUT_KEY: {"action": "accept"}},
+            input_responses={UrlElicitationInputKey.CONSENT: {"action": "accept"}},
             request_id=3,
         )
         second = _modern_post(pod, retry, _modern_headers(auth_headers))
@@ -535,7 +618,7 @@ def test_modern_retry_accept_with_consent_reaches_downstream(auth_headers, _mode
         container.consent_store.has_server_consent.return_value = True
         retry = _modern_execute_tool(
             url_elicitation=True,
-            input_responses={URL_ELICITATION_INPUT_KEY: {"action": "accept"}},
+            input_responses={UrlElicitationInputKey.CONSENT: {"action": "accept"}},
             request_id=3,
         )
         second = _modern_post(pod, retry, _modern_headers(auth_headers))

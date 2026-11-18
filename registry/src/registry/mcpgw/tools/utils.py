@@ -39,7 +39,7 @@ from registry_pkgs.oauth.flow_state_manager import FlowStateManager
 from registry_pkgs.oauth.types import ClientBranding, StateMetadata
 
 from ...auth.dependencies import UserContextDict
-from ...constants import URL_ELICITATION_INPUT_KEY
+from ...constants import UrlElicitationInputKey
 from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
@@ -160,6 +160,7 @@ def _build_url_elicitation_result(
     llm_template: str,
     human_message: str,
     *,
+    input_key: UrlElicitationInputKey,
     elicitation_id: str | None = None,
 ) -> CallToolResult | InputRequiredResult:
     """Build a URL elicitation response or fallback result, keyed on the negotiated protocol era.
@@ -169,17 +170,23 @@ def _build_url_elicitation_result(
     (``UrlElicitationRequiredError``). Both eras re-run the consent/token checks on the retry, so the
     client's answer is never trusted and no ``request_state`` is sealed. Unsupported clients get a
     plain-text ``CallToolResult`` fallback.
+
+    ``input_key`` names the failing check. A modern retry suppresses the prompt only when it answers that
+    same key, so a chain of different checks (consent, then downstream OAuth) prompts once per check, while
+    a check that still fails after its own prompt returns text. The SDK client sends only the latest round's
+    answers, so each check prompts at most once in a row and the chain always terminates.
     """
     if elicitation_id is None:
         elicitation_id = parse_elicitation_id(auth_url)
     llm_message = llm_template.format(f"URL `{auth_url}`")
     modern = ctx.protocol_version in MODERN_PROTOCOL_VERSIONS
 
-    # 1. Modern retry: the client answered a prior InputRequiredResult and we only reach here because the
-    #    consent/token check failed again. Never prompt again — an auto-accepting client (Claude Code `-p`)
-    #    would otherwise loop up to the SDK's round limit, saving a pending-consent nonce each round.
-    if modern and ctx.input_responses and URL_ELICITATION_INPUT_KEY in ctx.input_responses:
-        action = getattr(ctx.input_responses[URL_ELICITATION_INPUT_KEY], "action", None)
+    # 1. Modern retry of the same check: the client answered this check's InputRequiredResult and the check
+    #    failed again. Never prompt again — an auto-accepting client (Claude Code `-p`) would otherwise loop
+    #    up to the SDK's round limit, saving a pending-consent nonce each round. An answer under a different
+    #    key means an earlier check passed and this is the next one, which gets its own prompt below.
+    if modern and ctx.input_responses and input_key in ctx.input_responses:
+        action = getattr(ctx.input_responses[input_key], "action", None)
         if action != "accept":
             logger.info("Modern URL elicitation retry answered %r; returning declined text.", action)
             return CallToolResult(
@@ -206,7 +213,7 @@ def _build_url_elicitation_result(
         logger.info("Sending a 2026-07-28 URL mode input_required result (elicitation id %s).", elicitation_id)
         return InputRequiredResult(
             input_requests={
-                URL_ELICITATION_INPUT_KEY: ElicitRequest(
+                input_key: ElicitRequest(
                     params=ElicitRequestURLParams(url=auth_url, message=human_message),
                 )
             }

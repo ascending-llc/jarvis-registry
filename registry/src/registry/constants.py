@@ -44,10 +44,19 @@ class DownstreamOAuthConstants:
 # auth_source recorded on a user context built from a managed-agent (proxy / Bearer) token.
 MANAGED_AGENT_AUTH_SOURCE = "jwt_auth"
 
-# The input-request key under which the mcpgw gateway delivers a 2026-07-28 URL elicitation
-# (consent / re-auth) as an `InputRequiredResult`, and under which the client's retry answer arrives in
-# `ctx.input_responses`. Shared with the direct-connect proxy so both surfaces use one wire key.
-URL_ELICITATION_INPUT_KEY = "jarvis_registry_authorization"
+
+class UrlElicitationInputKey(StrEnum):
+    """Input-request keys under which a 2026-07-28 URL elicitation goes out as an `InputRequiredResult`.
+
+    The client's retry answer arrives in `inputResponses` under the same key. Each check has its own key, so
+    a retry answering one check (consent) can still prompt for the next check that fails (downstream OAuth)
+    instead of falling back to text. Shared by the mcpgw gateway and the direct-connect proxy so both
+    surfaces expose one wire contract.
+    """
+
+    CONSENT = "jarvis_registry_consent"
+    AUTHORIZATION = "jarvis_registry_authorization"
+
 
 # /api/v1/tokens/generate error details. Scope lists are rendered sorted and comma-separated; {purpose}
 # is the UI label of the token type, quoted rather than preceded by an article ("a Interactive token").

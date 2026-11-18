@@ -19,7 +19,7 @@ from mcp.types import (
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
-from registry.constants import URL_ELICITATION_INPUT_KEY
+from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
@@ -497,6 +497,7 @@ def test_negotiated_protocol_version_mirrors_sdk_negotiation(requested, expected
 
 _ELICITATION_URL = "https://registry.example.com/consent/server?nonce=abc"
 _ELICITATION_TEMPLATE = "Show the user this {} so they can open it."
+_KEY = UrlElicitationInputKey.CONSENT
 
 
 def test_build_url_elicitation_result_message_matches_fallback_text():
@@ -505,10 +506,10 @@ def test_build_url_elicitation_result_message_matches_fallback_text():
 
     with pytest.raises(utils.UrlElicitationRequiredError) as exc_info:
         utils._build_url_elicitation_result(
-            capable_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+            capable_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
         )
     fallback = utils._build_url_elicitation_result(
-        fallback_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+        fallback_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
     )
 
     assert str(exc_info.value) == fallback.content[0].text
@@ -523,7 +524,7 @@ def test_build_url_elicitation_result_logs_why_url_mode_was_not_used(caplog):
     )
 
     with caplog.at_level("INFO", logger=utils.logger.name):
-        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human")
+        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
 
     message = caplog.records[-1].getMessage()
     assert "'codex-mcp-client'" in message
@@ -538,7 +539,7 @@ def test_build_url_elicitation_result_logs_missing_client_params(caplog):
 
     with caplog.at_level("INFO", logger=utils.logger.name):
         result = utils._build_url_elicitation_result(
-            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
         )
 
     assert result.is_error is True
@@ -551,12 +552,12 @@ def test_build_url_elicitation_result_modern_first_round_returns_input_required(
     ctx = _modern_ctx(url_capability=True)
 
     result = utils._build_url_elicitation_result(
-        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", elicitation_id="eid"
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=_KEY, elicitation_id="eid"
     )
 
     assert isinstance(result, InputRequiredResult)
-    assert set(result.input_requests) == {URL_ELICITATION_INPUT_KEY}
-    params = result.input_requests[URL_ELICITATION_INPUT_KEY].params
+    assert set(result.input_requests) == {_KEY}
+    params = result.input_requests[_KEY].params
     assert params.mode == "url"
     assert params.url == _ELICITATION_URL
     assert params.message == "please authorize"
@@ -570,11 +571,11 @@ def test_build_url_elicitation_result_modern_retry_declined_returns_text(action)
     ctx = _make_ctx(
         protocol_version="2026-07-28",
         client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
-        input_responses={URL_ELICITATION_INPUT_KEY: ElicitResult(action=action)},
+        input_responses={_KEY: ElicitResult(action=action)},
         client_params=None,
     )
 
-    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human")
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
 
     assert isinstance(result, CallToolResult)
     assert result.is_error is True
@@ -587,11 +588,11 @@ def test_build_url_elicitation_result_modern_retry_accepted_returns_url_text_not
     ctx = _make_ctx(
         protocol_version="2026-07-28",
         client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
-        input_responses={URL_ELICITATION_INPUT_KEY: ElicitResult(action="accept")},
+        input_responses={_KEY: ElicitResult(action="accept")},
         client_params=None,
     )
 
-    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human")
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
 
     assert isinstance(result, CallToolResult)
     assert result.is_error is True
@@ -609,18 +610,63 @@ def test_build_url_elicitation_result_modern_retry_unknown_key_reprompts():
     )
 
     result = utils._build_url_elicitation_result(
-        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", elicitation_id="eid"
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=_KEY, elicitation_id="eid"
     )
 
     assert isinstance(result, InputRequiredResult)
-    assert set(result.input_requests) == {URL_ELICITATION_INPUT_KEY}
+    assert set(result.input_requests) == {_KEY}
+
+
+@pytest.mark.parametrize(
+    ("answered", "failing"),
+    [
+        (UrlElicitationInputKey.CONSENT, UrlElicitationInputKey.AUTHORIZATION),
+        (UrlElicitationInputKey.AUTHORIZATION, UrlElicitationInputKey.CONSENT),
+    ],
+)
+def test_build_url_elicitation_result_modern_retry_prompts_for_next_check(answered, failing):
+    """A retry that answered one check and now fails a different one (first use: consent, then downstream
+    OAuth) prompts for the new check under its own key instead of falling back to text."""
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={answered: ElicitResult(action="accept")},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=failing
+    )
+
+    assert isinstance(result, InputRequiredResult)
+    assert set(result.input_requests) == {failing}
+    assert result.input_requests[failing].params.url == _ELICITATION_URL
+
+
+@pytest.mark.parametrize("key", list(UrlElicitationInputKey))
+def test_build_url_elicitation_result_modern_retry_same_check_returns_text_for_each_key(key):
+    """Decision 2A holds per key: a check that fails again after its own prompt never prompts again."""
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={key: ElicitResult(action="accept")},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=key)
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert f"URL `{_ELICITATION_URL}`" in result.content[0].text
 
 
 def test_build_url_elicitation_result_legacy_capable_raises():
     ctx = _legacy_ctx(_make_client_params("vscode", supports_url_elicitation=True))
 
     with pytest.raises(utils.UrlElicitationRequiredError):
-        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid")
+        utils._build_url_elicitation_result(
+            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
+        )
 
 
 @pytest.mark.parametrize("protocol_version", ["2025-11-25", "2026-07-28"])
@@ -628,7 +674,7 @@ def test_build_url_elicitation_result_incapable_returns_fallback(protocol_versio
     ctx = _make_ctx(protocol_version=protocol_version, client_capabilities=None, client_params=None)
 
     result = utils._build_url_elicitation_result(
-        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
     )
 
     assert isinstance(result, CallToolResult)
@@ -764,7 +810,8 @@ async def test_modern_authorization_metric_distinguishes_pending_and_terminal_re
     server_id = str(PydanticObjectId())
     ctx = _modern_ctx(url_capability=True)
     if action is not None:
-        ctx.input_responses = {URL_ELICITATION_INPUT_KEY: ElicitResult(action=action)}
+        key = UrlElicitationInputKey.CONSENT if reason == "consent" else UrlElicitationInputKey.AUTHORIZATION
+        ctx.input_responses = {key: ElicitResult(action=action)}
     lifespan = ctx.request_context.lifespan_context
     lifespan.server_service.get_server_by_id.return_value = _make_server(server_id)
     lifespan.consent_store.has_server_consent.return_value = reason != "consent"
