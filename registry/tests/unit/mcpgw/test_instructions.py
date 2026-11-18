@@ -36,7 +36,6 @@ async def _gateway_session() -> AsyncIterator[Client]:
         "a2a_agent_repo",
         "search_service",
         "mcpgw_downstream_response_cache",
-        "mcpgw_downstream_call_limiter",
         "downstream_era_cache",
         "oauth_service",
         "client_info_store",

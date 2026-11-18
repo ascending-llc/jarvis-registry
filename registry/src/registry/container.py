@@ -36,7 +36,8 @@ from registry_pkgs.workflows.schedule_repository import WorkflowScheduleReposito
 from .auth.dependencies import effective_scopes_from_context
 from .core.a2a_proxy import A2AProxyClientRegistry
 from .core.mcp_config import MCPClientConfig
-from .core.mcp_downstream import _RESPONSE_CACHE_MAX_ENTRIES, DownstreamCallLimiter, DownstreamEraCache
+from .core.mcp_downstream import _RESPONSE_CACHE_MAX_ENTRIES, DownstreamEraCache
+from .core.mcp_transport import MethodRoutedTransport
 from .mcpgw.core.client_info_store import ClientInfoStore
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
@@ -454,18 +455,21 @@ class RegistryContainer:
         )
 
     @cached_property
-    def mcpgw_downstream_transport(self) -> httpx2.AsyncHTTPTransport:
-        """Gateway-only connection pool, independent of direct-proxy traffic."""
-        return httpx2.AsyncHTTPTransport(
-            limits=httpx2.Limits(
-                max_connections=MCPClientConfig.DOWNSTREAM_MAX_CONNECTIONS,
-                max_keepalive_connections=MCPClientConfig.DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS,
-            )
-        )
+    def mcpgw_downstream_transport(self) -> MethodRoutedTransport:
+        """Gateway-only connection pools (GET streams apart from requests), independent of direct-proxy traffic."""
 
-    @cached_property
-    def mcpgw_downstream_call_limiter(self) -> DownstreamCallLimiter:
-        return DownstreamCallLimiter(MCPClientConfig.DOWNSTREAM_MAX_CONNECTIONS)
+        def pool(max_connections: int) -> httpx2.AsyncHTTPTransport:
+            return httpx2.AsyncHTTPTransport(
+                limits=httpx2.Limits(
+                    max_connections=max_connections,
+                    max_keepalive_connections=MCPClientConfig.DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS,
+                )
+            )
+
+        return MethodRoutedTransport(
+            request_pool=pool(MCPClientConfig.DOWNSTREAM_REQUEST_MAX_CONNECTIONS),
+            stream_pool=pool(MCPClientConfig.DOWNSTREAM_STREAM_MAX_CONNECTIONS),
+        )
 
     @cached_property
     def mcpgw_downstream_response_cache(self) -> InMemoryResponseCacheStore:

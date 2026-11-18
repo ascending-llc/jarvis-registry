@@ -40,11 +40,11 @@ class MCPClientConfig:
     TRANSPORT_SSE = MCPTransport.SSE
     TRANSPORT_STDIO = MCPTransport.STDIO
 
-    # Reserve GET + active POST + cleanup/cancellation traffic per in-flight SDK call.
-    DOWNSTREAM_MAX_CONNECTIONS = 100
+    # Gateway downstream pools (see MethodRoutedTransport). The stream pool is larger because an open GET
+    # stream holds its connection for the whole call, and legacy SSE calls cannot proceed without one.
+    DOWNSTREAM_REQUEST_MAX_CONNECTIONS = 100
+    DOWNSTREAM_STREAM_MAX_CONNECTIONS = 200
     DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS = 20
-    DOWNSTREAM_CONNECTIONS_PER_CALL = 3
-    DOWNSTREAM_QUEUE_TIMEOUT_SECONDS = 30.0
 
     # Endpoint paths
     ENDPOINT_MCP = "/mcp"

@@ -220,7 +220,6 @@ async def _call_with_oauth_recovery(
             tool_name=tool_name,
             arguments=arguments,
             downstream_transport=lifespan.downstream_transport,
-            call_limiter=lifespan.downstream_call_limiter,
             response_cache=lifespan.downstream_response_cache,
             era_cache=lifespan.downstream_era_cache,
             on_progress=on_progress if get_progress_token(ctx) is not None else None,

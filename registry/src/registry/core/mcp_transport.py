@@ -34,6 +34,33 @@ class SharedTransport(httpx2.AsyncBaseTransport):
         pass
 
 
+class MethodRoutedTransport(httpx2.AsyncBaseTransport):
+    """Two downstream pools: one for GET streams, one for request and cleanup traffic.
+
+    The SDK keeps a GET open for the whole call (a stateful streamable-HTTP session's server-message
+    stream, a legacy SSE event stream, a resumed response stream) while the same call still needs
+    POSTs and a closing DELETE. In one shared pool, a burst of open streams can take every connection
+    and leave no call able to send its POST. Routing GETs to their own pool means requests and cleanup
+    only ever wait for other requests, which finish on their own.
+
+    The owner (the container) closes both pools; per-call clients borrow this through SharedTransport.
+    """
+
+    def __init__(self, *, request_pool: httpx2.AsyncBaseTransport, stream_pool: httpx2.AsyncBaseTransport) -> None:
+        self.request_pool = request_pool
+        self.stream_pool = stream_pool
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        pool = self.stream_pool if request.method == "GET" else self.request_pool
+        return await pool.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        try:
+            await self.request_pool.aclose()
+        finally:
+            await self.stream_pool.aclose()
+
+
 class ResponseRecorder:
     """Record the latest RPC response, ignoring background GET/DELETE and notifications.
 

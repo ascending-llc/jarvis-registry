@@ -1,4 +1,4 @@
-"""Real TCP pool regression: long-lived GET streams must leave room for POST and cleanup."""
+"""Real TCP pool regression: long-lived GET streams must never starve POSTs and cleanup."""
 
 import asyncio
 import json
@@ -13,12 +13,11 @@ import uvicorn
 from mcp.client.caching import InMemoryResponseCacheStore
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult
 
 from registry.core.mcp_config import MCPTransport
-from registry.core.mcp_downstream import DownstreamCallLimiter, DownstreamEraCache, call_downstream_tool
-from registry_pkgs.core.exceptions import DownstreamHttpFailureException
+from registry.core.mcp_downstream import DownstreamEraCache, call_downstream_tool
+from registry.core.mcp_transport import MethodRoutedTransport
 from tests.mcp_downstream_support import MemoryRedis
 
 pytestmark = pytest.mark.integration
@@ -84,12 +83,14 @@ async def _tcp_server(
                     await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.parametrize(
-    ("outcome", "json_response"),
-    [(outcome, False) for outcome in ("success", "failure", "cancel", "queue_timeout", "queue_cancel")]
-    + [(outcome, True) for outcome in ("success", "failure", "queue_timeout", "queue_cancel")],
-)
-async def test_small_tcp_pool_admits_complete_calls_and_releases_capacity(outcome: str, json_response: bool) -> None:
+@pytest.mark.parametrize("json_response", [False, True])
+async def test_open_get_streams_never_starve_requests_or_cleanup(json_response: bool) -> None:
+    """A full stream pool must not block another call's POSTs or its closing DELETE.
+
+    Call A holds the only stream connection (its session GET) and one request connection (a tools/call
+    that blocks). Call B must still initialize, call and terminate on the request pool while A is open.
+    In a single pool of the same total size, B would wait for a connection that A never releases.
+    """
     entered, release = asyncio.Event(), asyncio.Event()
     executions = 0
     sdk_server = MCPServer("pool-regression")
@@ -101,25 +102,24 @@ async def test_small_tcp_pool_admits_complete_calls_and_releases_capacity(outcom
         if executions == 1:
             entered.set()
             await release.wait()
-            if outcome == "failure":
-                raise MCPError(-32099, "intentional downstream failure")
         return "done"
 
     messages, http_methods = [], []
-    # Three connections reserve GET + active POST + cleanup, admitting one complete call.
-    limiter = DownstreamCallLimiter(3, queue_timeout=0.05 if outcome == "queue_timeout" else 2)
     redis = MemoryRedis()
     redis.values["test:mcp_era:s"] = "legacy"
-    pool = httpx2.AsyncHTTPTransport(limits=httpx2.Limits(max_connections=3, max_keepalive_connections=3))
+    pools = MethodRoutedTransport(
+        request_pool=httpx2.AsyncHTTPTransport(limits=httpx2.Limits(max_connections=2, max_keepalive_connections=2)),
+        stream_pool=httpx2.AsyncHTTPTransport(limits=httpx2.Limits(max_connections=1, max_keepalive_connections=1)),
+    )
     store = InMemoryResponseCacheStore()
     real_client = httpx2.AsyncClient
 
     def client(**kwargs) -> httpx2.AsyncClient:
-        # Queueing longer than this pool timeout must still succeed with call-level admission.
+        # B's own session GET finds the stream pool full; it must fail fast in the background, not block B.
         kwargs["timeout"] = httpx2.Timeout(2, pool=0.05)
         return real_client(**kwargs)
 
-    tasks = []
+    first: asyncio.Task | None = None
     try:
         async with _tcp_server(sdk_server, messages, http_methods, json_response=json_response) as url:
 
@@ -132,8 +132,7 @@ async def test_small_tcp_pool_admits_complete_calls_and_releases_capacity(outcom
                     headers={},
                     tool_name="search",
                     arguments={},
-                    downstream_transport=pool,
-                    call_limiter=limiter,
+                    downstream_transport=pools,
                     response_cache=store,
                     era_cache=DownstreamEraCache(redis, "test"),
                 )
@@ -141,55 +140,22 @@ async def test_small_tcp_pool_admits_complete_calls_and_releases_capacity(outcom
             with patch.object(httpx2, "AsyncClient", client):
                 async with asyncio.timeout(5):
                     first = asyncio.create_task(invoke())
-                    tasks.append(first)
                     await entered.wait()
-                    assert limiter.capacity == 1
-                    count_before_queue = len(http_methods)
-                    queued = asyncio.create_task(invoke())
-                    tasks.append(queued)
-                    if outcome == "queue_timeout":
-                        with pytest.raises(
-                            DownstreamHttpFailureException, match="waiting for downstream MCP call capacity"
-                        ):
-                            await queued
-                        assert len(http_methods) == count_before_queue
-                    elif outcome == "queue_cancel":
+                    while "GET" not in http_methods:  # A's session stream is open on the stream pool
                         await asyncio.sleep(0.01)
-                        queued.cancel()
-                        with pytest.raises(asyncio.CancelledError):
-                            await queued
-                        assert len(http_methods) == count_before_queue
-                    else:
-                        await asyncio.sleep(0.1)
-                        assert not queued.done()
-                        assert len(http_methods) == count_before_queue
-                    if outcome == "cancel":
-                        first.cancel()
-                        with pytest.raises(asyncio.CancelledError):
-                            await first
-                    else:
-                        release.set()
-                        if outcome == "failure":
-                            with pytest.raises(MCPError) as error:
-                                await first
-                            assert error.value.code == -32099
-                        else:
-                            assert isinstance(await first, CallToolResult)
-                    if outcome in ("queue_timeout", "queue_cancel"):
-                        queued = asyncio.create_task(invoke())
-                        tasks.append(queued)
-                    second_result = await queued
-                    assert not second_result.is_error
-                    assert executions == 2
+
+                    second = await invoke()
+
+                    assert not second.is_error
+                    assert not first.done()
+                    assert http_methods.count("DELETE") == 1
+                    release.set()
+                    assert not (await first).is_error
                     assert sum(m["method"] == "tools/call" for m in messages) == 2
-                    assert sum(m["method"] == "initialize" for m in messages) == 2
                     assert http_methods.count("DELETE") == 2
-                    initializations = [m for m in messages if m["method"] == "initialize"]
-                    assert initializations[1]["_http_index"] > http_methods.index("DELETE")
     finally:
         release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        await pool.aclose()
+        if first is not None and not first.done():
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+        await pools.aclose()

@@ -44,7 +44,7 @@ from starlette.testclient import TestClient
 from registry.app_factory import create_app
 from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
-from registry.core.mcp_downstream import DownstreamCallLimiter, DownstreamEraCache
+from registry.core.mcp_downstream import DownstreamEraCache
 from registry.mcpgw import create_gateway_mcp_app
 from registry.mcpgw.core.client_info_store import ClientInfoStore
 from registry.mcpgw.tools import server as server_tools
@@ -122,7 +122,6 @@ def _container_stub(
     consent_store.has_server_consent.return_value = has_consent
     return SimpleNamespace(
         mcpgw_downstream_transport=downstream_transport or MagicMock(),
-        mcpgw_downstream_call_limiter=DownstreamCallLimiter(100),
         mcpgw_downstream_response_cache=InMemoryResponseCacheStore(),
         downstream_era_cache=DownstreamEraCache(redis, settings.redis_key_prefix),
         a2a_client_registry=MagicMock(),

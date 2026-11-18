@@ -22,7 +22,6 @@ from opentelemetry.sdk.trace import TracerProvider
 from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.core.mcp_config import MCPTransport
-from registry.core.mcp_downstream import DownstreamCallLimiter
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
@@ -70,7 +69,6 @@ def _make_ctx(
         acl_service=acl_service,
         server_service=server_service,
         downstream_transport=MagicMock(),
-        downstream_call_limiter=DownstreamCallLimiter(100),
         downstream_response_cache=MagicMock(),
         downstream_era_cache=MagicMock(),
         oauth_service=MagicMock(),
@@ -1206,7 +1204,6 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
     proxy_client = object()
     container = SimpleNamespace(
         mcpgw_downstream_transport=proxy_client,
-        mcpgw_downstream_call_limiter=DownstreamCallLimiter(100),
         mcpgw_downstream_response_cache=object(),
         downstream_era_cache=object(),
         a2a_client_registry=MagicMock(),
@@ -1235,8 +1232,6 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
             pass
 
     assert ctx1 is ctx2
-    assert ctx1.downstream_call_limiter is container.mcpgw_downstream_call_limiter
-    assert ctx2.downstream_call_limiter is ctx1.downstream_call_limiter
     assert ctx1.downstream_transport is proxy_client
     assert ctx2.downstream_transport is proxy_client
     # The container is resolved only on the first entry; the context is cached thereafter.

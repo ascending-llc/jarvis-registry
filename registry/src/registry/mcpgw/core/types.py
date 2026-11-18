@@ -10,7 +10,7 @@ from registry_pkgs.oauth.oauth_service import MCPOAuthService
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
-from ...core.mcp_downstream import DownstreamCallLimiter, DownstreamEraCache
+from ...core.mcp_downstream import DownstreamEraCache
 from ...services.access_control_service import ACLService
 from ...services.federation.a2a_client_registry import A2AClientRegistry
 from ...services.search.service import SearchService
@@ -23,7 +23,6 @@ class McpAppContext:
     """MCP application context with typed dependencies."""
 
     downstream_transport: AsyncBaseTransport
-    downstream_call_limiter: DownstreamCallLimiter
     downstream_response_cache: InMemoryResponseCacheStore
     downstream_era_cache: DownstreamEraCache
     a2a_client_registry: A2AClientRegistry

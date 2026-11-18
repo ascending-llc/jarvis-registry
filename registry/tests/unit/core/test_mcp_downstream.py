@@ -10,11 +10,11 @@ from mcp.types import CallToolResult, ElicitRequest, ElicitRequestURLParams, Inp
 from redis.exceptions import RedisError
 from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
 
-from registry.core.mcp_downstream import DownstreamCallLimiter, DownstreamEraCache, call_downstream_tool
+from registry.core.mcp_downstream import DownstreamEraCache, call_downstream_tool
 from registry_pkgs.core.exceptions import DownstreamHttpFailureException, DownstreamUnauthorizedException
 
 
-async def call(transport, *, redis=None, store=None, user="u", server="s", limiter=None, **kwargs):
+async def call(transport, *, redis=None, store=None, user="u", server="s", **kwargs):
     return await call_downstream_tool(
         url="http://downstream/mcp",
         transport_type="streamable-http",
@@ -24,7 +24,6 @@ async def call(transport, *, redis=None, store=None, user="u", server="s", limit
         tool_name="search",
         arguments={},
         downstream_transport=transport,
-        call_limiter=limiter if limiter is not None else DownstreamCallLimiter(100),
         response_cache=store if store is not None else InMemoryResponseCacheStore(),
         era_cache=DownstreamEraCache(redis if redis is not None else MemoryRedis(), "test"),
         **kwargs,
@@ -319,7 +318,6 @@ async def test_legacy_sse_real_sdk_stream_closes_and_pool_survives():
                 tool_name="search",
                 arguments={},
                 downstream_transport=transport,
-                call_limiter=DownstreamCallLimiter(100),
                 response_cache=InMemoryResponseCacheStore(),
                 era_cache=DownstreamEraCache(redis, "test"),
             )
@@ -490,7 +488,6 @@ async def test_unknown_transport_is_rejected_before_network_io() -> None:
             tool_name="search",
             arguments={},
             downstream_transport=httpx2.MockTransport(reject),
-            call_limiter=DownstreamCallLimiter(100),
             response_cache=InMemoryResponseCacheStore(),
             era_cache=DownstreamEraCache(MemoryRedis(), "test"),
         )
@@ -585,16 +582,3 @@ async def test_stateful_legacy_http_sessions_are_isolated_and_cleaned_up(outcome
                 assert len(tool_requests) == 1
                 assert sum(request.method == "DELETE" for request in requests) == 1
     assert transport.closed == 1
-
-
-@pytest.mark.parametrize("connections", [0, 1, 2])
-def test_call_limiter_rejects_pool_without_cleanup_capacity(connections: int) -> None:
-    with pytest.raises(ValueError, match="cleanup connection"):
-        DownstreamCallLimiter(connections)
-
-
-def test_call_limiter_uses_complete_connection_budget() -> None:
-    assert DownstreamCallLimiter(100).capacity == 33
-    assert DownstreamCallLimiter(6).capacity == 2
-    with pytest.raises(ValueError, match="positive"):
-        DownstreamCallLimiter(3, queue_timeout=0)
