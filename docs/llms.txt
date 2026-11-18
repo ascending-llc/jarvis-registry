@@ -2,7 +2,7 @@
 
 > Jarvis Registry is a self-hostable enterprise gateway and registry for governed access to MCP servers, A2A agents, and private AI skills.
 
-Last updated: 2026-11-03T16:50:59Z
+Last updated: 2026-11-18T03:07:54Z
 
 Use the guides below for deployment, developer clients, business chatbot integrations, identity, access control, and operations. Capabilities depend on deployment configuration and the connected platform. Private deployment does not itself confer compliance certification.
 
@@ -17,7 +17,7 @@ Use the guides below for deployment, developer clients, business chatbot integra
 
 ## Get Started
 
-- [Quick Start](https://jarvisregistry.com/quick-start/): Get the Jarvis Registry running in 5 minutes with this streamlined setup guide.
+- [Quick Start](https://jarvisregistry.com/quick-start/): Run Jarvis Registry locally with Docker Compose and prebuilt images from GitHub Container Registry (GHCR).
 - [Generate Secrets](https://jarvisregistry.com/generate-secrets/): All keys are generated locally in your browser using the Web Crypto API. Nothing is sent to any server.
 - [Production Deployment: Overview](https://jarvisregistry.com/deployment-guide/): This guide is cloud-platform-agnostic. It describes what components are needed and why for deploying Jarvis Registry to an existing Kubernetes cluster on AWS (EKS) or Azure (AKS). Sections that differ between platforms are clearly marked.
 - [Production Deployment: Configuration](https://jarvisregistry.com/production-configuration/): Choose the instructions for your role: developers connect local IDE to the centralized MCP gateway; organization administrators make it available in business chatbots such as Claude and ChatGPT; deployment operators configure the...
@@ -49,7 +49,6 @@ Use the guides below for deployment, developer clients, business chatbot integra
 - [A2A Agent API](https://jarvisregistry.com/design/a2a-agent-api-design/): All agent responses follow this structure:
 - [Agent Workflow](https://jarvisregistry.com/design/agent-workflow/): Architecture: Agno as outer workflow runtime (operator controls, pause/resume, SSE streaming) + PydanticAI as internal protocol executor (MCP tool calls, A2A agent handoffs). Customer-facing schema is pure Pydantic — no runtime...
 - [AgentCore Integration](https://jarvisregistry.com/design/agentcore/): This guide demonstrates how to register and use an Amazon Bedrock AgentCore Gateway as an MCP server through the MCP Gateway Registry.
-- [Federation Guide](https://jarvisregistry.com/design/federation/): The MCP Gateway Registry supports federation with external registries, allowing you to import and manage servers/agents from multiple sources through a unified interface.
 - [Federation API](https://jarvisregistry.com/design/federation-api/): Base URL: /api/v1
 - [DB Persistence](https://jarvisregistry.com/design/mcp_db_persistence_design/): Living design document for MongoDB integration
 
@@ -89,6 +88,7 @@ Use the guides below for deployment, developer clients, business chatbot integra
 ## Changelog
 
 - [Overview](https://jarvisregistry.com/changelog/): Release notes for every version of Jarvis Registry.
+- [asc0.5.18](https://jarvisregistry.com/changelog/asc0.5.18/): The asc0.5.18 release of Jarvis Registry
 - [asc0.5.17](https://jarvisregistry.com/changelog/asc0.5.17/): The asc0.5.17 release of Jarvis Registry
 - [asc0.5.16](https://jarvisregistry.com/changelog/asc0.5.16/): The asc0.5.16 release of Jarvis Registry
 - [asc0.5.15](https://jarvisregistry.com/changelog/asc0.5.15/): The asc0.5.15 release of Jarvis Registry

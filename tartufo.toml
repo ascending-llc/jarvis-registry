@@ -196,4 +196,8 @@ exclude-signatures = [
     {signature = 'ebc796d30201a1afc1c32d8bb5c4bea1b88dac290d1c5342b2290081ef3c7557', reason = 'ENTRA_CLIENT_ID placeholder in auth docs is not a credential'},
     {signature = '94a8900d1f56c1520b87644c9b56ab106c2d37c376c55d83216e717602f6479f', reason = 'ENTRA_CLIENT_ID placeholder in Entra ID setup docs is not a credential'},
     {signature = 'b2c59c694241a64b91ba066d5ef318138b22808ed3e6e58286d8e34a57f04cda', reason = 'orphan sweeper guard constants are code constants, not credentials'},
+    {signature = '2c6f8f66132f49cb66ae9fbe72cc7ac100b68b9d753a043610badab988fdc3a5', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
+    {signature = '5d89094328b97cc1e2ad6872eddc1c535e4e16ab3bbb6ca81d573e8ffc81be26', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
+    {signature = '324292d44d8ce74c7b02fbd776e1cc8f324db5b2ccf4558d0c2f1f2bf8889641', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
+    {signature = '1d71d8e57c99920849fcae18a1c83986495aa529cd8671f97a86e6cb850d79f9', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
 ]
