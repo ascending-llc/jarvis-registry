@@ -9,6 +9,11 @@ server. Creates isolated test data, cleans it up on exit, and prints the results
 Local only: it refuses to run unless the Registry URL, MONGO_URI and REDIS_URI all
 point at loopback or the docker compose services. A port-forward to a remote database
 also looks local, so don't run it while one is open on the configured host and port.
+
+From the host against docker compose, point Mongo and Redis at the published ports:
+  REDIS_URI=redis://localhost:6379 \\
+  MONGO_URI='mongodb://localhost:27017/jarvis?directConnection=true' \\
+  uv run python scripts/verify_direct_proxy_live_e2e.py
 """
 
 from __future__ import annotations
@@ -615,7 +620,10 @@ class LiveProbe:
         authorized = await self.http.get(auth_url.replace(self.fixture_base, self.fixture_local_base, 1))
         self.check("fixture OAuth authorize redirects", authorized.status_code in {302, 307})
         callback = urlsplit(authorized.headers["location"])
-        completed = await self.http.get(self.base + callback.path + "?" + callback.query)
+        # The redirect URI is built from REGISTRY_URL, whose path may carry a proxy prefix such
+        # as /gateway; route the callback to --registry-url without that prefix.
+        callback_path = callback.path.removeprefix(urlsplit(settings.registry_url).path.rstrip("/"))
+        completed = await self.http.get(self.base + callback_path + "?" + callback.query)
         self.check(
             "real OAuth callback exchanges token", completed.status_code in {302, 307} and self.token_exchanges == 1
         )
