@@ -1397,7 +1397,9 @@ async def test_direct_reauth_method_classification(monkeypatch: pytest.MonkeyPat
         assert "resource_metadata=" in response.headers["www-authenticate"]
     else:
         assert response.status_code == 200
-        assert json.loads(response.body)["error"]["code"] == -32003
+        error = json.loads(response.body)["error"]
+        assert error["code"] == -32003
+        assert "https://login.example/auth" in error["message"]
     assert not requests
 
 
@@ -1534,8 +1536,50 @@ async def test_direct_preserves_downstream_fields_and_byte_lengths(
     assert sent.headers["mcp-protocol-version"] == version
 
 
-async def test_direct_oauth_resend_reuses_clean_body_and_computed_length(monkeypatch: pytest.MonkeyPatch) -> None:
-    message = _direct_message(action="accept")
+_REGISTRY_KEY_SETS = pytest.mark.parametrize(
+    "keys",
+    [(_CONSENT_KEY,), (_OAUTH_KEY,), (_CONSENT_KEY, _OAUTH_KEY)],
+    ids=["consent", "authorization", "both"],
+)
+
+
+def _accepted_retry(keys: tuple[UrlElicitationInputKey, ...]) -> dict[str, Any]:
+    message = _direct_message()
+    message["params"]["inputResponses"] = {key: {"action": "accept"} for key in keys}
+    return message
+
+
+@_REGISTRY_KEY_SETS
+async def test_direct_strips_every_registry_key(
+    monkeypatch: pytest.MonkeyPatch, keys: tuple[UrlElicitationInputKey, ...]
+) -> None:
+    message = _accepted_retry(keys)
+    message["params"]["inputResponses"]["downstream"] = {"action": "accept", "custom": [1, 2]}
+    message["params"]["requestState"] = "opaque下游state"
+    response, requests, _, _, _ = await _direct_run(monkeypatch, message, consent=True)
+    assert response.status_code == 200
+    (sent,) = requests
+    expected = json.loads(json.dumps(message))
+    expected["params"]["inputResponses"] = {"downstream": {"action": "accept", "custom": [1, 2]}}
+    assert json.loads(sent.content) == expected
+    assert int(sent.headers["content-length"]) == len(sent.content)
+
+
+@_REGISTRY_KEY_SETS
+async def test_direct_strip_drops_empty_input_responses(
+    monkeypatch: pytest.MonkeyPatch, keys: tuple[UrlElicitationInputKey, ...]
+) -> None:
+    _, requests, _, _, _ = await _direct_run(monkeypatch, _accepted_retry(keys), consent=True)
+    (sent,) = requests
+    assert "inputResponses" not in json.loads(sent.content)["params"]
+    assert int(sent.headers["content-length"]) == len(sent.content)
+
+
+@_REGISTRY_KEY_SETS
+async def test_direct_oauth_resend_reuses_clean_body_and_computed_length(
+    monkeypatch: pytest.MonkeyPatch, keys: tuple[UrlElicitationInputKey, ...]
+) -> None:
+    message = _accepted_retry(keys)
     _, requests, builder, _, _ = await _direct_run(
         monkeypatch, message, consent=True, statuses=(401, 200), server=_make_server(auth_mode=McpAuthMode.OAUTH)
     )
