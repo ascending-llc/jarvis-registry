@@ -35,7 +35,6 @@ from registry_pkgs.workflows.schedule_repository import WorkflowScheduleReposito
 
 from .auth.dependencies import effective_scopes_from_context
 from .core.a2a_proxy import A2AProxyClientRegistry
-from .core.mcp_client import MCPClientService
 from .core.mcp_config import MCPClientConfig
 from .core.mcp_downstream import _RESPONSE_CACHE_MAX_ENTRIES, DownstreamCallLimiter, DownstreamEraCache
 from .mcpgw.core.client_info_store import ClientInfoStore
@@ -124,10 +123,6 @@ class RegistryContainer:
     @cached_property
     def a2a_agent_repo(self) -> A2AAgentRepository:
         return A2AAgentRepository(self.db_client)
-
-    @cached_property
-    def mcp_client_service(self) -> MCPClientService:
-        return MCPClientService(redis_client=self.redis_client)
 
     @cached_property
     def client_info_store(self) -> ClientInfoStore:

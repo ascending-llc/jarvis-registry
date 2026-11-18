@@ -6,27 +6,21 @@ Refactored with centralized configuration and strategy pattern.
 """
 
 import asyncio
-import json
 import logging
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 import httpx2
-from httpx_sse import EventSource
 from mcp import Client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from redis import Redis
 
-from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
 from registry_pkgs.oauth.discovery import discover_mcp_oauth
 from registry_pkgs.oauth.errors import OAuthDiscoveryError
 
@@ -39,30 +33,6 @@ from .mcp_transport import ResponseRecorder, create_sse_client_factory
 from .server_strategies import get_server_strategy
 
 logger = logging.getLogger(__name__)
-
-
-# ========== Session Management ==========
-# Redis-based session store for downstream MCP servers with TTL
-# Key: f"mcp_session:{user_id}:{server_id}" -> Value: JSON({"session_id": str, "initialized": bool})
-# Sessions expire after 15 minutes of inactivity (MCP server session timeout)
-SESSION_TTL_MINUTES = 15  # MCP session timeout
-SESSION_KEY_PREFIX = "mcp_session:"
-_MCP_PROTOCOL_VERSION = "2024-11-05"
-_MCP_INITIALIZE_REQUEST = {
-    "jsonrpc": "2.0",
-    "id": "1",
-    "method": "initialize",
-    "params": {
-        "protocolVersion": _MCP_PROTOCOL_VERSION,
-        "capabilities": {},
-        "clientInfo": settings.mcp_client_info,
-    },
-}
-_MCP_INITIALIZED_NOTIFICATION = {
-    "jsonrpc": "2.0",
-    "method": "notifications/initialized",
-    "params": {},
-}
 
 
 def _flatten_exception_group_messages(error: BaseException) -> list[str]:
@@ -84,254 +54,6 @@ def _format_exception_group(error: ExceptionGroup) -> str:
     return " | ".join(details)
 
 
-async def call_tool_via_sse_ephemeral(
-    http_client: httpx.AsyncClient,
-    sse_url: str,
-    headers: dict[str, str],
-    request_body: dict[str, Any],
-    on_notification: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-    timeout_seconds: int = 30,
-) -> dict[str, Any]:
-    """Execute one tool call over SSE using an ephemeral session lifecycle.
-
-    Flow:
-      1. Open GET /sse and wait for endpoint event
-      2. POST initialize
-      3. Await the initialize JSON-RPC response from the SSE stream
-      4. POST notifications/initialized
-      5. POST tools/call
-      6. Read the matching JSON-RPC tool response from the SSE stream
-    """
-    request_id = request_body.get("id")
-    if request_id is None:
-        raise MisimplementedSpecException("SSE tool call request must include a JSON-RPC id.")
-
-    init_request = deepcopy(_MCP_INITIALIZE_REQUEST)
-    initialized_notification = deepcopy(_MCP_INITIALIZED_NOTIFICATION)
-    init_request_id = init_request.get("id")
-
-    sse_headers = dict(headers)
-    sse_headers["Accept"] = "text/event-stream"
-    sse_headers.pop("Content-Type", None)
-
-    loop = asyncio.get_running_loop()
-    init_response_future: asyncio.Future[dict[str, Any]] = loop.create_future()
-    tool_response_future: asyncio.Future[dict[str, Any]] = loop.create_future()
-    post_endpoint_ready: asyncio.Future[str] = loop.create_future()
-
-    def _fail_pending_responses(error: BaseException) -> None:
-        for response_future in (init_response_future, tool_response_future, post_endpoint_ready):
-            if not response_future.done():
-                response_future.set_exception(error)
-
-    def _set_response_future_result(response_obj: dict[str, Any]) -> bool:
-        response_id = response_obj.get("id")
-        if response_id is None:
-            error = MisimplementedSpecException("Downstream SSE JSON-RPC response must include an id.")
-            _fail_pending_responses(error)
-            return False
-
-        if str(response_id) == str(init_request_id) and not init_response_future.done():
-            init_response_future.set_result(response_obj)
-            return True
-
-        if str(response_id) == str(request_id) and not tool_response_future.done():
-            tool_response_future.set_result(response_obj)
-            return True
-
-        return False
-
-    def _raise_for_rpc_error(response_obj: dict[str, Any], action: str) -> None:
-        error_obj = response_obj.get("error")
-        if isinstance(error_obj, dict):
-            raise ConnectionError(
-                f"Downstream SSE MCP {action} failed: {json.dumps(error_obj, default=str, sort_keys=True)}"
-            )
-
-    async def _pump_responses() -> None:
-        try:
-            async with http_client.stream("GET", sse_url, headers=sse_headers) as sse_resp:
-                if not sse_resp.is_success:
-                    raw = await sse_resp.aread()
-                    error = ConnectionError(
-                        "Error opening downstream SSE stream for tool call: "
-                        f"status={sse_resp.status_code}, body={raw.decode('utf-8', errors='replace')}"
-                    )
-                    if not post_endpoint_ready.done():
-                        post_endpoint_ready.set_exception(error)
-                    raise error
-
-                event_source = EventSource(sse_resp)
-                async for event in event_source.aiter_sse():
-                    if event.event == "endpoint":
-                        endpoint_path = event.data.strip()
-                        if endpoint_path.startswith("/"):
-                            parsed = urlparse(sse_url)
-                            new_messages_url = f"{parsed.scheme}://{parsed.netloc}{endpoint_path}"
-                        else:
-                            new_messages_url = endpoint_path
-
-                        if not post_endpoint_ready.done():
-                            post_endpoint_ready.set_result(new_messages_url)
-                        continue
-
-                    if event.event != "message":
-                        logger.info("Ignoring non-message SSE event during ephemeral SSE tool call: %s", event.event)
-                        continue
-
-                    try:
-                        obj = event.json()
-                    except (json.JSONDecodeError, ValueError, TypeError):
-                        logger.info(
-                            "Ignoring malformed SSE message event with non-JSON payload during ephemeral SSE tool call."
-                        )
-                        continue
-
-                    if not isinstance(obj, dict):
-                        logger.info(
-                            "Ignoring malformed SSE message event with non-object JSON payload: %s",
-                            type(obj).__name__,
-                        )
-                        continue
-
-                    if obj.get("jsonrpc") != "2.0":
-                        logger.info("Ignoring malformed SSE message missing jsonrpc='2.0': %s", obj)
-                        continue
-
-                    method = obj.get("method")
-                    if isinstance(method, str) and method.startswith("notifications/"):
-                        if on_notification is not None:
-                            await on_notification(obj)
-                        continue
-
-                    has_result_or_error = isinstance(obj.get("result"), dict) or isinstance(obj.get("error"), dict)
-                    if has_result_or_error:
-                        _set_response_future_result(obj)
-
-                raise ValueError("Downstream SSE stream ended without the expected JSON-RPC responses.")
-        except Exception as error:
-            _fail_pending_responses(error)
-            raise
-
-    response_task = asyncio.create_task(_pump_responses())
-
-    try:
-        new_messages_url = await asyncio.wait_for(post_endpoint_ready, timeout=timeout_seconds)
-
-        async with http_client.stream("POST", new_messages_url, json=init_request, headers=headers) as init_resp:
-            if not init_resp.is_success:
-                raw_body = await init_resp.aread()
-                raise ConnectionError(
-                    "Error initializing downstream SSE MCP session: "
-                    f"status code: {init_resp.status_code}, body: {raw_body.decode('utf-8', errors='replace')}"
-                )
-
-        init_response = await asyncio.wait_for(init_response_future, timeout=timeout_seconds)
-        _raise_for_rpc_error(init_response, "initialize")
-
-        async with http_client.stream(
-            "POST",
-            new_messages_url,
-            json=initialized_notification,
-            headers=headers,
-        ) as initialized_resp:
-            if not initialized_resp.is_success:
-                raw_body = await initialized_resp.aread()
-                raise ConnectionError(
-                    "Error sending initialized notification to downstream SSE MCP session: "
-                    f"status code: {initialized_resp.status_code}, body: {raw_body.decode('utf-8', errors='replace')}"
-                )
-
-        async with http_client.stream("POST", new_messages_url, json=request_body, headers=headers) as resp:
-            if not resp.is_success:
-                raw_body = await resp.aread()
-                raise ConnectionError(
-                    "Error calling downstream MCP server over SSE: "
-                    f"status code: {resp.status_code}, body: {raw_body.decode('utf-8', errors='replace')}"
-                )
-
-            if resp.headers.get("content-type", "").startswith("application/json"):
-                raise MisimplementedSpecException(
-                    "Downstream SSE MCP server responded to tools/call with application/json instead of delivering "
-                    "the JSON-RPC response on the SSE stream."
-                )
-
-        tool_response = await asyncio.wait_for(tool_response_future, timeout=timeout_seconds)
-        _raise_for_rpc_error(tool_response, "tool call")
-        return tool_response
-    finally:
-        if not response_task.done():
-            response_task.cancel()
-
-
-def _get_session(session_key: str, redis_client: Redis | None = None) -> tuple[str, bool] | None:
-    """Get session ID and initialization status from Redis if not expired."""
-    if not redis_client:
-        logger.warning("Redis not available, session management disabled")
-        return None
-
-    try:
-        redis_key = f"{SESSION_KEY_PREFIX}{session_key}"
-        session_data = redis_client.get(redis_key)
-
-        if not session_data:
-            return None
-
-        # Parse JSON data
-        data = json.loads(session_data)
-        session_id = data.get("session_id")
-        initialized = data.get("initialized", False)
-        logger.debug(f"Session retrieved from Redis: {session_key} (initialized={initialized})")
-        return (session_id, initialized)
-
-    except Exception as e:
-        logger.error(f"Failed to get session from Redis: {e}")
-        return None
-
-
-def _store_session(
-    session_key: str,
-    session_id: str,
-    initialized: bool = False,
-    redis_client: Redis | None = None,
-) -> None:
-    """Store session ID with TTL and initialization status in Redis."""
-    if not redis_client:
-        logger.warning("Redis not available, session not stored")
-        return
-
-    try:
-        redis_key = f"{SESSION_KEY_PREFIX}{session_key}"
-        payload: dict[str, Any] = {"session_id": session_id, "initialized": initialized}
-        session_data = json.dumps(payload)
-
-        # Store with TTL in seconds
-        ttl_seconds = SESSION_TTL_MINUTES * 60
-        redis_client.setex(redis_key, ttl_seconds, session_data)
-
-        logger.debug(
-            f"Session stored in Redis with {SESSION_TTL_MINUTES}min TTL: {session_key} (initialized={initialized})"
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to store session in Redis: {e}")
-
-
-def _clear_session(session_key: str, redis_client: Redis | None = None) -> None:
-    """Clear/disconnect a session from Redis."""
-    if not redis_client:
-        logger.warning("Redis not available, session not cleared")
-        return
-
-    try:
-        redis_key = f"{SESSION_KEY_PREFIX}{session_key}"
-        redis_client.delete(redis_key)
-        logger.info(f"🗑️ Session cleared from Redis: {session_key}")
-
-    except Exception as e:
-        logger.error(f"Failed to clear session from Redis: {e}")
-
-
 @dataclass
 class _InitResult:
     """Snapshot of the v2 Client's post-handshake attributes.
@@ -344,9 +66,6 @@ class _InitResult:
     protocol_version: str
     server_info: Any
     capabilities: Any
-
-
-_ResponseRecorder = ResponseRecorder
 
 
 async def initialize_mcp(
@@ -383,7 +102,7 @@ async def initialize_mcp(
 
     logger.info(f"Initializing MCP connection to {mcp_url} using {transport_type} transport")
 
-    recorder = _ResponseRecorder()
+    recorder = ResponseRecorder()
     try:
         if transport_type == MCPTransport.STREAMABLE_HTTP:
             async with httpx2.AsyncClient(
@@ -559,100 +278,6 @@ async def perform_health_check(
         return False, "unhealthy: invalid initialize response", response_time_ms, None
 
 
-async def _initialize_mcp_session(
-    target_url: str,
-    headers: dict[str, str],
-    session_key: str,
-    transport_type: MCPTransport = MCPTransport.STREAMABLE_HTTP,
-    redis_client: Redis | None = None,
-) -> str | None:
-    """
-    Perform MCP initialization handshake using raw JSON-RPC for streamable-http transport.
-
-    Args:
-        target_url: MCP server URL
-        headers: HTTP headers (including authentication)
-        session_key: Session storage key (user_id:server_id)
-        transport_type: Transport type (only "streamable-http" supported)
-
-    Returns:
-        Session ID if successful, None otherwise
-
-    Raises:
-        DownstreamUnauthorizedException: The server answered the initialize request with 401.
-    """
-    logger.info(f"🔄 Initializing MCP session using JSON-RPC ({transport_type} transport)")
-
-    # JSON-RPC initialize request body (shared by both transports)
-    init_request = deepcopy(_MCP_INITIALIZE_REQUEST)
-    initialized_notification = deepcopy(_MCP_INITIALIZED_NOTIFICATION)
-
-    try:
-        if transport_type == MCPTransport.STREAMABLE_HTTP:
-            return await _initialize_mcp_session_http(
-                target_url=target_url,
-                headers=headers,
-                session_key=session_key,
-                init_request=init_request,
-                initialized_notification=initialized_notification,
-                redis_client=redis_client,
-            )
-
-        logger.warning(
-            "Session initialization is only supported for streamable-http. "
-            f"Skipping session init for transport type: {transport_type}"
-        )
-        return None
-
-    except DownstreamUnauthorizedException:
-        # A 401 must reach the caller's OAuth recovery instead of being swallowed.
-        _clear_session(session_key, redis_client=redis_client)
-        raise
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize MCP session: {e}", exc_info=True)
-        _clear_session(session_key, redis_client=redis_client)
-        return None
-
-
-async def _initialize_mcp_session_http(
-    target_url: str,
-    headers: dict[str, str],
-    session_key: str,
-    init_request: dict,
-    initialized_notification: dict,
-    redis_client: Redis | None = None,
-) -> str | None:
-    """Perform MCP initialization handshake for streamable-http transport."""
-    # streamable-http: POST initialize directly to the endpoint
-    async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
-        logger.info("📤 Sending initialize request")
-        response = await http_client.post(target_url, json=init_request)
-        if response.status_code == HTTPStatus.UNAUTHORIZED:
-            raise DownstreamUnauthorizedException(
-                "Downstream MCP server rejected the session initialize request with 401.",
-                www_authenticate=response.headers.get("WWW-Authenticate"),
-            )
-        response.raise_for_status()
-
-        # Extract session ID from response headers
-        session_id = response.headers.get("mcp-session-id") or response.headers.get("Mcp-Session-Id")
-
-        if not session_id:
-            logger.warning("⚠️ No session ID in response headers")
-            return None
-
-        logger.info(f"✅ Session ID received: {session_id}")
-
-        # Send initialized notification (completes handshake)
-        headers_with_session = {**headers, "Mcp-Session-Id": session_id}
-        logger.info("📤 Sending initialized notification")
-        await http_client.post(target_url, json=initialized_notification, headers=headers_with_session)
-
-        logger.info(f"✅ MCP session fully initialized: {session_id}")
-        _store_session(session_key, session_id, initialized=True, redis_client=redis_client)
-        return session_id
-
-
 @dataclass
 class MCPServerData:
     """MCP server data container for tools, resources, prompts, and capabilities."""
@@ -753,50 +378,11 @@ async def detect_server_transport(base_url: str) -> MCPTransport:
     return MCPClientConfig.TRANSPORT_HTTP
 
 
-async def get_tools_from_server_with_transport(
-    base_url: str, transport: MCPTransport | None = None
-) -> list[dict] | None:
-    """
-    Connects to an MCP server using the specified transport, lists tools, and returns their details.
-
-    Args:
-        base_url: The base URL of the MCP server (e.g., http://localhost:8000).
-        transport: Transport type ("streamable-http", "sse", or None for auto-detection)
-
-    Returns:
-        A list of tool detail dictionaries, or None if connection/retrieval fails.
-    """
-    if not base_url:
-        logger.error("MCP Check Error: Base URL is empty.")
-        return None
-
-    # Auto-detect transport if needed
-    if transport is None:
-        transport = await detect_server_transport(base_url)
-
-    logger.info(f"Attempting to connect to MCP server at {base_url} using {transport} transport...")
-
-    try:
-        if transport == "streamable-http":
-            return await _get_tools_streamable_http(base_url)
-        elif transport == "sse":
-            return await _get_tools_sse(base_url)
-        else:
-            logger.error(f"Unsupported transport type: {transport}")
-            return None
-
-    except Exception as e:
-        logger.error(
-            f"MCP Check Error: Failed to get tool list from {base_url} with {transport}: {type(e).__name__} - {e}"
-        )
-        return None
-
-
 def _is_requires_init(session_id: str | None) -> bool:
     """Whether the server issued a session id (so it is stateful and requires init).
 
     v2's ``streamable_http_client`` no longer yields ``get_session_id``; the session id is recorded off
-    the response headers by :class:`_ResponseRecorder` instead.
+    the response headers by :class:`ResponseRecorder` instead.
     """
     requires_init = session_id is not None
     logger.info(f"streamable-http: session_id={'present' if session_id else 'absent'}, requiresInit={requires_init}")
@@ -851,7 +437,7 @@ async def _get_from_streamable_http(
     try:
         # Create custom httpx2 client with headers; the recorder captures the session id off the wire
         # since v2's streamable_http_client no longer yields get_session_id.
-        recorder = _ResponseRecorder()
+        recorder = ResponseRecorder()
         async with httpx2.AsyncClient(
             headers=headers,
             timeout=30.0,
@@ -922,19 +508,6 @@ async def _get_from_streamable_http(
     except Exception as e:
         logger.error(f"Failed to connect to {mcp_url}: {type(e).__name__} - {e}")
         return MCPServerData(None, None, None, None, f"Connection failed: {type(e).__name__} - {e}")
-
-
-async def _get_tools_streamable_http(
-    base_url: str, headers: dict[str, str] = None, transport_type: MCPTransport = MCPTransport.STREAMABLE_HTTP
-) -> list[dict] | None:
-    """
-    Get tools using streamable-http transport (legacy method, without capabilities, resources, or prompts).
-    Wraps the consolidated method for backward compatibility.
-    """
-    result = await _get_from_streamable_http(
-        base_url, headers, transport_type, include_capabilities=False, include_resources=False, include_prompts=False
-    )
-    return result.tools
 
 
 async def _get_from_sse(
@@ -1060,19 +633,6 @@ async def _get_from_sse(
     except Exception as e:
         logger.error(f"Failed to connect to {mcp_server_url}: {type(e).__name__} - {e}")
         return MCPServerData(None, None, None, None, f"Connection failed: {type(e).__name__} - {e}")
-
-
-async def _get_tools_sse(
-    base_url: str, headers: dict[str, str] = None, transport_type: MCPTransport = MCPTransport.SSE
-) -> list[dict] | None:
-    """
-    Get tools using SSE transport (legacy method, without capabilities, resources, or prompts).
-    Wraps the consolidated method for backward compatibility.
-    """
-    result = await _get_from_sse(
-        base_url, headers, transport_type, include_capabilities=False, include_resources=False, include_prompts=False
-    )
-    return result.tools
 
 
 def _extract_capabilities(init_result: Any) -> dict | None:
@@ -1350,34 +910,3 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
     if result.resource:
         metadata["resource"] = result.resource
     return metadata
-
-
-class MCPClientService:
-    """Service wrapper for MCP client helpers and session persistence."""
-
-    def __init__(self, redis_client: Redis | None = None):
-        self.redis_client = redis_client
-
-    def get_session(self, session_key: str) -> tuple[str, bool] | None:
-        return _get_session(session_key, redis_client=self.redis_client)
-
-    def store_session(self, session_key: str, session_id: str, initialized: bool = False) -> None:
-        _store_session(session_key, session_id, initialized=initialized, redis_client=self.redis_client)
-
-    def clear_session(self, session_key: str) -> None:
-        _clear_session(session_key, redis_client=self.redis_client)
-
-    async def initialize_mcp_session(
-        self,
-        target_url: str,
-        headers: dict[str, str],
-        session_key: str,
-        transport_type: MCPTransport = MCPTransport.STREAMABLE_HTTP,
-    ) -> str | None:
-        return await _initialize_mcp_session(
-            target_url,
-            headers,
-            session_key,
-            transport_type,
-            redis_client=self.redis_client,
-        )
