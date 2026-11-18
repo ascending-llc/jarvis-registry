@@ -5,15 +5,11 @@ Dynamic MCP server proxy routes.
 from __future__ import annotations
 
 import logging
-from enum import StrEnum
-from typing import Literal
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 from bson import ObjectId
-from httpx_sse import ServerSentEvent
 from mcp.server.mcpserver import Context
-from mcp.server.session import ServerSession
 from mcp.shared.exceptions import UrlElicitationRequiredError
 from mcp.types import (
     CallToolResult,
@@ -21,9 +17,6 @@ from mcp.types import (
     ElicitRequestURLParams,
     InitializeRequestParams,
     InputRequiredResult,
-    LoggingMessageNotification,
-    ProgressNotification,
-    RequestId,
     TextContent,
 )
 from mcp_types.version import (
@@ -31,7 +24,6 @@ from mcp_types.version import (
     LATEST_HANDSHAKE_VERSION,
     MODERN_PROTOCOL_VERSIONS,
 )
-from pydantic import ValidationError
 
 from registry_pkgs.core.exceptions import InternalServerException
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
@@ -288,130 +280,6 @@ def get_progress_token(ctx: Context[McpAppContext]) -> str | int | None:
     token = meta.get("progress_token")
     # bool is an int subclass, but is not a protocol progress token.
     return token if type(token) in (str, int) else None
-
-
-class NotificationMethod(StrEnum):
-    PROGRESS = "notifications/progress"
-    LOGGING_MESSAGE = "notifications/message"
-
-
-# Logging (`notifications/message`) is forwarded only on a handshake era (2025-11-25): it is deprecated as
-# of 2026-07-28 (SEP-2577) and modern clients must opt in per request, so we drop it on modern requests
-# rather than replicate the per-request level filter. An absent/unknown protocol version is treated as
-# modern for this choice (fail closed — drop logging). Everything not named in `NotificationMethod` is
-# dropped on both eras: the upstream client sees only the gateway's static tool list, so a downstream list
-# change / resource update is meaningless to it, and modern subscription delivery would need a cross-pod bus
-# the gateway does not run.
-# Cancellation is not a tool-status notification: legacy server cancellations refer to server-initiated
-# requests we do not relay; modern server cancellations may only terminate subscriptions we do not expose.
-async def forward_notification(
-    session: ServerSession,
-    obj: dict,
-    *,
-    related_request_id: RequestId | None,
-    protocol_version: str | None,
-    progress_token: str | int | None,
-) -> None:
-    """
-    Forward supported downstream notifications on the originating POST's response stream.
-    Delivery is best effort; notifications do not require a separate SSE GET connection.
-
-    Args:
-        session: ServerSession
-        obj: The parsed "data" field of a Server-Sent Event. According to MCP spec it must be of type dict[str, Any]
-        related_request_id: The client request ID that the notification is related to. Optional
-        protocol_version: The request's negotiated protocol version, which decides whether a logging
-            notification is forwarded (handshake era only; an absent/unknown version drops it).
-        progress_token: The token supplied by the upstream request and passed to the downstream request.
-            Progress without a matching token is dropped.
-
-    Returns: None
-
-    Raises: Nothing. All exceptions are caught and logged only, as notification forwarding is best-effort anyway.
-    """
-
-    if "method" not in obj or not isinstance(obj["method"], str):
-        logger.error(f"unexpected notification data: {str(obj)}")
-
-        return
-
-    method = obj["method"]
-    # Forward logging only on a known handshake era. Modern, absent, or unknown versions fail closed (drop).
-    forward_logging = protocol_version in HANDSHAKE_PROTOCOL_VERSIONS
-
-    # The notification models keep extra fields, so a leftover "jsonrpc" key would be passed twice when the SDK
-    # wraps the notification in a JSONRPCNotification. Every downstream SSE notification carries it.
-    obj = {key: value for key, value in obj.items() if key != "jsonrpc"}
-
-    try:
-        match method:
-            case NotificationMethod.PROGRESS:
-                notification = ProgressNotification.model_validate(obj)
-                received_token = obj["params"].get("progressToken")
-                if (
-                    progress_token is None
-                    or type(received_token) is not type(progress_token)
-                    or received_token != progress_token
-                ):
-                    logger.debug("dropping downstream progress notification with no matching request token")
-                    return
-            case NotificationMethod.LOGGING_MESSAGE if forward_logging:
-                notification = LoggingMessageNotification.model_validate(obj)
-            case _:
-                logger.debug("dropping downstream notification %s", method)
-
-                return
-    except ValidationError as exc:
-        logger.error(f"error parsing notification data: {str(exc)}")
-
-        return
-
-    try:
-        await session.send_notification(notification, related_request_id)
-    except Exception:
-        logger.exception("encountered error while scheduling notification-forwarding to client")
-
-        return
-
-
-def parse_data_field(
-    event: ServerSentEvent,
-) -> tuple[dict, Literal["notification", "response", "irrelevant"]]:
-    """
-    Parse the Server-Send Event and check if it's a notification, a response, or something we don't care about.
-    Reference: https://modelcontextprotocol.io/specification/2025-11-25/schema?search=server-sent+event#json-rpc
-
-    Args:
-        event: httpx_sse.ServerSendEvent
-
-    Returns:
-        1st: A Python dictionary deserialized from the "data" field. An empty dictionary if event if malformed
-            or of a kind we don't care about.
-        2nd: One of three string values indicating if the event **seems like** a notification, a response,
-            or **is** something irrelevant.
-
-    Raises: Nothing
-    """
-    if event.event != "message":
-        return {}, "irrelevant"
-
-    try:
-        obj = event.json()
-    except Exception:
-        return {}, "irrelevant"
-
-    if not isinstance(obj, dict):
-        return {}, "irrelevant"
-
-    if "jsonrpc" not in obj or obj["jsonrpc"] != "2.0":
-        return {}, "irrelevant"
-
-    if ("result" in obj and isinstance(obj["result"], dict)) or ("error" in obj and isinstance(obj["error"], dict)):
-        return obj, "response"
-    elif "method" in obj and isinstance(obj["method"], str) and obj["method"].startswith("notifications/"):
-        return obj, "notification"
-    else:
-        return {}, "irrelevant"
 
 
 def get_target_url(server: ExtendedMCPServer) -> str:

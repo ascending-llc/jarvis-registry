@@ -22,7 +22,7 @@ def _entry(monkeypatch: pytest.MonkeyPatch, kind: str) -> SimpleNamespace:
         ctx = _modern_ctx(url_capability=True)
         target = _make_server()
         ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = target
-        execute = AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "done"}]}})
+        execute = AsyncMock(return_value=CallToolResult(content=[TextContent(type="text", text="done")]))
         monkeypatch.setattr(server, "_call_with_oauth_recovery", execute)
 
         async def invoke() -> CallToolResult | InputRequiredResult:

@@ -5,7 +5,6 @@ Unit tests for mcp_client functions.
 import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
-import httpx
 import pytest
 
 from registry.core.mcp_client import (
@@ -13,13 +12,11 @@ from registry.core.mcp_client import (
     _get_from_sse,
     _get_from_streamable_http,
     _is_requires_init,
-    call_tool_via_sse_ephemeral,
     get_tools_and_capabilities_from_server,
     initialize_mcp,
     perform_health_check,
 )
 from registry.core.mcp_config import MCPClientConfig
-from registry_pkgs.core.exceptions import DownstreamUnauthorizedException, MisimplementedSpecException
 from registry_pkgs.oauth.discovery import DiscoveryResult
 from registry_pkgs.oauth.errors import OAuthDiscoveryError
 
@@ -51,10 +48,10 @@ async def test_rewrite_sse_request_url_strips_mount_path():
     """The v2 request hook (replacing the old httpx monkey-patch) rewrites the mount-path POST-back URL."""
     import httpx2
 
-    from registry.core.mcp_client import _rewrite_sse_request_url
+    from registry.core.mcp_transport import rewrite_sse_request_url
 
     req = httpx2.Request("POST", "http://host:8000/fininfo/messages/?session_id=abc")
-    await _rewrite_sse_request_url(req)
+    await rewrite_sse_request_url(req)
     assert str(req.url) == "http://host:8000/messages/?session_id=abc"
 
 
@@ -64,31 +61,31 @@ async def test_rewrite_sse_request_url_strips_mount_path():
 async def test_rewrite_sse_request_url_leaves_non_messages_url_untouched():
     import httpx2
 
-    from registry.core.mcp_client import _rewrite_sse_request_url
+    from registry.core.mcp_transport import rewrite_sse_request_url
 
     req = httpx2.Request("GET", "http://host:8000/sse")
-    await _rewrite_sse_request_url(req)
+    await rewrite_sse_request_url(req)
     assert str(req.url) == "http://host:8000/sse"
 
 
 @pytest.mark.unit
 @pytest.mark.core
 @pytest.mark.asyncio
-async def test_mcp_sse_client_factory_attaches_hook_and_optional_recorder():
+async def test_create_sse_client_factory_attaches_hook_and_optional_recorder():
     """The SSE factory attaches the mount-path rewrite hook, and the recorder only when provided."""
-    from registry.core.mcp_client import _mcp_sse_client_factory, _ResponseRecorder, _rewrite_sse_request_url
+    from registry.core.mcp_transport import ResponseRecorder, create_sse_client_factory, rewrite_sse_request_url
 
-    recorder = _ResponseRecorder()
-    client = _mcp_sse_client_factory(recorder)(headers={"a": "b"}, auth=None, timeout=None)
+    recorder = ResponseRecorder()
+    client = create_sse_client_factory(recorder)(headers={"a": "b"}, auth=None, timeout=None)
     try:
-        assert _rewrite_sse_request_url in client.event_hooks["request"]
+        assert rewrite_sse_request_url in client.event_hooks["request"]
         assert recorder in client.event_hooks["response"]
     finally:
         await client.aclose()
 
-    client2 = _mcp_sse_client_factory()(headers=None, auth=None, timeout=None)
+    client2 = create_sse_client_factory()(headers=None, auth=None, timeout=None)
     try:
-        assert _rewrite_sse_request_url in client2.event_hooks["request"]
+        assert rewrite_sse_request_url in client2.event_hooks["request"]
         assert recorder not in client2.event_hooks["response"]
     finally:
         await client2.aclose()
@@ -111,550 +108,6 @@ class TestMCPClient:
         # v2's streamable_http_client no longer yields get_session_id; the recorder captures the session
         # id off the response headers and _is_requires_init takes it directly.
         assert _is_requires_init(session_id) is expected
-
-    @pytest.mark.asyncio
-    async def test_call_tool_via_sse_ephemeral_waits_for_initialize_response(self, mock_headers):
-        """Test ephemeral SSE waits for initialize response before continuing handshake."""
-
-        class MockEvent:
-            def __init__(self, event_type, data="", payload=None):
-                self.event = event_type
-                self.data = data
-                self._payload = payload
-
-            def json(self):
-                if self._payload is None:
-                    raise ValueError("No JSON payload")
-                return self._payload
-
-        class MockResponse:
-            def __init__(self, is_success=True, status_code=200, headers=None, body=b""):
-                self.is_success = is_success
-                self.status_code = status_code
-                self.headers = headers or {}
-                self._body = body
-
-            async def aread(self):
-                return self._body
-
-        class MockStreamContext:
-            def __init__(self, response):
-                self._response = response
-
-            async def __aenter__(self):
-                return self._response
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return None
-
-        init_post_started = asyncio.Event()
-        call_order: list[str] = []
-        notification_handler = AsyncMock()
-
-        class MockHttpClient:
-            def stream(self, method, url, **kwargs):
-                if method == "GET":
-                    call_order.append("get_sse")
-                    return MockStreamContext(MockResponse(headers={"content-type": "text/event-stream"}))
-
-                if method == "POST" and kwargs["json"].get("method") == "initialize":
-                    call_order.append("post_initialize")
-                    init_post_started.set()
-                    return MockStreamContext(MockResponse())
-
-                if method == "POST" and kwargs["json"].get("method") == "notifications/initialized":
-                    call_order.append("post_initialized")
-                    return MockStreamContext(MockResponse())
-
-                if method == "POST" and kwargs["json"].get("method") == "tools/call":
-                    call_order.append("post_tool_call")
-                    return MockStreamContext(MockResponse(headers={"content-type": "text/event-stream"}))
-
-                raise AssertionError(f"Unexpected stream call: {method} {url} {kwargs}")
-
-        class MockEventSource:
-            def __init__(self, _response):
-                self._response = _response
-
-            async def aiter_sse(self):
-                yield MockEvent("endpoint", "/messages")
-                await init_post_started.wait()
-                call_order.append("initialize_response")
-                yield MockEvent(
-                    "message",
-                    payload={"jsonrpc": "2.0", "id": "1", "result": {"protocolVersion": "2024-11-05"}},
-                )
-                yield MockEvent(
-                    "message",
-                    payload={"jsonrpc": "2.0", "method": "notifications/message", "params": {"value": "ping"}},
-                )
-                yield MockEvent(
-                    "message",
-                    payload={"jsonrpc": "2.0", "id": "tool-123", "result": {"content": []}},
-                )
-
-        request_body = {
-            "jsonrpc": "2.0",
-            "id": "tool-123",
-            "method": "tools/call",
-            "params": {"name": "demo", "arguments": {}},
-        }
-
-        with patch("registry.core.mcp_client.EventSource", MockEventSource):
-            result = await call_tool_via_sse_ephemeral(
-                http_client=MockHttpClient(),
-                sse_url="https://example.com/sse",
-                headers=mock_headers,
-                request_body=request_body,
-                on_notification=notification_handler,
-            )
-
-        assert result == {"jsonrpc": "2.0", "id": "tool-123", "result": {"content": []}}
-        assert call_order == [
-            "get_sse",
-            "post_initialize",
-            "initialize_response",
-            "post_initialized",
-            "post_tool_call",
-        ]
-        notification_handler.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_call_tool_via_sse_ephemeral_uses_endpoint_event_messages_url(self, mock_headers):
-        """Test ephemeral SSE posts handshake and tool calls to the endpoint event URL."""
-
-        class MockEvent:
-            def __init__(self, event_type, data="", payload=None):
-                self.event = event_type
-                self.data = data
-                self._payload = payload
-
-            def json(self):
-                if self._payload is None:
-                    raise ValueError("No JSON payload")
-                return self._payload
-
-        class MockResponse:
-            def __init__(self, is_success=True, status_code=200, headers=None, body=b""):
-                self.is_success = is_success
-                self.status_code = status_code
-                self.headers = headers or {}
-                self._body = body
-
-            async def aread(self):
-                return self._body
-
-        class MockStreamContext:
-            def __init__(self, response):
-                self._response = response
-
-            async def __aenter__(self):
-                return self._response
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return None
-
-        init_post_started = asyncio.Event()
-        post_calls: list[tuple[str, str]] = []
-
-        class MockHttpClient:
-            def stream(self, method, url, **kwargs):
-                if method == "GET":
-                    return MockStreamContext(MockResponse(headers={"content-type": "text/event-stream"}))
-
-                request_method = kwargs["json"].get("method")
-                post_calls.append((request_method, url))
-                if request_method == "initialize":
-                    init_post_started.set()
-
-                response_headers = {"content-type": "text/event-stream"} if request_method == "tools/call" else {}
-                return MockStreamContext(MockResponse(headers=response_headers))
-
-        class MockEventSource:
-            def __init__(self, _response):
-                self._response = _response
-
-            async def aiter_sse(self):
-                yield MockEvent("endpoint", "/messages?session_id=session-123")
-                await init_post_started.wait()
-                yield MockEvent(
-                    "message",
-                    payload={"jsonrpc": "2.0", "id": "1", "result": {"protocolVersion": "2024-11-05"}},
-                )
-                yield MockEvent(
-                    "message",
-                    payload={"jsonrpc": "2.0", "id": "tool-123", "result": {"content": []}},
-                )
-                await asyncio.sleep(1)
-
-        request_body = {
-            "jsonrpc": "2.0",
-            "id": "tool-123",
-            "method": "tools/call",
-            "params": {"name": "demo", "arguments": {}},
-        }
-
-        with patch("registry.core.mcp_client.EventSource", MockEventSource):
-            result = await call_tool_via_sse_ephemeral(
-                http_client=MockHttpClient(),
-                sse_url="https://example.com/sse",
-                headers=mock_headers,
-                request_body=request_body,
-            )
-
-        assert result == {"jsonrpc": "2.0", "id": "tool-123", "result": {"content": []}}
-        assert post_calls == [
-            ("initialize", "https://example.com/messages?session_id=session-123"),
-            ("notifications/initialized", "https://example.com/messages?session_id=session-123"),
-            ("tools/call", "https://example.com/messages?session_id=session-123"),
-        ]
-
-    @pytest.mark.asyncio
-    async def test_call_tool_via_sse_ephemeral_forwards_notifications(self, mock_headers):
-        """Test ephemeral SSE forwards JSON-RPC notifications observed on the SSE stream."""
-
-        class MockEvent:
-            def __init__(self, event_type, data="", payload=None):
-                self.event = event_type
-                self.data = data
-                self._payload = payload
-
-            def json(self):
-                if self._payload is None:
-                    raise ValueError("No JSON payload")
-                return self._payload
-
-        class MockResponse:
-            def __init__(self, is_success=True, status_code=200, headers=None, body=b""):
-                self.is_success = is_success
-                self.status_code = status_code
-                self.headers = headers or {}
-                self._body = body
-
-            async def aread(self):
-                return self._body
-
-        class MockStreamContext:
-            def __init__(self, response):
-                self._response = response
-
-            async def __aenter__(self):
-                return self._response
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return None
-
-        init_post_started = asyncio.Event()
-        notification_handler = AsyncMock()
-
-        class MockHttpClient:
-            def stream(self, method, _url, **kwargs):
-                if method == "GET":
-                    return MockStreamContext(MockResponse(headers={"content-type": "text/event-stream"}))
-
-                if kwargs["json"].get("method") == "initialize":
-                    init_post_started.set()
-
-                response_headers = (
-                    {"content-type": "text/event-stream"} if kwargs["json"].get("method") == "tools/call" else {}
-                )
-                return MockStreamContext(MockResponse(headers=response_headers))
-
-        notification_payloads = [
-            {"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progress": 25}},
-            {"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "info"}},
-        ]
-
-        class MockEventSource:
-            def __init__(self, _response):
-                self._response = _response
-
-            async def aiter_sse(self):
-                yield MockEvent("endpoint", "/messages")
-                await init_post_started.wait()
-                yield MockEvent(
-                    "message",
-                    payload={"jsonrpc": "2.0", "id": "1", "result": {"protocolVersion": "2024-11-05"}},
-                )
-                for payload in notification_payloads:
-                    yield MockEvent("message", payload=payload)
-                yield MockEvent(
-                    "message",
-                    payload={"jsonrpc": "2.0", "id": "tool-123", "result": {"content": []}},
-                )
-                await asyncio.sleep(1)
-
-        request_body = {
-            "jsonrpc": "2.0",
-            "id": "tool-123",
-            "method": "tools/call",
-            "params": {"name": "demo", "arguments": {}},
-        }
-
-        with patch("registry.core.mcp_client.EventSource", MockEventSource):
-            await call_tool_via_sse_ephemeral(
-                http_client=MockHttpClient(),
-                sse_url="https://example.com/sse",
-                headers=mock_headers,
-                request_body=request_body,
-                on_notification=notification_handler,
-            )
-
-        assert notification_handler.await_count == 2
-        assert [call.args[0] for call in notification_handler.await_args_list] == notification_payloads
-
-    @pytest.mark.asyncio
-    async def test_call_tool_via_sse_ephemeral_times_out_waiting_for_endpoint_event(self, mock_headers):
-        """Test ephemeral SSE raises a timeout when the endpoint event never arrives."""
-
-        class MockEvent:
-            def __init__(self, event_type, data="", payload=None):
-                self.event = event_type
-                self.data = data
-                self._payload = payload
-
-            def json(self):
-                if self._payload is None:
-                    raise ValueError("No JSON payload")
-                return self._payload
-
-        class MockResponse:
-            def __init__(self, is_success=True, status_code=200, headers=None, body=b""):
-                self.is_success = is_success
-                self.status_code = status_code
-                self.headers = headers or {}
-                self._body = body
-
-            async def aread(self):
-                return self._body
-
-        class MockStreamContext:
-            def __init__(self, response):
-                self._response = response
-
-            async def __aenter__(self):
-                return self._response
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return None
-
-        class MockHttpClient:
-            def stream(self, method, _url, **_kwargs):
-                assert method == "GET"
-                return MockStreamContext(MockResponse(headers={"content-type": "text/event-stream"}))
-
-        class MockEventSource:
-            def __init__(self, _response):
-                self._response = _response
-
-            async def aiter_sse(self):
-                yield MockEvent("comment", data="keep-alive")
-                await asyncio.sleep(1)
-
-        request_body = {
-            "jsonrpc": "2.0",
-            "id": "tool-123",
-            "method": "tools/call",
-            "params": {"name": "demo", "arguments": {}},
-        }
-
-        with patch("registry.core.mcp_client.EventSource", MockEventSource):
-            with pytest.raises(asyncio.TimeoutError):
-                await call_tool_via_sse_ephemeral(
-                    http_client=MockHttpClient(),
-                    sse_url="https://example.com/sse",
-                    headers=mock_headers,
-                    request_body=request_body,
-                    timeout_seconds=0.01,
-                )
-
-    @pytest.mark.asyncio
-    async def test_call_tool_via_sse_ephemeral_raises_on_initialize_rpc_error(self, mock_headers):
-        """Test ephemeral SSE aborts when the initialize response on the SSE stream is an error."""
-
-        class MockEvent:
-            def __init__(self, event_type, data="", payload=None):
-                self.event = event_type
-                self.data = data
-                self._payload = payload
-
-            def json(self):
-                if self._payload is None:
-                    raise ValueError("No JSON payload")
-                return self._payload
-
-        class MockResponse:
-            def __init__(self, is_success=True, status_code=200, headers=None, body=b""):
-                self.is_success = is_success
-                self.status_code = status_code
-                self.headers = headers or {}
-                self._body = body
-
-            async def aread(self):
-                return self._body
-
-        class MockStreamContext:
-            def __init__(self, response):
-                self._response = response
-
-            async def __aenter__(self):
-                return self._response
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return None
-
-        init_post_started = asyncio.Event()
-        post_methods: list[str] = []
-
-        class MockHttpClient:
-            def stream(self, method, _url, **kwargs):
-                if method == "GET":
-                    return MockStreamContext(MockResponse(headers={"content-type": "text/event-stream"}))
-
-                request_method = kwargs["json"].get("method")
-                post_methods.append(request_method)
-                if request_method == "initialize":
-                    init_post_started.set()
-                    return MockStreamContext(MockResponse())
-
-                raise AssertionError(f"Unexpected POST after initialize failure: {request_method}")
-
-        class MockEventSource:
-            def __init__(self, _response):
-                self._response = _response
-
-            async def aiter_sse(self):
-                yield MockEvent("endpoint", "/messages")
-                await init_post_started.wait()
-                yield MockEvent(
-                    "message",
-                    payload={
-                        "jsonrpc": "2.0",
-                        "id": "1",
-                        "error": {"code": -32000, "message": "initialize rejected"},
-                    },
-                )
-                await asyncio.sleep(1)
-
-        request_body = {
-            "jsonrpc": "2.0",
-            "id": "tool-123",
-            "method": "tools/call",
-            "params": {"name": "demo", "arguments": {}},
-        }
-
-        with patch("registry.core.mcp_client.EventSource", MockEventSource):
-            with pytest.raises(ConnectionError, match="initialize rejected"):
-                await call_tool_via_sse_ephemeral(
-                    http_client=MockHttpClient(),
-                    sse_url="https://example.com/sse",
-                    headers=mock_headers,
-                    request_body=request_body,
-                )
-
-        assert post_methods == ["initialize"]
-
-    @pytest.mark.asyncio
-    async def test_call_tool_via_sse_ephemeral_rejects_missing_request_id(self, mock_headers):
-        """Test ephemeral SSE rejects tool requests without a JSON-RPC id."""
-
-        request_body = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {"name": "demo", "arguments": {}},
-        }
-
-        with pytest.raises(MisimplementedSpecException, match="must include a JSON-RPC id"):
-            await call_tool_via_sse_ephemeral(
-                http_client=Mock(),
-                sse_url="https://example.com/sse",
-                headers=mock_headers,
-                request_body=request_body,
-            )
-
-    @pytest.mark.asyncio
-    async def test_call_tool_via_sse_ephemeral_rejects_direct_json_post_response(self, mock_headers):
-        """Test ephemeral SSE rejects direct JSON POST responses instead of treating them as valid."""
-
-        class MockEvent:
-            def __init__(self, event_type, data="", payload=None):
-                self.event = event_type
-                self.data = data
-                self._payload = payload
-
-            def json(self):
-                if self._payload is None:
-                    raise ValueError("No JSON payload")
-                return self._payload
-
-        class MockResponse:
-            def __init__(self, is_success=True, status_code=200, headers=None, body=b""):
-                self.is_success = is_success
-                self.status_code = status_code
-                self.headers = headers or {}
-                self._body = body
-
-            async def aread(self):
-                return self._body
-
-        class MockStreamContext:
-            def __init__(self, response):
-                self._response = response
-
-            async def __aenter__(self):
-                return self._response
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return None
-
-        init_post_started = asyncio.Event()
-
-        class MockHttpClient:
-            def stream(self, method, _url, **kwargs):
-                if method == "GET":
-                    return MockStreamContext(MockResponse(headers={"content-type": "text/event-stream"}))
-
-                request_method = kwargs["json"].get("method")
-                if request_method == "initialize":
-                    init_post_started.set()
-                    return MockStreamContext(MockResponse())
-
-                if request_method == "notifications/initialized":
-                    return MockStreamContext(MockResponse())
-
-                if request_method == "tools/call":
-                    return MockStreamContext(MockResponse(headers={"content-type": "application/json"}))
-
-                raise AssertionError(f"Unexpected stream call: {method} {kwargs}")
-
-        class MockEventSource:
-            def __init__(self, _response):
-                self._response = _response
-
-            async def aiter_sse(self):
-                yield MockEvent("endpoint", "/messages")
-                await init_post_started.wait()
-                yield MockEvent(
-                    "message",
-                    payload={"jsonrpc": "2.0", "id": "1", "result": {"protocolVersion": "2024-11-05"}},
-                )
-                await asyncio.sleep(1)
-
-        request_body = {
-            "jsonrpc": "2.0",
-            "id": "tool-123",
-            "method": "tools/call",
-            "params": {"name": "demo", "arguments": {}},
-        }
-
-        with patch("registry.core.mcp_client.EventSource", MockEventSource):
-            with pytest.raises(MisimplementedSpecException, match="application/json"):
-                await call_tool_via_sse_ephemeral(
-                    http_client=MockHttpClient(),
-                    sse_url="https://example.com/sse",
-                    headers=mock_headers,
-                    request_body=request_body,
-                )
 
     @pytest.fixture
     def mock_headers(self):
@@ -1151,43 +604,6 @@ class TestGetOAuthMetadataFromServer:
         assert await get_oauth_metadata_from_server("") is None
 
 
-class TestInitializeMcpSessionUnauthorized:
-    """A 401 during session init must reach OAuth recovery instead of being swallowed (AS-1929)."""
-
-    @staticmethod
-    def _patch_client(handler):
-        real_client = httpx.AsyncClient
-
-        def factory(**kwargs):
-            return real_client(transport=httpx.MockTransport(handler), **kwargs)
-
-        return patch("registry.core.mcp_client.httpx.AsyncClient", side_effect=factory)
-
-    @pytest.mark.asyncio
-    async def test_401_propagates_with_challenge_and_clears_session(self):
-        from registry.core.mcp_client import _initialize_mcp_session
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(401, headers={"WWW-Authenticate": 'Bearer resource_metadata="https://x"'})
-
-        with self._patch_client(handler), patch("registry.core.mcp_client._clear_session") as clear_session:
-            with pytest.raises(DownstreamUnauthorizedException) as exc_info:
-                await _initialize_mcp_session("https://mcp.example.com/mcp", {}, "u:s")
-
-        assert exc_info.value.www_authenticate == 'Bearer resource_metadata="https://x"'
-        clear_session.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_other_failures_are_still_swallowed(self):
-        from registry.core.mcp_client import _initialize_mcp_session
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(500)
-
-        with self._patch_client(handler), patch("registry.core.mcp_client._clear_session"):
-            assert await _initialize_mcp_session("https://mcp.example.com/mcp", {}, "u:s") is None
-
-
 def _initialize_response(request_id, *, session_id: str | None = None):
     import httpx2
 
@@ -1373,15 +789,24 @@ class TestInitializeFailureLogging:
 def test_sse_client_factory_builds_client_with_hooks_and_timeout():
     import httpx2
 
-    from registry.core.mcp_client import _mcp_sse_client_factory, _ResponseRecorder, _rewrite_sse_request_url
+    from registry.core.mcp_transport import ResponseRecorder, create_sse_client_factory, rewrite_sse_request_url
 
-    recorder = _ResponseRecorder()
+    recorder = ResponseRecorder()
     timeout = httpx2.Timeout(5.0, read=300.0)
 
-    client = _mcp_sse_client_factory(recorder)(headers={"X-Test": "1"}, timeout=timeout)
+    client = create_sse_client_factory(recorder)(headers={"X-Test": "1"}, timeout=timeout)
 
     assert client.timeout == timeout
     assert client.headers["X-Test"] == "1"
-    assert client.event_hooks["request"] == [_rewrite_sse_request_url]
+    assert client.event_hooks["request"] == [rewrite_sse_request_url, recorder.on_request]
     assert client.event_hooks["response"] == [recorder]
-    assert _mcp_sse_client_factory()().event_hooks["response"] == []
+    assert create_sse_client_factory()().event_hooks["response"] == []
+
+
+@pytest.mark.asyncio
+async def test_health_check_reports_unsupported_transport_without_network_io():
+    with patch("registry.core.mcp_client.initialize_mcp") as initialize:
+        result = await perform_health_check("https://example.com/mcp", transport="websocket")
+
+    assert result == (False, "unhealthy: unsupported transport 'websocket'", None, None)
+    initialize.assert_not_called()

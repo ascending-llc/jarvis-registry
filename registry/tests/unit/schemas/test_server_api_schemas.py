@@ -116,3 +116,31 @@ def test_apikey_returned_camel_case_and_masked(convert) -> None:
     assert "custom_header" not in api_key
     assert api_key["key"].startswith("************")
     assert api_key["key"].endswith("secret")
+
+
+@pytest.mark.parametrize("transport", ["streamable-http", "sse", "stdio"])
+def test_connection_transport_parses_enum_and_preserves_wire_value(transport: str) -> None:
+    from registry.core.mcp_config import MCPTransport
+    from registry.schemas.server_api_schemas import ServerConnectionTestRequest
+
+    request = ServerConnectionTestRequest(url="https://example.com/mcp", transport=transport)
+    assert isinstance(request.transport, MCPTransport)
+    assert request.model_dump(mode="json")["transport"] == transport
+
+
+def test_connection_transport_rejects_unknown_values() -> None:
+    from pydantic import ValidationError
+
+    from registry.schemas.server_api_schemas import ServerConnectionTestRequest
+
+    with pytest.raises(ValidationError, match="transport"):
+        ServerConnectionTestRequest(url="https://example.com/mcp", transport="invalid")
+
+
+@pytest.mark.parametrize("transport", ["http", ""])
+def test_connection_transport_accepts_streamable_http_aliases(transport: str) -> None:
+    from registry.core.mcp_config import MCPTransport
+    from registry.schemas.server_api_schemas import ServerConnectionTestRequest
+
+    request = ServerConnectionTestRequest(url="https://example.com/mcp", transport=transport)
+    assert request.transport is MCPTransport.STREAMABLE_HTTP

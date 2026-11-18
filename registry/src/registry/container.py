@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import httpx
+import httpx2
 from beanie import PydanticObjectId
+from mcp.client.caching import InMemoryResponseCacheStore
 from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
@@ -33,7 +35,9 @@ from registry_pkgs.workflows.schedule_repository import WorkflowScheduleReposito
 
 from .auth.dependencies import effective_scopes_from_context
 from .core.a2a_proxy import A2AProxyClientRegistry
-from .core.mcp_client import MCPClientService
+from .core.mcp_config import MCPClientConfig
+from .core.mcp_downstream import _RESPONSE_CACHE_MAX_ENTRIES, DownstreamEraCache
+from .core.mcp_transport import MethodRoutedTransport
 from .mcpgw.core.client_info_store import ClientInfoStore
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
@@ -120,10 +124,6 @@ class RegistryContainer:
     @cached_property
     def a2a_agent_repo(self) -> A2AAgentRepository:
         return A2AAgentRepository(self.db_client)
-
-    @cached_property
-    def mcp_client_service(self) -> MCPClientService:
-        return MCPClientService(redis_client=self.redis_client)
 
     @cached_property
     def client_info_store(self) -> ClientInfoStore:
@@ -304,6 +304,7 @@ class RegistryContainer:
             token_service=self.token_service,
             oauth_service=self.oauth_service,
             mcp_server_repo=self.mcp_server_repo,
+            downstream_era_cache=self.downstream_era_cache,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
             background_task_tracker=self.background_task_tracker,
             lease_owner=self.lease_owner,
@@ -454,20 +455,29 @@ class RegistryContainer:
         )
 
     @cached_property
-    def mcpgw_proxy_client(self) -> httpx.AsyncClient:
-        """Long-lived httpx client for the stateless MCP gateway's downstream proxy calls.
+    def mcpgw_downstream_transport(self) -> MethodRoutedTransport:
+        """Gateway-only connection pools (GET streams apart from requests), independent of direct-proxy traffic."""
 
-        In stateless mode the FastMCP lifespan is entered on every request, so this must live on the
-        container (not be opened per-lifespan-entry) to keep keep-alive pooling across requests.
+        def pool(max_connections: int) -> httpx2.AsyncHTTPTransport:
+            return httpx2.AsyncHTTPTransport(
+                limits=httpx2.Limits(
+                    max_connections=max_connections,
+                    max_keepalive_connections=MCPClientConfig.DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS,
+                )
+            )
 
-        Deliberately separate from `mcp_proxy_client` despite identical settings, so the gateway's traffic
-        and the direct-proxy/skill-sync traffic keep isolated pools and can't starve each other.
-        """
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, read=60.0),
-            follow_redirects=True,
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        return MethodRoutedTransport(
+            request_pool=pool(MCPClientConfig.DOWNSTREAM_REQUEST_MAX_CONNECTIONS),
+            stream_pool=pool(MCPClientConfig.DOWNSTREAM_STREAM_MAX_CONNECTIONS),
         )
+
+    @cached_property
+    def mcpgw_downstream_response_cache(self) -> InMemoryResponseCacheStore:
+        return InMemoryResponseCacheStore(max_entries=_RESPONSE_CACHE_MAX_ENTRIES)
+
+    @cached_property
+    def downstream_era_cache(self) -> DownstreamEraCache:
+        return DownstreamEraCache(self.redis_client, self.settings.redis_key_prefix)
 
     @cached_property
     def a2a_httpx_client(self) -> httpx.AsyncClient:
@@ -679,7 +689,7 @@ class RegistryContainer:
         # Cancel and finalize all tracked background runs (replaces the cluster-wide shutdown sweep).
         await self.background_task_tracker.shutdown()
         await self.mcp_proxy_client.aclose()
-        await self.mcpgw_proxy_client.aclose()
+        await self.mcpgw_downstream_transport.aclose()
         await self.a2a_httpx_client.aclose()
         await self.a2a_client_registry.close()
         self.azure_model_credential.close()

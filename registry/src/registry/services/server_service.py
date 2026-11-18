@@ -41,6 +41,8 @@ from ..constants import (
     VECTOR_DELETE_SKIPPED_FALLBACK,
     VECTOR_SYNC_SKIPPED_FALLBACK,
 )
+from ..core.mcp_config import MCPTransport
+from ..core.mcp_downstream import DownstreamEraCache
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.server_api_schemas import (
     ServerCreateRequest,
@@ -306,8 +308,10 @@ class ServerServiceV1:
         embedding_maintenance_watcher: EmbeddingMaintenanceWatcher | None = None,
         background_task_tracker: BackgroundTaskTracker | None = None,
         lease_owner: str = "registry-unowned",
+        downstream_era_cache: DownstreamEraCache | None = None,
     ):
         """Initialize server service with search index manager."""
+        self.downstream_era_cache = downstream_era_cache
         self.mcp_server_repo = mcp_server_repo
         self.user_service = user_service
         self.token_service = token_service
@@ -531,7 +535,7 @@ class ServerServiceV1:
 
                 config = server.config or {}
                 url = config.get("url")
-                transport = config.get("type", "streamable-http")
+                transport = config.get("type")
 
                 (
                     is_healthy,
@@ -541,6 +545,8 @@ class ServerServiceV1:
                 ) = await perform_health_check(
                     url=url,
                     transport=transport,
+                    server_id=str(server.id),
+                    era_cache=self.downstream_era_cache,
                 )
                 logger.info(
                     f"Health check result for {server.serverName}: {status_msg} (response_time: {response_time_ms}ms)"
@@ -1113,9 +1119,8 @@ class ServerServiceV1:
             )
 
         # Get transport type
-        transport_type = config.get("type", "streamable-http")
-
         try:
+            transport_type = MCPTransport(config.get("type"))
             # Build complete headers with all authentication (OAuth, apiKey, custom)
             # This consolidates all auth logic in one place
             try:
@@ -1159,6 +1164,8 @@ class ServerServiceV1:
                 transport_type=transport_type,
                 include_resources=include_resources,
                 include_prompts=include_prompts,
+                server_id=str(server.id) if server.id else None,
+                era_cache=self.downstream_era_cache,
             )
             if result.requires_init is not None:
                 server.config["requiresInit"] = result.requires_init

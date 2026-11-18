@@ -9,9 +9,12 @@ from urllib.parse import quote
 
 import httpx
 import httpx2
+from mcp.types import ClientCapabilities, Implementation, InitializeRequestParams
+from mcp_types.version import LATEST_HANDSHAKE_VERSION
 
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
+from registry.core.mcp_config import MCPTransport
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.a2a_agent import (
     TRANSPORT_JSONRPC,
@@ -302,7 +305,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         runtime_url: str,
-        transport_type: str | None,
+        transport_type: MCPTransport | None,
         runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
@@ -316,6 +319,7 @@ class AgentCoreRuntimeInvoker:
         - IAM path: `InvokeAgentRuntime` with MCP JSON-RPC methods
         - JWT path: HTTP call to the runtime invocation endpoint
         """
+        transport_type = MCPTransport(transport_type) if transport_type is not None else None
         mode = self._resolve_runtime_access_mode(
             runtime_access=runtime_access,
             metadata=metadata,
@@ -447,7 +451,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         runtime_url: str,
-        transport_type: str | None,
+        transport_type: MCPTransport | None,
         runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
@@ -475,7 +479,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         runtime_url: str,
-        transport_type: str | None,
+        transport_type: MCPTransport | None,
         runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
@@ -614,18 +618,18 @@ class AgentCoreRuntimeInvoker:
                 client=client,
                 runtime_arn=runtime_arn,
                 method="initialize",
-                params={
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "mcp-gateway-registry", "version": "1.0.0"},
-                },
+                params=InitializeRequestParams(
+                    protocol_version=LATEST_HANDSHAKE_VERSION,
+                    capabilities=ClientCapabilities(),
+                    client_info=Implementation(name="mcp-gateway-registry", version="1.0.0"),
+                ).model_dump(by_alias=True, mode="json", exclude_none=True),
                 request_id=self._next_request_id(),
                 runtime_session_id=None,
                 mcp_session_id=None,
                 protocol_version=None,
             )
         )
-        negotiated_protocol_version = init_result.get("protocolVersion") or protocol_version or "2024-11-05"
+        negotiated_protocol_version = init_result.get("protocolVersion") or protocol_version or LATEST_HANDSHAKE_VERSION
 
         await self._send_mcp_notification(
             client=client,
