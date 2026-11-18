@@ -4,6 +4,7 @@ import fnmatch
 import json
 from typing import Any
 
+import fakeredis
 import pytest
 
 from registry_pkgs.core.oauth_state_store import (
@@ -343,21 +344,48 @@ def test_save_device_authorization_writes_device_and_user_code_in_transaction(
     assert fake_redis.ttls[user_code_key] == 600
 
 
+@pytest.fixture
+def device_state() -> tuple[OAuthStateStore, fakeredis.FakeRedis]:
+    redis_client = fakeredis.FakeRedis(decode_responses=True)
+    return OAuthStateStore(redis_client, key_prefix="test", client_secret_hash_key="hash-key"), redis_client
+
+
 def test_get_update_and_delete_device_state(
-    store: OAuthStateStore,
-    fake_redis: _FakeRedis,
+    device_state: tuple[OAuthStateStore, fakeredis.FakeRedis],
 ) -> None:
+    store, redis_client = device_state
     store.save_device_code("device-1", {"status": "pending"}, 600)
+    key = "test:oauth:device:device-1"
+    redis_client.pexpire(key, 600_250)
+    expires_at = redis_client.pexpiretime(key)
 
     assert store.get_device_code("device-1") == {"status": "pending"}
     assert store.update_device_code("device-1", {"status": "approved"}) is True
     assert store.get_device_code("device-1") == {"status": "approved"}
-    assert fake_redis.ttls["jarvis-auth-server-test:oauth:device:device-1"] == 600
+    assert redis_client.pexpiretime(key) == expires_at
 
     store.save_user_code("USER-1234", "device-1", 600)
     assert store.get_user_code("USER-1234") == "device-1"
     store.delete_user_code("USER-1234")
     assert store.get_user_code("USER-1234") is None
+
+
+def test_update_device_code_skips_code_removed_after_ttl_read(
+    device_state: tuple[OAuthStateStore, fakeredis.FakeRedis],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, redis_client = device_state
+    store.save_device_code("device-1", {"status": "pending"}, 600)
+    read_ttl = redis_client.ttl
+
+    def ttl_then_delete(key: str) -> int:
+        remaining = read_ttl(key)
+        redis_client.delete(key)
+        return remaining
+
+    monkeypatch.setattr(redis_client, "ttl", ttl_then_delete)
+    assert store.update_device_code("device-1", {"status": "approved"}) is False
+    assert store.get_device_code("device-1") is None
 
 
 def test_consume_device_code_is_single_use(
