@@ -582,3 +582,140 @@ async def test_stateful_legacy_http_sessions_are_isolated_and_cleaned_up(outcome
                 assert len(tool_requests) == 1
                 assert sum(request.method == "DELETE" for request in requests) == 1
     assert transport.closed == 1
+
+
+def _sse_app_rejecting_posts(status: int):
+    """A real SDK SSE server whose POST /messages/ endpoint answers ``status`` (GET still opens the stream).
+
+    The SDK server can't produce this split on its own, so a middleware rejects the POSTs.
+    """
+    from mcp.server.mcpserver import MCPServer
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    server = MCPServer("sse")
+
+    @server.tool()
+    async def search() -> str:
+        return "sse done"
+
+    app = server.sse_app(transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
+
+    async def rejecting(scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "POST" and "/messages/" in scope["path"]:
+            headers = [(b"www-authenticate", b"Bearer sse-challenge")] if status == 401 else []
+            await send({"type": "http.response.start", "status": status, "headers": headers})
+            await send({"type": "http.response.body", "body": b""})
+            return
+        await app(scope, receive, send)
+
+    return rejecting
+
+
+async def test_legacy_sse_post_401_fails_fast_with_challenge():
+    import asyncio
+
+    from tests.mcp_downstream_support import StreamingASGITransport
+
+    transport = StreamingASGITransport(_sse_app_rejecting_posts(401))
+    try:
+        # Well inside the 60 s read timeout the SDK would otherwise wait out.
+        async with asyncio.timeout(5):
+            with pytest.raises(DownstreamUnauthorizedException) as error:
+                await call_downstream_tool(
+                    url="http://downstream/sse",
+                    transport_type="sse",
+                    server_id="s",
+                    user_id="u",
+                    headers={},
+                    tool_name="search",
+                    arguments={},
+                    downstream_transport=transport,
+                    response_cache=InMemoryResponseCacheStore(),
+                    era_cache=DownstreamEraCache(MemoryRedis(), "test"),
+                )
+        assert error.value.www_authenticate == "Bearer sse-challenge"
+        assert error.value.oauth_retry_safe
+    finally:
+        await transport.aclose()
+
+
+def _patch_sse_discovery_client(monkeypatch, transport):
+    from registry.core import mcp_transport
+
+    def client(headers=None, timeout=None, auth=None):
+        return httpx2.AsyncClient(
+            transport=mcp_transport.SharedTransport(transport), headers=headers, timeout=timeout, auth=auth
+        )
+
+    monkeypatch.setattr(mcp_transport, "create_mcp_http_client", client)
+
+
+@pytest.mark.parametrize(
+    ("status", "healthy", "message"),
+    [
+        (401, True, "connected (initialize requires authentication)"),
+        (403, True, "connected (initialize requires authentication)"),
+        (404, False, "unhealthy: endpoint returned 404 for 'sse' transport"),
+        (405, False, "unhealthy: endpoint returned 405 for 'sse' transport"),
+    ],
+)
+async def test_legacy_sse_health_reports_post_rejection_without_waiting(monkeypatch, status, healthy, message):
+    import asyncio
+
+    from tests.mcp_downstream_support import StreamingASGITransport
+
+    from registry.core.mcp_client import perform_health_check
+
+    transport = StreamingASGITransport(_sse_app_rejecting_posts(status))
+    _patch_sse_discovery_client(monkeypatch, transport)
+    try:
+        # INIT_TIMEOUT is 30 s; a rejected POST must be reported as soon as it arrives.
+        async with asyncio.timeout(5):
+            result = await perform_health_check("http://downstream/sse", transport="sse")
+        assert result[0] is healthy
+        assert result[1].startswith(message)
+    finally:
+        await transport.aclose()
+
+
+async def test_legacy_sse_discovery_reports_post_rejection_without_waiting(monkeypatch):
+    import asyncio
+
+    from tests.mcp_downstream_support import StreamingASGITransport
+
+    from registry.core.mcp_client import _get_from_sse
+
+    transport = StreamingASGITransport(_sse_app_rejecting_posts(401))
+    _patch_sse_discovery_client(monkeypatch, transport)
+    try:
+        async with asyncio.timeout(5):
+            result = await _get_from_sse("http://downstream/sse", include_resources=False, include_prompts=False)
+        assert result.tools is None
+        assert result.error_message == "Connection failed: SSE server rejected a request with HTTP 401"
+    finally:
+        await transport.aclose()
+
+
+async def test_legacy_sse_discovery_still_succeeds_with_fail_fast(monkeypatch):
+    from mcp.server.mcpserver import MCPServer
+    from mcp.server.transport_security import TransportSecuritySettings
+    from tests.mcp_downstream_support import StreamingASGITransport
+
+    from registry.core.mcp_client import _get_from_sse
+
+    server = MCPServer("sse")
+
+    @server.tool()
+    async def search() -> str:
+        return "sse done"
+
+    transport = StreamingASGITransport(
+        server.sse_app(transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
+    )
+    _patch_sse_discovery_client(monkeypatch, transport)
+    try:
+        result = await _get_from_sse("http://downstream/sse")
+        assert result.error_message is None
+        assert [tool["name"] for tool in result.tools] == ["search"]
+    finally:
+        await transport.aclose()

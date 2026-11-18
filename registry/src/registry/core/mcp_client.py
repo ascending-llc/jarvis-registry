@@ -29,7 +29,7 @@ from .config import settings
 # Internal imports
 from .mcp_config import MCPClientConfig, MCPTransport
 from .mcp_downstream import DownstreamEraCache
-from .mcp_transport import ResponseRecorder, create_sse_client_factory
+from .mcp_transport import ResponseRecorder, cancel_on_post_rejection, create_sse_client_factory
 from .server_strategies import get_server_strategy
 
 logger = logging.getLogger(__name__)
@@ -115,17 +115,21 @@ async def initialize_mcp(
                     return _snapshot_init(session), recorder.status_code
 
         elif transport_type == MCPTransport.SSE:
-            async with _connect_client(
-                sse_client(
-                    mcp_url,
-                    headers=headers,
-                    httpx_client_factory=create_sse_client_factory(recorder),
-                )
-            ) as session:
-                logger.info(f"MCP initialization successful for {target_url}")
-                if era_cache:
-                    await era_cache.record(server_id, session.protocol_version)
-                return _snapshot_init(session), recorder.status_code
+            # A rejected POST (e.g. 401 on initialize) ends the handshake now instead of after INIT_TIMEOUT.
+            with cancel_on_post_rejection(recorder):
+                async with _connect_client(
+                    sse_client(
+                        mcp_url,
+                        headers=headers,
+                        httpx_client_factory=create_sse_client_factory(recorder),
+                    )
+                ) as session:
+                    logger.info(f"MCP initialization successful for {target_url}")
+                    if era_cache:
+                        await era_cache.record(server_id, session.protocol_version)
+                    return _snapshot_init(session), recorder.status_code
+            logger.info(f"SSE server {target_url} rejected an initialization POST with HTTP {recorder.status_code}")
+            return None, recorder.status_code
         else:
             logger.error(f"Unsupported transport type: {transport_type}")
             return None, None
@@ -568,65 +572,77 @@ async def _get_from_sse(
         # v2's sse_client uses httpx2, so the old global monkey-patch no longer applies. The client
         # factory attaches a per-client request hook that rewrites the mount-path POST-back URL, and
         # auth is honoured (passed through instead of logged as ignored).
-        async with _connect_client(
-            sse_client(
-                mcp_server_url,
-                headers=headers,
-                auth=httpx_auth,
-                httpx_client_factory=create_sse_client_factory(),
-            )
-        ) as session:
-            if era_cache:
-                await era_cache.record(server_id, session.protocol_version)
-            init_result = _snapshot_init(session)
-            tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
+        recorder = ResponseRecorder()
+        # Fail fast while the handshake and tool listing are pending: a rejected POST there would otherwise
+        # surface only as a timeout.
+        with cancel_on_post_rejection(recorder):
+            async with _connect_client(
+                sse_client(
+                    mcp_server_url,
+                    headers=headers,
+                    auth=httpx_auth,
+                    httpx_client_factory=create_sse_client_factory(recorder),
+                )
+            ) as session:
+                if era_cache:
+                    await era_cache.record(server_id, session.protocol_version)
+                init_result = _snapshot_init(session)
+                tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
+                # Optional resource/prompt listings keep their own timeouts and must not abort a discovery
+                # that already has its tools.
+                recorder.on_post_rejected = None
 
-            # Extract capabilities if requested
-            capabilities = None
-            if include_capabilities:
-                capabilities = _extract_capabilities(init_result)
+                # Extract capabilities if requested
+                capabilities = None
+                if include_capabilities:
+                    capabilities = _extract_capabilities(init_result)
 
-                # If capabilities required but not retrieved, consider it a failed server
-                if not capabilities:
-                    logger.error(f"Failed to retrieve capabilities from {mcp_server_url} - server considered failed")
-                    return MCPServerData(None, None, None, None, "Failed to retrieve capabilities")
+                    # If capabilities required but not retrieved, consider it a failed server
+                    if not capabilities:
+                        logger.error(
+                            f"Failed to retrieve capabilities from {mcp_server_url} - server considered failed"
+                        )
+                        return MCPServerData(None, None, None, None, "Failed to retrieve capabilities")
 
-                logger.info(f"Successfully retrieved capabilities from {mcp_server_url}: {capabilities}")
+                    logger.info(f"Successfully retrieved capabilities from {mcp_server_url}: {capabilities}")
 
-            # Extract tool details
-            tool_list = _extract_tool_details(tools_response)
+                # Extract tool details
+                tool_list = _extract_tool_details(tools_response)
 
-            # Extract resources if requested
-            resource_list = []
-            if include_resources:
-                try:
-                    resources_response = await asyncio.wait_for(
-                        session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                    )
-                    resource_list = _extract_resource_details(resources_response)
-                except Exception as e:
-                    logger.warning(f"Failed to retrieve resources from {mcp_server_url}: {e}")
-                    resource_list = []
+                # Extract resources if requested
+                resource_list = []
+                if include_resources:
+                    try:
+                        resources_response = await asyncio.wait_for(
+                            session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
+                        )
+                        resource_list = _extract_resource_details(resources_response)
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve resources from {mcp_server_url}: {e}")
+                        resource_list = []
 
-            # Extract prompts if requested
-            prompt_list = []
-            if include_prompts:
-                try:
-                    prompts_response = await asyncio.wait_for(
-                        session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                    )
-                    prompt_list = _extract_prompt_details(prompts_response)
-                except Exception as e:
-                    logger.warning(f"Failed to retrieve prompts from {mcp_server_url}: {e}")
-                    prompt_list = []
+                # Extract prompts if requested
+                prompt_list = []
+                if include_prompts:
+                    try:
+                        prompts_response = await asyncio.wait_for(
+                            session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
+                        )
+                        prompt_list = _extract_prompt_details(prompts_response)
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve prompts from {mcp_server_url}: {e}")
+                        prompt_list = []
 
-            return MCPServerData(
-                tools=tool_list,
-                resources=resource_list,
-                prompts=prompt_list,
-                capabilities=capabilities,
-                requires_init=requires_init,
-            )
+                return MCPServerData(
+                    tools=tool_list,
+                    resources=resource_list,
+                    prompts=prompt_list,
+                    capabilities=capabilities,
+                    requires_init=requires_init,
+                )
+        message = f"Connection failed: SSE server rejected a request with HTTP {recorder.status_code}"
+        logger.error(f"{message} ({mcp_server_url})")
+        return MCPServerData(None, None, None, None, message)
 
     except TimeoutError:
         logger.error(f"Timeout connecting to {mcp_server_url}")

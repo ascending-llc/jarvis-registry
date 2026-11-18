@@ -3,8 +3,11 @@
 import json
 import logging
 import re
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from enum import StrEnum
 
+import anyio
 import httpx2
 from mcp.shared._httpx_utils import McpHttpClientFactory, create_mcp_http_client
 
@@ -76,6 +79,9 @@ class ResponseRecorder:
         self._rpc_started = False
         self.phase = DownstreamPhase.CONNECTING
         self.method: str | None = None
+        # Set by cancel_on_post_rejection: called when an RPC POST is rejected (see there).
+        self.on_post_rejected: Callable[[], None] | None = None
+        self.post_rejected = False
 
     async def on_request(self, request: httpx2.Request) -> None:
         if request.method == "POST":
@@ -104,14 +110,37 @@ class ResponseRecorder:
                 message = json.loads(request.content)
             except (ValueError, httpx2.RequestNotRead):
                 return
-            if "id" not in message:
+            if not isinstance(message, dict) or "id" not in message:
                 return
             if self.first_rpc_status_code is None:
                 self.first_rpc_status_code = response.status_code
+            if self.on_post_rejected is not None and response.status_code >= 400:
+                self.post_rejected = True
+                self.on_post_rejected()
         elif request.method != "GET" or self._rpc_started or self.status_code is not None:
             return
         self.status_code = response.status_code
         self.www_authenticate = response.headers.get("www-authenticate")
+
+
+@contextmanager
+def cancel_on_post_rejection(recorder: ResponseRecorder) -> Iterator[anyio.CancelScope]:
+    """Cancel the enclosed SSE work as soon as one of its RPC POSTs is rejected.
+
+    The SDK's SSE transport logs a failed POST and drops it, so the request would otherwise wait out
+    its read timeout and surface as a timeout, never as the 401 or 404 the server sent. On rejection
+    the block exits early with ``recorder.post_rejected`` set and the status in ``recorder.status_code``;
+    the caller turns that into its own error. Every rejected RPC counts, ``server/discover`` included:
+    the mode="auto" fallback to ``initialize`` needs the probe to fail, and a dropped POST never does.
+    Streamable HTTP does not need this: the SDK already reports a rejected POST as an error on the
+    pending request.
+    """
+    with anyio.CancelScope() as scope:
+        recorder.on_post_rejected = scope.cancel
+        try:
+            yield scope
+        finally:
+            recorder.on_post_rejected = None
 
 
 def normalize_sse_endpoint_url_for_request(url_str: str) -> str:

@@ -22,6 +22,7 @@ dependencies = [
     "cryptography>=40.0.0",
     # MCP and Agents
     "mcp>=2.3.0,<3.0.0",
+    "anyio>=4.5.0",
     "langgraph>=0.4.3",
     "langchain-anthropic>=0.3.17",
     # Utilities

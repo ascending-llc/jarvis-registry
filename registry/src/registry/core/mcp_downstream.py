@@ -2,8 +2,8 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Literal
 
 import httpx2
@@ -34,7 +34,13 @@ from registry_pkgs.core.exceptions import (
 
 from .config import settings
 from .mcp_config import MCPClientConfig, MCPTransport
-from .mcp_transport import DownstreamPhase, ResponseRecorder, SharedTransport, create_sse_client_factory
+from .mcp_transport import (
+    DownstreamPhase,
+    ResponseRecorder,
+    SharedTransport,
+    cancel_on_post_rejection,
+    create_sse_client_factory,
+)
 
 logger = logging.getLogger(__name__)
 _ERA_CACHE_TTL_SECONDS = 3600
@@ -147,6 +153,15 @@ async def _open_transport(
         raise ValueError(f"Unsupported downstream transport: {transport_type}")
 
 
+@contextmanager
+def _fail_fast_on_sse(recorder: ResponseRecorder, transport_type: MCPTransport) -> Iterator[None]:
+    if transport_type == MCPTransport.SSE:
+        with cancel_on_post_rejection(recorder):
+            yield
+    else:
+        yield
+
+
 async def call_downstream_tool(
     *,
     url: str,
@@ -168,50 +183,53 @@ async def call_downstream_tool(
         recorder = ResponseRecorder()
         tool_sent = False
         try:
-            async with _open_transport(url, transport_type, headers, recorder, downstream_transport) as transport:
-                async with Client(
-                    transport,
-                    mode=cached_mode if attempt == 0 and cached_mode else "auto",
-                    read_timeout_seconds=60,
-                    client_info=Implementation(**settings.mcp_client_info),
-                    logging_callback=on_log,
-                    log_level=_DOWNSTREAM_LOG_LEVEL if on_log else None,
-                    cache=CacheConfig(
-                        store=response_cache,
-                        partition=user_id,
-                        target_id=server_id,
-                        default_ttl_ms=_TOOL_LIST_CACHE_TTL_MS,
-                    ),
-                ) as client:
-                    await era_cache.record(server_id, client.protocol_version)
-                    recorder.phase = DownstreamPhase.LISTING
-                    try:
-                        # One deadline for the entire listing, not a fresh timeout for every page.
-                        async with asyncio.timeout(MCPClientConfig.TOOLS_TIMEOUT):
-                            listing = await client.list_tools()
-                            cursors: set[str] = set()
-                            while not any(tool.name == tool_name for tool in listing.tools) and listing.next_cursor:
-                                cursor = listing.next_cursor
-                                if cursor in cursors:
-                                    raise MisimplementedSpecException(
-                                        "Downstream tools/list repeated a pagination cursor."
-                                    )
-                                cursors.add(cursor)
-                                listing = await client.list_tools(cursor=cursor)
-                    except TimeoutError as exc:
-                        raise DownstreamHttpFailureException(
-                            "Timed out fetching the downstream MCP tool list."
-                        ) from exc
-                    tool_sent = True
-                    recorder.phase = DownstreamPhase.CALLING
-                    result = await client.session.call_tool(
-                        tool_name,
-                        arguments,
-                        allow_input_required=True,
-                        progress_callback=on_progress,
-                    )
-                    recorder.phase = DownstreamPhase.CLOSING
-                return result
+            # An SSE POST rejection cancels the block instead of waiting out the read timeout.
+            with _fail_fast_on_sse(recorder, transport_type):
+                async with _open_transport(url, transport_type, headers, recorder, downstream_transport) as transport:
+                    async with Client(
+                        transport,
+                        mode=cached_mode if attempt == 0 and cached_mode else "auto",
+                        read_timeout_seconds=60,
+                        client_info=Implementation(**settings.mcp_client_info),
+                        logging_callback=on_log,
+                        log_level=_DOWNSTREAM_LOG_LEVEL if on_log else None,
+                        cache=CacheConfig(
+                            store=response_cache,
+                            partition=user_id,
+                            target_id=server_id,
+                            default_ttl_ms=_TOOL_LIST_CACHE_TTL_MS,
+                        ),
+                    ) as client:
+                        await era_cache.record(server_id, client.protocol_version)
+                        recorder.phase = DownstreamPhase.LISTING
+                        try:
+                            # One deadline for the entire listing, not a fresh timeout for every page.
+                            async with asyncio.timeout(MCPClientConfig.TOOLS_TIMEOUT):
+                                listing = await client.list_tools()
+                                cursors: set[str] = set()
+                                while not any(tool.name == tool_name for tool in listing.tools) and listing.next_cursor:
+                                    cursor = listing.next_cursor
+                                    if cursor in cursors:
+                                        raise MisimplementedSpecException(
+                                            "Downstream tools/list repeated a pagination cursor."
+                                        )
+                                    cursors.add(cursor)
+                                    listing = await client.list_tools(cursor=cursor)
+                        except TimeoutError as exc:
+                            raise DownstreamHttpFailureException(
+                                "Timed out fetching the downstream MCP tool list."
+                            ) from exc
+                        tool_sent = True
+                        recorder.phase = DownstreamPhase.CALLING
+                        result = await client.session.call_tool(
+                            tool_name,
+                            arguments,
+                            allow_input_required=True,
+                            progress_callback=on_progress,
+                        )
+                        recorder.phase = DownstreamPhase.CLOSING
+                    return result
+            raise DownstreamHttpFailureException(_DOWNSTREAM_FAILURE_MESSAGE)  # mapped below from the status
         except Exception as exc:
             error = _single_error(exc)
             version_error = isinstance(error, MCPError) and error.code == UNSUPPORTED_PROTOCOL_VERSION
