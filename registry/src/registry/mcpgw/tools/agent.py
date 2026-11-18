@@ -18,6 +18,7 @@ from mcp.types import (
     CallToolResult,
     EmbeddedResource,
     ImageContent,
+    InputRequiredResult,
     TextContent,
     TextResourceContents,
 )
@@ -27,6 +28,7 @@ from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import A2ACallResult, call_a2a, raise_if_iam_unsupported
 
+from ...constants import UrlElicitationInputKey
 from ...core.config import settings
 from ...services.access_control_service import ACLService
 from ...services.generated_token_policy import is_consent_exempt
@@ -206,7 +208,7 @@ async def execute_agent_impl(
     agent_id: str,
     message: AgentMessageInput,
     ctx: Context[McpAppContext],
-) -> CallToolResult:
+) -> CallToolResult | InputRequiredResult:
     """
     Invoke an A2A agent and return its response.
     """
@@ -283,6 +285,7 @@ async def execute_agent_impl(
             auth_url,
             template,
             human_message,
+            input_key=UrlElicitationInputKey.CONSENT,
             elicitation_id=elicitation_id,
         )
 
@@ -341,7 +344,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 ),
             ),
         ],
-    ) -> CallToolResult:
+    ) -> CallToolResult | InputRequiredResult:
         """Invoke an A2A agent selected through discover_agents, using its exact agent_id.
         The agent runs autonomously on the delegated task and returns its final result.
 

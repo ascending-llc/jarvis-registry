@@ -1,3 +1,14 @@
+from enum import StrEnum
+
+
+class ExecutionOutcome(StrEnum):
+    """Bounded telemetry outcomes for an execution, including a pending input round."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    INPUT_REQUIRED = "input_required"
+
+
 MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 
@@ -32,6 +43,20 @@ class DownstreamOAuthConstants:
 
 # auth_source recorded on a user context built from a managed-agent (proxy / Bearer) token.
 MANAGED_AGENT_AUTH_SOURCE = "jwt_auth"
+
+
+class UrlElicitationInputKey(StrEnum):
+    """Input-request keys under which a 2026-07-28 URL elicitation goes out as an `InputRequiredResult`.
+
+    The client's retry answer arrives in `inputResponses` under the same key. Each check has its own key, so
+    a retry answering one check (consent) can still prompt for the next check that fails (downstream OAuth)
+    instead of falling back to text. Shared by the mcpgw gateway and the direct-connect proxy so both
+    surfaces expose one wire contract.
+    """
+
+    CONSENT = "jarvis_registry_consent"
+    AUTHORIZATION = "jarvis_registry_authorization"
+
 
 # /api/v1/tokens/generate error details. Scope lists are rendered sorted and comma-separated; {purpose}
 # is the UI label of the token type, quoted rather than preceded by an article ("a Interactive token").

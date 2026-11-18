@@ -18,6 +18,7 @@ from mcp.types import (
     CallToolResult,
     EmbeddedResource,
     ImageContent,
+    InputRequiredResult,
     ResourceLink,
     TextContent,
     TextResourceContents,
@@ -28,6 +29,7 @@ from pydantic import AnyUrl, BaseModel
 
 from registry_pkgs.telemetry.span_attributes import TRACE_APP, clean_span_attributes, set_span_attributes
 
+from ..constants import ExecutionOutcome
 from .core.types import McpAppContext
 from .tools.utils import get_client_params
 
@@ -56,6 +58,7 @@ _TRACE_MODEL_FIELDS: dict[type[BaseModel], tuple[str, ...]] = {
     FileWithBytes: ("name", "mime_type"),
     FileWithUri: ("name", "mime_type", "uri"),
     ImageContent: ("type", "mime_type", "annotations"),
+    InputRequiredResult: ("result_type",),
     ResourceLink: ("type", "name", "title", "uri", "description", "mime_type", "size", "annotations"),
     TextContent: ("type", "text", "annotations"),
     TextPart: ("kind", "text"),
@@ -229,16 +232,20 @@ def _set_serialized_attribute(
             logger.warning("Failed to record trace attribute error event for %s", key, exc_info=True)
 
 
-def _record_result(span: Span, result: CallToolResult) -> bool:
-    success = result.is_error is not True
+def _record_result(span: Span, result: CallToolResult | InputRequiredResult) -> ExecutionOutcome:
     _set_serialized_attribute(span, "langfuse.observation.output", result)
+    # A URL elicitation delivered as an input_required tool result is neither a success nor an error: the
+    # call is paused awaiting the client's retry. Record it as not successful without an ERROR span status.
+    if isinstance(result, InputRequiredResult):
+        return ExecutionOutcome.INPUT_REQUIRED
+    success = result.is_error is not True
     if success:
-        return True
+        return ExecutionOutcome.SUCCESS
     try:
         span.set_status(Status(StatusCode.ERROR, "MCP operation returned an error result"))
     except Exception:
         logger.error("failed to set OTEL span status to ERROR when MCP operation returned an error result")
-    return False
+    return ExecutionOutcome.FAILURE
 
 
 def trace_discovery(
@@ -296,11 +303,11 @@ def trace_discovery(
 def trace_tool_execution(
     func: Callable[
         [Context[McpAppContext], str, dict[str, Any], str],
-        Awaitable[CallToolResult],
+        Awaitable[CallToolResult | InputRequiredResult],
     ],
 ) -> Callable[
     [Context[McpAppContext], str, dict[str, Any], str],
-    Awaitable[CallToolResult],
+    Awaitable[CallToolResult | InputRequiredResult],
 ]:
     """Trace one downstream MCP tool execution with trace-relevant input and output."""
 
@@ -310,7 +317,7 @@ def trace_tool_execution(
         tool_name: str,
         arguments: dict[str, Any],
         server_id: str,
-    ) -> CallToolResult:
+    ) -> CallToolResult | InputRequiredResult:
         attributes = {
             **_build_trace_attributes(
                 ctx,
@@ -328,13 +335,19 @@ def trace_tool_execution(
                 "langfuse.observation.input",
                 projection=lambda: _build_tool_trace_input(tool_name, server_id, arguments),
             )
-            success = False
+            outcome = ExecutionOutcome.FAILURE
             try:
                 result = await func(ctx, tool_name, arguments, server_id)
-                success = _record_result(span, result)
+                outcome = _record_result(span, result)
                 return result
             finally:
-                set_span_attributes(span, {"registry.operation.success": success})
+                set_span_attributes(
+                    span,
+                    {
+                        "registry.operation.success": outcome is ExecutionOutcome.SUCCESS,
+                        "registry.operation.outcome": outcome.value,
+                    },
+                )
 
     return wrapper
 
@@ -342,11 +355,11 @@ def trace_tool_execution(
 def trace_agent_execution[AgentMessageT](
     func: Callable[
         [str, AgentMessageT, Context[McpAppContext]],
-        Awaitable[CallToolResult],
+        Awaitable[CallToolResult | InputRequiredResult],
     ],
 ) -> Callable[
     [str, AgentMessageT, Context[McpAppContext]],
-    Awaitable[CallToolResult],
+    Awaitable[CallToolResult | InputRequiredResult],
 ]:
     """Trace one downstream A2A agent execution with trace-relevant input and output."""
 
@@ -355,7 +368,7 @@ def trace_agent_execution[AgentMessageT](
         agent_id: str,
         message: AgentMessageT,
         ctx: Context[McpAppContext],
-    ) -> CallToolResult:
+    ) -> CallToolResult | InputRequiredResult:
         attributes = {
             **_build_trace_attributes(
                 ctx,
@@ -372,12 +385,18 @@ def trace_agent_execution[AgentMessageT](
                 "langfuse.observation.input",
                 projection=lambda: _build_agent_trace_input(agent_id, message),
             )
-            success = False
+            outcome = ExecutionOutcome.FAILURE
             try:
                 result = await func(agent_id, message, ctx)
-                success = _record_result(span, result)
+                outcome = _record_result(span, result)
                 return result
             finally:
-                set_span_attributes(span, {"registry.operation.success": success})
+                set_span_attributes(
+                    span,
+                    {
+                        "registry.operation.success": outcome is ExecutionOutcome.SUCCESS,
+                        "registry.operation.outcome": outcome.value,
+                    },
+                )
 
     return wrapper
