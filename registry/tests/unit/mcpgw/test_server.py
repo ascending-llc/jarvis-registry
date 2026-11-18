@@ -1505,7 +1505,10 @@ async def test_tool_list_deadline_stops_before_execution_without_oauth_recovery(
         async with asyncio.timeout(5):
             with pytest.raises(DownstreamHttpFailureException, match="Timed out fetching.*tool list"):
                 await execute_tool_impl(ctx, "tavily_search", {}, server_id)
-        assert cancelled.is_set()
+        if not pagination:
+            # Only a stalled page is guaranteed to be in flight at the deadline; with endless pages the
+            # deadline may land in the client's own work between pages.
+            assert cancelled.is_set()
         assert pages.count(None) == 1  # No second attempt starting at page one.
         assert len(pages) > 1 if pagination else len(pages) == 1
         assert transport.count("tools/call") == 0
