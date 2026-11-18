@@ -5,6 +5,15 @@ Run:
 
 Uses real HTTP, MongoDB, Redis, and consent/OAuth APIs with a temporary MCP/OAuth
 server. Creates isolated test data, cleans it up on exit, and prints the results.
+
+Local only: it refuses to run unless the Registry URL, MONGO_URI and REDIS_URI all
+point at loopback or the docker compose services. A port-forward to a remote database
+also looks local, so don't run it while one is open on the configured host and port.
+
+From the host against docker compose, point Mongo and Redis at the published ports:
+  REDIS_URI=redis://localhost:6379 \\
+  MONGO_URI='mongodb://localhost:27017/jarvis?directConnection=true' \\
+  uv run python scripts/verify_direct_proxy_live_e2e.py
 """
 
 from __future__ import annotations
@@ -33,16 +42,48 @@ from mcp.types import ElicitResult
 from pymongo import AsyncMongoClient
 from redis.asyncio import Redis
 
+from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.utils.csrf import compute_csrf_token
 from registry_pkgs.core.jwt_tokens import mint_crud_session_token, mint_managed_agent_token
 
 MODERN = "2026-07-28"
 LEGACY = "2025-11-25"
-INPUT_KEY = "jarvis_registry_authorization"
+CONSENT_KEY = UrlElicitationInputKey.CONSENT
+OAUTH_KEY = UrlElicitationInputKey.AUTHORIZATION
 CAP_KEY = "io.modelcontextprotocol/clientCapabilities"
 PROTO_KEY = "io.modelcontextprotocol/protocolVersion"
 KINDS = ("modern", "legacy", "oauth", "disabled", "stdio")
+# Loopback, plus the docker compose service names for when the probe runs inside the compose network.
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "registry", "registry-mongodb", "registry-redis"})
+
+
+def _uri_hosts(uri: str) -> list[str]:
+    """Return every host in a URI, including each host of a multi-host MongoDB seed list."""
+    scheme, sep, rest = uri.partition("://")
+    if not sep:
+        raise ValueError(f"not a URI: {scheme!r}")
+    netloc = rest.split("/", 1)[0].split("?", 1)[0].rpartition("@")[2]
+    return [urlsplit(f"//{host}").hostname or "" for host in netloc.split(",")]
+
+
+def require_local_targets(registry_url: str) -> None:
+    """Refuse to run unless every target this probe writes to or calls is local."""
+    targets = {
+        "--registry-url": registry_url,
+        "MONGO_URI": settings.mongo_config.mongo_uri,
+        "REDIS_URI": settings.redis_uri,
+    }
+    for name, uri in targets.items():
+        if uri.startswith("mongodb+srv://"):
+            raise SystemExit(f"Refusing to run: {name} uses mongodb+srv, which is never local.")
+        hosts = _uri_hosts(uri)
+        remote = [host for host in hosts if host.lower() not in LOCAL_HOSTS]
+        if not hosts or remote:
+            raise SystemExit(
+                f"Refusing to run: {name} targets non-local host(s) {remote or hosts}. "
+                f"This probe writes test data and may only run against {sorted(LOCAL_HOSTS)}."
+            )
 
 
 class LiveProbe:
@@ -90,14 +131,16 @@ class LiveProbe:
             extra_claims={"preferred_username": self.run},
         )
 
-    def message(self, method: str = "tools/call", *, action: str | None = None, capable: bool = True) -> dict[str, Any]:
+    def message(
+        self, method: str = "tools/call", *, action: str | None = None, capable: bool = True, key: str = CONSENT_KEY
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "name": "echo",
             "arguments": {"text": "实际测试"},
             "_meta": {PROTO_KEY: MODERN, CAP_KEY: {"elicitation": {"url": {}}} if capable else {}},
         }
         if action:
-            params["inputResponses"] = {INPUT_KEY: {"action": action}}
+            params["inputResponses"] = {key: {"action": action}}
         return {"jsonrpc": "2.0", "id": self.run, "method": method, "params": params}
 
     async def rpc(
@@ -128,11 +171,11 @@ class LiveProbe:
             result = response.json() if response.content else {}
         return response, result
 
-    def prompt_url(self, body: dict[str, Any]) -> str:
+    def prompt_url(self, body: dict[str, Any], key: str = CONSENT_KEY) -> str:
         result = body.get("result", {})
         self.check("input_required wire", result.get("resultType") == "input_required")
         self.check("no Registry requestState", "requestState" not in result)
-        prompt = result["inputRequests"][INPUT_KEY]
+        prompt = result["inputRequests"][key]
         self.check("URL prompt shape", prompt["method"] == "elicitation/create" and prompt["params"]["mode"] == "url")
         self.check("no modern elicitationId", "elicitationId" not in prompt["params"])
         url = prompt["params"]["url"]
@@ -428,7 +471,8 @@ class LiveProbe:
         self.check("SDK downstream execution count", len(sent) == (1 if approve and action == "accept" else 0))
         if sent:
             self.check(
-                "SDK strips Registry answer", INPUT_KEY not in sent[0]["message"]["params"].get("inputResponses", {})
+                "SDK strips Registry answer",
+                not set(UrlElicitationInputKey) & set(sent[0]["message"]["params"].get("inputResponses", {})),
             )
 
     async def exercise(self) -> None:
@@ -468,7 +512,7 @@ class LiveProbe:
             self.check(f"retry {action} has no downstream call", len(self.observed) == before)
         for invalid in (None, {}, {"action": "invalid"}):
             msg = self.message()
-            msg["params"]["inputResponses"] = {INPUT_KEY: invalid}
+            msg["params"]["inputResponses"] = {CONSENT_KEY: invalid}
             _, body = await self.rpc("modern", msg)
             self.check("invalid Registry response gets -32602", body.get("error", {}).get("code") == -32602)
         _, body = await self.rpc("modern", self.message())
@@ -488,7 +532,7 @@ class LiveProbe:
         _, body = await self.rpc("modern", msg, raw=raw)
         sent = self.observed[-1]
         expected = json.loads(raw)
-        del expected["params"]["inputResponses"][INPUT_KEY]
+        del expected["params"]["inputResponses"][CONSENT_KEY]
         self.check(
             "authorized retry returns downstream result",
             body.get("result", {}).get("content", [{}])[0].get("text") == "done",
@@ -564,15 +608,22 @@ class LiveProbe:
                 response.status_code == 200 and body.get("error", {}).get("code") == -32003,
             )
         _, body = await self.rpc("oauth", self.message(action="accept"))
+        self.prompt_url(body, OAUTH_KEY)
+        _, body = await self.rpc("oauth", self.message(action="accept", key=OAUTH_KEY))
         self.check(
-            "consent then missing OAuth does not prompt again", body.get("result", {}).get("resultType") == "complete"
+            "OAuth retry still failing does not prompt again", body.get("result", {}).get("resultType") == "complete"
         )
-        _, body = await self.rpc("oauth", self.message())
-        auth_url = self.prompt_url(body)
+        # Every interactive re-auth starts a new flow under the same user:server flow id, so the retry
+        # above invalidated the first prompt's state. Complete OAuth with a freshly prompted URL.
+        _, body = await self.rpc("oauth", self.message(action="accept"))
+        auth_url = self.prompt_url(body, OAUTH_KEY)
         authorized = await self.http.get(auth_url.replace(self.fixture_base, self.fixture_local_base, 1))
         self.check("fixture OAuth authorize redirects", authorized.status_code in {302, 307})
         callback = urlsplit(authorized.headers["location"])
-        completed = await self.http.get(self.base + callback.path + "?" + callback.query)
+        # The redirect URI is built from REGISTRY_URL, whose path may carry a proxy prefix such
+        # as /gateway; route the callback to --registry-url without that prefix.
+        callback_path = callback.path.removeprefix(urlsplit(settings.registry_url).path.rstrip("/"))
+        completed = await self.http.get(self.base + callback_path + "?" + callback.query)
         self.check(
             "real OAuth callback exchanges token", completed.status_code in {302, 307} and self.token_exchanges == 1
         )
@@ -601,14 +652,14 @@ class LiveProbe:
         self.check(
             "401 resend reuses cleaned body and length",
             sent[0]["raw"] == sent[1]["raw"]
-            and INPUT_KEY not in sent[1]["message"]["params"].get("inputResponses", {})
+            and not set(UrlElicitationInputKey) & set(sent[1]["message"]["params"].get("inputResponses", {}))
             and all(int(row["length"]) == len(row["raw"]) for row in sent),
         )
         self.reject_next = True
         self.reject_refresh = True
         response, body = await self.rpc("oauth", self.message())
         self.check("401 + invalid refresh stays in-band", response.status_code == 200)
-        self.prompt_url(body)
+        self.prompt_url(body, OAUTH_KEY)
 
     async def cleanup(self) -> dict[str, int]:
         removed: dict[str, int] = {}
@@ -698,6 +749,7 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--registry-url", default="http://127.0.0.1:7860")
     args = parser.parse_args()
+    require_local_targets(args.registry_url)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpx2").setLevel(logging.WARNING)
     return await LiveProbe(args.registry_url).run_all()

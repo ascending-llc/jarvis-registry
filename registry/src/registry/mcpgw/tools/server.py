@@ -50,6 +50,7 @@ from registry_pkgs.telemetry.trace_propagation import (
 )
 
 from ...auth.dependencies import UserContextDict
+from ...constants import UrlElicitationInputKey
 from ...core.config import settings
 from ...core.mcp_config import MCPTransport
 from ...core.mcp_downstream import DownstreamCallUnauthorized, call_downstream_tool
@@ -446,7 +447,13 @@ async def execute_tool_impl(
                 f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
                 "Please follow the URL to perform re-authorization in a browser window and come back again."
             )
-            result = _build_url_elicitation_result(ctx, exc.auth_url, template, human_message)
+            result = _build_url_elicitation_result(
+                ctx,
+                exc.auth_url,
+                template,
+                human_message,
+                input_key=UrlElicitationInputKey.AUTHORIZATION,
+            )
             if isinstance(result, InputRequiredResult):
                 metrics_ctx.set_input_required()
             return result
@@ -466,6 +473,7 @@ async def execute_tool_impl(
                 exc.auth_url,
                 template,
                 human_message,
+                input_key=UrlElicitationInputKey.CONSENT,
                 elicitation_id=exc.elicitation_id,
             )
             if isinstance(result, InputRequiredResult):

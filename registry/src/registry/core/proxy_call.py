@@ -8,12 +8,14 @@ from typing import Any, Literal
 from mcp_types import CLIENT_CAPABILITIES_META_KEY, ClientCapabilities, ElicitResult
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 
-from registry.constants import URL_ELICITATION_INPUT_KEY
+from registry.constants import UrlElicitationInputKey
 
 # tools/list retains the historical pre-tool-call OAuth discovery behavior.
 HANDSHAKE_METHODS = frozenset({"initialize", "server/discover", "tools/list"})
 CONSENT_EXEMPT_METHODS = HANDSHAKE_METHODS | {"resources/list", "resources/templates/list", "prompts/list"}
 INPUT_REQUIRED_METHODS = frozenset({"tools/call", "prompts/get", "resources/read"})
+
+UrlAnswer = Literal["accept", "decline", "cancel"]
 
 
 class ProxyProtocolEra(StrEnum):
@@ -38,8 +40,13 @@ class ProxyCall:
     tool_name: str | None
     protocol_era: ProxyProtocolEra
     url_elicitation: bool
-    url_answer: Literal["accept", "decline", "cancel"] | None
+    url_answers: dict[UrlElicitationInputKey, UrlAnswer]
     body: bytes
+
+    @property
+    def authorization_declined(self) -> bool:
+        """True when the client declined or cancelled any Registry authorization prompt."""
+        return any(answer != "accept" for answer in self.url_answers.values())
 
     @classmethod
     def from_message(
@@ -47,8 +54,8 @@ class ProxyCall:
     ) -> "ProxyCall":
         """Interpret only Registry-owned fields; preserve all downstream extension data.
 
-        The authorization input key is reserved on modern direct connections. A
-        downstream server must not use it for its own input requests.
+        The ``UrlElicitationInputKey`` input keys are reserved on modern direct
+        connections. A downstream server must not use them for its own input requests.
         """
         era = ProxyProtocolEra.UNKNOWN
         if version in MODERN_PROTOCOL_VERSIONS:
@@ -59,7 +66,7 @@ class ProxyCall:
         tool_name = params.get("name") if method == "tools/call" and isinstance(params, dict) else None
         tool_name = tool_name if isinstance(tool_name, str) else None
         supported = era == ProxyProtocolEra.LEGACY
-        answer: Literal["accept", "decline", "cancel"] | None = None
+        answers: dict[UrlElicitationInputKey, UrlAnswer] = {}
         if era == ProxyProtocolEra.MODERN:
             params = _object_field(message, "params")
             meta = _object_field(params, "_meta")
@@ -67,14 +74,17 @@ class ProxyCall:
                 capabilities = ClientCapabilities.model_validate(meta[CLIENT_CAPABILITIES_META_KEY])
                 supported = capabilities.elicitation is not None and capabilities.elicitation.url is not None
             responses = _object_field(params, "inputResponses")
-            if URL_ELICITATION_INPUT_KEY in responses:
-                answer = ElicitResult.model_validate(responses[URL_ELICITATION_INPUT_KEY]).action
-                if answer == "accept":
-                    remaining = {key: value for key, value in responses.items() if key != URL_ELICITATION_INPUT_KEY}
-                    clean_params = dict(params)
-                    if remaining:
-                        clean_params["inputResponses"] = remaining
-                    else:
-                        clean_params.pop("inputResponses")
-                    body = json.dumps({**message, "params": clean_params}, ensure_ascii=False).encode("utf-8")
-        return cls(request_id, method, tool_name, era, supported, answer, body)
+            answers = {
+                key: ElicitResult.model_validate(responses[key]).action
+                for key in UrlElicitationInputKey
+                if key in responses
+            }
+            if answers and not any(answer != "accept" for answer in answers.values()):
+                remaining = {key: value for key, value in responses.items() if key not in answers}
+                clean_params = dict(params)
+                if remaining:
+                    clean_params["inputResponses"] = remaining
+                else:
+                    clean_params.pop("inputResponses")
+                body = json.dumps({**message, "params": clean_params}, ensure_ascii=False).encode("utf-8")
+        return cls(request_id, method, tool_name, era, supported, answers, body)

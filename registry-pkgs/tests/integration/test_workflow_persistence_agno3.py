@@ -41,8 +41,16 @@ async def _ok(step_input: StepInput, session_state: dict | None = None) -> StepO
 
 
 async def _fail(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
-    # A failed StepOutput is what agno's on_error policy (now on HumanReview) acts on.
-    # A raised exception is a different path caught by the runner / control wrapper.
+    # agno applies a step's on_error policy (read from its HumanReview) only when the
+    # step raises; a returned StepOutput(success=False) never reaches that branch.
+    # These workflows compile without a directive_queue, so no with_control wrapper
+    # converts the exception into a failed output first.
+    raise RuntimeError("boom")
+
+
+async def _failed_output(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+    # The production shape of a failed step: with_control catches the executor's
+    # exception and returns this, so agno never sees a raise for ordinary failures.
     return StepOutput(success=False, error="boom")
 
 
@@ -126,30 +134,44 @@ async def test_all_steps_succeed_completes_with_node_runs_and_run_doc(mongo):
     assert run_docs >= 1
 
 
-async def test_failing_step_on_error_fail_fails_run(mongo):
+@pytest.mark.parametrize(
+    "human_review",
+    [None, HumanReviewSpec(requires_output_review=True)],
+    ids=["no_hitl", "hitl_output_review"],
+)
+async def test_failing_step_on_error_fail_fails_run(mongo, human_review):
     client, db_name = mongo
     middle = WorkflowNode(name="second", executor_key="k2", step_objective="second")
     middle.step_config = StepConfig(on_error="fail")
+    middle.human_review = human_review
     definition = _definition(middle)
     run = await _insert_running_run(definition)
 
-    await _compile(definition, run, client, db_name, _fail).arun(input="go", session_id=str(run.id))
+    with pytest.raises(RuntimeError, match="boom"):
+        await _compile(definition, run, client, db_name, _fail).arun(input="go", session_id=str(run.id))
 
+    # agno re-raises without persisting the errored run; in production
+    # WorkflowRunner._finalize_failure then writes FAILED. What this test pins is
+    # that agno honoured on_error=fail rather than skipping the step.
     fresh = await WorkflowRun.get(run.id)
     assert fresh is not None
-    assert fresh.status == WorkflowRunStatus.FAILED
+    assert fresh.status in (WorkflowRunStatus.RUNNING, WorkflowRunStatus.FAILED)
+
+    # The run stopped at the failing step: "third" never ran.
+    node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
+    assert "third" not in {nr.node_name for nr in node_runs}
 
 
 async def test_failing_step_on_error_skip_continues_run(mongo):
-    # The counterpart to on_error="fail": a skip-tolerated failure must not fail the
-    # run. This is the exact behaviour the agno 3 error-policy move must preserve.
+    # The counterpart to on_error="fail": a skip-tolerated failure (in the shape
+    # with_control returns) must be persisted as SKIPPED and must not fail the run.
     client, db_name = mongo
     middle = WorkflowNode(name="second", executor_key="k2", step_objective="second")
     middle.step_config = StepConfig(on_error="skip")
     definition = _definition(middle)
     run = await _insert_running_run(definition)
 
-    await _compile(definition, run, client, db_name, _fail).arun(input="go", session_id=str(run.id))
+    await _compile(definition, run, client, db_name, _failed_output).arun(input="go", session_id=str(run.id))
 
     fresh = await WorkflowRun.get(run.id)
     assert fresh is not None

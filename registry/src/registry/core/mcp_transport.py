@@ -65,6 +65,10 @@ class ResponseRecorder:
                 self.www_authenticate = None
 
     async def __call__(self, response: httpx2.Response) -> None:
+        # v2 transports follow same-origin redirects themselves, one ``client.send`` per hop, so the hook
+        # also fires on each 3xx. Skip those: the status that matters is the redirect target's.
+        if response.is_redirect:
+            return
         request = response.request
         if sid := response.headers.get("mcp-session-id"):
             self.session_id = sid

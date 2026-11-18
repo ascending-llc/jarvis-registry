@@ -29,7 +29,7 @@ from mcp.types import (
     UrlElicitationCapability,
 )
 
-from registry.constants import URL_ELICITATION_INPUT_KEY
+from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.mcpgw.tools import agent, utils
 from registry.mcpgw.tools.agent import AgentMessageInput, _convert_response, execute_agent_impl
@@ -231,7 +231,7 @@ async def test_execute_agent_without_consent_modern_returns_input_required():
         result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
     assert isinstance(result, InputRequiredResult)
-    params = result.input_requests[URL_ELICITATION_INPUT_KEY].params
+    params = result.input_requests[UrlElicitationInputKey.CONSENT].params
     assert params.mode == "url"
     assert "/consent/agent?nonce=" in params.url
     assert result.request_state is None

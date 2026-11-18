@@ -19,7 +19,12 @@ from opentelemetry import baggage, trace
 from redis import Redis
 from redis.exceptions import RedisError
 
-from registry.constants import JSONRPC_INTERNAL_ERROR, JSONRPC_INVALID_PARAMS, JSONRPC_INVALID_REQUEST
+from registry.constants import (
+    JSONRPC_INTERNAL_ERROR,
+    JSONRPC_INVALID_PARAMS,
+    JSONRPC_INVALID_REQUEST,
+    UrlElicitationInputKey,
+)
 from registry.core.mcp_config import MCPClientConfig
 from registry.core.proxy_call import HANDSHAKE_METHODS, ProxyCall, ProxyProtocolEra
 from registry.core.proxy_responses import (
@@ -290,6 +295,7 @@ def _handle_url_elicitation_required(
     )
     return url_elicitation_response(
         call,
+        input_key=UrlElicitationInputKey.AUTHORIZATION,
         auth_url=exc.auth_url,
         llm_msg=llm_msg,
         user_msg=user_msg,
@@ -1059,7 +1065,7 @@ async def dynamic_mcp_post_proxy(
     call = await _prepare_direct_proxy_call(request, msg_body, request_id)
     if isinstance(call, Response):
         return call
-    if call.url_answer in {"decline", "cancel"}:
+    if call.authorization_declined:
         return authorization_declined_response(call)
     try:
         consent_url = await get_proxy_consent_url(

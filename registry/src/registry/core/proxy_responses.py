@@ -15,7 +15,7 @@ from mcp_types import (
 
 from registry.constants import (
     MCP_REQUEST_REFUSED_ERROR_CODE,
-    URL_ELICITATION_INPUT_KEY,
+    UrlElicitationInputKey,
 )
 from registry.core.proxy_call import INPUT_REQUIRED_METHODS, ProxyCall, ProxyProtocolEra
 
@@ -73,8 +73,20 @@ def _authorization_text_response(call: ProxyCall, message: str) -> JSONResponse:
 
 
 def url_elicitation_response(
-    call: ProxyCall, *, auth_url: str, llm_msg: str, user_msg: str, legacy_elicitation_id: str | None = None
+    call: ProxyCall,
+    *,
+    input_key: UrlElicitationInputKey,
+    auth_url: str,
+    llm_msg: str,
+    user_msg: str,
+    legacy_elicitation_id: str | None = None,
 ) -> JSONResponse:
+    """Build the authorization response for the failing check named by ``input_key``.
+
+    A modern retry suppresses the prompt only when it already answered that same key, so a chain of
+    different checks (consent, then downstream OAuth) prompts once per check, while a check that still
+    fails after its own prompt returns text.
+    """
     if call.protocol_era == ProxyProtocolEra.LEGACY:
         data = ElicitationRequiredErrorData(
             elicitations=[ElicitRequestURLParams(message=user_msg, url=auth_url, elicitation_id=legacy_elicitation_id)]
@@ -82,18 +94,16 @@ def url_elicitation_response(
         return JSONResponse(
             content=build_jsonrpc_error(call.request_id, _URL_ELICITATION_REQUIRED_ERROR_CODE, llm_msg, data)
         )
-    if call.url_answer in {"decline", "cancel"}:
+    if call.authorization_declined:
         return _authorization_text_response(call, _AUTHORIZATION_DECLINED_MESSAGE)
     if (
         call.protocol_era == ProxyProtocolEra.MODERN
-        and call.url_answer is None
+        and input_key not in call.url_answers
         and call.method in INPUT_REQUIRED_METHODS
         and call.url_elicitation
     ):
         result = InputRequiredResult(
-            input_requests={
-                URL_ELICITATION_INPUT_KEY: ElicitRequest(params=ElicitRequestURLParams(message=user_msg, url=auth_url))
-            }
+            input_requests={input_key: ElicitRequest(params=ElicitRequestURLParams(message=user_msg, url=auth_url))}
         )
         return JSONResponse(
             content={
@@ -121,6 +131,7 @@ def server_consent_response(call: ProxyCall, *, auth_url: str, server_name: str)
     )
     return url_elicitation_response(
         call,
+        input_key=UrlElicitationInputKey.CONSENT,
         auth_url=auth_url,
         llm_msg=llm_msg,
         user_msg=user_msg,

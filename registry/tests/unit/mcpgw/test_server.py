@@ -3,10 +3,12 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
 from mcp.types import (
     CallToolResult,
     ClientCapabilities,
     ElicitationCapability,
+    ElicitRequestURLParams,
     ElicitResult,
     Implementation,
     InitializeRequestParams,
@@ -17,7 +19,7 @@ from mcp.types import (
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
-from registry.constants import URL_ELICITATION_INPUT_KEY
+from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.core.mcp_downstream import DownstreamCallLimiter
 from registry.mcpgw.tools import server, utils
@@ -499,6 +501,7 @@ def test_negotiated_protocol_version_mirrors_sdk_negotiation(requested, expected
 
 _ELICITATION_URL = "https://registry.example.com/consent/server?nonce=abc"
 _ELICITATION_TEMPLATE = "Show the user this {} so they can open it."
+_KEY = UrlElicitationInputKey.CONSENT
 
 
 def test_build_url_elicitation_result_message_matches_fallback_text():
@@ -507,10 +510,10 @@ def test_build_url_elicitation_result_message_matches_fallback_text():
 
     with pytest.raises(utils.UrlElicitationRequiredError) as exc_info:
         utils._build_url_elicitation_result(
-            capable_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+            capable_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
         )
     fallback = utils._build_url_elicitation_result(
-        fallback_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+        fallback_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
     )
 
     assert str(exc_info.value) == fallback.content[0].text
@@ -525,7 +528,7 @@ def test_build_url_elicitation_result_logs_why_url_mode_was_not_used(caplog):
     )
 
     with caplog.at_level("INFO", logger=utils.logger.name):
-        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human")
+        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
 
     message = caplog.records[-1].getMessage()
     assert "'codex-mcp-client'" in message
@@ -540,7 +543,7 @@ def test_build_url_elicitation_result_logs_missing_client_params(caplog):
 
     with caplog.at_level("INFO", logger=utils.logger.name):
         result = utils._build_url_elicitation_result(
-            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
         )
 
     assert result.is_error is True
@@ -553,12 +556,12 @@ def test_build_url_elicitation_result_modern_first_round_returns_input_required(
     ctx = _modern_ctx(url_capability=True)
 
     result = utils._build_url_elicitation_result(
-        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", elicitation_id="eid"
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=_KEY, elicitation_id="eid"
     )
 
     assert isinstance(result, InputRequiredResult)
-    assert set(result.input_requests) == {URL_ELICITATION_INPUT_KEY}
-    params = result.input_requests[URL_ELICITATION_INPUT_KEY].params
+    assert set(result.input_requests) == {_KEY}
+    params = result.input_requests[_KEY].params
     assert params.mode == "url"
     assert params.url == _ELICITATION_URL
     assert params.message == "please authorize"
@@ -572,11 +575,11 @@ def test_build_url_elicitation_result_modern_retry_declined_returns_text(action)
     ctx = _make_ctx(
         protocol_version="2026-07-28",
         client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
-        input_responses={URL_ELICITATION_INPUT_KEY: ElicitResult(action=action)},
+        input_responses={_KEY: ElicitResult(action=action)},
         client_params=None,
     )
 
-    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human")
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
 
     assert isinstance(result, CallToolResult)
     assert result.is_error is True
@@ -589,11 +592,11 @@ def test_build_url_elicitation_result_modern_retry_accepted_returns_url_text_not
     ctx = _make_ctx(
         protocol_version="2026-07-28",
         client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
-        input_responses={URL_ELICITATION_INPUT_KEY: ElicitResult(action="accept")},
+        input_responses={_KEY: ElicitResult(action="accept")},
         client_params=None,
     )
 
-    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human")
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
 
     assert isinstance(result, CallToolResult)
     assert result.is_error is True
@@ -611,18 +614,63 @@ def test_build_url_elicitation_result_modern_retry_unknown_key_reprompts():
     )
 
     result = utils._build_url_elicitation_result(
-        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", elicitation_id="eid"
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=_KEY, elicitation_id="eid"
     )
 
     assert isinstance(result, InputRequiredResult)
-    assert set(result.input_requests) == {URL_ELICITATION_INPUT_KEY}
+    assert set(result.input_requests) == {_KEY}
+
+
+@pytest.mark.parametrize(
+    ("answered", "failing"),
+    [
+        (UrlElicitationInputKey.CONSENT, UrlElicitationInputKey.AUTHORIZATION),
+        (UrlElicitationInputKey.AUTHORIZATION, UrlElicitationInputKey.CONSENT),
+    ],
+)
+def test_build_url_elicitation_result_modern_retry_prompts_for_next_check(answered, failing):
+    """A retry that answered one check and now fails a different one (first use: consent, then downstream
+    OAuth) prompts for the new check under its own key instead of falling back to text."""
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={answered: ElicitResult(action="accept")},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=failing
+    )
+
+    assert isinstance(result, InputRequiredResult)
+    assert set(result.input_requests) == {failing}
+    assert result.input_requests[failing].params.url == _ELICITATION_URL
+
+
+@pytest.mark.parametrize("key", list(UrlElicitationInputKey))
+def test_build_url_elicitation_result_modern_retry_same_check_returns_text_for_each_key(key):
+    """Decision 2A holds per key: a check that fails again after its own prompt never prompts again."""
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={key: ElicitResult(action="accept")},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=key)
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert f"URL `{_ELICITATION_URL}`" in result.content[0].text
 
 
 def test_build_url_elicitation_result_legacy_capable_raises():
     ctx = _legacy_ctx(_make_client_params("vscode", supports_url_elicitation=True))
 
     with pytest.raises(utils.UrlElicitationRequiredError):
-        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid")
+        utils._build_url_elicitation_result(
+            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
+        )
 
 
 @pytest.mark.parametrize("protocol_version", ["2025-11-25", "2026-07-28"])
@@ -630,7 +678,7 @@ def test_build_url_elicitation_result_incapable_returns_fallback(protocol_versio
     ctx = _make_ctx(protocol_version=protocol_version, client_capabilities=None, client_params=None)
 
     result = utils._build_url_elicitation_result(
-        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
     )
 
     assert isinstance(result, CallToolResult)
@@ -685,6 +733,8 @@ _CANCELLED_NOTIFICATION = {"jsonrpc": "2.0", "method": "notifications/cancelled"
         # Downstream list-change notifications are dropped on both eras.
         ("2025-11-25", _TOOLS_LIST_CHANGED_NOTIFICATION, False),
         ("2026-07-28", _TOOLS_LIST_CHANGED_NOTIFICATION, False),
+        # Downstream cancellations are dropped on both eras: they refer to requests the downstream server
+        # sent to the gateway, which are never relayed, so the upstream client never saw those ids.
         ("2025-11-25", _CANCELLED_NOTIFICATION, False),
         ("2026-07-28", _CANCELLED_NOTIFICATION, False),
         # An absent/unknown protocol version fails closed for logging but still forwards progress.
@@ -766,7 +816,8 @@ async def test_modern_authorization_metric_distinguishes_pending_and_terminal_re
     server_id = str(PydanticObjectId())
     ctx = _modern_ctx(url_capability=True)
     if action is not None:
-        ctx.input_responses = {URL_ELICITATION_INPUT_KEY: ElicitResult(action=action)}
+        key = UrlElicitationInputKey.CONSENT if reason == "consent" else UrlElicitationInputKey.AUTHORIZATION
+        ctx.input_responses = {key: ElicitResult(action=action)}
     lifespan = ctx.request_context.lifespan_context
     lifespan.server_service.get_server_by_id.return_value = _make_server(server_id)
     lifespan.consent_store.has_server_consent.return_value = reason != "consent"
@@ -950,6 +1001,29 @@ async def test_execute_tool_impl_downstream_tool_error_records_error_type(monkey
     call_kwargs = mock_record.call_args[1]
     assert call_kwargs["success"] is False
     assert call_kwargs["error_type"] == "downstream_tool_error"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_downstream_jsonrpc_error_raises_mcp_error(monkeypatch):
+    """A downstream JSON-RPC error is re-raised as MCPError carrying its code, message and data, so the
+    gateway's error-shape wrapper can turn it into the v1 isError text."""
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        server,
+        "call_downstream_tool",
+        AsyncMock(side_effect=MCPError(-32602, "bad arguments", {"field": "q"})),
+    )
+
+    with pytest.raises(MCPError) as exc_info:
+        await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert exc_info.value.code == -32602
+    assert str(exc_info.value) == "bad arguments"
+    assert exc_info.value.data == {"field": "q"}
 
 
 @pytest.mark.asyncio
@@ -1192,6 +1266,66 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
     assert ctx2.downstream_transport is proxy_client
     # The container is resolved only on the first entry; the context is cached thereafter.
     assert calls["n"] == 1
+
+
+async def _call_wrapped_tool(raise_exc: BaseException) -> CallToolResult | MCPError:
+    """Register one tool through the gateway's error-shape wrapper and call it over an in-memory Client.
+
+    Returns the tool result, or the MCPError the client raised for a top-level JSON-RPC error (caught
+    inside the Client context so it isn't wrapped in the transport's ExceptionGroup).
+    """
+    from mcp import Client
+    from mcp.server.mcpserver import Context, MCPServer
+
+    from registry.mcpgw.server import _wrap_tool_error_shape
+
+    seen_ctx: list[object] = []
+
+    async def failing_tool(ctx: Context, query: str) -> CallToolResult:
+        seen_ctx.append(ctx)
+        raise raise_exc
+
+    app = MCPServer("test-error-shape", subscriptions=False)
+    app.tool(name="failing_tool")(_wrap_tool_error_shape("failing_tool", failing_tool))
+
+    async with Client(app, mode="legacy") as client:
+        try:
+            result = await client.call_tool("failing_tool", {"query": "x"})
+        except MCPError as exc:
+            result = exc
+    # functools.wraps keeps the signature, so the SDK still injects Context.
+    assert len(seen_ctx) == 1 and isinstance(seen_ctx[0], Context)
+    return result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        MCPError(code=-32000, message="downstream exploded"),
+        InternalServerException("downstream exploded"),
+    ],
+    ids=["MCPError", "McpGatewayException"],
+)
+async def test_wrapped_tool_error_keeps_v1_is_error_shape(exc):
+    result = await _call_wrapped_tool(exc)
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert len(result.content) == 1
+    assert result.content[0].text == "Error executing tool failing_tool: downstream exploded"
+
+
+@pytest.mark.asyncio
+async def test_wrapped_tool_url_elicitation_still_returns_32042():
+    elicitation = ElicitRequestURLParams(
+        mode="url", message="Sign in", url="https://example.com/auth", elicitation_id="eid-1"
+    )
+    result = await _call_wrapped_tool(UrlElicitationRequiredError([elicitation], message="Sign in required"))
+
+    assert isinstance(result, MCPError)
+    assert result.code == -32042
+    assert result.data["elicitations"][0]["elicitationId"] == "eid-1"
 
 
 @pytest.mark.parametrize("kind", ["url", "state_only", "form", "legacy_url", "malformed_legacy"])
