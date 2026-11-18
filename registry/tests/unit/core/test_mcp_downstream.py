@@ -14,9 +14,9 @@ from registry.core.mcp_downstream import DownstreamEraCache, call_downstream_too
 from registry_pkgs.core.exceptions import DownstreamHttpFailureException, DownstreamUnauthorizedException
 
 
-async def call(transport, *, redis=None, store=None, user="u", server="s", **kwargs):
+async def call(transport, *, redis=None, store=None, user="u", server="s", url="http://downstream/mcp", **kwargs):
     return await call_downstream_tool(
-        url="http://downstream/mcp",
+        url=url,
         transport_type="streamable-http",
         server_id=server,
         user_id=user,
@@ -182,6 +182,31 @@ async def test_cache_expiry_and_explicit_zero_ttl(monkeypatch):
         await call(transport, redis=redis, store=store, server="zero")
         await call(transport, redis=redis, store=store, server="zero")
         assert transport.count("tools/list") == 2
+
+
+async def test_endpoint_change_gets_a_fresh_tool_list_cache_entry():
+    redis, store = MemoryRedis(), InMemoryResponseCacheStore()
+    async with sdk_endpoint() as transport:
+        await call(transport, redis=redis, store=store)
+        await call(transport, redis=redis, store=store)
+        assert transport.count("tools/list") == 1
+        # Same server ID, new URL: the old endpoint's listing must not be reused.
+        await call(transport, redis=redis, store=store, url="http://moved/mcp")
+        assert transport.count("tools/list") == 2
+        await call(transport, redis=redis, store=store, url="http://moved/mcp")
+        assert transport.count("tools/list") == 2
+
+
+def test_tool_list_cache_target_hashes_endpoint_without_leaking_url() -> None:
+    from registry.core.mcp_config import MCPTransport
+    from registry.core.mcp_downstream import _tool_list_cache_target
+
+    url = "https://downstream/mcp?api_key=secret"
+    target = _tool_list_cache_target("s", MCPTransport.STREAMABLE_HTTP, url)
+    assert target.startswith("s:")
+    assert "secret" not in target
+    assert target == _tool_list_cache_target("s", MCPTransport.STREAMABLE_HTTP, url)
+    assert target != _tool_list_cache_target("s", MCPTransport.SSE, url)
 
 
 @pytest.mark.parametrize("raw", [b"legacy", "legacy", b"2026-07-28", "2026-07-28", "bad", b"\xff", None])

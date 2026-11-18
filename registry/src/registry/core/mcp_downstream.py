@@ -1,6 +1,7 @@
 """Per-call SDK connections over pod-wide pools, with identity-partitioned metadata caches."""
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -81,6 +82,17 @@ class DownstreamEraCache:
 
     async def delete(self, server_id: str) -> None:
         await self._run(self._redis.delete, self._key(server_id))
+
+
+def _tool_list_cache_target(server_id: str, transport_type: MCPTransport, url: str) -> str:
+    """Cache target for a server's tool listing, scoped to its current endpoint.
+
+    A server keeps its ID when its URL or transport changes, and the store is per pod, so no single
+    invalidation reaches every pod. Folding the endpoint into the key gives a changed endpoint a fresh
+    entry everywhere. The endpoint is hashed so credentials embedded in a URL stay out of cache keys.
+    """
+    endpoint = hashlib.sha256(f"{transport_type}|{url}".encode()).hexdigest()[:16]
+    return f"{server_id}:{endpoint}"
 
 
 class DownstreamCallUnauthorized(DownstreamUnauthorizedException):
@@ -216,7 +228,7 @@ async def call_downstream_tool(
                         cache=CacheConfig(
                             store=response_cache,
                             partition=user_id,
-                            target_id=server_id,
+                            target_id=_tool_list_cache_target(server_id, transport_type, url),
                             default_ttl_ms=_TOOL_LIST_CACHE_TTL_MS,
                         ),
                     ) as client:
