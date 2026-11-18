@@ -148,8 +148,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   };
 
   // Generate MCP configuration for the server
-  // Check if this is an Anthropic registry server
-  const isAnthropicServer = server.tags?.includes('anthropic-registry');
 
   const hasAgentCoreTags =
     server.tags?.includes(FEDERATED_TAG) && server.tags?.includes('aws') && server.tags?.includes('agentcore');
@@ -158,13 +156,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
 
   return (
     <>
-      <div
-        className={`search-interactive-element group rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-full flex flex-col relative ${
-          isAnthropicServer
-            ? 'border border-[color:var(--jarvis-primary-soft)] bg-gradient-to-br from-[#1f2432] to-[#242b3f] hover:border-[var(--jarvis-primary-hover)]'
-            : 'border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] hover:border-[color:var(--jarvis-border-strong)]'
-        }`}
-      >
+      <div className='search-interactive-element group rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-full flex flex-col relative border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] hover:border-[color:var(--jarvis-border-strong)]'>
         {loading && (
           <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
             <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]'></div>
@@ -194,17 +186,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                 {server.official && (
                   <span className='whitespace-nowrap rounded-full bg-[var(--jarvis-primary-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-primary-text-hover)]'>
                     OFFICIAL
-                  </span>
-                )}
-                {isAnthropicServer && (
-                  <span className='whitespace-nowrap rounded-full border border-[color:var(--jarvis-primary-soft)] bg-[var(--jarvis-primary-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-primary-text-hover)]'>
-                    ANTHROPIC
-                  </span>
-                )}
-                {/* Check if this is an ASOR server */}
-                {server.tags?.includes('asor') && (
-                  <span className='whitespace-nowrap rounded-full border border-[var(--jarvis-warning)]/35 bg-[var(--jarvis-warning-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-warning-text)]'>
-                    ASOR
                   </span>
                 )}
               </div>
