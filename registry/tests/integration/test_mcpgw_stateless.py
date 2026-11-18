@@ -10,6 +10,7 @@ another pod answers a ``tools/call`` with a ``-32042`` URL elicitation or the pl
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -21,7 +22,7 @@ import pytest
 from beanie import PydanticObjectId
 from fastapi import FastAPI
 from mcp import Client
-from mcp.client.session import ClientRequestContext
+from mcp.client.session import ClientRequestContext, ElicitationFnT
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.inbound import (
     CLIENT_CAPABILITIES_META_KEY,
@@ -29,6 +30,7 @@ from mcp.shared.inbound import (
     PROTOCOL_VERSION_META_KEY,
 )
 from mcp.types import (
+    CallToolResult,
     ClientCapabilities,
     ElicitationCapability,
     ElicitRequestParams,
@@ -405,7 +407,15 @@ def test_modern_first_round_returns_input_required_golden_shape(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("action", "grant_consent"),
-    [("accept", False), ("accept", True), ("decline", False), ("cancel", False), (None, False)],
+    [
+        ("accept", False),
+        ("accept", True),
+        ("decline", False),
+        ("cancel", False),
+        ("decline", True),
+        ("cancel", True),
+        (None, False),
+    ],
 )
 async def test_modern_sdk_drives_authorization_to_terminal_result(
     auth_headers: dict[str, str],
@@ -434,7 +444,7 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
         redis = _FakeRedis()
         container = _container_stub(redis, has_consent=False, proxy_client=proxy_client)
 
-        async def answer(_ctx: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
+        async def answer(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
             assert action is not None
             assert params.mode == "url"
             assert "/consent/server?nonce=" in params.url
@@ -472,10 +482,12 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
     if action is not None:
         assert calls[1]["params"]["inputResponses"][UrlElicitationInputKey.CONSENT]["action"] == action
         assert calls[0]["params"]["arguments"] == calls[1]["params"]["arguments"]
-    assert len(downstream_calls) == (1 if grant_consent else 0)
-    assert result.is_error is not grant_consent
+    executes = grant_consent and action == "accept"
+    assert len(downstream_calls) == int(executes)
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is not executes
     assert isinstance(result.content[0], TextContent)
-    if grant_consent:
+    if executes:
         assert result.content[0].text == "done"
     elif action in {"decline", "cancel"}:
         assert "declined or cancelled" in result.content[0].text
@@ -635,3 +647,210 @@ def test_modern_request_rejected_when_gate_off(auth_headers):
 
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == -32022
+
+
+@asynccontextmanager
+async def _sdk_client(
+    container: SimpleNamespace,
+    auth: dict[str, str],
+    *,
+    callback: ElicitationFnT | None = None,
+    mode: str = "2026-07-28",
+    outgoing: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[Client]:
+    async def record(request: httpx2.Request) -> None:
+        if outgoing is not None and request.method == "POST":
+            outgoing.append(json.loads(await request.aread()))
+
+    app = _make_pod(container)
+    async with app.router.lifespan_context(app):
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers=auth,
+            event_hooks={"request": [record]},
+        ) as http:
+            async with Client(
+                streamable_http_client(f"http://localhost{_MCP_PATH}", http_client=http),
+                mode=mode,
+                elicitation_callback=callback,
+            ) as client:
+                yield client
+
+
+@pytest.mark.parametrize(
+    "action,grant",
+    [
+        ("accept", True),
+        ("accept", False),
+        ("decline", False),
+        ("cancel", False),
+        ("decline", True),
+        ("cancel", True),
+        (None, False),
+    ],
+)
+async def test_agent_sdk_authorization_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+    auth_headers: dict[str, str],
+    _modern_gate_on: None,
+    action: Literal["accept", "decline", "cancel"] | None,
+    grant: bool,
+) -> None:
+    from registry.mcpgw.tools import agent as agent_tools
+    from tests.unit.mcpgw.test_agent import _make_agent, _result_with_message
+
+    container = _container_stub(_FakeRedis(), has_consent=False)
+    container.consent_store.has_agent_consent.return_value = False
+    container.a2a_client_registry.get_client = AsyncMock(return_value=MagicMock())
+    container.acl_service.get_accessible_resource_ids.return_value = {SERVER_ID}
+    model = MagicMock()
+    model.find_one = AsyncMock(return_value=_make_agent(SERVER_ID))
+    monkeypatch.setattr(agent_tools, "A2AAgent", model)
+    invoke = AsyncMock(return_value=_result_with_message("agent-done"))
+    monkeypatch.setattr(agent_tools, "call_a2a", invoke)
+    prompts: list[ElicitRequestParams] = []
+    outgoing: list[dict[str, Any]] = []
+
+    async def answer(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
+        assert action is not None
+        assert params.mode == "url" and "/consent/agent?nonce=" in params.url
+        prompts.append(params)
+        if grant:
+            container.consent_store.has_agent_consent.return_value = True
+        return ElicitResult(action=action)
+
+    async with _sdk_client(container, auth_headers, callback=answer if action else None, outgoing=outgoing) as client:
+        result = await client.call_tool(
+            "execute_agent", {"agent_id": SERVER_ID, "message": {"parts": [{"kind": "text", "text": "do task"}]}}
+        )
+    assert isinstance(result, CallToolResult)
+    executes = action == "accept" and grant
+    assert result.is_error is not executes
+    assert invoke.await_count == int(executes)
+    assert len(prompts) == int(action is not None)
+    calls = [message for message in outgoing if message["method"] == "tools/call"]
+    assert len(calls) == (2 if action else 1)
+    assert container.pending_consent_store.save.call_count == (2 if action == "accept" and not grant else 1)
+    assert isinstance(result.content[0], TextContent)
+    if action in {"decline", "cancel"}:
+        assert "declined or cancelled" in result.content[0].text
+    if executes:
+        assert "agent-done" in result.content[0].text
+    assert all("requestState" not in call["params"] for call in calls)
+
+
+@pytest.mark.parametrize("via_401", [False, True])
+@pytest.mark.parametrize("action,grant", [("accept", True), ("accept", False), ("decline", True), ("cancel", True)])
+async def test_oauth_sdk_authorization_and_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    auth_headers: dict[str, str],
+    _modern_gate_on: None,
+    via_401: bool,
+    action: Literal["accept", "decline", "cancel"],
+    grant: bool,
+) -> None:
+    from registry.utils.mcp_headers import build_authenticated_headers
+
+    # Exercise production header construction, OAuth exception mapping, and recovery.
+    # Only the external OAuth service and HTTP target are boundary stand-ins.
+    monkeypatch.setattr(server_tools, "build_authenticated_headers", build_authenticated_headers)
+    authorized = via_401
+    rejected = False
+    sends: list[dict[str, Any]] = []
+    prompts: list[ElicitRequestParams] = []
+    get_tokens = AsyncMock()
+
+    async def tokens(**kwargs: Any) -> tuple[str | None, str | None, str | None]:
+        return ("test-token", None, None) if authorized else (None, "https://login.example/authorize", None)
+
+    get_tokens.side_effect = tokens
+
+    async def recover(*args: Any, **kwargs: Any) -> None:
+        nonlocal authorized
+        authorized = False
+
+    def downstream(request: httpx.Request) -> httpx.Response:
+        nonlocal rejected
+        message = json.loads(request.content)
+        sends.append(message)
+        assert request.headers["authorization"] == "Bearer test-token"
+        if via_401 and not rejected:
+            rejected = True
+            return httpx.Response(
+                401,
+                json={"error": "expired"},
+                headers={"www-authenticate": 'Bearer resource_metadata="https://downstream.example/metadata"'},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {"content": [{"type": "text", "text": "oauth-done"}]},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as proxy:
+        container = _container_stub(_FakeRedis(), has_consent=True, proxy_client=proxy)
+        target = _server_doc()
+        target.mcp_auth_mode = server_tools.McpAuthMode.OAUTH
+        target.config["requiresOAuth"] = True
+        container.server_service.get_server_by_id.return_value = target
+        container.oauth_service.get_valid_access_token = get_tokens
+        container.oauth_service.recover_from_unauthorized = AsyncMock(side_effect=recover)
+
+        async def answer(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
+            nonlocal authorized
+            assert params.mode == "url" and params.url == "https://login.example/authorize"
+            prompts.append(params)
+            if grant:
+                authorized = True
+            return ElicitResult(action=action)
+
+        async with _sdk_client(container, auth_headers, callback=answer) as client:
+            result = await client.call_tool(
+                "execute_tool", {"server_id": SERVER_ID, "tool_name": "search", "arguments": {}}
+            )
+        executes = action == "accept" and grant
+        assert isinstance(result, CallToolResult)
+        assert result.is_error is not executes
+        assert len(prompts) == 1
+        assert len(sends) == int(via_401) + int(executes)
+        assert get_tokens.await_count == (int(via_401) + 1 + int(action == "accept"))
+        assert container.oauth_service.recover_from_unauthorized.await_count == int(via_401)
+        if via_401:
+            assert container.oauth_service.recover_from_unauthorized.await_args.kwargs["is_retry"] is False
+            assert (
+                "downstream.example/metadata"
+                in container.oauth_service.recover_from_unauthorized.await_args.kwargs["www_authenticate"]
+            )
+        assert isinstance(result.content[0], TextContent)
+        if executes:
+            assert result.content[0].text == "oauth-done"
+        elif action == "accept":
+            assert "https://login.example/authorize" in result.content[0].text
+        else:
+            assert "declined or cancelled" in result.content[0].text
+        assert all(not set(UrlElicitationInputKey) & set(send["params"].get("inputResponses", {})) for send in sends)
+
+
+async def test_sdk_auto_with_gate_off_negotiates_legacy_and_elicits(
+    monkeypatch: pytest.MonkeyPatch, auth_headers: dict[str, str]
+) -> None:
+    from mcp.shared.exceptions import MCPError
+
+    monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", False)
+    container = _container_stub(_FakeRedis(), has_consent=False)
+    outgoing: list[dict[str, Any]] = []
+
+    async def answer(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
+        return ElicitResult(action="accept")
+
+    async with _sdk_client(container, auth_headers, callback=answer, mode="auto", outgoing=outgoing) as client:
+        assert client.protocol_version == "2025-11-25"
+        with pytest.raises(MCPError) as error:
+            await client.call_tool("execute_tool", {"server_id": SERVER_ID, "tool_name": "search", "arguments": {}})
+        assert error.value.code == -32042
+    assert [call["method"] for call in outgoing][:2] == ["server/discover", "initialize"]
+    container.consent_store.has_server_consent.assert_called_once()

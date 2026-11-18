@@ -839,7 +839,11 @@ async def test_modern_authorization_metric_distinguishes_pending_and_terminal_re
         assert result.is_error is True
     attributes = mock_telemetry_metrics.record_counter.call_args.args[2]
     assert attributes["status"] == ("input_required" if action is None else "failure")
-    assert attributes["error_type"] == ("consent_required" if reason == "consent" else "url_elicitation")
+    assert attributes["error_type"] == (
+        "authorization_declined"
+        if action == "decline"
+        else ("consent_required" if reason == "consent" else "url_elicitation")
+    )
     downstream.assert_not_awaited()
 
 

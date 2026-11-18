@@ -27,6 +27,7 @@ from mcp.types import (
 )
 from opentelemetry import baggage
 from pydantic import Field
+from starlette.concurrency import run_in_threadpool
 
 from registry_pkgs.core.exceptions import (
     ConsentRequiredException,
@@ -68,6 +69,7 @@ from .utils import (
     _build_url_elicitation_result,
     _extract_authenticated_user_context,
     _get_state_metadata,
+    authorization_declined_result,
     forward_notification,
     get_client_params,
     get_progress_token,
@@ -471,6 +473,11 @@ async def execute_tool_impl(
                     isError=True,
                 )
 
+            declined = authorization_declined_result(ctx)
+            if declined is not None:
+                metrics_ctx.set_error_type("authorization_declined")
+                return declined
+
             if server.is_tool_disabled(tool_name):
                 logger.info(
                     "execute_tool: tool_name=%s is disabled on server_id=%s",
@@ -497,7 +504,8 @@ async def execute_tool_impl(
                 client_id,
                 settings.headless_agent_client_id,
             )
-            if requires_server_consent and not lifespan.consent_store.has_server_consent(
+            if requires_server_consent and not await run_in_threadpool(
+                lifespan.consent_store.has_server_consent,
                 user_id,
                 client_id,
                 server.path,
@@ -505,7 +513,8 @@ async def execute_tool_impl(
                 nonce = secrets.token_urlsafe(32)
                 elicitation_id = str(uuid4())
                 state_metadata = _get_state_metadata(get_client_params(ctx))
-                lifespan.pending_consent_store.save(
+                await run_in_threadpool(
+                    lifespan.pending_consent_store.save,
                     nonce,
                     {
                         "user_id": user_id,

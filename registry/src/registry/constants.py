@@ -76,3 +76,14 @@ GENERATED_TOKEN_NO_GRANTABLE_SCOPES_DETAIL = (
 VECTOR_SYNC_SKIPPED_FALLBACK = "the reconciler will heal it"
 VECTOR_DELETE_SKIPPED_FALLBACK = "the orphan sweep will remove its vectors"
 REGISTRATION_CAPABILITIES_SKIPPED_FALLBACK = "refresh the server to fetch its capabilities"
+
+# JSON-RPC errors shared by direct-proxy routing and response construction.
+JSONRPC_INVALID_REQUEST = -32600
+JSONRPC_INVALID_PARAMS = -32602
+JSONRPC_INTERNAL_ERROR = -32603
+# The gateway deliberately refused the request (access denied, server disabled, unsupported
+# transport, downstream authorization rejected or changed mid-call). It sits in JSON-RPC 2.0's
+# implementation-defined server-error range (-32000 to -32099), avoiding the codes the MCP spec
+# and SDKs already use (-32000 connection closed, -32001 request timeout, -32002 resource not
+# found, -32042 URL elicitation required).
+MCP_REQUEST_REFUSED_ERROR_CODE = -32003

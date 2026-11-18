@@ -154,6 +154,32 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     return {"client_branding": branding}
 
 
+def authorization_declined_result(ctx: Context[McpAppContext]) -> CallToolResult | None:
+    """Stop this invocation when the modern client declined Registry authorization."""
+    if ctx.protocol_version not in MODERN_PROTOCOL_VERSIONS or not ctx.input_responses:
+        return None
+    if not any(
+        getattr(ctx.input_responses.get(key), "action", None) in {"decline", "cancel"} for key in UrlElicitationInputKey
+    ):
+        return None
+    return _declined_authorization_result()
+
+
+def _declined_authorization_result() -> CallToolResult:
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=(
+                    "The user declined or cancelled the authorization, so the request was not "
+                    "performed. Do not retry unless the user asks you to."
+                ),
+            )
+        ],
+        is_error=True,
+    )
+
+
 def _build_url_elicitation_result(
     ctx: Context[McpAppContext],
     auth_url: str,
@@ -189,18 +215,7 @@ def _build_url_elicitation_result(
         action = getattr(ctx.input_responses[input_key], "action", None)
         if action != "accept":
             logger.info("Modern URL elicitation retry answered %r; returning declined text.", action)
-            return CallToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=(
-                            "The user declined or cancelled the authorization, so the request was not "
-                            "performed. Do not retry unless the user asks you to."
-                        ),
-                    )
-                ],
-                isError=True,
-            )
+            return _declined_authorization_result()
         logger.info("Modern URL elicitation retry accepted but the check still failed; returning URL text.")
         return CallToolResult(content=[TextContent(type="text", text=llm_message)], isError=True)
 
