@@ -729,6 +729,8 @@ _CANCELLED_NOTIFICATION = {"jsonrpc": "2.0", "method": "notifications/cancelled"
         # Downstream list-change notifications are dropped on both eras.
         ("2025-11-25", _TOOLS_LIST_CHANGED_NOTIFICATION, False),
         ("2026-07-28", _TOOLS_LIST_CHANGED_NOTIFICATION, False),
+        # Downstream cancellations are dropped on both eras: they refer to requests the downstream server
+        # sent to the gateway, which are never relayed, so the upstream client never saw those ids.
         ("2025-11-25", _CANCELLED_NOTIFICATION, False),
         ("2026-07-28", _CANCELLED_NOTIFICATION, False),
         # An absent/unknown protocol version fails closed for logging but still forwards progress.
