@@ -18,7 +18,6 @@ from .services.embedding_reindex_job_service import EmbeddingReindexJobService
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
-from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
 from .services.group_service import GroupService
 from .services.model_gateway_selection_service import ModelGatewaySelectionService
@@ -46,10 +45,6 @@ def get_container(request: Request) -> RegistryContainer:
 
 def get_search_service(container: RegistryContainer = Depends(get_container)) -> SearchService:
     return container.search_service
-
-
-def get_federation_service(container: RegistryContainer = Depends(get_container)) -> FederationService:
-    return container.federation_service
 
 
 def get_user_service(container: RegistryContainer = Depends(get_container)) -> UserService:

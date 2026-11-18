@@ -34,9 +34,6 @@ class Settings(JarvisBaseSettings):
     oauth2_code_verifier_cookie_name: str = "registry_oauth2_code_verifier"
     oauth2_state_nonce_cookie_name: str = "registry_oauth2_state_nonce"
 
-    # ==================== Service URLs ====================
-    registry_internal_url: str = "http://localhost:7860"
-
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
     csrf_header_name: str = "X-Jarvis-CSRF"
@@ -143,11 +140,6 @@ class Settings(JarvisBaseSettings):
 
     # ==================== Google Group Sync ====================
     google_group_sync_enabled: bool = True
-
-    # ==================== Federation ====================
-    federation_config_path: str = "/app/config/federation.json"
-    asor_access_token: str | None = None
-    asor_client_credentials: str | None = None
 
     # ==================== A2A HTTP Client ====================
     # A2A calls hold a pooled connection for their whole duration, so concurrent

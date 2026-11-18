@@ -5,12 +5,7 @@ Handles server-specific URL and header modifications.
 Eliminates hardcoded special-case handling scattered across the codebase.
 """
 
-import logging
 from abc import ABC, abstractmethod
-
-from .mcp_config import MCPClientConfig
-
-logger = logging.getLogger(__name__)
 
 
 class ServerBehaviorStrategy(ABC):
@@ -39,33 +34,6 @@ class DefaultStrategy(ServerBehaviorStrategy):
         return headers
 
 
-class AnthropicRegistryStrategy(ServerBehaviorStrategy):
-    """Behavior for servers imported from Anthropic registry"""
-
-    def modify_url(self, url: str) -> str:
-        """
-        Add instance_id parameter for Anthropic registry servers.
-
-        Anthropic registry servers (streamable-http and sse) require
-        instance_id=default query parameter.
-        """
-        if "?" not in url:
-            modified_url = f"{url}?{MCPClientConfig.ANTHROPIC_QUERY_PARAM}"
-        elif "instance_id=" not in url:
-            modified_url = f"{url}&{MCPClientConfig.ANTHROPIC_QUERY_PARAM}"
-        else:
-            modified_url = url
-
-        if modified_url != url:
-            logger.debug(f"Added instance_id parameter for Anthropic server: {url} -> {modified_url}")
-
-        return modified_url
-
-    def modify_headers(self, headers: dict[str, str]) -> dict[str, str]:
-        """No special header modifications for Anthropic servers"""
-        return headers
-
-
 def get_server_strategy(server_info: dict) -> ServerBehaviorStrategy:
     """
     Factory function to get appropriate strategy based on server info.
@@ -78,13 +46,6 @@ def get_server_strategy(server_info: dict) -> ServerBehaviorStrategy:
     """
     if not server_info:
         return DefaultStrategy()
-
-    tags = server_info.get("tags", [])
-
-    # Check for Anthropic registry servers
-    if MCPClientConfig.ANTHROPIC_TAG in tags:
-        logger.debug("Using AnthropicRegistryStrategy for server")
-        return AnthropicRegistryStrategy()
 
     # Additional strategy checks based on tags can be added here.
 

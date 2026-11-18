@@ -49,7 +49,6 @@ from .services.embedding_reindex_job_service import EmbeddingReindexJobService
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
-from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
 from .services.group_directory_client import (
     EntraIdGroupDirectoryClient,
@@ -164,10 +163,6 @@ class RegistryContainer:
             a2a_agent_repo=self.a2a_agent_repo,
             acl_service=self.acl_service,
         )
-
-    @cached_property
-    def federation_service(self) -> FederationService:
-        return FederationService()
 
     @cached_property
     def user_service(self) -> UserService:
@@ -649,9 +644,6 @@ class RegistryContainer:
         logger.info("Initializing MCP service (OAuth flow state storage)...")
         await self.mcp_service.initialize()
 
-        logger.info("Initializing federation service...")
-        self._initialize_federation()
-
         logger.info("Initializing workflow runner...")
         workflow_runner = self.workflow_runner
         logger.info("Workflow runner initialized successfully: %s", type(workflow_runner).__name__)
@@ -694,24 +686,3 @@ class RegistryContainer:
         await self.a2a_client_registry.close()
         self.azure_model_credential.close()
         await self.cloud_identity_client.aclose()
-
-    def _initialize_federation(self) -> None:
-        """Run optional federation sync on startup without failing the whole application."""
-        federation_service = self.federation_service
-        if federation_service.config.is_any_federation_enabled():
-            logger.info("Federation enabled for: %s", ", ".join(federation_service.config.get_enabled_federations()))
-
-            sync_on_startup = (
-                federation_service.config.anthropic.enabled and federation_service.config.anthropic.sync_on_startup
-            ) or (federation_service.config.asor.enabled and federation_service.config.asor.sync_on_startup)
-
-            if sync_on_startup:
-                logger.info("Syncing servers from federated registries on startup...")
-                try:
-                    sync_results = federation_service.sync_all()
-                    for source, servers in sync_results.items():
-                        logger.info("Synced %s servers from %s", len(servers), source)
-                except Exception as exc:
-                    logger.error("Federation sync failed (continuing with startup): %s", exc, exc_info=True)
-        else:
-            logger.info("Federation is disabled")

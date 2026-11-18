@@ -73,7 +73,6 @@ Security enforcement (authentication, RBAC, ACL) remains consistent for federate
 - [A2A Agent Registry](a2a-gateway-registry.md) — Sharing and lifecycle for agent resources
 - [Registry Endpoint](registry-endpoint.md) — How clients discover and invoke federated resources
 - [AgentCore Federation API](../design/federation-api.md) — Configuration and synchronization API reference
-- [Federation Guide](../design/federation.md) — Registry-to-registry federation architecture
 
 **Product page & demo**
 
