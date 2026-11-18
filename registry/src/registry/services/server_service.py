@@ -535,7 +535,7 @@ class ServerServiceV1:
 
                 config = server.config or {}
                 url = config.get("url")
-                transport = MCPTransport(config.get("type", MCPTransport.STREAMABLE_HTTP))
+                transport = config.get("type")
 
                 (
                     is_healthy,
@@ -1120,7 +1120,7 @@ class ServerServiceV1:
 
         # Get transport type
         try:
-            transport_type = MCPTransport(config.get("type", MCPTransport.STREAMABLE_HTTP))
+            transport_type = MCPTransport(config.get("type"))
             # Build complete headers with all authentication (OAuth, apiKey, custom)
             # This consolidates all auth logic in one place
             try:

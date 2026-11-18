@@ -135,3 +135,12 @@ def test_connection_transport_rejects_unknown_values() -> None:
 
     with pytest.raises(ValidationError, match="transport"):
         ServerConnectionTestRequest(url="https://example.com/mcp", transport="invalid")
+
+
+@pytest.mark.parametrize("transport", ["http", ""])
+def test_connection_transport_accepts_streamable_http_aliases(transport: str) -> None:
+    from registry.core.mcp_config import MCPTransport
+    from registry.schemas.server_api_schemas import ServerConnectionTestRequest
+
+    request = ServerConnectionTestRequest(url="https://example.com/mcp", transport=transport)
+    assert request.transport is MCPTransport.STREAMABLE_HTTP

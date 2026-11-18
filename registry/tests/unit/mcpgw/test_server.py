@@ -21,6 +21,7 @@ from opentelemetry.sdk.trace import TracerProvider
 
 from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
+from registry.core.mcp_config import MCPTransport
 from registry.core.mcp_downstream import DownstreamCallLimiter
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
@@ -873,6 +874,61 @@ async def test_execute_tool_impl_injects_trace_context_into_downstream_headers(m
     assert "traceparent" in headers
     assert f"{BAGGAGE_KEY_MCP_TOOL_NAME}=tavily_search" in headers["baggage"]
     assert f"{BAGGAGE_KEY_MCP_SERVER_ID}={server_id}" in headers["baggage"]
+
+
+_MISSING = object()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("streamable-http", MCPTransport.STREAMABLE_HTTP),
+        ("http", MCPTransport.STREAMABLE_HTTP),
+        (None, MCPTransport.STREAMABLE_HTTP),
+        (_MISSING, MCPTransport.STREAMABLE_HTTP),
+        ("sse", MCPTransport.SSE),
+    ],
+)
+async def test_execute_tool_impl_normalizes_stored_transport(monkeypatch, configured, expected):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    server_obj = _make_server(server_id)
+    if configured is _MISSING:
+        del server_obj.config["type"]
+    else:
+        server_obj.config["type"] = configured
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = server_obj
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    downstream_call = AsyncMock(
+        return_value=CallToolResult.model_validate({"content": [{"type": "text", "text": "ok"}]})
+    )
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert not result.is_error
+    assert downstream_call.await_args.kwargs["transport_type"] is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", ["websocket", "stdio"])
+async def test_execute_tool_impl_rejects_unsupported_transport_without_calling(monkeypatch, configured):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    server_obj = _make_server(server_id)
+    server_obj.config["type"] = configured
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = server_obj
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    downstream_call = AsyncMock()
+    monkeypatch.setattr(server, "call_downstream_tool", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert result.is_error
+    assert f"'{configured}' transport" in result.content[0].text
+    downstream_call.assert_not_awaited()
 
 
 @pytest.mark.asyncio

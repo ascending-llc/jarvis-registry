@@ -801,3 +801,12 @@ def test_sse_client_factory_builds_client_with_hooks_and_timeout():
     assert client.event_hooks["request"] == [rewrite_sse_request_url, recorder.on_request]
     assert client.event_hooks["response"] == [recorder]
     assert create_sse_client_factory()().event_hooks["response"] == []
+
+
+@pytest.mark.asyncio
+async def test_health_check_reports_unsupported_transport_without_network_io():
+    with patch("registry.core.mcp_client.initialize_mcp") as initialize:
+        result = await perform_health_check("https://example.com/mcp", transport="websocket")
+
+    assert result == (False, "unhealthy: unsupported transport 'websocket'", None, None)
+    initialize.assert_not_called()

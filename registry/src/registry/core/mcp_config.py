@@ -14,6 +14,17 @@ class MCPTransport(StrEnum):
     SSE = "sse"
     STDIO = "stdio"
 
+    @classmethod
+    def _missing_(cls, value: object) -> "MCPTransport | None":
+        # An absent type has always meant streamable HTTP, and Jarvis Chat stores "http" as its alias.
+        if value in (None, "", "http"):
+            return cls.STREAMABLE_HTTP
+        return None
+
+
+# Transports the Registry can call over the network (stdio servers are not reachable from the gateway).
+NETWORK_TRANSPORTS = frozenset({MCPTransport.STREAMABLE_HTTP, MCPTransport.SSE})
+
 
 class MCPClientConfig:
     """Stateless configuration constants for MCP client operations."""

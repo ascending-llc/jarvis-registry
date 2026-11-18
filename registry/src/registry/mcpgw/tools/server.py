@@ -52,7 +52,7 @@ from registry_pkgs.telemetry.trace_propagation import (
 from ...auth.dependencies import UserContextDict
 from ...constants import UrlElicitationInputKey
 from ...core.config import settings
-from ...core.mcp_config import MCPTransport
+from ...core.mcp_config import NETWORK_TRANSPORTS, MCPTransport
 from ...core.mcp_downstream import DownstreamCallUnauthorized, call_downstream_tool
 from ...core.telemetry_decorators import (
     PromptExecutionMetricsContext,
@@ -160,7 +160,23 @@ async def _call_with_oauth_recovery(
     """
     lifespan = ctx.request_context.lifespan_context
     oauth_service = lifespan.oauth_service
-    transport_type = MCPTransport(server.config.get("type", MCPTransport.STREAMABLE_HTTP))
+    configured_type = server.config.get("type")
+    try:
+        transport_type = MCPTransport(configured_type)
+    except ValueError:
+        transport_type = None
+    if transport_type not in NETWORK_TRANSPORTS:
+        metrics_ctx.set_error_type("unsupported_transport")
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=f"The '{server.serverName}' MCP server uses the '{configured_type}' transport, "
+                    "which Jarvis Registry cannot call.",
+                )
+            ],
+            isError=True,
+        )
     state_metadata = _get_state_metadata(get_client_params(ctx))
     oauth_enabled = server.mcp_auth_mode is McpAuthMode.OAUTH
 

@@ -173,7 +173,7 @@ async def _connect_client(transport: Any) -> AsyncIterator[Client]:
 
 async def perform_health_check(
     url: str,
-    transport: MCPTransport = MCPTransport.STREAMABLE_HTTP,
+    transport: MCPTransport | str | None = MCPTransport.STREAMABLE_HTTP,
     *,
     server_id: str | None = None,
     era_cache: DownstreamEraCache | None = None,
@@ -199,7 +199,11 @@ async def perform_health_check(
     if not url:
         return False, "No URL provided", None, None
 
-    transport = MCPTransport(transport)
+    try:
+        transport = MCPTransport(transport)
+    except ValueError:
+        logger.warning(f"Health check skipped for {url}: unsupported transport {transport!r}")
+        return False, f"unhealthy: unsupported transport '{transport}'", None, None
 
     # Skip health checks for stdio transport
     if transport == MCPClientConfig.TRANSPORT_STDIO:
