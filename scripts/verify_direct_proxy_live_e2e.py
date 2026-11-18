@@ -5,6 +5,10 @@ Run:
 
 Uses real HTTP, MongoDB, Redis, and consent/OAuth APIs with a temporary MCP/OAuth
 server. Creates isolated test data, cleans it up on exit, and prints the results.
+
+Local only: it refuses to run unless the Registry URL, MONGO_URI and REDIS_URI all
+point at loopback or the docker compose services. A port-forward to a remote database
+also looks local, so don't run it while one is open on the configured host and port.
 """
 
 from __future__ import annotations
@@ -45,6 +49,36 @@ OAUTH_KEY = UrlElicitationInputKey.AUTHORIZATION
 CAP_KEY = "io.modelcontextprotocol/clientCapabilities"
 PROTO_KEY = "io.modelcontextprotocol/protocolVersion"
 KINDS = ("modern", "legacy", "oauth", "disabled", "stdio")
+# Loopback, plus the docker compose service names for when the probe runs inside the compose network.
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "registry", "registry-mongodb", "registry-redis"})
+
+
+def _uri_hosts(uri: str) -> list[str]:
+    """Return every host in a URI, including each host of a multi-host MongoDB seed list."""
+    scheme, sep, rest = uri.partition("://")
+    if not sep:
+        raise ValueError(f"not a URI: {scheme!r}")
+    netloc = rest.split("/", 1)[0].split("?", 1)[0].rpartition("@")[2]
+    return [urlsplit(f"//{host}").hostname or "" for host in netloc.split(",")]
+
+
+def require_local_targets(registry_url: str) -> None:
+    """Refuse to run unless every target this probe writes to or calls is local."""
+    targets = {
+        "--registry-url": registry_url,
+        "MONGO_URI": settings.mongo_config.mongo_uri,
+        "REDIS_URI": settings.redis_uri,
+    }
+    for name, uri in targets.items():
+        if uri.startswith("mongodb+srv://"):
+            raise SystemExit(f"Refusing to run: {name} uses mongodb+srv, which is never local.")
+        hosts = _uri_hosts(uri)
+        remote = [host for host in hosts if host.lower() not in LOCAL_HOSTS]
+        if not hosts or remote:
+            raise SystemExit(
+                f"Refusing to run: {name} targets non-local host(s) {remote or hosts}. "
+                f"This probe writes test data and may only run against {sorted(LOCAL_HOSTS)}."
+            )
 
 
 class LiveProbe:
@@ -703,6 +737,7 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--registry-url", default="http://127.0.0.1:7860")
     args = parser.parse_args()
+    require_local_targets(args.registry_url)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpx2").setLevel(logging.WARNING)
     return await LiveProbe(args.registry_url).run_all()
