@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Literal
 
+import anyio
 import httpx2
 from mcp import Client
 from mcp.client.caching import CacheConfig, InMemoryResponseCacheStore
@@ -95,11 +96,30 @@ class DownstreamCallUnauthorized(DownstreamUnauthorizedException):
         return self.phase in (DownstreamPhase.CONNECTING, DownstreamPhase.LISTING, DownstreamPhase.CALLING)
 
 
+# Raised by SDK stream tasks when the transport closes under them after another failure ended the call.
+_TEARDOWN_ERRORS = (anyio.BrokenResourceError, anyio.ClosedResourceError)
+
+
+def _leaves(group: BaseExceptionGroup) -> list[BaseException]:
+    return [
+        leaf for exc in group.exceptions for leaf in (_leaves(exc) if isinstance(exc, BaseExceptionGroup) else [exc])
+    ]
+
+
 def _single_error(error: Exception) -> Exception:
-    """Unwrap SDK task-group envelopes only when they contain exactly one failure."""
-    while isinstance(error, ExceptionGroup) and len(error.exceptions) == 1:
-        error = error.exceptions[0]
-    return error
+    """Unwrap SDK task-group envelopes to the one failure they carry.
+
+    Stream-teardown errors raised while the transport closes after that failure are ignored. A group
+    with more than one other failure is returned unchanged, so independent failures are never
+    collapsed into one (e.g. a recoverable 401).
+    """
+    if not isinstance(error, ExceptionGroup):
+        return error
+    _, rest = error.split(_TEARDOWN_ERRORS)
+    leaves = _leaves(rest if rest is not None else error)
+    if len(leaves) == 1 and isinstance(leaves[0], Exception):
+        return leaves[0]
+    return rest if rest is not None else error
 
 
 def _map_error(error: Exception, recorder: ResponseRecorder) -> Exception:

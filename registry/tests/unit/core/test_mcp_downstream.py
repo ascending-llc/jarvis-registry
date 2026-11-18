@@ -462,6 +462,40 @@ def test_multiple_failures_are_not_collapsed_into_recoverable_401() -> None:
     assert _map_error(error, recorder) is error
 
 
+def test_teardown_errors_do_not_hide_the_real_failure() -> None:
+    import anyio
+
+    from registry.core.mcp_downstream import _single_error
+
+    failure = DownstreamHttpFailureException("Timed out fetching the downstream MCP tool list.")
+    # The shape the SDK produces when a deadline fires mid-request: the stream task breaks during teardown.
+    error = ExceptionGroup(
+        "outer", [ExceptionGroup("transport", [anyio.BrokenResourceError(), ExceptionGroup("body", [failure])])]
+    )
+    assert _single_error(error) is failure
+
+
+def test_teardown_errors_are_not_used_to_collapse_independent_failures() -> None:
+    import anyio
+
+    from registry.core.mcp_downstream import _single_error
+
+    first, second = RuntimeError("a"), RuntimeError("b")
+    error = ExceptionGroup("failures", [first, anyio.ClosedResourceError(), second])
+    unwrapped = _single_error(error)
+    assert isinstance(unwrapped, ExceptionGroup)
+    assert list(unwrapped.exceptions) == [first, second]
+
+
+def test_lone_teardown_error_is_still_reported() -> None:
+    import anyio
+
+    from registry.core.mcp_downstream import _single_error
+
+    broken = anyio.BrokenResourceError()
+    assert _single_error(ExceptionGroup("g", [ExceptionGroup("h", [broken])])) is broken
+
+
 @pytest.mark.parametrize(("url", "expected"), [("http://host/mcp", "streamable-http"), ("http://host/sse", "sse")])
 async def test_transport_detection_returns_enum(url: str, expected: str) -> None:
     from registry.core.mcp_client import detect_server_transport
