@@ -31,10 +31,6 @@ class MCPClientConfig:
     WELLKNOWN_OAUTH_RESOURCE = "/.well-known/oauth-protected-resource"
     WELLKNOWN_OAUTH_SERVER = "/.well-known/oauth-authorization-server"
 
-    # Special server handling
-    ANTHROPIC_QUERY_PARAM = "instance_id=default"
-    ANTHROPIC_TAG = "anthropic-registry"
-
     # Header defaults
     DEFAULT_HEADERS = MappingProxyType(
         {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
