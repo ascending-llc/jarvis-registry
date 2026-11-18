@@ -1,12 +1,16 @@
 """Unit tests for OAuth token grant dispatch and request validation."""
 
+import json
 import logging
+import threading
 import time
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
+from fastapi.responses import JSONResponse
 from tests.support.oauth_state_store import InMemoryOAuthStateStore
 
+from auth_server.core.config import settings
 from auth_server.models.token_grants import (
     AuthorizationCodeTokenRequest,
     DeviceCodeTokenRequest,
@@ -19,6 +23,7 @@ from registry_pkgs.core.client_categories import (
     DEVICE_CODE_GRANT_TYPE,
     REFRESH_TOKEN_GRANT_TYPE,
 )
+from registry_pkgs.core.consent_store import LEGACY_CONSENT_GRANT_ID
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken, verify_managed_agent_token
 
 
@@ -99,11 +104,11 @@ async def test_exchange_dispatches_supported_grant(
 ) -> None:
     caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
     expected = Mock()
-    with patch.object(service, method_name, new=AsyncMock(return_value=expected)) as grant_method:
+    with patch.object(service, method_name, new=Mock(return_value=expected)) as grant_method:
         response = await service.exchange(grant_request)
 
     assert response is expected
-    grant_method.assert_awaited_once_with(grant_request)
+    grant_method.assert_called_once_with(grant_request)
     assert "client_id: mcp-client-test" in caplog.text
 
 
@@ -138,7 +143,7 @@ async def test_refresh_exchange_returns_invalid_grant_when_rotation_loses_race()
     )
     service = TokenGrantService(
         store=store,
-        consent_store=Mock(),
+        consent_store=Mock(get_client_grant_id=Mock(return_value=LEGACY_CONSENT_GRANT_ID)),
     )
     grant_request = RefreshTokenRequest(
         grant_type=REFRESH_TOKEN_GRANT_TYPE,
@@ -175,11 +180,19 @@ async def test_refresh_exchange_propagates_unexpected_store_failure() -> None:
         await service.exchange(grant_request)
 
 
-def _prepare_grant(kind: str, user_info: dict) -> tuple[TokenGrantService, OAuthTokenRequest]:
+def _prepare_grant(
+    kind: str,
+    user_info: dict,
+    *,
+    stored_grant_id: str | None = LEGACY_CONSENT_GRANT_ID,
+    presented_grant_id: str | None = None,
+    client_id: str = "mcp-client-identity",
+) -> tuple[TokenGrantService, OAuthTokenRequest]:
     store = InMemoryOAuthStateStore()
-    client_id = "mcp-client-identity"
     store.save_client(client_id, {"grant_types": [kind], "token_endpoint_auth_method": "none"})
     context = {"client_id": client_id, "expires_at": int(time.time()) + 600}
+    if presented_grant_id is not None:
+        context["consent_grant_id"] = presented_grant_id
     if kind == AUTHORIZATION_CODE_GRANT_TYPE:
         store.save_authcode(
             "code",
@@ -212,7 +225,137 @@ def _prepare_grant(kind: str, user_info: dict) -> tuple[TokenGrantService, OAuth
     else:
         store.save_refresh_token("refresh", {**context, "user_info": user_info, "scope": "mcp-proxy-ops"})
         request = RefreshTokenRequest(grant_type=kind, client_id=client_id, refresh_token="refresh")
-    return TokenGrantService(store, Mock(has_client_consent=Mock(return_value=True))), request
+    return TokenGrantService(store, Mock(get_client_grant_id=Mock(return_value=stored_grant_id))), request
+
+
+@pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE])
+@pytest.mark.parametrize(
+    "stored_grant_id, presented_grant_id, accepted",
+    [
+        pytest.param(LEGACY_CONSENT_GRANT_ID, None, True, id="legacy"),
+        pytest.param("grant-1", "grant-1", True, id="matching"),
+        pytest.param(None, "grant-1", False, id="revoked"),
+        pytest.param("grant-2", "grant-1", False, id="reapproved"),
+    ],
+)
+async def test_grants_require_the_original_consent_grant(
+    kind: str, stored_grant_id: str | None, presented_grant_id: str | None, accepted: bool
+) -> None:
+    service, request = _prepare_grant(
+        kind,
+        {"user_id": "user-123", "username": "user"},
+        stored_grant_id=stored_grant_id,
+        presented_grant_id=presented_grant_id,
+    )
+    with (
+        patch.object(service, "_mint_response", wraps=service._mint_response) as mint,
+        patch.object(service._store, "rotate_refresh_token", wraps=service._store.rotate_refresh_token) as rotate,
+    ):
+        response = await service.exchange(request)
+
+    service._consent_store.get_client_grant_id.assert_called_once_with("user-123", request.client_id)
+    if accepted:
+        assert not isinstance(response, JSONResponse)
+        mint.assert_called_once()
+        assert service._store.get_refresh_token(response.refresh_token)["consent_grant_id"] == stored_grant_id
+        claims = verify_managed_agent_token(service._token_config, response.access_token)
+        assert "consent_grant_id" not in claims
+        if kind == REFRESH_TOKEN_GRANT_TYPE:
+            rotate.assert_called_once()
+            assert service._store.get_refresh_token("refresh") is None
+    else:
+        assert response.status_code == 400
+        assert json.loads(response.body) == {
+            "error": "invalid_grant",
+            "error_description": "User consent is required. Restart the authorization flow.",
+        }
+        mint.assert_not_called()
+        rotate.assert_not_called()
+        assert set(service._store.refresh_tokens_storage) == (
+            {"refresh"} if kind == REFRESH_TOKEN_GRANT_TYPE else set()
+        )
+
+
+@pytest.mark.parametrize("presented_grant_id", [None, "grant-1"])
+async def test_refresh_rotations_preserve_consent_grant(presented_grant_id: str | None) -> None:
+    expected_grant_id = presented_grant_id if presented_grant_id is not None else LEGACY_CONSENT_GRANT_ID
+    service, request = _prepare_grant(
+        REFRESH_TOKEN_GRANT_TYPE,
+        {"user_id": "user-123", "username": "user"},
+        stored_grant_id=expected_grant_id,
+        presented_grant_id=presented_grant_id,
+    )
+
+    for _ in range(2):
+        previous_token = request.refresh_token
+        response = await service.exchange(request)
+        assert not isinstance(response, JSONResponse)
+        assert service._store.get_refresh_token(previous_token) is None
+        assert service._store.get_refresh_token(response.refresh_token)["consent_grant_id"] == expected_grant_id
+        request = RefreshTokenRequest(
+            grant_type=REFRESH_TOKEN_GRANT_TYPE,
+            client_id=request.client_id,
+            refresh_token=response.refresh_token,
+        )
+
+
+@pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE])
+async def test_grants_check_consent_from_consumed_context(kind: str) -> None:
+    service, request = _prepare_grant(
+        kind,
+        {"user_id": "user-123", "username": "user"},
+        stored_grant_id="current-grant",
+        presented_grant_id="current-grant",
+    )
+    if kind == AUTHORIZATION_CODE_GRANT_TYPE:
+        consumed = {**service._store.get_authcode("code"), "consent_grant_id": "old-grant"}
+        consume_method = "consume_authcode"
+    else:
+        consumed = {**service._store.get_device_code("device"), "consent_grant_id": "old-grant"}
+        consume_method = "consume_device_code"
+    with (
+        patch.object(service._store, consume_method, return_value=consumed),
+        patch.object(service, "_mint_response") as mint,
+    ):
+        response = await service.exchange(request)
+
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"] == "invalid_grant"
+    mint.assert_not_called()
+    assert service._store.refresh_tokens_storage == {}
+
+
+@pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE])
+async def test_registry_client_grants_skip_consent_and_omit_grant_id(kind: str) -> None:
+    service, request = _prepare_grant(
+        kind,
+        {"user_id": "user-123", "username": "user"},
+        stored_grant_id=None,
+        client_id=settings.registry_app_name,
+    )
+    request.client_secret = settings.registry_client_secret
+
+    response = await service.exchange(request)
+
+    assert not isinstance(response, JSONResponse)
+    service._consent_store.get_client_grant_id.assert_not_called()
+    assert "consent_grant_id" not in service._store.get_refresh_token(response.refresh_token)
+
+
+@pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE])
+async def test_grants_run_sync_consent_io_off_event_loop(kind: str) -> None:
+    service, request = _prepare_grant(kind, {"user_id": "user-123", "username": "user"})
+    event_loop_thread = threading.get_ident()
+
+    def read_grant(user_id: str, client_id: str) -> str:
+        assert threading.get_ident() != event_loop_thread
+        return LEGACY_CONSENT_GRANT_ID
+
+    service._consent_store.get_client_grant_id.side_effect = read_grant
+    response = await service.exchange(request)
+
+    assert not isinstance(response, JSONResponse)
+    service._consent_store.get_client_grant_id.assert_called_once()
 
 
 @pytest.mark.parametrize("kind", [AUTHORIZATION_CODE_GRANT_TYPE, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE])
@@ -282,12 +425,12 @@ async def test_grants_validate_identity_from_consumed_context(kind: str) -> None
 
 async def test_refresh_without_consent_does_not_mint_or_rotate() -> None:
     service, request = _prepare_grant(REFRESH_TOKEN_GRANT_TYPE, {"user_id": "user-123", "username": "user"})
-    service._consent_store.has_client_consent.return_value = False
+    service._consent_store.get_client_grant_id.return_value = None
     with patch.object(service, "_mint_response") as mint:
         response = await service.exchange(request)
     assert response.status_code == 400
     assert b"User consent is required" in response.body
-    service._consent_store.has_client_consent.assert_called_once_with("user-123", request.client_id)
+    service._consent_store.get_client_grant_id.assert_called_once_with("user-123", request.client_id)
     mint.assert_not_called()
     assert service._store.get_refresh_token("refresh") is not None
 

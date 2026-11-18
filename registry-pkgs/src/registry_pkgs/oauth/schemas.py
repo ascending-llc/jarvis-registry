@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
@@ -46,6 +46,7 @@ class MCPClientContext(TypedDict):
     code_challenge: str
     state: str
     server_path: str
+    consent_grant_id: NotRequired[str]
 
 
 class ConsentScopeDisplay(BaseModel):

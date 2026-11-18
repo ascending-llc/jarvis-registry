@@ -1,5 +1,6 @@
 """OAuth token grant orchestration for authorization code, device code, and refresh grants."""
 
+import asyncio
 import logging
 import secrets
 import time
@@ -13,7 +14,7 @@ from registry_pkgs.core.client_categories import (
     AUTHORIZATION_CODE_GRANT_TYPE,
     REFRESH_TOKEN_GRANT_TYPE,
 )
-from registry_pkgs.core.consent_store import ConsentStore
+from registry_pkgs.core.consent_store import LEGACY_CONSENT_GRANT_ID, ConsentStore, consent_grant_matches
 from registry_pkgs.core.downstream_oauth import DEVICE_CODE_GRANT_TYPE, oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token_with_scope
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
@@ -95,13 +96,18 @@ def _build_refresh_data(
     user_info: dict[str, Any],
     scope: str,
     issued_at: int,
+    *,
+    consent_grant_id: str | None,
 ) -> dict[str, Any]:
-    return {
+    data = {
         "client_id": client_id,
         "user_info": user_info,
         "scope": scope,
         "expires_at": issued_at + REFRESH_TOKEN_TTL_SECONDS,
     }
+    if consent_grant_id is not None:
+        data["consent_grant_id"] = consent_grant_id
+    return data
 
 
 class TokenGrantService:
@@ -122,11 +128,11 @@ class TokenGrantService:
         logger.info("client_id: %s", request.client_id)
 
         if isinstance(request, AuthorizationCodeTokenRequest):
-            return await self._exchange_authorization_code(request)
+            return await asyncio.to_thread(self._exchange_authorization_code, request)
         if isinstance(request, DeviceCodeTokenRequest):
-            return await self._exchange_device_code(request)
+            return await asyncio.to_thread(self._exchange_device_code, request)
         if isinstance(request, RefreshTokenRequest):
-            return await self._exchange_refresh_token(request)
+            return await asyncio.to_thread(self._exchange_refresh_token, request)
         return _oauth_error("unsupported_grant_type", f"grant_type '{request.grant_type}' is not supported")
 
     def _validate_client(self, client_id: str, client_secret: str | None, grant_type: str) -> JSONResponse | None:
@@ -152,6 +158,13 @@ class TokenGrantService:
             )
             return _oauth_error("unauthorized_client", f"client is not authorized for {grant_type}")
         return None
+
+    def _check_consent_grant(self, client_id: str, user_id: str, presented: str | None) -> JSONResponse | None:
+        if is_registry_client(client_id):
+            return None
+        if consent_grant_matches(self._consent_store.get_client_grant_id(user_id, client_id), presented):
+            return None
+        return _oauth_error("invalid_grant", "User consent is required. Restart the authorization flow.")
 
     def _mint_response(
         self,
@@ -192,7 +205,7 @@ class TokenGrantService:
             refresh_token=refresh_token,
         )
 
-    async def _exchange_authorization_code(
+    def _exchange_authorization_code(
         self,
         request: AuthorizationCodeTokenRequest,
     ) -> DeviceTokenResponse | JSONResponse:
@@ -252,6 +265,13 @@ class TokenGrantService:
         user_id = _stored_user_id(user_info)
         if user_id is None:
             return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
+        presented_grant_id = auth_code_data.get("consent_grant_id")
+        consent_error = self._check_consent_grant(request.client_id, user_id, presented_grant_id)
+        if consent_error is not None:
+            return consent_error
+        consent_grant_id = None
+        if not is_registry_client(request.client_id):
+            consent_grant_id = presented_grant_id if presented_grant_id is not None else LEGACY_CONSENT_GRANT_ID
         resolved_scopes = auth_code_data.get("resolved_scope")
         if resolved_scopes is None:
             logger.info("No resolved_scope in auth code, computing from groups (backward compatibility)")
@@ -270,11 +290,13 @@ class TokenGrantService:
         )
         self._store.save_refresh_token(
             refresh_token,
-            _build_refresh_data(request.client_id, user_info, response.scope, issued_at),
+            _build_refresh_data(
+                request.client_id, user_info, response.scope, issued_at, consent_grant_id=consent_grant_id
+            ),
         )
         return response
 
-    async def _exchange_device_code(
+    def _exchange_device_code(
         self,
         request: DeviceCodeTokenRequest,
     ) -> DeviceTokenResponse | JSONResponse:
@@ -319,6 +341,13 @@ class TokenGrantService:
         user_id = _stored_user_id(user_info)
         if user_id is None:
             return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
+        presented_grant_id = device_data.get("consent_grant_id")
+        consent_error = self._check_consent_grant(request.client_id, user_id, presented_grant_id)
+        if consent_error is not None:
+            return consent_error
+        consent_grant_id = None
+        if not is_registry_client(request.client_id):
+            consent_grant_id = presented_grant_id if presented_grant_id is not None else LEGACY_CONSENT_GRANT_ID
         refresh_token = secrets.token_urlsafe(32)
         response = self._mint_response(
             client_id=request.client_id,
@@ -331,12 +360,14 @@ class TokenGrantService:
         )
         self._store.save_refresh_token(
             refresh_token,
-            _build_refresh_data(request.client_id, user_info, response.scope, issued_at),
+            _build_refresh_data(
+                request.client_id, user_info, response.scope, issued_at, consent_grant_id=consent_grant_id
+            ),
         )
         self._store.delete_user_code(device_data["user_code"])
         return response
 
-    async def _exchange_refresh_token(
+    def _exchange_refresh_token(
         self,
         request: RefreshTokenRequest,
     ) -> DeviceTokenResponse | JSONResponse:
@@ -355,10 +386,13 @@ class TokenGrantService:
         user_id = _stored_user_id(user_info)
         if user_id is None:
             return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
-        if not is_registry_client(request.client_id) and not self._consent_store.has_client_consent(
-            user_id, request.client_id
-        ):
-            return _oauth_error("invalid_grant", "User consent is required. Restart the authorization flow.")
+        presented_grant_id = refresh_data.get("consent_grant_id")
+        consent_error = self._check_consent_grant(request.client_id, user_id, presented_grant_id)
+        if consent_error is not None:
+            return consent_error
+        consent_grant_id = None
+        if not is_registry_client(request.client_id):
+            consent_grant_id = presented_grant_id if presented_grant_id is not None else LEGACY_CONSENT_GRANT_ID
 
         issued_at = int(time.time())
         requested_scopes = (refresh_data.get("scope") or "").split()
@@ -375,7 +409,9 @@ class TokenGrantService:
         rotated = self._store.rotate_refresh_token(
             old_token=request.refresh_token,
             new_token=new_refresh_token,
-            new_data=_build_refresh_data(request.client_id, user_info, response.scope, issued_at),
+            new_data=_build_refresh_data(
+                request.client_id, user_info, response.scope, issued_at, consent_grant_id=consent_grant_id
+            ),
         )
         if rotated is None:
             return _oauth_error("invalid_grant", "refresh token already used")

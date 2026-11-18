@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs, urlsplit
 
@@ -7,7 +8,8 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from registry.api.v1.mcp.oauth_router import _client_branding_from_meta, router
-from registry.deps import get_container
+from registry.core.config import settings
+from registry.deps import get_container, get_redis_client
 from registry.services.oauth.mcp_service import MCPService
 from registry_pkgs.oauth.errors import OAuthCoordinationError
 from registry_pkgs.oauth.refresh_lock import REFRESH_IN_PROGRESS_MESSAGE
@@ -415,6 +417,7 @@ class TestOAuthRouter:
             "user_id": "test_user",
             "client_id": "claude",
             "server_path": "github",
+            "consent_grant_id": "grant-1",
         }
         mock_oauth_state_store.update_device_code.reset_mock()
 
@@ -432,6 +435,7 @@ class TestOAuthRouter:
                 "user_id": "test_user",
                 "client_id": "claude",
                 "server_path": "github",
+                "consent_grant_id": "grant-1",
             },
         )
 
@@ -463,7 +467,11 @@ class TestOAuthRouter:
         assert "oauth-callback?type=success" in response.headers["location"]
         mock_oauth_state_store.update_device_code.assert_not_called()
 
-    def test_oauth_callback_mcp_client_redirect(self, client):
+    @pytest.mark.parametrize(
+        ("client_id", "grant_id"),
+        [("claude", "grant-1"), ("claude", None), (settings.jwt_token_config.registry_client_id, None)],
+    )
+    def test_oauth_callback_mcp_client_redirect(self, client: TestClient, client_id: str, grant_id: str | None) -> None:
         """MCP-client-initiated (Layer B) flow: callback redirects to the client's redirect_uri
         with a code + state instead of the registry success page."""
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
@@ -477,11 +485,15 @@ class TestOAuthRouter:
         mock_flow.status = "pending"
         mock_flow.metadata.mcp_client_context = {
             "redirect_uri": "http://localhost:33418/cb",
-            "client_id": "claude",
+            "client_id": client_id,
             "code_challenge": "cc",
             "state": "st123",
             "server_path": "github",
         }
+        if grant_id is not None:
+            mock_flow.metadata.mcp_client_context["consent_grant_id"] = grant_id
+        redis_mock = Mock()
+        client.app.dependency_overrides[get_redis_client] = lambda: redis_mock
         mock_flow.metadata.device_code = None
         mock_mcp_service.oauth_service.flow_manager.get_flow = AsyncMock(side_effect=lambda flow_id: mock_flow)
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
@@ -501,6 +513,12 @@ class TestOAuthRouter:
         assert "GHCODE" not in location
         # Must NOT fall through to the registry success page.
         assert "oauth-callback?type=success" not in location
+        redis_mock.setex.assert_called_once()
+        code_data = json.loads(redis_mock.setex.call_args.args[2])
+        if grant_id is None:
+            assert "consent_grant_id" not in code_data
+        else:
+            assert code_data["consent_grant_id"] == grant_id
 
     def test_oauth_callback_missing_code(self, client):
         """Test OAuth callback with missing code parameter"""

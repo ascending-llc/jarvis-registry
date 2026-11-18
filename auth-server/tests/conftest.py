@@ -3,6 +3,7 @@ Pytest configuration and shared fixtures for auth_server tests.
 """
 
 import os
+import secrets
 from collections.abc import Generator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -31,15 +32,15 @@ pytest_plugins = ["registry_pkgs.testing.pytest_output"]
 
 class _InMemoryConsentStore:
     def __init__(self) -> None:
-        self.client_consents: set[tuple[str, str]] = set()
+        self.client_consents: dict[tuple[str, str], str] = {}
         self.server_consents: set[tuple[str, str, str]] = set()
         self.default_client_consent = True
 
-    def has_client_consent(self, user_id: str, client_id: str) -> bool:
-        return self.default_client_consent or (user_id, client_id) in self.client_consents
+    def get_client_grant_id(self, user_id: str, client_id: str) -> str | None:
+        return self.client_consents.get((user_id, client_id), "1" if self.default_client_consent else None)
 
-    def grant_client_consent(self, user_id: str, client_id: str) -> None:
-        self.client_consents.add((user_id, client_id))
+    def grant_client_consent(self, user_id: str, client_id: str) -> str:
+        return self.client_consents.setdefault((user_id, client_id), secrets.token_urlsafe(16))
 
     def has_server_consent(self, user_id: str, client_id: str, server_path: str) -> bool:
         return (user_id, client_id, server_path) in self.server_consents

@@ -11,6 +11,7 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
+from redis.exceptions import RedisError
 
 from registry.api.v1.mcp.consent_routes import router as consent_router
 from registry.api.v1.mcp.oauth_router import router
@@ -129,8 +130,8 @@ def store_mock() -> Mock:
 @pytest.fixture
 def consent_store_mock() -> Mock:
     store = Mock()
-    store.has_client_consent = Mock(return_value=True)
-    store.grant_client_consent = Mock()
+    store.get_client_grant_id = Mock(return_value="1")
+    store.grant_client_consent = Mock(return_value="1")
     store.has_server_consent = Mock(return_value=True)
     store.grant_server_consent = Mock()
     store.has_agent_consent = Mock(return_value=True)
@@ -250,7 +251,7 @@ def test_authorize_without_client_consent_redirects_to_frontend(
     pending_consent_store,
     mcp_service_mock,
 ):
-    consent_store_mock.has_client_consent.return_value = False
+    consent_store_mock.get_client_grant_id.return_value = None
 
     resp = client.get(
         f"/mcp/downstream/oauth/authorize/{USER_A}/github",
@@ -274,7 +275,7 @@ def test_authorize_registry_client_skips_consent_gate(
     pending_consent_store,
     mcp_service_mock,
 ):
-    consent_store_mock.has_client_consent.return_value = False
+    consent_store_mock.get_client_grant_id.return_value = None
     mcp_service_mock.oauth_service.initiate_oauth_flow.reset_mock()
 
     resp = client.get(
@@ -290,8 +291,27 @@ def test_authorize_registry_client_skips_consent_gate(
     assert resp.status_code == 307
     assert resp.headers["location"] == "https://github.com/login/oauth/authorize?x=1"
     assert pending_consent_store.pending == {}
-    consent_store_mock.has_client_consent.assert_not_called()
+    consent_store_mock.get_client_grant_id.assert_not_called()
     mcp_service_mock.oauth_service.initiate_oauth_flow.assert_called_once()
+    ctx = mcp_service_mock.oauth_service.initiate_oauth_flow.await_args.kwargs["mcp_client_context"]
+    assert "consent_grant_id" not in ctx
+
+
+def test_authorize_preserves_current_consent_grant_in_context(
+    client: TestClient, consent_store_mock: Mock, mcp_service_mock: Mock
+) -> None:
+    consent_store_mock.get_client_grant_id.return_value = "grant-1"
+
+    response = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"client_id": "claude", "redirect_uri": "http://localhost:33418/cb", "code_challenge": "abc"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    ctx = mcp_service_mock.oauth_service.initiate_oauth_flow.await_args.kwargs["mcp_client_context"]
+    assert ctx["consent_grant_id"] == "grant-1"
+    consent_store_mock.get_client_grant_id.assert_called_once_with(USER_A, "claude")
 
 
 def test_authorize_invalid_user_id_returns_400(client):
@@ -1392,7 +1412,10 @@ def test_approve_device_consent_reuses_client_consent_and_starts_layer_a(
     pending_consent_store,
     consent_store_mock,
     mcp_service_mock,
+    store_mock,
 ):
+    store_mock.device_codes["device-1"] = _device_state()
+    consent_store_mock.grant_client_consent.return_value = "grant-1"
     pending_consent_store.save(
         "device-nonce",
         {
@@ -1413,6 +1436,8 @@ def test_approve_device_consent_reuses_client_consent_and_starts_layer_a(
     call_kwargs = mcp_service_mock.oauth_service.initiate_oauth_flow.await_args.kwargs
     assert call_kwargs["device_code"] == "device-1"
     assert "mcp_client_context" not in call_kwargs
+    assert store_mock.device_codes["device-1"]["consent_grant_id"] == "grant-1"
+    assert store_mock.device_codes["device-1"]["status"] == "pending"
 
 
 def test_approve_device_consent_rejects_lost_consume_race(
@@ -1539,12 +1564,12 @@ def test_deny_device_consent_rejects_lost_consume_race(
     assert store_mock.device_codes["device-1"]["status"] == "pending"
 
 
-def _post_device_token(client: TestClient, *, device_code: str = "device-1") -> Response:
+def _post_device_token(client: TestClient, *, device_code: str = "device-1", client_id: str = "claude") -> Response:
     return client.post(
         f"/mcp/downstream/oauth/token/{USER_A}/github",
         data={
             "grant_type": DEVICE_CODE_GRANT_TYPE,
-            "client_id": "claude",
+            "client_id": client_id,
             "device_code": device_code,
         },
     )
@@ -1618,6 +1643,7 @@ def test_device_token_approved_is_single_use(client, store_mock):
         "user_id": USER_A,
         "server_path": "github",
         "scope": "mcp-proxy-ops",
+        "consent_grant_id": "1",
     }
 
     _assert_token_error(_post_device_token(client), "invalid_grant", "device_code not found")
@@ -1631,3 +1657,162 @@ def test_device_token_storage_failure_leaves_approved_code_retryable(client, sto
 
     _assert_token_error(response, "server_error", "internal server error", status_code=500)
     assert store_mock.device_codes["device-1"]["status"] == "approved"
+
+
+def _exchange_consent_grant(
+    client: TestClient,
+    redis_mock: Mock,
+    store_mock: Mock,
+    *,
+    grant_type: str,
+    presented: str | None,
+    client_id: str = "claude",
+) -> Response:
+    if grant_type == "authorization_code":
+        payload = json.loads(_stored_entry(client_id=client_id))
+    elif grant_type == "refresh_token":
+        payload = _refresh_data(client_id=client_id)
+    else:
+        payload = _device_state(status_value="approved", client_id=client_id)
+    if presented is not None:
+        payload["consent_grant_id"] = presented
+
+    if grant_type == "authorization_code":
+        redis_mock.getdel.return_value = json.dumps(payload)
+        return _post_token(client, client_id=client_id)
+    if grant_type == "refresh_token":
+        store_mock.get_refresh_token.return_value = payload
+        store_mock.rotate_refresh_token.return_value = payload
+        return _post_refresh(client, client_id=client_id)
+    store_mock.device_codes["device-1"] = payload
+    return _post_device_token(client, client_id=client_id)
+
+
+@pytest.mark.parametrize("grant_type", ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE])
+@pytest.mark.parametrize(
+    ("stored", "presented", "expected_status"),
+    [
+        pytest.param("1", None, 200, id="legacy"),
+        pytest.param("grant-1", "grant-1", 200, id="matching"),
+        pytest.param(None, "grant-1", 400, id="revoked"),
+        pytest.param("grant-2", "grant-1", 400, id="regranted"),
+        pytest.param("grant-2", None, 400, id="legacy-after-regrant"),
+    ],
+)
+def test_token_grants_require_matching_consent(
+    client: TestClient,
+    redis_mock: Mock,
+    store_mock: Mock,
+    consent_store_mock: Mock,
+    grant_type: str,
+    stored: str | None,
+    presented: str | None,
+    expected_status: int,
+) -> None:
+    consent_store_mock.get_client_grant_id.return_value = stored
+
+    response = _exchange_consent_grant(client, redis_mock, store_mock, grant_type=grant_type, presented=presented)
+
+    assert response.status_code == expected_status
+    consent_store_mock.get_client_grant_id.assert_called_once_with(USER_A, "claude")
+    if expected_status == 400:
+        _assert_token_error(response, "invalid_grant", "User consent is required. Restart the authorization flow.")
+        store_mock.save_refresh_token.assert_not_called()
+        store_mock.rotate_refresh_token.assert_not_called()
+        store_mock.consume_device_code_and_save_refresh_token.assert_not_called()
+        return
+
+    if grant_type == "authorization_code":
+        saved = store_mock.save_refresh_token.call_args.args[1]
+    elif grant_type == "refresh_token":
+        saved = store_mock.rotate_refresh_token.call_args.kwargs["new_data"]
+    else:
+        saved = store_mock.refresh_tokens[response.json()["refresh_token"]]
+    assert saved["consent_grant_id"] == stored
+    claims = verify_managed_agent_token(settings.jwt_token_config, response.json()["access_token"])
+    assert "consent_grant_id" not in claims
+
+
+@pytest.mark.parametrize("grant_type", ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE])
+def test_registry_client_token_grants_skip_consent(
+    client: TestClient, redis_mock: Mock, store_mock: Mock, consent_store_mock: Mock, grant_type: str
+) -> None:
+    consent_store_mock.get_client_grant_id.side_effect = AssertionError("Registry app must not read consent")
+
+    response = _exchange_consent_grant(
+        client,
+        redis_mock,
+        store_mock,
+        grant_type=grant_type,
+        presented=None,
+        client_id=settings.jwt_token_config.registry_client_id,
+    )
+
+    assert response.status_code == 200
+    consent_store_mock.get_client_grant_id.assert_not_called()
+    if grant_type == "authorization_code":
+        saved = store_mock.save_refresh_token.call_args.args[1]
+    elif grant_type == "refresh_token":
+        saved = store_mock.rotate_refresh_token.call_args.kwargs["new_data"]
+    else:
+        saved = store_mock.refresh_tokens[response.json()["refresh_token"]]
+    assert "consent_grant_id" not in saved
+
+
+@pytest.mark.parametrize("grant_type", ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE])
+def test_token_consent_lookup_failure_returns_server_error(
+    client: TestClient, redis_mock: Mock, store_mock: Mock, consent_store_mock: Mock, grant_type: str
+) -> None:
+    consent_store_mock.get_client_grant_id.side_effect = RedisError("unavailable")
+
+    response = _exchange_consent_grant(client, redis_mock, store_mock, grant_type=grant_type, presented="grant-1")
+
+    _assert_token_error(response, "server_error", "internal server error", status_code=500)
+    store_mock.save_refresh_token.assert_not_called()
+    store_mock.rotate_refresh_token.assert_not_called()
+    store_mock.consume_device_code_and_save_refresh_token.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["grant", "missing-device", "update-false", "update-error"])
+def test_device_consent_persistence_failure_marks_device_failed(
+    client: TestClient,
+    store_mock: Mock,
+    consent_store_mock: Mock,
+    pending_consent_store: _InMemoryPendingConsentStore,
+    failure: str,
+) -> None:
+    pending_consent_store.save(
+        "device-nonce",
+        {
+            "flow_type": "device",
+            "user_id": USER_A,
+            "server_path": "github",
+            "client_id": "claude",
+            "device_code": "device-1",
+        },
+    )
+    if failure != "missing-device":
+        store_mock.device_codes["device-1"] = _device_state()
+    if failure == "grant":
+        consent_store_mock.grant_client_consent.side_effect = RedisError("unavailable")
+    if failure in {"update-false", "update-error"}:
+        update = store_mock.update_device_code.side_effect
+
+        def fail_consent_update(device_code: str, data: dict) -> bool:
+            if "consent_grant_id" in data:
+                if failure == "update-error":
+                    raise RedisError("unavailable")
+                return False
+            return update(device_code, data)
+
+        store_mock.update_device_code.side_effect = fail_consent_update
+
+    response = client.post("/mcp/consent/downstream", json={"nonce": "device-nonce"})
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert pending_consent_store.peek("device-nonce") is None
+    if failure == "missing-device":
+        store_mock.update_device_code.assert_not_called()
+    else:
+        assert store_mock.device_codes["device-1"]["status"] == "failed"
