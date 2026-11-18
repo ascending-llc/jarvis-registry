@@ -983,6 +983,21 @@ def _resolve_direct_proxy_target(call: ProxyCall, server: ExtendedMCPServer) -> 
             ),
         )
 
+    # Tool disabling is a registry policy, so it must hold on the direct proxy the same way it
+    # already does in the gateway's execute_tool: a tool the server owner disabled in the
+    # registry never reaches the downstream server. Handshake methods (initialize, tools/list)
+    # carry no tool_name and stay unaffected.
+    if call.tool_name is not None and server.is_tool_disabled(call.tool_name):
+        return JSONResponse(
+            status_code=200,
+            content=build_method_error(
+                call.request_id,
+                f"Tool '{call.tool_name}' is currently disabled on server '{server.serverName}'. It was disabled in "
+                "Jarvis Registry — do not retry this tool until it is re-enabled there.",
+                method=call.method,
+            ),
+        )
+
     # Get target URL
     try:
         return get_target_url(server)
