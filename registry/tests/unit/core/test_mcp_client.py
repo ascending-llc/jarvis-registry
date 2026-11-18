@@ -1350,6 +1350,9 @@ class TestInitializeFailureLogging:
         assert (init_result, status_code) == (None, None)
         errors = [r for r in caplog.records if r.levelname == "ERROR"]
         assert errors and "MCP initialization failed" in errors[-1].getMessage()
+        # The transport's ExceptionGroup wrapper is unwrapped down to the real cause.
+        assert "refused" in errors[-1].getMessage()
+        assert "unhandled errors in a TaskGroup" not in errors[-1].getMessage()
 
     @pytest.mark.asyncio
     async def test_http_error_status_is_not_logged_as_error(self, caplog):

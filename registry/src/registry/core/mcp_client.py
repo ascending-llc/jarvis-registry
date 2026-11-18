@@ -431,11 +431,13 @@ async def initialize_mcp(
         return None, recorder.status_code
     except Exception as e:
         status_code = recorder.status_code
+        # v2 transports surface failures wrapped in an ExceptionGroup; log the leaf causes instead.
+        detail = _format_exception_group(e) if isinstance(e, ExceptionGroup) else f"{type(e).__name__}: {e}"
         if status_code is not None and status_code >= HTTPStatus.BAD_REQUEST:
             # An HTTP error status is an outcome the caller interprets (e.g. 401 → auth required).
-            logger.debug(f"HTTP error {status_code} during MCP initialization for {target_url}: {type(e).__name__}")
+            logger.debug(f"HTTP error {status_code} during MCP initialization for {target_url}: {detail}")
         else:
-            logger.error(f"MCP initialization failed for {target_url}: {type(e).__name__} - {e}")
+            logger.error(f"MCP initialization failed for {target_url}: {detail}")
         return None, status_code
 
 
