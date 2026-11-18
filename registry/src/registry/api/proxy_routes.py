@@ -1144,6 +1144,21 @@ async def dynamic_mcp_post_proxy(
             ),
         )
 
+    # Tool disabling is a registry policy, so it must hold on the direct proxy the same way it
+    # already does in the gateway's execute_tool: a tool the server owner disabled in the
+    # registry never reaches the downstream server. Handshake methods (initialize, tools/list)
+    # carry no tool_name and stay unaffected.
+    if tool_name is not None and server.is_tool_disabled(tool_name):
+        return JSONResponse(
+            status_code=200,
+            content=_build_method_error(
+                request_id,
+                f"Tool '{tool_name}' is currently disabled on server '{server.serverName}'. It was disabled in "
+                "Jarvis Registry — do not retry this tool until it is re-enabled there.",
+                method=mcp_method,
+            ),
+        )
+
     # Get target URL
     try:
         target_url = get_target_url(server)
