@@ -200,4 +200,8 @@ exclude-signatures = [
     {signature = '5d89094328b97cc1e2ad6872eddc1c535e4e16ab3bbb6ca81d573e8ffc81be26', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
     {signature = '324292d44d8ce74c7b02fbd776e1cc8f324db5b2ccf4558d0c2f1f2bf8889641', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
     {signature = '1d71d8e57c99920849fcae18a1c83986495aa529cd8671f97a86e6cb850d79f9', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
+    {signature = '5203b1bb62ed03d64492c96e4614bc38fa0a0dc6d7f95608912c265a9e798847', reason = 'example key value pair in quick-start doc is not credential'},
+    {signature = '564ca3a8556bd2ebc50b7408a639c4810e16002b1f02a9911955ca39845eda0d', reason = 'example key value pair in quick-start doc is not credential'},
+    {signature = '8d2861040377feea34b7619cc927b649903881722d4f9dbcef2555f163e7ab50', reason = 'example key value pair in quick-start doc is not credential'},
+    {signature = '20fe648845b4bed780226bfdbecd6f0dc158baed78afb1fb281ce3dc0eaeb70b', reason = 'example key value pair in quick-start doc is not credential'},
 ]

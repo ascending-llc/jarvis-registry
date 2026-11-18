@@ -17,6 +17,7 @@ from typing import (
     TypeVar,
 )
 
+from ..constants import ExecutionOutcome
 from ..utils.otel_metrics import (
     record_auth_request as _record_auth_request,
 )
@@ -258,12 +259,14 @@ class _ExecutionMetricsContext:
       set_success(False) and may set_error_type("server_not_found") for the failure mode.
     - Raised exception: __aexit__ forces success=False and sets error_type to the
       exception class name unless the caller already set one.
+    - Pending client input: ToolExecutionMetricsContext.set_input_required() records
+      status=input_required; a subsequent exception always overrides it with failure.
     """
 
     def __init__(self, server_name: str = "unknown") -> None:
         self._start_time: float = 0
         self._server_name: str = server_name
-        self._success: bool = False
+        self._outcome = ExecutionOutcome.FAILURE
         self._error_type: str = "none"
         self._error_type_set: bool = False
 
@@ -273,7 +276,7 @@ class _ExecutionMetricsContext:
 
     def set_success(self, success: bool) -> None:
         """Set the success status."""
-        self._success = success
+        self._outcome = ExecutionOutcome.SUCCESS if success else ExecutionOutcome.FAILURE
 
     def set_error_type(self, error_type: str) -> None:
         """Set a bounded, low-cardinality failure-mode label."""
@@ -291,7 +294,7 @@ class _ExecutionMetricsContext:
         exc_tb: Any,
     ) -> None:
         if exc_type is not None:
-            self._success = False
+            self._outcome = ExecutionOutcome.FAILURE
             if not self._error_type_set:
                 self._error_type = exc_type.__name__
 
@@ -318,7 +321,7 @@ class ToolExecutionMetricsContext(_ExecutionMetricsContext):
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
             result = await proxy_tool_call(...)
-            ctx.set_success(not result.isError)
+            ctx.set_success(not result.is_error)
             return result
     """
 
@@ -340,14 +343,19 @@ class ToolExecutionMetricsContext(_ExecutionMetricsContext):
         """Set the HTTP method."""
         self._method = method
 
+    def set_input_required(self) -> None:
+        """Record a pending client-input round without counting it as an execution failure."""
+        self._outcome = ExecutionOutcome.INPUT_REQUIRED
+
     def _record(self, duration: float) -> None:
         _record_tool_execution(
             tool_name=self._tool_name,
             server_name=self._server_name,
-            success=self._success,
+            success=self._outcome is ExecutionOutcome.SUCCESS,
             duration_seconds=duration,
             method=self._method,
             error_type=self._error_type,
+            input_required=self._outcome is ExecutionOutcome.INPUT_REQUIRED,
         )
 
 
@@ -362,14 +370,14 @@ class ResourceAccessMetricsContext(_ExecutionMetricsContext):
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
             result = await read_resource(...)
-            ctx.set_success(not result.isError)
+            ctx.set_success(not result.is_error)
             return result
     """
 
     def _record(self, duration: float) -> None:
         _record_resource_access(
             server_name=self._server_name,
-            success=self._success,
+            success=self._outcome is ExecutionOutcome.SUCCESS,
             duration_seconds=duration,
             error_type=self._error_type,
         )
@@ -384,7 +392,7 @@ class PromptExecutionMetricsContext(_ExecutionMetricsContext):
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
             result = await execute_prompt(...)
-            ctx.set_success(not result.isError)
+            ctx.set_success(not result.is_error)
             return result
     """
 
@@ -404,7 +412,7 @@ class PromptExecutionMetricsContext(_ExecutionMetricsContext):
         _record_prompt_execution(
             prompt_name=self._prompt_name,
             server_name=self._server_name,
-            success=self._success,
+            success=self._outcome is ExecutionOutcome.SUCCESS,
             duration_seconds=duration,
             error_type=self._error_type,
         )

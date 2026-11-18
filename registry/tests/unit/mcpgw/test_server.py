@@ -1,20 +1,25 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
 from mcp.types import (
     CallToolResult,
     ClientCapabilities,
     ElicitationCapability,
+    ElicitRequestURLParams,
+    ElicitResult,
     Implementation,
     InitializeRequestParams,
+    InputRequiredResult,
     TextContent,
     UrlElicitationCapability,
 )
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
+from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
@@ -46,6 +51,11 @@ def _make_ctx(
     accessible_server_ids: list[str] | None = None,
     include_user_context: bool = True,
     client_params: InitializeRequestParams | None = None,
+    protocol_version: str | None = None,
+    client_capabilities: ClientCapabilities | None = None,
+    input_responses: dict | None = None,
+    session_client_params: InitializeRequestParams | None = None,
+    seed_client_params: bool = True,
 ):
     accessible: object = _PermissiveAccessibleSet() if accessible_server_ids is None else accessible_server_ids
     acl_service = MagicMock()
@@ -68,16 +78,26 @@ def _make_ctx(
     request_state = SimpleNamespace()
     if include_user_context:
         request_state.user = {"user_id": user_id, "username": "test", "client_id": "claude"}
-    # Pre-seed the per-request memo so get_client_params() returns these params without a Redis GET.
-    request_state.mcp_client_params = client_params
+    # Pre-seed the per-request memo so get_client_params() returns these params without a Redis GET,
+    # unless a test wants to exercise the uncached source (seed_client_params=False).
+    if seed_client_params:
+        request_state.mcp_client_params = client_params
     request_context = SimpleNamespace(
         lifespan_context=lifespan_context,
         request=SimpleNamespace(state=request_state),
+        request_id="req-1",
     )
 
     ctx = MagicMock()
     ctx.request_context = request_context
     ctx.request_id = "req-1"
+    # On a MagicMock, an unset protocol_version is a mock that is never in MODERN_PROTOCOL_VERSIONS, so the
+    # default ctx is legacy. Tests opt into the modern era by passing protocol_version="2026-07-28".
+    if protocol_version is not None:
+        ctx.protocol_version = protocol_version
+    ctx.client_capabilities = client_capabilities
+    ctx.input_responses = input_responses
+    ctx.session.client_params = session_client_params
     return ctx
 
 
@@ -116,7 +136,7 @@ def _make_client_params(
 
 
 def _assert_stale_server_id_hint(result: CallToolResult) -> None:
-    assert result.isError is True
+    assert result.is_error is True
     assert len(result.content) == 1
     content = result.content[0]
     assert isinstance(content, TextContent)
@@ -190,7 +210,7 @@ class TestExecutionMetricsWiring:
                 server_id="missing",
             )
 
-        assert result.isError is True
+        assert result.is_error is True
         mock_record.assert_called_once()
         call_kwargs = mock_record.call_args[1]
         assert call_kwargs["tool_name"] == "tavily_search"
@@ -305,7 +325,7 @@ async def test_execute_tool_impl_missing_user_context_returns_auth_error():
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, str(PydanticObjectId()))
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Authentication required" in result.content[0].text
     ctx.request_context.lifespan_context.server_service.get_server_by_id.assert_not_awaited()
 
@@ -316,7 +336,7 @@ async def test_execute_tool_impl_invalid_user_id_returns_auth_error():
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, str(PydanticObjectId()))
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Authentication required" in result.content[0].text
     ctx.request_context.lifespan_context.server_service.get_server_by_id.assert_not_awaited()
 
@@ -343,7 +363,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Access denied" in result.content[0].text
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
     downstream_call.assert_not_awaited()
@@ -362,7 +382,7 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Service temporarily unavailable" in result.content[0].text
     downstream_call.assert_not_awaited()
 
@@ -393,24 +413,40 @@ def test_get_state_metadata_maps_client_name_to_branding(client_name, expected_b
     assert result["client_branding"] == expected_branding
 
 
+def _legacy_ctx(client_params: InitializeRequestParams | None):
+    """A 2025-11-25 ctx whose cached initialize params are `client_params` (legacy support path)."""
+    return _make_ctx(protocol_version="2025-11-25", client_params=client_params)
+
+
+def _modern_ctx(*, url_capability: bool, session_client_params: InitializeRequestParams | None = None):
+    """A 2026-07-28 ctx that declares capabilities via `_meta` (client_capabilities), with no cached params."""
+    elicitation = ElicitationCapability(url=UrlElicitationCapability()) if url_capability else None
+    return _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=elicitation),
+        client_params=None,
+        session_client_params=session_client_params,
+    )
+
+
 @pytest.mark.parametrize("client_name", ["claude-code", "claude-ai/1.0", "Claude"])
 @pytest.mark.parametrize("supports_url_elicitation", [True, False])
 def test_support_url_elicitation_claude_clients_follow_declared_capability(client_name, supports_url_elicitation):
     """Claude Code CLI and Claude Desktop both identify as "claude-code", and only Claude Desktop hangs on
     a -32042 response, so no Claude client name gets an override: each follows what it declares."""
-    client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
+    ctx = _legacy_ctx(_make_client_params(client_name, supports_url_elicitation=supports_url_elicitation))
 
-    assert utils._support_url_elicitation(client_params) is supports_url_elicitation
+    assert utils._support_url_elicitation(ctx) is supports_url_elicitation
 
 
 def test_support_url_elicitation_non_claude_client_follows_declared_capability():
-    client_params = _make_client_params("some-other-client", supports_url_elicitation=False)
+    ctx = _legacy_ctx(_make_client_params("some-other-client", supports_url_elicitation=False))
 
-    assert utils._support_url_elicitation(client_params) is False
+    assert utils._support_url_elicitation(ctx) is False
 
 
 def test_support_url_elicitation_returns_false_for_missing_client_params():
-    assert utils._support_url_elicitation(None) is False
+    assert utils._support_url_elicitation(_legacy_ctx(None)) is False
 
 
 @pytest.mark.parametrize(
@@ -428,7 +464,22 @@ def test_support_url_elicitation_returns_false_for_missing_client_params():
 def test_support_url_elicitation_requires_negotiated_version_defining_url_mode(protocol_version, expected):
     client_params = _make_client_params("some-client", supports_url_elicitation=True, protocol_version=protocol_version)
 
-    assert utils._support_url_elicitation(client_params) is expected
+    assert utils._support_url_elicitation(_legacy_ctx(client_params)) is expected
+
+
+def test_support_url_elicitation_modern_reads_capabilities_without_client_info():
+    """On 2026-07-28 the capability arrives via `_meta` even when the client omits `clientInfo`, so support
+    is decided by `ctx.client_capabilities` alone — `get_client_params` can be None."""
+    assert utils._support_url_elicitation(_modern_ctx(url_capability=True)) is True
+
+
+def test_support_url_elicitation_modern_false_when_url_capability_absent():
+    assert utils._support_url_elicitation(_modern_ctx(url_capability=False)) is False
+
+
+def test_support_url_elicitation_modern_false_when_no_capabilities():
+    ctx = _make_ctx(protocol_version="2026-07-28", client_capabilities=None, client_params=None)
+    assert utils._support_url_elicitation(ctx) is False
 
 
 @pytest.mark.parametrize(
@@ -436,8 +487,8 @@ def test_support_url_elicitation_requires_negotiated_version_defining_url_mode(p
     [
         ("2025-06-18", "2025-06-18"),
         ("2025-11-25", "2025-11-25"),
-        ("2026-07-28", utils.LATEST_PROTOCOL_VERSION),
-        (1, utils.LATEST_PROTOCOL_VERSION),
+        ("2026-07-28", utils.LATEST_HANDSHAKE_VERSION),
+        (1, utils.LATEST_HANDSHAKE_VERSION),
     ],
 )
 def test_negotiated_protocol_version_mirrors_sdk_negotiation(requested, expected):
@@ -446,6 +497,7 @@ def test_negotiated_protocol_version_mirrors_sdk_negotiation(requested, expected
 
 _ELICITATION_URL = "https://registry.example.com/consent/server?nonce=abc"
 _ELICITATION_TEMPLATE = "Show the user this {} so they can open it."
+_KEY = UrlElicitationInputKey.CONSENT
 
 
 def test_build_url_elicitation_result_message_matches_fallback_text():
@@ -454,10 +506,10 @@ def test_build_url_elicitation_result_message_matches_fallback_text():
 
     with pytest.raises(utils.UrlElicitationRequiredError) as exc_info:
         utils._build_url_elicitation_result(
-            capable_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+            capable_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
         )
     fallback = utils._build_url_elicitation_result(
-        fallback_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+        fallback_ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
     )
 
     assert str(exc_info.value) == fallback.content[0].text
@@ -472,7 +524,7 @@ def test_build_url_elicitation_result_logs_why_url_mode_was_not_used(caplog):
     )
 
     with caplog.at_level("INFO", logger=utils.logger.name):
-        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human")
+        utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
 
     message = caplog.records[-1].getMessage()
     assert "'codex-mcp-client'" in message
@@ -487,13 +539,308 @@ def test_build_url_elicitation_result_logs_missing_client_params(caplog):
 
     with caplog.at_level("INFO", logger=utils.logger.name):
         result = utils._build_url_elicitation_result(
-            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", elicitation_id="eid"
+            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     message = caplog.records[-1].getMessage()
     assert "no cached client params" in message
     assert "elicitation ID found: True" in message
+
+
+def test_build_url_elicitation_result_modern_first_round_returns_input_required():
+    ctx = _modern_ctx(url_capability=True)
+
+    result = utils._build_url_elicitation_result(
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=_KEY, elicitation_id="eid"
+    )
+
+    assert isinstance(result, InputRequiredResult)
+    assert set(result.input_requests) == {_KEY}
+    params = result.input_requests[_KEY].params
+    assert params.mode == "url"
+    assert params.url == _ELICITATION_URL
+    assert params.message == "please authorize"
+    # No request_state is sealed; the retry re-runs the checks (decision 1A). elicitation_id stays off the wire.
+    assert result.request_state is None
+    assert params.elicitation_id is None
+
+
+@pytest.mark.parametrize("action", ["decline", "cancel"])
+def test_build_url_elicitation_result_modern_retry_declined_returns_text(action):
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={_KEY: ElicitResult(action=action)},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert "declined or cancelled" in result.content[0].text
+
+
+def test_build_url_elicitation_result_modern_retry_accepted_returns_url_text_not_prompt():
+    """A retry only reaches here because the check failed again. Even on `accept`, never prompt again —
+    return the URL text so the user can finish in the browser and ask for a retry (decision 2A)."""
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={_KEY: ElicitResult(action="accept")},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY)
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert f"URL `{_ELICITATION_URL}`" in result.content[0].text
+
+
+def test_build_url_elicitation_result_modern_retry_unknown_key_reprompts():
+    """A retry whose input_responses answer a different input request (not ours) is not our retry: fall
+    through to the first-round branch and prompt, rather than mistaking it for a declined/accepted answer."""
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={"some_other_key": ElicitResult(action="accept")},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=_KEY, elicitation_id="eid"
+    )
+
+    assert isinstance(result, InputRequiredResult)
+    assert set(result.input_requests) == {_KEY}
+
+
+@pytest.mark.parametrize(
+    ("answered", "failing"),
+    [
+        (UrlElicitationInputKey.CONSENT, UrlElicitationInputKey.AUTHORIZATION),
+        (UrlElicitationInputKey.AUTHORIZATION, UrlElicitationInputKey.CONSENT),
+    ],
+)
+def test_build_url_elicitation_result_modern_retry_prompts_for_next_check(answered, failing):
+    """A retry that answered one check and now fails a different one (first use: consent, then downstream
+    OAuth) prompts for the new check under its own key instead of falling back to text."""
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={answered: ElicitResult(action="accept")},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "please authorize", input_key=failing
+    )
+
+    assert isinstance(result, InputRequiredResult)
+    assert set(result.input_requests) == {failing}
+    assert result.input_requests[failing].params.url == _ELICITATION_URL
+
+
+@pytest.mark.parametrize("key", list(UrlElicitationInputKey))
+def test_build_url_elicitation_result_modern_retry_same_check_returns_text_for_each_key(key):
+    """Decision 2A holds per key: a check that fails again after its own prompt never prompts again."""
+    ctx = _make_ctx(
+        protocol_version="2026-07-28",
+        client_capabilities=ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability())),
+        input_responses={key: ElicitResult(action="accept")},
+        client_params=None,
+    )
+
+    result = utils._build_url_elicitation_result(ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=key)
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert f"URL `{_ELICITATION_URL}`" in result.content[0].text
+
+
+def test_build_url_elicitation_result_legacy_capable_raises():
+    ctx = _legacy_ctx(_make_client_params("vscode", supports_url_elicitation=True))
+
+    with pytest.raises(utils.UrlElicitationRequiredError):
+        utils._build_url_elicitation_result(
+            ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
+        )
+
+
+@pytest.mark.parametrize("protocol_version", ["2025-11-25", "2026-07-28"])
+def test_build_url_elicitation_result_incapable_returns_fallback(protocol_version):
+    ctx = _make_ctx(protocol_version=protocol_version, client_capabilities=None, client_params=None)
+
+    result = utils._build_url_elicitation_result(
+        ctx, _ELICITATION_URL, _ELICITATION_TEMPLATE, "human", input_key=_KEY, elicitation_id="eid"
+    )
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert f"URL `{_ELICITATION_URL}`" in result.content[0].text
+
+
+def test_get_client_params_modern_reads_session_without_redis():
+    session_params = _make_client_params("modern-client", supports_url_elicitation=True, protocol_version="2026-07-28")
+    ctx = _make_ctx(protocol_version="2026-07-28", session_client_params=session_params, seed_client_params=False)
+
+    assert utils.get_client_params(ctx) is session_params
+    ctx.request_context.lifespan_context.client_info_store.key_for.assert_not_called()
+    ctx.request_context.lifespan_context.client_info_store.load.assert_not_called()
+
+
+def test_get_client_params_legacy_reads_redis_store():
+    cached = _make_client_params("legacy-client", supports_url_elicitation=True)
+    ctx = _make_ctx(protocol_version="2025-11-25", seed_client_params=False)
+    store = ctx.request_context.lifespan_context.client_info_store
+    store.key_for.return_value = "cache-key"
+    store.load.return_value = cached
+
+    assert utils.get_client_params(ctx) is cached
+    store.load.assert_called_once_with("cache-key")
+
+
+_PROGRESS_NOTIFICATION = {
+    "jsonrpc": "2.0",
+    "method": "notifications/progress",
+    "params": {"progressToken": "tok", "progress": 0.5, "total": 1.0},
+}
+_LOGGING_NOTIFICATION = {
+    "jsonrpc": "2.0",
+    "method": "notifications/message",
+    "params": {"level": "info", "data": "downstream log line"},
+}
+_TOOLS_LIST_CHANGED_NOTIFICATION = {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}
+_CANCELLED_NOTIFICATION = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "req-1"}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol_version", "notification", "forwarded"),
+    [
+        # Progress is forwarded on both eras.
+        ("2026-07-28", _PROGRESS_NOTIFICATION, True),
+        ("2025-11-25", _PROGRESS_NOTIFICATION, True),
+        # Logging is forwarded only on 2025-11-25 (deprecated / opt-in on 2026-07-28).
+        ("2025-11-25", _LOGGING_NOTIFICATION, True),
+        ("2026-07-28", _LOGGING_NOTIFICATION, False),
+        # Downstream list-change notifications are dropped on both eras.
+        ("2025-11-25", _TOOLS_LIST_CHANGED_NOTIFICATION, False),
+        ("2026-07-28", _TOOLS_LIST_CHANGED_NOTIFICATION, False),
+        # Downstream cancellations are dropped on both eras: they refer to requests the downstream server
+        # sent to the gateway, which are never relayed, so the upstream client never saw those ids.
+        ("2025-11-25", _CANCELLED_NOTIFICATION, False),
+        ("2026-07-28", _CANCELLED_NOTIFICATION, False),
+        # An absent/unknown protocol version fails closed for logging but still forwards progress.
+        (None, _LOGGING_NOTIFICATION, False),
+        (None, _PROGRESS_NOTIFICATION, True),
+    ],
+)
+async def test_forward_notification_filters_by_era(protocol_version, notification, forwarded):
+    session = MagicMock()
+    session.send_notification = AsyncMock()
+
+    await utils.forward_notification(
+        session, dict(notification), related_request_id="req-1", protocol_version=protocol_version, progress_token="tok"
+    )
+
+    assert session.send_notification.await_count == (1 if forwarded else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["2025-11-25", "2026-07-28"])
+@pytest.mark.parametrize(
+    ("expected", "received", "forwarded"),
+    [
+        (None, "tok", False),
+        ("tok", "wrong", False),
+        (0, "0", False),
+        (0, False, False),
+        (0, 0.0, False),
+        (0, 0, True),
+        ("tok", "tok", True),
+        ("", "", True),
+    ],
+)
+async def test_forward_progress_requires_matching_token(
+    version: str, expected: str | int | None, received: str | int | float | bool, forwarded: bool
+) -> None:
+    session = SimpleNamespace(send_notification=AsyncMock())
+    notification = {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {"progressToken": received, "progress": 1},
+    }
+    await utils.forward_notification(
+        session, notification, related_request_id=1, protocol_version=version, progress_token=expected
+    )
+    assert session.send_notification.await_count == int(forwarded)
+    if forwarded:
+        sent, request_id = session.send_notification.await_args.args
+        assert sent.params.progress_token == expected
+        assert request_id == 1
+
+
+@pytest.mark.parametrize("token", ["tok", "", 0, None, True, 1.5, {}])
+def test_get_progress_token_validates_request_metadata(token: object) -> None:
+    ctx = SimpleNamespace(request_context=SimpleNamespace(meta={"progress_token": token}))
+    expected = token if type(token) in (str, int) else None
+    assert utils.get_progress_token(ctx) == expected
+
+
+@pytest.mark.parametrize("token", ["tok", "", 0, True, False, 0.0])
+def test_get_progress_token_preserves_wire_type(token: str | int | float | bool) -> None:
+    from mcp.types import RequestParams
+
+    params = {"_meta": {"progressToken": token}}
+    ctx = SimpleNamespace(
+        request_context=SimpleNamespace(meta=RequestParams.model_validate(params).meta, params=params)
+    )
+    assert utils.get_progress_token(ctx) == (token if type(token) in (str, int) else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["consent", "oauth"])
+@pytest.mark.parametrize("action", [None, "accept", "decline"])
+async def test_modern_authorization_metric_distinguishes_pending_and_terminal_results(
+    monkeypatch: pytest.MonkeyPatch, mock_telemetry_metrics: Mock, reason: str, action: str | None
+) -> None:
+    from registry.utils.otel_metrics import record_tool_execution
+
+    server_id = str(PydanticObjectId())
+    ctx = _modern_ctx(url_capability=True)
+    if action is not None:
+        key = UrlElicitationInputKey.CONSENT if reason == "consent" else UrlElicitationInputKey.AUTHORIZATION
+        ctx.input_responses = {key: ElicitResult(action=action)}
+    lifespan = ctx.request_context.lifespan_context
+    lifespan.server_service.get_server_by_id.return_value = _make_server(server_id)
+    lifespan.consent_store.has_server_consent.return_value = reason != "consent"
+    downstream = AsyncMock()
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream)
+    monkeypatch.setattr(server, "record_server_request", lambda *args: None)
+    if reason == "oauth":
+        monkeypatch.setattr(
+            server,
+            "_call_with_oauth_recovery",
+            AsyncMock(
+                side_effect=UrlElicitationRequiredException(
+                    "authorize", auth_url="https://example.com/authorize", server_name="github"
+                )
+            ),
+        )
+    monkeypatch.setattr(f"{DECORATORS_PATH}._record_tool_execution", record_tool_execution)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+
+    assert isinstance(result, InputRequiredResult) is (action is None)
+    if action is not None:
+        assert result.is_error is True
+    attributes = mock_telemetry_metrics.record_counter.call_args.args[2]
+    assert attributes["status"] == ("input_required" if action is None else "failure")
+    assert attributes["error_type"] == ("consent_required" if reason == "consent" else "url_elicitation")
+    downstream.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -508,7 +855,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "explicit consent" in result.content[0].text
     assert "/consent/server?nonce=" in result.content[0].text
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
@@ -548,7 +895,7 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
 
     # The elicitation id raised to the client must be threaded into the pending-consent payload so
     # the consent callback can later recover the client branding for the deep-link back.
-    raised_elicitation_id = exc_info.value.elicitations[0].elicitationId
+    raised_elicitation_id = exc_info.value.elicitations[0].elicitation_id
     assert raised_elicitation_id
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["elicitation_id"] == raised_elicitation_id
@@ -574,7 +921,7 @@ async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
 
 
 @pytest.mark.asyncio
@@ -592,7 +939,7 @@ async def test_execute_tool_impl_injects_trace_context_into_downstream_headers(m
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     headers = downstream_call.await_args.args[3]
     assert "traceparent" in headers
     assert f"{BAGGAGE_KEY_MCP_TOOL_NAME}=tavily_search" in headers["baggage"]
@@ -627,7 +974,7 @@ async def test_execute_tool_impl_injects_trace_context_into_session_init(monkeyp
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     # initialize_mcp_session(target_url, init_headers, session_key, transport_type)
     init_headers = init_session.await_args.args[1]
     assert "traceparent" in init_headers
@@ -651,7 +998,7 @@ async def test_execute_tool_impl_headless_agent_bypasses_server_consent(monkeypa
 
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
     downstream_call.assert_awaited_once()
-    assert not result.isError
+    assert not result.is_error
 
 
 @pytest.mark.asyncio
@@ -672,10 +1019,33 @@ async def test_execute_tool_impl_downstream_tool_error_records_error_type(monkey
     with patch(f"{DECORATORS_PATH}._record_tool_execution") as mock_record:
         result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     call_kwargs = mock_record.call_args[1]
     assert call_kwargs["success"] is False
     assert call_kwargs["error_type"] == "downstream_tool_error"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_downstream_jsonrpc_error_raises_mcp_error(monkeypatch):
+    """A downstream JSON-RPC error is re-raised as MCPError carrying its code, message and data, so the
+    gateway's error-shape wrapper can turn it into the v1 isError text."""
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        server,
+        "_downstream_tool_call",
+        AsyncMock(return_value={"error": {"code": -32602, "message": "bad arguments", "data": {"field": "q"}}}),
+    )
+
+    with pytest.raises(MCPError) as exc_info:
+        await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert exc_info.value.code == -32602
+    assert str(exc_info.value) == "bad arguments"
+    assert exc_info.value.data == {"field": "q"}
 
 
 @pytest.mark.asyncio
@@ -691,7 +1061,7 @@ async def test_execute_tool_impl_disabled_tool_returns_error(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "tavily_search" in result.content[0].text
     assert server_id in result.content[0].text
     assert "Do not retry this tool" in result.content[0].text
@@ -717,7 +1087,7 @@ async def test_execute_tool_impl_enabled_tool_not_blocked(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     downstream_call.assert_awaited()
 
 
@@ -769,7 +1139,7 @@ async def test_tool_401_then_refresh_retries_once_with_new_token(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     assert downstream.await_count == 2
     assert downstream.await_args_list[1].args[3]["Authorization"] == "Bearer t2"
     kwargs = oauth_service.recover_from_unauthorized.await_args.kwargs
@@ -816,7 +1186,7 @@ async def test_tool_second_401_loop_guard_returns_error_result(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
-    assert result.isError
+    assert result.is_error
     assert result.content[0].text == message
     assert downstream.await_count == 2
     assert [c.kwargs["is_retry"] for c in oauth_service.recover_from_unauthorized.await_args_list] == [False, True]
@@ -836,7 +1206,7 @@ async def test_tool_recovery_none_but_rebuild_has_token_retries_then_limits_send
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
-    assert result.isError
+    assert result.is_error
     assert result.content[0].text == "Authorization for github changed during this call; retry it."
     assert downstream.await_count == 2  # no third send
     assert downstream.await_args_list[1].args[3]["Authorization"] == "Bearer t-other"
@@ -857,7 +1227,7 @@ async def test_tool_401_during_session_init_reaches_recovery(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
 
-    assert not result.isError
+    assert not result.is_error
     assert oauth_service.recover_from_unauthorized.await_args.kwargs["rejected_access_token"] == "t1"
     assert downstream.await_args.args[3]["mcp-Session-Id"] == "sess-2"
     assert downstream.await_args.args[3]["Authorization"] == "Bearer t2"
@@ -895,16 +1265,20 @@ async def test_downstream_tool_call_raises_unauthorized_with_challenge():
     assert exc_info.value.www_authenticate == 'Bearer resource_metadata="https://x"'
 
 
-def test_create_mcp_app_is_stateless_without_event_store():
-    """The gateway must be stateless (any pod serves any request) and keep json_response off so that
-    downstream notifications still ride the POST's own SSE stream."""
+def test_create_mcp_app_drops_otel_middleware_and_disables_subscriptions():
+    """The gateway must not trust client trace context (no built-in OpenTelemetryMiddleware) and the
+    static tool list needs no subscription bus. In v2 the stateless/json_response transport settings
+    move onto streamable_http_app(...), applied by app_factory."""
+    from mcp.server._otel import OpenTelemetryMiddleware
+
     from registry.mcpgw.server import create_mcp_app
 
     mcp = create_mcp_app(container_provider=lambda: None)
 
-    assert mcp.settings.stateless_http is True
-    assert mcp.settings.json_response is False
-    assert mcp._event_store is None
+    assert not any(isinstance(m, OpenTelemetryMiddleware) for m in mcp.middleware)
+    # Transport settings now live on streamable_http_app; build the stateless app to confirm it accepts them.
+    app = mcp.streamable_http_app(stateless_http=True, json_response=False)
+    assert app is not None
 
 
 @pytest.mark.asyncio
@@ -947,3 +1321,63 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
     assert ctx2.proxy_client is proxy_client
     # The container is resolved only on the first entry; the context is cached thereafter.
     assert calls["n"] == 1
+
+
+async def _call_wrapped_tool(raise_exc: BaseException) -> CallToolResult | MCPError:
+    """Register one tool through the gateway's error-shape wrapper and call it over an in-memory Client.
+
+    Returns the tool result, or the MCPError the client raised for a top-level JSON-RPC error (caught
+    inside the Client context so it isn't wrapped in the transport's ExceptionGroup).
+    """
+    from mcp import Client
+    from mcp.server.mcpserver import Context, MCPServer
+
+    from registry.mcpgw.server import _wrap_tool_error_shape
+
+    seen_ctx: list[object] = []
+
+    async def failing_tool(ctx: Context, query: str) -> CallToolResult:
+        seen_ctx.append(ctx)
+        raise raise_exc
+
+    app = MCPServer("test-error-shape", subscriptions=False)
+    app.tool(name="failing_tool")(_wrap_tool_error_shape("failing_tool", failing_tool))
+
+    async with Client(app, mode="legacy") as client:
+        try:
+            result = await client.call_tool("failing_tool", {"query": "x"})
+        except MCPError as exc:
+            result = exc
+    # functools.wraps keeps the signature, so the SDK still injects Context.
+    assert len(seen_ctx) == 1 and isinstance(seen_ctx[0], Context)
+    return result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        MCPError(code=-32000, message="downstream exploded"),
+        InternalServerException("downstream exploded"),
+    ],
+    ids=["MCPError", "McpGatewayException"],
+)
+async def test_wrapped_tool_error_keeps_v1_is_error_shape(exc):
+    result = await _call_wrapped_tool(exc)
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert len(result.content) == 1
+    assert result.content[0].text == "Error executing tool failing_tool: downstream exploded"
+
+
+@pytest.mark.asyncio
+async def test_wrapped_tool_url_elicitation_still_returns_32042():
+    elicitation = ElicitRequestURLParams(
+        mode="url", message="Sign in", url="https://example.com/auth", elicitation_id="eid-1"
+    )
+    result = await _call_wrapped_tool(UrlElicitationRequiredError([elicitation], message="Sign in required"))
+
+    assert isinstance(result, MCPError)
+    assert result.code == -32042
+    assert result.data["elicitations"][0]["elicitationId"] == "eid-1"

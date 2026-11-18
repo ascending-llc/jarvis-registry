@@ -811,9 +811,9 @@ class TestHealthCheckEndpointUrlConstruction:
     def mock_init_result(self):
         """Create a valid MCP InitializeResult for health check tests."""
         mock_result = Mock()
-        mock_result.protocolVersion = "2024-11-05"
-        mock_result.serverInfo = Mock()
-        mock_result.serverInfo.name = "test-server"
+        mock_result.protocol_version = "2024-11-05"
+        mock_result.server_info = Mock()
+        mock_result.server_info.name = "test-server"
         return mock_result
 
 

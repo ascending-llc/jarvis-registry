@@ -15,19 +15,18 @@ from uuid import uuid4
 
 from beanie import PydanticObjectId
 from httpx_sse import EventSource
-from mcp.server.fastmcp import Context
-from mcp.server.session import ServerSession
-from mcp.shared.exceptions import McpError
+from mcp.server.mcpserver import Context
+from mcp.shared.exceptions import MCPError
 from mcp.types import (
     CallToolResult,
     EmbeddedResource,
     ErrorData,
+    InputRequiredResult,
     TextContent,
     TextResourceContents,
 )
 from opentelemetry import baggage
 from pydantic import Field
-from pydantic.networks import AnyUrl
 
 from registry_pkgs.core.exceptions import (
     ConsentRequiredException,
@@ -50,6 +49,7 @@ from registry_pkgs.telemetry.trace_propagation import (
 )
 
 from ...auth.dependencies import UserContextDict
+from ...constants import UrlElicitationInputKey
 from ...core.config import settings
 from ...core.mcp_client import call_tool_via_sse_ephemeral
 from ...core.telemetry_decorators import (
@@ -70,6 +70,7 @@ from .utils import (
     _get_state_metadata,
     forward_notification,
     get_client_params,
+    get_progress_token,
     get_target_url,
     parse_data_field,
 )
@@ -84,11 +85,11 @@ _STALE_SERVER_ID_MESSAGE = (
 )
 
 
-def _get_server_service(ctx: Context[ServerSession, McpAppContext]):
+def _get_server_service(ctx: Context[McpAppContext]):
     return ctx.request_context.lifespan_context.server_service
 
 
-def _get_mcp_client_service(ctx: Context[ServerSession, McpAppContext]):
+def _get_mcp_client_service(ctx: Context[McpAppContext]):
     return ctx.request_context.lifespan_context.mcp_client_service
 
 
@@ -105,7 +106,7 @@ async def _user_can_view_server(
 
 
 async def _downstream_tool_call(
-    ctx: Context[ServerSession, McpAppContext],
+    ctx: Context[McpAppContext],
     url: str,
     body: dict[str, Any],
     headers: dict[str, str],
@@ -117,7 +118,7 @@ async def _downstream_tool_call(
     so url, request body, and request headers must be passed in explicitly.
 
     Args:
-        ctx: The mcp.server.fastmcp.Context object that can be DI'ed into a tool call handler function.
+        ctx: The mcp.server.mcpserver.Context object that can be DI'ed into a tool call handler function.
         url: Downstream MCP URL
         body: The raw JSON-RPC request body for the tool call
         headers: All HTTP headers for the tool call POST request
@@ -139,7 +140,13 @@ async def _downstream_tool_call(
                 raise MisimplementedSpecException("SSE tool call requires SSE endpoint URL.")
 
             async def _on_notification(obj: dict[str, Any]) -> None:
-                await forward_notification(ctx.session, obj, related_request_id=ctx.request_id)
+                await forward_notification(
+                    ctx.session,
+                    obj,
+                    related_request_id=ctx.request_context.request_id,
+                    protocol_version=ctx.protocol_version,
+                    progress_token=get_progress_token(ctx),
+                )
 
             try:
                 return await call_tool_via_sse_ephemeral(
@@ -196,7 +203,13 @@ async def _downstream_tool_call(
                     match possible_event_type:
                         case "notification":
                             # If the event seems a notification, try forwarding it to our client.
-                            await forward_notification(ctx.session, obj, related_request_id=ctx.request_id)
+                            await forward_notification(
+                                ctx.session,
+                                obj,
+                                related_request_id=ctx.request_context.request_id,
+                                protocol_version=ctx.protocol_version,
+                                progress_token=get_progress_token(ctx),
+                            )
                         case "response":
                             # If the event seems a response (error or result), set response_obj to the parsed "data" field of the event.
                             # Only set once because server is not supposed to send a response unrelated to the request on this SSE stream.
@@ -250,7 +263,7 @@ def _auth_changed_result(server_name: str) -> CallToolResult:
 
 
 async def _call_with_oauth_recovery(
-    ctx: Context[ServerSession, McpAppContext],
+    ctx: Context[McpAppContext],
     *,
     server: ExtendedMCPServer,
     user_context: UserContextDict,
@@ -372,16 +385,16 @@ async def _call_with_oauth_recovery(
 
 @trace_tool_execution
 async def execute_tool_impl(
-    ctx: Context[ServerSession, McpAppContext],
+    ctx: Context[McpAppContext],
     tool_name: str,
     arguments: dict[str, Any],
     server_id: str,
-) -> CallToolResult:
+) -> CallToolResult | InputRequiredResult:
     """
     Execute a specific downstream MCP tool.
 
     Args:
-        ctx: The mcp.server.fastmcp.Context object that can be DI'ed into a tool call handler function.
+        ctx: The mcp.server.mcpserver.Context object that can be DI'ed into a tool call handler function.
         tool_name: Resolved tool name to send to MCP server (e.g., 'tavily_search')
         arguments: Tool-specific arguments as key-value pairs
         server_id: Server ID from discovery (e.g., '6972e222755441652c23090f')
@@ -393,7 +406,7 @@ async def execute_tool_impl(
         McpGatewayException: All classifiable exceptions are raised as subclasses of McpGatewayException.
             Caller of this function should filter on the subclasses to deal with specific exceptions differently.
             E.g. catch a UrlElicitationRequiredException in order to return a URL mode elicitation to client.
-        McpError: Raised when downstream MCP returned a JSON-RPC error response. We raise this exception from
+        MCPError: Raised when downstream MCP returned a JSON-RPC error response. We raise this exception from
             the MCP Python SDK to forward the error response to our client.
     """
 
@@ -531,10 +544,14 @@ async def execute_tool_impl(
             # Build MCP JSON-RPC request
             mcp_request_body = {
                 "jsonrpc": "2.0",
-                "id": ctx.request_id,  # Forward the "id" field from clients of mcpgw to downstream MCPs.
+                "id": ctx.request_context.request_id,  # Forward the "id" field from clients of mcpgw to downstream MCPs.
                 "method": "tools/call",
                 "params": {"name": tool_name, "arguments": arguments},
             }
+            progress_token = get_progress_token(ctx)
+            if progress_token is not None:
+                # Forward only progress metadata; client trace context and protocol-era metadata stay local.
+                mcp_request_body["params"]["_meta"] = {"progressToken": progress_token}
             logger.info(f"MCP JSON-RPC request body: {json.dumps(mcp_request_body, indent=2)}")
 
             resp_obj = await _call_with_oauth_recovery(
@@ -559,12 +576,12 @@ async def execute_tool_impl(
                     f"code {error_data.code}, messsage: {error_data.message}, data: {str(error_data.data)}"
                 )
 
-                raise McpError(error_data)
+                raise MCPError.from_error_data(error_data)
             elif "result" in resp_obj:
                 result = CallToolResult.model_validate(resp_obj["result"])
-                if result.isError:
+                if result.is_error:
                     metrics_ctx.set_error_type("downstream_tool_error")
-                metrics_ctx.set_success(not result.isError)
+                metrics_ctx.set_success(not result.is_error)
                 return result
             else:
                 raise MisimplementedSpecException("Downstream MCP did not return a JSONRPCResponse message.")
@@ -580,7 +597,16 @@ async def execute_tool_impl(
                 f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
                 "Please follow the URL to perform re-authorization in a browser window and come back again."
             )
-            return _build_url_elicitation_result(ctx, exc.auth_url, template, human_message)
+            result = _build_url_elicitation_result(
+                ctx,
+                exc.auth_url,
+                template,
+                human_message,
+                input_key=UrlElicitationInputKey.AUTHORIZATION,
+            )
+            if isinstance(result, InputRequiredResult):
+                metrics_ctx.set_input_required()
+            return result
         except ConsentRequiredException as exc:
             metrics_ctx.set_error_type("consent_required")
             template = (
@@ -592,18 +618,22 @@ async def execute_tool_impl(
                 "Jarvis Registry needs your explicit consent before this application can call the "
                 f"'{exc.server_name}' MCP server on your behalf. Please follow the URL to review and approve."
             )
-            return _build_url_elicitation_result(
+            result = _build_url_elicitation_result(
                 ctx,
                 exc.auth_url,
                 template,
                 human_message,
+                input_key=UrlElicitationInputKey.CONSENT,
                 elicitation_id=exc.elicitation_id,
             )
+            if isinstance(result, InputRequiredResult):
+                metrics_ctx.set_input_required()
+            return result
         except DownstreamAuthRejectedException as exc:
             # Loop guard: a freshly issued token was rejected. Tell the LLM instead of starting another login.
             metrics_ctx.set_error_type("downstream_auth_rejected")
             return CallToolResult(content=[TextContent(type="text", text=str(exc))], isError=True)
-        except (McpGatewayException, McpError):
+        except (McpGatewayException, MCPError):
             # These exceptions have been logged and should just bubble up to the caller as a way of communication.
             # __aexit__ records status=failure with error_type = exception class name.
             raise
@@ -620,7 +650,7 @@ async def read_resource_impl(
     user_context: UserContextDict,
     server_id: str,
     resource_uri: str,
-    ctx: Context[ServerSession, McpAppContext],
+    ctx: Context[McpAppContext],
 ) -> CallToolResult:
     """
     Read/access a resource from an MCP server.
@@ -674,7 +704,8 @@ async def read_resource_impl(
                     EmbeddedResource(
                         type="resource",
                         resource=TextResourceContents(
-                            uri=AnyUrl(resource_uri),
+                            # v2's TextResourceContents.uri is a plain str (was AnyUrl in v1).
+                            uri=resource_uri,
                             text='{"results": [{"title": "AI News", "snippet": "Latest AI developments..."}]}',
                             mimeType="application/json",
                             _meta=get_meta_field(True, server_id, server.path),
@@ -682,7 +713,7 @@ async def read_resource_impl(
                     )
                 ]
             )
-            metrics_ctx.set_success(not result.isError)
+            metrics_ctx.set_success(not result.is_error)
             return result
 
         except Exception:
@@ -701,7 +732,7 @@ async def execute_prompt_impl(
     server_id: str,
     prompt_name: str,
     arguments: dict[str, Any] | None,
-    ctx: Context[ServerSession, McpAppContext],
+    ctx: Context[McpAppContext],
 ) -> CallToolResult:
     """
     Execute a prompt from an MCP server.
@@ -789,7 +820,7 @@ async def execute_prompt_impl(
                     ],
                 },
             )
-            metrics_ctx.set_success(not result.isError)
+            metrics_ctx.set_success(not result.is_error)
             return result
 
         except Exception:
@@ -818,7 +849,7 @@ def get_tools() -> list[tuple[str, Callable]]:
 
     # Define tool wrapper function with proper signature and decorators
     async def execute_tool(
-        ctx: Context[ServerSession, McpAppContext],
+        ctx: Context[McpAppContext],
         tool_name: Annotated[
             str,
             Field(
@@ -849,7 +880,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 )
             ),
         ],
-    ) -> CallToolResult:
+    ) -> CallToolResult | InputRequiredResult:
         """Execute one downstream MCP tool returned by discover_servers.
         Use only a result with entity_type='tool', pairing its exact tool_name and server_id.
 
@@ -867,7 +898,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         )
 
     async def read_resource(
-        ctx: Context[ServerSession, McpAppContext],
+        ctx: Context[McpAppContext],
         server_id: Annotated[
             str,
             Field(
@@ -906,7 +937,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         )
 
     async def execute_prompt(
-        ctx: Context[ServerSession, McpAppContext],
+        ctx: Context[McpAppContext],
         server_id: Annotated[
             str,
             Field(

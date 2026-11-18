@@ -88,9 +88,29 @@ def test_store_save_then_load_round_trips():
     loaded = store.load(key)
 
     assert loaded is not None
-    assert loaded.clientInfo.name == "vscode"
+    assert loaded.client_info.name == "vscode"
     # Only the three persisted fields are stored.
     assert set(json.loads(redis.store[key])) == {"clientInfo", "capabilities", "protocolVersion"}
+
+
+def test_store_loads_v1_shape_camelcase_entry():
+    """An entry written by v1 code (camelCase JSON) still validates and loads under v2."""
+    redis = _FakeRedis()
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    key = "k-v1"
+    redis.store[key] = json.dumps(
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "legacy-client", "version": "0.9"},
+        }
+    )
+
+    loaded = store.load(key)
+
+    assert loaded is not None
+    assert loaded.client_info.name == "legacy-client"
+    assert loaded.protocol_version == "2025-11-25"
 
 
 def test_store_load_returns_none_on_miss():
@@ -287,7 +307,8 @@ def _ctx(redis: _FakeRedis, user: dict[str, Any] | None):
     request = SimpleNamespace(state=state)
     lifespan_context = SimpleNamespace(client_info_store=store)
     request_context = SimpleNamespace(request=request, lifespan_context=lifespan_context)
-    return SimpleNamespace(request_context=request_context)
+    # These exercise the legacy (2025-11-25) Redis-cache source of get_client_params.
+    return SimpleNamespace(request_context=request_context, protocol_version="2025-11-25")
 
 
 def test_get_client_params_at_most_one_get_per_request():
@@ -300,7 +321,7 @@ def test_get_client_params_at_most_one_get_per_request():
     first = get_client_params(ctx)
     second = get_client_params(ctx)
 
-    assert first is not None and first.clientInfo.name == "vscode"
+    assert first is not None and first.client_info.name == "vscode"
     assert second is first
     assert redis.get_calls == 1
 
