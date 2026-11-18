@@ -603,11 +603,15 @@ class LiveProbe:
                 response.status_code == 200 and body.get("error", {}).get("code") == -32003,
             )
         _, body = await self.rpc("oauth", self.message(action="accept"))
-        auth_url = self.prompt_url(body, OAUTH_KEY)
+        self.prompt_url(body, OAUTH_KEY)
         _, body = await self.rpc("oauth", self.message(action="accept", key=OAUTH_KEY))
         self.check(
             "OAuth retry still failing does not prompt again", body.get("result", {}).get("resultType") == "complete"
         )
+        # Every interactive re-auth starts a new flow under the same user:server flow id, so the retry
+        # above invalidated the first prompt's state. Complete OAuth with a freshly prompted URL.
+        _, body = await self.rpc("oauth", self.message(action="accept"))
+        auth_url = self.prompt_url(body, OAUTH_KEY)
         authorized = await self.http.get(auth_url.replace(self.fixture_base, self.fixture_local_base, 1))
         self.check("fixture OAuth authorize redirects", authorized.status_code in {302, 307})
         callback = urlsplit(authorized.headers["location"])
