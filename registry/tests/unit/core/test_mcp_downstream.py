@@ -107,6 +107,15 @@ async def test_progress_callback_uses_sdk_token():
         assert message["params"]["_meta"]["progressToken"] is not None
 
 
+@pytest.mark.parametrize("on_log", [AsyncMock(), None])
+async def test_modern_log_opt_in_is_warning_only_when_relaying(on_log):
+    async with sdk_endpoint() as transport:
+        await call(transport, on_log=on_log)
+        message = next(m for m in transport.messages if m["method"] == "tools/call")
+        level = message["params"].get("_meta", {}).get("io.modelcontextprotocol/logLevel")
+        assert level == ("warning" if on_log else None)
+
+
 async def test_redis_errors_degrade_without_failing_executed_tool():
     redis = MemoryRedis()
     with patch.object(redis, "get", side_effect=RedisError), patch.object(redis, "set", side_effect=RedisError):

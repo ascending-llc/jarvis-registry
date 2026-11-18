@@ -14,7 +14,13 @@ from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.dispatcher import ProgressFnT
 from mcp.shared.exceptions import MCPError
-from mcp.types import UNSUPPORTED_PROTOCOL_VERSION, CallToolResult, Implementation, InputRequiredResult
+from mcp.types import (
+    UNSUPPORTED_PROTOCOL_VERSION,
+    CallToolResult,
+    Implementation,
+    InputRequiredResult,
+    LoggingLevel,
+)
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from redis import Redis
 from redis.exceptions import RedisError
@@ -35,6 +41,8 @@ _ERA_CACHE_TTL_SECONDS = 3600
 _TOOL_LIST_CACHE_TTL_MS = 300_000
 _RESPONSE_CACHE_MAX_ENTRIES = 4096
 _DOWNSTREAM_FAILURE_MESSAGE = "Error calling downstream MCP server."
+# Level requested from 2026-07-28 downstream servers when relaying logs upstream (no effect on legacy servers).
+_DOWNSTREAM_LOG_LEVEL: LoggingLevel = "warning"
 DownstreamMode = Literal["legacy", "2026-07-28"]
 
 
@@ -140,6 +148,35 @@ def _map_error(error: Exception, recorder: ResponseRecorder) -> Exception:
     return error
 
 
+@asynccontextmanager
+async def _open_transport(
+    url: str,
+    transport_type: MCPTransport,
+    headers: dict[str, str],
+    recorder: ResponseRecorder,
+    downstream_transport: httpx2.AsyncBaseTransport,
+) -> AsyncIterator[Any]:
+    """Yield the SDK transport for one call, on a per-call httpx2 client over the shared pool."""
+    if transport_type == MCPTransport.SSE:
+        # sse_client builds its own client through the factory.
+        yield sse_client(
+            url,
+            headers=headers,
+            httpx_client_factory=create_sse_client_factory(recorder, downstream_transport),
+        )
+    elif transport_type == MCPTransport.STREAMABLE_HTTP:
+        async with httpx2.AsyncClient(
+            transport=SharedTransport(downstream_transport),
+            headers=headers,
+            timeout=httpx2.Timeout(30.0, read=60.0),
+            follow_redirects=True,
+            event_hooks={"request": [recorder.on_request], "response": [recorder]},
+        ) as http_client:
+            yield streamable_http_client(url, http_client=http_client)
+    else:
+        raise ValueError(f"Unsupported downstream transport: {transport_type}")
+
+
 async def call_downstream_tool(
     *,
     url: str,
@@ -163,30 +200,14 @@ async def call_downstream_tool(
             recorder = ResponseRecorder()
             tool_sent = False
             try:
-                async with httpx2.AsyncClient(
-                    transport=SharedTransport(downstream_transport),
-                    headers=headers,
-                    timeout=httpx2.Timeout(30.0, read=60.0),
-                    follow_redirects=True,
-                    event_hooks={"request": [recorder.on_request], "response": [recorder]},
-                ) as http_client:
-                    if transport_type == MCPTransport.SSE:
-                        transport = sse_client(
-                            url,
-                            headers=headers,
-                            httpx_client_factory=create_sse_client_factory(recorder, downstream_transport),
-                        )
-                    elif transport_type == MCPTransport.STREAMABLE_HTTP:
-                        transport = streamable_http_client(url, http_client=http_client)
-                    else:
-                        raise ValueError(f"Unsupported downstream transport: {transport_type}")
+                async with _open_transport(url, transport_type, headers, recorder, downstream_transport) as transport:
                     async with Client(
                         transport,
                         mode=cached_mode if attempt == 0 and cached_mode else "auto",
                         read_timeout_seconds=60,
                         client_info=Implementation(**settings.mcp_client_info),
                         logging_callback=on_log,
-                        log_level="debug" if on_log else None,
+                        log_level=_DOWNSTREAM_LOG_LEVEL if on_log else None,
                         cache=CacheConfig(
                             store=response_cache,
                             partition=user_id,

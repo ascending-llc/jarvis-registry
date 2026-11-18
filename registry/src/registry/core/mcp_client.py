@@ -224,7 +224,8 @@ async def perform_health_check(
         target_url=url,
         headers=headers,
         transport_type=transport,
-        **({"server_id": server_id, "era_cache": era_cache} if era_cache else {}),
+        server_id=server_id,
+        era_cache=era_cache,
     )
 
     # Calculate response time
@@ -854,7 +855,8 @@ async def get_tools_and_capabilities_from_server(
                 include_resources=include_resources,
                 include_prompts=include_prompts,
                 httpx_auth=httpx_auth,
-                **({"server_id": server_id, "era_cache": era_cache} if era_cache else {}),
+                server_id=server_id,
+                era_cache=era_cache,
             )
         elif transport_type == MCPTransport.SSE:
             return await _get_from_sse(
@@ -865,7 +867,8 @@ async def get_tools_and_capabilities_from_server(
                 include_resources=include_resources,
                 include_prompts=include_prompts,
                 httpx_auth=httpx_auth,
-                **({"server_id": server_id, "era_cache": era_cache} if era_cache else {}),
+                server_id=server_id,
+                era_cache=era_cache,
             )
         else:
             logger.error(f"Unsupported transport type: {transport_type}")
