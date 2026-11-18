@@ -5,7 +5,7 @@ Tests for registry-specific telemetry decorators that provide automatic
 metrics collection for API operations.
 """
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -16,6 +16,7 @@ from registry.core.telemetry_decorators import (
     ToolExecutionMetricsContext,
     track_registry_operation,
 )
+from registry.utils.otel_metrics import record_tool_execution
 
 # Module path for mocking domain functions
 DOMAIN_FUNCS_PATH = "registry.core.telemetry_decorators"
@@ -215,6 +216,39 @@ class TestToolExecutionMetricsContext:
             call_kwargs = mock_record.call_args[1]
             assert call_kwargs["success"] is False
             assert call_kwargs["error_type"] == "server_not_found"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal_state", ["input_required", "success", "failure", "exception"])
+    async def test_input_required_metric_status(
+        self, terminal_state: str, monkeypatch: pytest.MonkeyPatch, mock_telemetry_metrics: Mock
+    ) -> None:
+        """Exercise the real recorder: only an unfinished input round gets the third status."""
+        monkeypatch.setattr(f"{DOMAIN_FUNCS_PATH}._record_tool_execution", record_tool_execution)
+
+        async def execute() -> None:
+            async with ToolExecutionMetricsContext(tool_name="t", server_name="s") as ctx:
+                ctx.set_error_type("consent_required")
+                ctx.set_input_required()
+                if terminal_state == "exception":
+                    raise TimeoutError("failed after prompting")
+                if terminal_state in {"success", "failure"}:
+                    ctx.set_success(terminal_state == "success")
+
+        if terminal_state == "exception":
+            with pytest.raises(TimeoutError, match="failed after prompting"):
+                await execute()
+        else:
+            await execute()
+
+        expected = "failure" if terminal_state == "exception" else terminal_state
+        mock_telemetry_metrics.record_counter.assert_called_once()
+        name, count, attributes = mock_telemetry_metrics.record_counter.call_args.args
+        assert name == "mcp_tool_execution_total"
+        assert count == 1
+        assert attributes["status"] == expected
+        assert attributes["error_type"] == "consent_required"
+        mock_telemetry_metrics.record_histogram.assert_called_once()
+        assert mock_telemetry_metrics.record_histogram.call_args.args[2] == attributes
 
 
 @pytest.mark.unit
