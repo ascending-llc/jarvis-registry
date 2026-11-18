@@ -1,8 +1,9 @@
-"""Unit tests for RegistryContainer — model selection logic."""
+"""Unit tests for RegistryContainer service wiring and lifecycle."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from beanie import PydanticObjectId
 
 from registry.container import RegistryContainer
 from registry.services.group_directory_client import EntraIdGroupDirectoryClient
@@ -21,7 +22,6 @@ def _make_settings(*, aip_arn: str | None = None) -> MagicMock:
     settings.aws_access_key_id = None
     settings.aws_secret_access_key = None
     settings.aws_session_token = None
-    settings.registry_internal_url = "http://localhost:7860"
     settings.jwt_signing_config = MagicMock()
     settings.embedding_reindex_catch_up_min_delay_seconds = None
     return settings
@@ -36,6 +36,57 @@ def _make_container(settings: MagicMock) -> RegistryContainer:
     container.__dict__["a2a_httpx_client"] = MagicMock()
     container.__dict__["azure_model_credential"] = MagicMock(token_provider=object())
     return container
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("vector_initialized", [True, False])
+async def test_startup_warms_services_and_starts_background_runners(
+    monkeypatch: pytest.MonkeyPatch, vector_initialized: bool
+) -> None:
+    container = _make_container(_make_settings())
+    old_role = ("old-role", 1)
+    roles = {("mcpServer", 1): PydanticObjectId()}
+    container.role_cache[old_role] = PydanticObjectId()
+    role_cache = container.role_cache
+    load_roles = AsyncMock(return_value=roles)
+    gc_generations = AsyncMock()
+    monkeypatch.setattr("registry.container.load_role_cache", load_roles)
+    monkeypatch.setattr("registry.container.gc_stale_embedding_generations", gc_generations)
+    vector_service = MagicMock(initialize=AsyncMock(), is_initialized=vector_initialized)
+    mcp_service = MagicMock(initialize=AsyncMock())
+    container.__dict__["vector_service"] = vector_service
+    container.__dict__["mcp_service"] = mcp_service
+    runners = {
+        name: MagicMock(start=AsyncMock())
+        for name in (
+            "skill_sync_job_runner",
+            "embedding_maintenance_watcher",
+            "embedding_reindex_job_runner",
+            "vector_sync_reconciler",
+            "vector_orphan_sweeper",
+            "lease_reaper",
+        )
+    }
+    container.__dict__.update(runners)
+
+    with (
+        patch("registry.container.WorkflowRunner") as workflow_runner,
+        patch("registry.container.MongoDB"),
+        patch("registry.container.build_legacy_bedrock_model"),
+    ):
+        await container.startup()
+        workflow_runner.assert_called_once()
+        assert container.workflow_runner is workflow_runner.return_value
+
+    load_roles.assert_awaited_once_with()
+    assert container.role_cache is role_cache
+    assert container.role_cache == roles
+    vector_service.initialize.assert_awaited_once_with()
+    mcp_service.initialize.assert_awaited_once_with()
+    gc_generations.assert_awaited_once_with(container.db_client)
+    for runner in runners.values():
+        runner.start.assert_awaited_once_with()
 
 
 def _stub_shutdown_dependencies(container: RegistryContainer, monkeypatch) -> None:
