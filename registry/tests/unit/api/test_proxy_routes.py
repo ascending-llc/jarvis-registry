@@ -33,6 +33,7 @@ from registry.api.proxy_routes import (
     managed_agent_card_well_known_alias,
     router,
 )
+from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.core.proxy_call import ProxyCall
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
@@ -1274,16 +1275,21 @@ async def test_get_proxy_non_oauth_401_is_relayed(monkeypatch):
 
 
 _MODERN = "2026-07-28"
-_AUTH_KEY = "jarvis_registry_authorization"
+_CONSENT_KEY = UrlElicitationInputKey.CONSENT
+_OAUTH_KEY = UrlElicitationInputKey.AUTHORIZATION
 _CAP_KEY = "io.modelcontextprotocol/clientCapabilities"
 
 
 def _direct_message(
-    method: str = "tools/call", *, action: Literal["accept", "decline", "cancel"] | None = None, capable: bool = True
+    method: str = "tools/call",
+    *,
+    action: Literal["accept", "decline", "cancel"] | None = None,
+    capable: bool = True,
+    key: UrlElicitationInputKey = _CONSENT_KEY,
 ) -> dict[str, Any]:
     params = {"name": "search", "_meta": {_CAP_KEY: {"elicitation": {"url": {}}} if capable else {}}}
     if action is not None:
-        params["inputResponses"] = {_AUTH_KEY: {"action": action}}
+        params["inputResponses"] = {key: {"action": action}}
     return {"jsonrpc": "2.0", "id": "中文-id", "method": method, "params": params}
 
 
@@ -1358,8 +1364,9 @@ async def test_direct_modern_input_required_wire(monkeypatch: pytest.MonkeyPatch
     result = body["result"]
     assert result["resultType"] == "input_required"
     assert "requestState" not in result
-    assert set(result["inputRequests"]) == {_AUTH_KEY}
-    prompt = result["inputRequests"][_AUTH_KEY]
+    key = _OAUTH_KEY if reauth else _CONSENT_KEY
+    assert set(result["inputRequests"]) == {key}
+    prompt = result["inputRequests"][key]
     assert prompt["method"] == "elicitation/create"
     assert prompt["params"]["mode"] == "url"
     assert "elicitationId" not in prompt["params"]
@@ -1430,13 +1437,38 @@ async def test_direct_retry_terminal_and_cancel_before_execution(
         assert not pending.pending
 
 
-async def test_direct_consent_then_oauth_returns_text_without_second_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_direct_consent_then_oauth_prompts_under_authorization_key(monkeypatch: pytest.MonkeyPatch) -> None:
     response, requests, _, _, _ = await _direct_run(
         monkeypatch, _direct_message(action="accept"), consent=True, reauth=True
     )
     result = json.loads(response.body)["result"]
+    assert result["resultType"] == "input_required"
+    assert set(result["inputRequests"]) == {_OAUTH_KEY}
+    assert result["inputRequests"][_OAUTH_KEY]["params"]["url"] == "https://login.example/auth"
+    assert not requests
+
+
+async def test_direct_oauth_retry_still_failing_returns_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    response, requests, _, _, _ = await _direct_run(
+        monkeypatch, _direct_message(action="accept", key=_OAUTH_KEY), consent=True, reauth=True
+    )
+    result = json.loads(response.body)["result"]
     assert result["resultType"] == "complete"
     assert "https://login.example/auth" in result["content"][0]["text"]
+    assert not requests
+
+
+@pytest.mark.parametrize("action", ["decline", "cancel"])
+async def test_direct_oauth_decline_stops_before_consent(
+    monkeypatch: pytest.MonkeyPatch, action: Literal["decline", "cancel"]
+) -> None:
+    response, requests, builder, store, _ = await _direct_run(
+        monkeypatch, _direct_message(action=action, key=_OAUTH_KEY), consent=True, reauth=True
+    )
+    result = json.loads(response.body)["result"]
+    assert "declined or cancelled" in result["content"][0]["text"]
+    store.has_server_consent.assert_not_called()
+    builder.assert_not_awaited()
     assert not requests
 
 
@@ -1459,9 +1491,10 @@ async def test_direct_legacy_and_unknown_authorization(monkeypatch: pytest.Monke
         {"_meta": None},
         {"_meta": {_CAP_KEY: []}},
         {"inputResponses": []},
-        {"inputResponses": {_AUTH_KEY: None}},
-        {"inputResponses": {_AUTH_KEY: {}}},
-        {"inputResponses": {_AUTH_KEY: {"action": "invalid"}}},
+        {"inputResponses": {_CONSENT_KEY: None}},
+        {"inputResponses": {_CONSENT_KEY: {}}},
+        {"inputResponses": {_CONSENT_KEY: {"action": "invalid"}}},
+        {"inputResponses": {_OAUTH_KEY: {"action": "invalid"}}},
     ],
 )
 async def test_direct_invalid_consumed_fields_are_protocol_errors(monkeypatch: pytest.MonkeyPatch, params: Any) -> None:
@@ -1494,7 +1527,7 @@ async def test_direct_preserves_downstream_fields_and_byte_lengths(
     assert int(sent.headers["content-length"]) == len(sent.content)
     expected = json.loads(raw)
     if version == _MODERN and answer == "accept":
-        del expected["params"]["inputResponses"][_AUTH_KEY]
+        del expected["params"]["inputResponses"][_CONSENT_KEY]
         assert json.loads(sent.content) == expected
     else:
         assert sent.content == raw

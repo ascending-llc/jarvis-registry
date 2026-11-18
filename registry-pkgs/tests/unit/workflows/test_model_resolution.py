@@ -30,9 +30,37 @@ def test_bedrock_litellm_model_id_plain_id() -> None:
     assert model_resolution.bedrock_litellm_model_id("amazon.nova-lite-v1:0") == "bedrock/amazon.nova-lite-v1:0"
 
 
-def test_bedrock_litellm_model_id_application_inference_profile_arn() -> None:
-    arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id"
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "global.openai.gpt-6.1-sol",  # system profile id, not an ARN: LiteLLM routes it itself
+        "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0",
+        "arn:aws:bedrock:us-east-1:123456789012:imported-model/abc123",  # imported models need InvokeModel
+    ],
+)
+def test_bedrock_litellm_model_id_leaves_non_profile_ids_to_litellm(model_id: str) -> None:
+    assert model_resolution.bedrock_litellm_model_id(model_id) == f"bedrock/{model_id}"
+
+
+@pytest.mark.parametrize(
+    "arn",
+    [
+        "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id",
+        # System cross-region profile of a model LiteLLM 1.80 doesn't list: unpinned it routed to InvokeModel.
+        "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.openai.gpt-6.1-sol",
+        "arn:aws-us-gov:bedrock:us-gov-west-1:123456789012:inference-profile/us-gov.anthropic.claude-v1",
+    ],
+)
+def test_bedrock_litellm_model_id_pins_inference_profile_arns_to_converse(arn: str) -> None:
     assert model_resolution.bedrock_litellm_model_id(arn) == f"bedrock/converse/{arn}"
+
+
+def test_bedrock_system_inference_profile_arn_routes_to_converse_in_litellm() -> None:
+    # Guards the pin against the installed LiteLLM: the route it resolves must be Converse, not InvokeModel.
+    from litellm.llms.bedrock.common_utils import BedrockModelInfo
+
+    arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.openai.gpt-6.1-sol"
+    assert BedrockModelInfo.get_bedrock_route(model_resolution.bedrock_litellm_model_id(arn)) == "converse"
 
 
 def test_build_agno_model_for_bedrock() -> None:

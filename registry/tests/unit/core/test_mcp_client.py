@@ -1186,3 +1186,202 @@ class TestInitializeMcpSessionUnauthorized:
 
         with self._patch_client(handler), patch("registry.core.mcp_client._clear_session"):
             assert await _initialize_mcp_session("https://mcp.example.com/mcp", {}, "u:s") is None
+
+
+def _initialize_response(request_id, *, session_id: str | None = None):
+    import httpx2
+
+    headers = {"content-type": "application/json"}
+    if session_id is not None:
+        headers["mcp-session-id"] = session_id
+    return httpx2.Response(
+        200,
+        headers=headers,
+        json={
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {"listChanged": True}},
+                "serverInfo": {"name": "redirected", "version": "1"},
+            },
+        },
+    )
+
+
+def _redirecting_handler(final_status: int | None = None, *, session_id: str | None = "sid-1"):
+    """``/mcp`` 307-redirects to ``/mcp/``; ``/mcp/`` answers ``final_status`` or a real MCP exchange."""
+    import json
+
+    import httpx2
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/mcp":
+            return httpx2.Response(307, headers={"location": "http://srv/mcp/"})
+        if final_status is not None:
+            return httpx2.Response(final_status)
+        body = json.loads(request.content or b"{}")
+        method = body.get("method")
+        if method == "initialize":
+            return _initialize_response(body["id"], session_id=session_id)
+        if method == "tools/list":
+            return httpx2.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"tools": []}},
+            )
+        return httpx2.Response(202)
+
+    return handler
+
+
+def _hanging_handler(request):
+    """Answer every request with an SSE stream that only ever sends keepalive comments."""
+    import httpx2
+
+    class _KeepaliveForever(httpx2.AsyncByteStream):
+        async def __aiter__(self):
+            while True:
+                await asyncio.sleep(0.05)
+                yield b": keepalive\n\n"
+
+    return httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=_KeepaliveForever())
+
+
+def _patch_httpx2_transport(handler):
+    """Route every httpx2.AsyncClient (ours and the SDK's) through a MockTransport."""
+    import httpx2
+
+    real = httpx2.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx2.MockTransport(handler)
+        return real(*args, **kwargs)
+
+    return patch("httpx2.AsyncClient", new=factory)
+
+
+@pytest.mark.unit
+@pytest.mark.core
+class TestResponseRecorderSkipsRedirects:
+    """v2 transports follow same-origin redirects themselves, so the recorder must skip the 3xx hops."""
+
+    @pytest.mark.asyncio
+    async def test_initialize_through_redirect_records_final_status(self):
+        with _patch_httpx2_transport(_redirecting_handler()):
+            init_result, status_code = await initialize_mcp("http://srv/mcp")
+
+        assert init_result is not None
+        assert init_result.protocol_version == "2025-11-25"
+        assert status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_discovery_through_redirect_detects_stateful_server(self):
+        with _patch_httpx2_transport(_redirecting_handler(session_id="sid-1")):
+            result = await _get_from_streamable_http("http://srv/mcp")
+
+        assert result.requires_init is True
+
+    @pytest.mark.asyncio
+    async def test_discovery_through_redirect_detects_stateless_server(self):
+        with _patch_httpx2_transport(_redirecting_handler(session_id=None)):
+            result = await _get_from_streamable_http("http://srv/mcp")
+
+        assert result.requires_init is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status_code", [401, 403])
+    async def test_health_check_auth_required_behind_redirect(self, status_code):
+        with _patch_httpx2_transport(_redirecting_handler(final_status=status_code)):
+            is_healthy, status, _, init_result = await perform_health_check("http://srv/mcp", "streamable-http")
+
+        assert is_healthy is True
+        assert "initialize requires authentication" in status.lower()
+        assert init_result is None
+
+
+@pytest.mark.unit
+@pytest.mark.core
+class TestInitializeHandshakeTimeout:
+    """The handshake is bounded by INIT_TIMEOUT even when the server keeps the stream alive."""
+
+    @pytest.fixture(autouse=True)
+    def _short_init_timeout(self, monkeypatch):
+        monkeypatch.setattr(MCPClientConfig, "INIT_TIMEOUT", 0.3)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("transport", "url"), [("streamable-http", "http://srv/mcp"), ("sse", "http://srv/sse")])
+    async def test_initialize_mcp_times_out(self, transport, url, caplog):
+        with _patch_httpx2_transport(_hanging_handler), caplog.at_level("ERROR", logger="registry.core.mcp_client"):
+            init_result, status_code = await asyncio.wait_for(initialize_mcp(url, transport_type=transport), timeout=5)
+
+        assert init_result is None
+        assert status_code == 200
+        assert any("timed out" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_streamable_http_discovery_times_out(self):
+        with _patch_httpx2_transport(_hanging_handler):
+            result = await asyncio.wait_for(_get_from_streamable_http("http://srv/mcp"), timeout=5)
+
+        assert result.tools is None
+        assert result.error_message == "Timeout connecting to server"
+
+    @pytest.mark.asyncio
+    async def test_sse_discovery_times_out(self):
+        with _patch_httpx2_transport(_hanging_handler):
+            result = await asyncio.wait_for(_get_from_sse("http://srv/sse"), timeout=5)
+
+        assert result.tools is None
+        assert result.error_message == "Timeout connecting to server"
+
+
+@pytest.mark.unit
+@pytest.mark.core
+class TestInitializeFailureLogging:
+    @pytest.mark.asyncio
+    async def test_non_http_failure_logs_error(self, caplog):
+        with (
+            _patch_httpx2_transport(lambda request: (_ for _ in ()).throw(ConnectionRefusedError("refused"))),
+            caplog.at_level("DEBUG", logger="registry.core.mcp_client"),
+        ):
+            init_result, status_code = await initialize_mcp("http://srv/mcp")
+
+        assert (init_result, status_code) == (None, None)
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert errors and "MCP initialization failed" in errors[-1].getMessage()
+        # The transport's ExceptionGroup wrapper is unwrapped down to the real cause.
+        assert "refused" in errors[-1].getMessage()
+        assert "unhandled errors in a TaskGroup" not in errors[-1].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_http_error_status_is_not_logged_as_error(self, caplog):
+        import httpx2
+
+        with (
+            _patch_httpx2_transport(lambda request: httpx2.Response(401)),
+            caplog.at_level("DEBUG", logger="registry.core.mcp_client"),
+        ):
+            init_result, status_code = await initialize_mcp("http://srv/mcp")
+
+        assert (init_result, status_code) == (None, 401)
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+@pytest.mark.unit
+@pytest.mark.core
+def test_sse_client_factory_builds_client_with_hooks_and_timeout():
+    import httpx2
+
+    from registry.core.mcp_client import _mcp_sse_client_factory, _ResponseRecorder, _rewrite_sse_request_url
+
+    recorder = _ResponseRecorder()
+    timeout = httpx2.Timeout(5.0, read=300.0)
+
+    client = _mcp_sse_client_factory(recorder)(headers={"X-Test": "1"}, timeout=timeout)
+
+    assert client.timeout == timeout
+    assert client.headers["X-Test"] == "1"
+    assert client.event_hooks["request"] == [_rewrite_sse_request_url]
+    assert client.event_hooks["response"] == [recorder]
+    assert _mcp_sse_client_factory()().event_hooks["response"] == []

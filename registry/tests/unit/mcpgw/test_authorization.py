@@ -11,7 +11,7 @@ from redis.exceptions import RedisError
 from tests.unit.mcpgw.test_agent import _make_agent, _make_ctx, _msg, _result_with_message
 from tests.unit.mcpgw.test_server import _make_server, _modern_ctx
 
-from registry.constants import URL_ELICITATION_INPUT_KEY
+from registry.constants import UrlElicitationInputKey
 from registry.mcpgw.tools import agent, server
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
 from registry_pkgs.core.exceptions import InternalServerException
@@ -56,12 +56,13 @@ def _entry(monkeypatch: pytest.MonkeyPatch, kind: str) -> SimpleNamespace:
 @pytest.mark.parametrize("kind", ["tool", "agent"])
 @pytest.mark.parametrize("consent", [False, True])
 @pytest.mark.parametrize("action", ["decline", "cancel"])
+@pytest.mark.parametrize("key", list(UrlElicitationInputKey))
 async def test_cancel_stops_before_consent_and_execution(
-    monkeypatch: pytest.MonkeyPatch, kind: str, consent: bool, action: str
+    monkeypatch: pytest.MonkeyPatch, kind: str, consent: bool, action: str, key: UrlElicitationInputKey
 ) -> None:
     entry = _entry(monkeypatch, kind)
     entry.store.return_value = consent
-    entry.ctx.input_responses = {URL_ELICITATION_INPUT_KEY: ElicitResult(action=action)}
+    entry.ctx.input_responses = {key: ElicitResult(action=action)}
     result = await entry.invoke()
     assert isinstance(result, CallToolResult) and result.is_error
     assert isinstance(result.content[0], TextContent)
@@ -72,7 +73,7 @@ async def test_cancel_stops_before_consent_and_execution(
 
 
 @pytest.mark.parametrize("kind", ["tool", "agent"])
-@pytest.mark.parametrize("key,action", [(URL_ELICITATION_INPUT_KEY, "accept"), ("downstream", "decline")])
+@pytest.mark.parametrize("key,action", [(UrlElicitationInputKey.CONSENT, "accept"), ("downstream", "decline")])
 async def test_accept_or_other_input_rechecks_consent(
     monkeypatch: pytest.MonkeyPatch, kind: str, key: str, action: str
 ) -> None:
@@ -127,7 +128,7 @@ async def test_consent_storage_error_never_executes(monkeypatch: pytest.MonkeyPa
 async def test_cancel_still_checks_acl(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
     entry = _entry(monkeypatch, kind)
     entry.ctx.request_context.lifespan_context.acl_service.get_accessible_resource_ids.return_value = set()
-    entry.ctx.input_responses = {URL_ELICITATION_INPUT_KEY: ElicitResult(action="cancel")}
+    entry.ctx.input_responses = {UrlElicitationInputKey.CONSENT: ElicitResult(action="cancel")}
     result = await entry.invoke()
     assert result.is_error
     assert "Access denied" in result.content[0].text
@@ -140,7 +141,7 @@ async def test_legacy_does_not_interpret_modern_input_answers(monkeypatch: pytes
     entry = _entry(monkeypatch, kind)
     entry.ctx.protocol_version = "2025-11-25"
     entry.store.return_value = True
-    entry.ctx.input_responses = {URL_ELICITATION_INPUT_KEY: ElicitResult(action="decline")}
+    entry.ctx.input_responses = {UrlElicitationInputKey.CONSENT: ElicitResult(action="decline")}
     result = await entry.invoke()
     assert not result.is_error
     entry.execute.assert_awaited_once()

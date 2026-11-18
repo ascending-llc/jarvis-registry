@@ -13,7 +13,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, ElicitRequestParams, ElicitResult, TextContent
 
 from registry.api import proxy_routes
-from registry.constants import URL_ELICITATION_INPUT_KEY
+from registry.constants import UrlElicitationInputKey
 from tests.integration.test_mcpgw_stateless import (
     USER_ID,
     _container_stub,
@@ -174,7 +174,7 @@ async def test_direct_sdk_auto_negotiation_and_authorization(
         assert result.is_error
         assert not downstream_calls
     if len(calls) == 2:
-        assert calls[1]["params"]["inputResponses"][URL_ELICITATION_INPUT_KEY]["action"] == action
+        assert calls[1]["params"]["inputResponses"][UrlElicitationInputKey.CONSENT]["action"] == action
         assert "requestState" not in calls[1]["params"]
 
 
