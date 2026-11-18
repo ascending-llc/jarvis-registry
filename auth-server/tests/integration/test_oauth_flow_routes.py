@@ -1647,6 +1647,32 @@ class TestDeviceFlowCallbackAndConsent:
             "user-123", "mcp-client-test"
         )
 
+    @pytest.mark.usefixtures("clear_device_storage")
+    def test_approve_device_consent_when_code_expires_during_update(self, test_client: TestClient) -> None:
+        device_code = _start_device_flow(test_client)["device_code"]
+        nonce = "expiring-device-nonce"
+        test_pending_consent_store.save(
+            nonce,
+            {
+                "flow_type": "device",
+                "device_code": device_code,
+                "mapped_user": {"user_id": "user-123"},
+                "resolved_scopes": ["servers-read"],
+                "session_data": {"client_id": "mcp-client-test"},
+            },
+        )
+        test_client.cookies.set("oauth2_consent_nonce", nonce)
+
+        # The read returns the device record, but the key expires before the approval is written.
+        with patch.object(
+            test_oauth_state_store, "get_device_code", side_effect=test_oauth_state_store.consume_device_code
+        ):
+            response = test_client.post(f"{API_PREFIX}/oauth2/consent/approve", data={"nonce": nonce})
+
+        assert response.status_code == 400
+        assert "This code is invalid or has expired" in response.text
+        assert device_code not in device_codes_storage
+
     def test_deny_device_consent_marks_device_denied(self, test_client: TestClient, clear_device_storage):
         data = _start_device_flow(test_client)
         nonce = "device-deny-nonce"

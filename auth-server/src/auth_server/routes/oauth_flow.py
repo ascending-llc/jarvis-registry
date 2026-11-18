@@ -404,7 +404,8 @@ def _finish_device_callback(
     updated["resolved_scope"] = resolved_scopes
     if consent_grant_id is not None:
         updated["consent_grant_id"] = consent_grant_id
-    store.update_device_code(device_code, updated)
+    if not store.update_device_code(device_code, updated):
+        return HTMLResponse(render_device_link_error_page(), status_code=400)
     return HTMLResponse(render_device_approved_page())
 
 
