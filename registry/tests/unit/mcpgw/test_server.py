@@ -3,10 +3,12 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
 from mcp.types import (
     CallToolResult,
     ClientCapabilities,
     ElicitationCapability,
+    ElicitRequestURLParams,
     ElicitResult,
     Implementation,
     InitializeRequestParams,
@@ -975,6 +977,29 @@ async def test_execute_tool_impl_downstream_tool_error_records_error_type(monkey
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_impl_downstream_jsonrpc_error_raises_mcp_error(monkeypatch):
+    """A downstream JSON-RPC error is re-raised as MCPError carrying its code, message and data, so the
+    gateway's error-shape wrapper can turn it into the v1 isError text."""
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        server,
+        "_downstream_tool_call",
+        AsyncMock(return_value={"error": {"code": -32602, "message": "bad arguments", "data": {"field": "q"}}}),
+    )
+
+    with pytest.raises(MCPError) as exc_info:
+        await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert exc_info.value.code == -32602
+    assert str(exc_info.value) == "bad arguments"
+    assert exc_info.value.data == {"field": "q"}
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_impl_disabled_tool_returns_error(monkeypatch):
     """A tool on the server's disabled list is rejected before any downstream call."""
     server_id = str(PydanticObjectId())
@@ -1247,3 +1272,63 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
     assert ctx2.proxy_client is proxy_client
     # The container is resolved only on the first entry; the context is cached thereafter.
     assert calls["n"] == 1
+
+
+async def _call_wrapped_tool(raise_exc: BaseException) -> CallToolResult | MCPError:
+    """Register one tool through the gateway's error-shape wrapper and call it over an in-memory Client.
+
+    Returns the tool result, or the MCPError the client raised for a top-level JSON-RPC error (caught
+    inside the Client context so it isn't wrapped in the transport's ExceptionGroup).
+    """
+    from mcp import Client
+    from mcp.server.mcpserver import Context, MCPServer
+
+    from registry.mcpgw.server import _wrap_tool_error_shape
+
+    seen_ctx: list[object] = []
+
+    async def failing_tool(ctx: Context, query: str) -> CallToolResult:
+        seen_ctx.append(ctx)
+        raise raise_exc
+
+    app = MCPServer("test-error-shape", subscriptions=False)
+    app.tool(name="failing_tool")(_wrap_tool_error_shape("failing_tool", failing_tool))
+
+    async with Client(app, mode="legacy") as client:
+        try:
+            result = await client.call_tool("failing_tool", {"query": "x"})
+        except MCPError as exc:
+            result = exc
+    # functools.wraps keeps the signature, so the SDK still injects Context.
+    assert len(seen_ctx) == 1 and isinstance(seen_ctx[0], Context)
+    return result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        MCPError(code=-32000, message="downstream exploded"),
+        InternalServerException("downstream exploded"),
+    ],
+    ids=["MCPError", "McpGatewayException"],
+)
+async def test_wrapped_tool_error_keeps_v1_is_error_shape(exc):
+    result = await _call_wrapped_tool(exc)
+
+    assert isinstance(result, CallToolResult)
+    assert result.is_error is True
+    assert len(result.content) == 1
+    assert result.content[0].text == "Error executing tool failing_tool: downstream exploded"
+
+
+@pytest.mark.asyncio
+async def test_wrapped_tool_url_elicitation_still_returns_32042():
+    elicitation = ElicitRequestURLParams(
+        mode="url", message="Sign in", url="https://example.com/auth", elicitation_id="eid-1"
+    )
+    result = await _call_wrapped_tool(UrlElicitationRequiredError([elicitation], message="Sign in required"))
+
+    assert isinstance(result, MCPError)
+    assert result.code == -32042
+    assert result.data["elicitations"][0]["elicitationId"] == "eid-1"
