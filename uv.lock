@@ -1490,7 +1490,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", extras = ["toml"], specifier = ">=7.4.0" },
-    { name = "fakeredis", extras = ["lua"] },
+    { name = "fakeredis", extras = ["lua"], specifier = ">=2.40.0" },
     { name = "markdown-it-py", specifier = ">=4.2.0" },
     { name = "mkdocs-git-revision-date-localized-plugin", specifier = ">=1.2.0" },
     { name = "mkdocs-material", specifier = ">=9.0.0" },
