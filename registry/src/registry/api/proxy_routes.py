@@ -9,12 +9,12 @@ from http import HTTPStatus
 from typing import Any
 from uuid import uuid4
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from httpx._decoders import SUPPORTED_DECODERS
+from httpx2._decoders import SUPPORTED_DECODERS
 from opentelemetry import baggage, trace
 from redis import Redis
 from redis.exceptions import RedisError
@@ -164,41 +164,40 @@ _HOP_BY_HOP_HEADERS = frozenset(
 )
 
 
-def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
+def _sanitize_hop_by_hop_headers(headers: httpx2.Headers | a2a_http.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
 # Each client library uses its own decoder set for its responses.
-# Content-codings that httpx's automatic response decoding (`Response.aread`/`aiter_bytes`) is
-# actually able to reverse *in this process*. Derived directly from httpx's own decoder registry
+# MCP content-codings that httpx2's automatic response decoding (`Response.aread`/`aiter_bytes`) is
+# actually able to reverse *in this process*. Derived directly from httpx2's own decoder registry
 # rather than a hand-maintained list, because the real answer is environment-dependent: `br`
 # (Brotli) and `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages
-# happen to be installed -- `httpx/_decoders.py` builds `SUPPORTED_DECODERS` by probing those
+# happen to be installed -- `httpx2/_decoders.py` builds `SUPPORTED_DECODERS` by probing those
 # imports at module load time and popping the entry when the import fails. A hardcoded list would
 # silently drift from that reality the moment an optional codec dependency is added or removed
 # (e.g. this repo currently has `zstandard` but not `brotli`) -- exactly the class of bug this
-# check exists to prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) httpx module, so this
-# is a deliberate, narrow coupling to non-public API: if a future httpx version restructures or
+# check exists to prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) httpx2 module, so this
+# is a deliberate, narrow coupling to non-public API: if a future httpx2 version restructures or
 # removes it, this import fails loudly at process start-up rather than silently going stale. See
-# `test_httpx_decoders_supported_decoders_is_accessible` in the test suite for a canary that fails
-# the moment CI's httpx version breaks this assumption, before it could surface as a prod bug.
+# `test_httpx2_decoders_supported_decoders_is_accessible` in the test suite for a canary that fails
+# the moment CI's httpx2 version breaks this assumption, before it could surface as a prod bug.
 _HTTPX_DECODABLE_CONTENT_ENCODINGS = frozenset(SUPPORTED_DECODERS.keys())
 
 
 def _pop_content_encoding_if_fully_decoded(
-    response_headers: dict[str, str], backend_headers: httpx.Headers, decodable_encodings: frozenset[str]
+    response_headers: dict[str, str],
+    backend_headers: httpx2.Headers | a2a_http.Headers,
+    decodable_encodings: frozenset[str],
 ) -> None:
     """
     Strip `Content-Encoding` from the outgoing response headers, but only when every coding it
     lists is in the supplied decoder set of the client that read the response.
 
-    We read the backend response body via `aread()`/`aiter_bytes()` above, which auto-decompresses
-    it according to `Content-Encoding` -- but only for codings httpx recognizes (see
-    `decodable_encodings`). Any other content-coding token -- a legitimate one httpx
-    just doesn't support (e.g. the RFC 8188 `aes128gcm` encryption coding), or plain Brotli/Zstandard
-    in a deployment missing the optional codec package -- is silently left alone by httpx: it drops
-    the unrecognized token and decodes nothing for it, with no error raised. The bytes we're holding
-    are then still in their original encoded form even though nothing looks wrong.
+    We read the backend response body via `aread()`/`aiter_bytes()`, which auto-decompresses
+    it according to `Content-Encoding` for codings recognized by that response's client (see
+    `decodable_encodings`). Unknown codings, such as RFC 8188 `aes128gcm` or optional codecs
+    missing from the deployment, can leave the bytes in their original encoded form.
 
     If we always stripped `Content-Encoding` regardless, we would forward those still-encoded bytes
     to our client while the header tells it no further decoding is needed -- a correctness bug, not
@@ -373,7 +372,7 @@ async def _forward_to_downstream(
     call: ProxyCall,
     request: Request,
     target_url: str,
-    proxy_client: httpx.AsyncClient,
+    proxy_client: httpx2.AsyncClient,
     headers: dict[str, str],
     server_name: str = "",
     on_unauthorized: UnauthorizedCallback | None = None,
@@ -456,7 +455,7 @@ async def _forward_to_downstream(
                 # value may be stale or wrong (e.g. when upstream mis-reports under chunked encoding).
                 response_headers.pop("content-length", None)
                 # `content_bytes` above came from `aread()`, which already reversed the backend's
-                # Content-Encoding whenever httpx knows how to (see
+                # Content-Encoding whenever httpx2 knows how to (see
                 # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
                 # unchanged in that case would tell our client to decode an already-decoded body.
                 _pop_content_encoding_if_fully_decoded(
@@ -510,7 +509,7 @@ async def _forward_to_downstream(
             if not is_stream:
                 await stream_context.__aexit__(None, None, None)
 
-    except httpx.TimeoutException:
+    except httpx2.TimeoutException:
         logger.error(f"Timeout proxying to {target_url}")
         return JSONResponse(status_code=200, content=build_jsonrpc_error(call.request_id, -32603, "gateway timeout"))
     except Exception:
@@ -527,7 +526,7 @@ async def proxy_to_mcp_server(
     auth_context: UserContextDict,
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
-    proxy_client: httpx.AsyncClient,
+    proxy_client: httpx2.AsyncClient,
     redis_client: Redis,
 ) -> Response:
     """
@@ -696,7 +695,7 @@ async def _forward_a2a(
                     # to complete JSON responses, causing the reported Content-Length to be unreliable).
                     response_headers.pop("content-length", None)
                     # `content_bytes` above came from `aread()`, which already reversed the backend's
-                    # Content-Encoding whenever httpx knows how to (see
+                    # Content-Encoding whenever the A2A client knows how to (see
                     # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
                     # unchanged in that case would tell our client to decode an already-decoded body.
                     _pop_content_encoding_if_fully_decoded(
@@ -1000,7 +999,7 @@ async def dynamic_mcp_post_proxy(
     auth_context: CurrentUser,
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
-    proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
+    proxy_client: httpx2.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
     consent_store: ConsentStore = Depends(get_consent_store),
@@ -1105,7 +1104,7 @@ async def dynamic_mcp_get_proxy(
     auth_context: CurrentUser,
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
-    proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
+    proxy_client: httpx2.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -1275,7 +1274,7 @@ async def dynamic_mcp_get_proxy(
             # Use 5 min timeout when forwarding GET stream.
             # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
             stream_context = proxy_client.stream(
-                request.method, target_url, headers=headers, content=body, timeout=httpx.Timeout(300)
+                request.method, target_url, headers=headers, content=body, timeout=httpx2.Timeout(300)
             )
             backend_response = await stream_context.__aenter__()
 
@@ -1308,7 +1307,7 @@ async def dynamic_mcp_get_proxy(
                     # NOTE: Every chunk-reading has a 5 min timeout.
                     async for chunk in backend_response.aiter_bytes():
                         yield chunk
-                except httpx.TimeoutException:
+                except httpx2.TimeoutException:
                     logger.info("No event from downstream for 5 min. Disconnecting.")
 
                     raise

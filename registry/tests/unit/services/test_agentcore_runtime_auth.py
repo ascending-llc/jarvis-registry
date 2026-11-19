@@ -162,44 +162,49 @@ async def test_build_runtime_http_auth_jwt_requires_federation_context():
         )
 
 
-def test_sigv4_httpx2_auth_signs_like_httpx_variant(monkeypatch):
-    """_SigV4Httpx2Auth builds the same AWSRequest and applies the same signed headers as the httpx variant.
+def test_sigv4_auth_signs_httpx2_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sign the original method, URL and body, then copy the signed headers back."""
+    from typing import Any
+    from unittest.mock import Mock
 
-    SigV4 is stubbed so the comparison is deterministic (the real signature embeds a timestamp).
-    """
-    from types import SimpleNamespace
-
-    import httpx
     import httpx2
+    from botocore.awsrequest import AWSRequest
 
     from registry.services.federation import agentcore_runtime_auth as mod
 
-    captured: list[tuple] = []
+    captured: list[tuple[str, str, bytes, str]] = []
+    frozen_credentials = object()
 
     class _FakeSigV4:
-        def __init__(self, _creds, service, region):
+        def __init__(self, credentials: Any, service: str, region: str) -> None:
+            assert credentials is frozen_credentials
             self.service = service
             self.region = region
 
-        def add_auth(self, aws_request):
-            captured.append((aws_request.method, str(aws_request.url), aws_request.data))
+        def add_auth(self, aws_request: AWSRequest) -> None:
+            captured.append(
+                (aws_request.method, str(aws_request.url), aws_request.data, aws_request.headers["Content-Type"])
+            )
             aws_request.headers["Authorization"] = f"SIG {self.service}/{self.region}"
+            aws_request.headers["X-Amz-Security-Token"] = "session-token"
 
     monkeypatch.setattr(mod, "SigV4Auth", _FakeSigV4)
-
-    creds = SimpleNamespace(get_frozen_credentials=lambda: "frozen")
-    provider = lambda: creds  # noqa: E731
-
-    httpx_auth = mod._SigV4HttpxAuth("bedrock-agentcore", "us-east-1", provider)
-    httpx2_auth = mod._SigV4Httpx2Auth("bedrock-agentcore", "us-east-1", provider)
-
+    credentials = Mock()
+    credentials.get_frozen_credentials.return_value = frozen_credentials
+    provider = Mock(return_value=credentials)
+    auth = mod._SigV4Auth("bedrock-agentcore", "us-east-1", provider)
     body = b'{"jsonrpc": "2.0"}'
-    headers = {"Content-Type": "application/json"}
-    req1 = httpx.Request("POST", "https://runtime.example.com/mcp", content=body, headers=headers)
-    req2 = httpx2.Request("POST", "https://runtime.example.com/mcp", content=body, headers=headers)
+    request = httpx2.Request(
+        "POST", "https://runtime.example.com/mcp", content=body, headers={"Content-Type": "application/json"}
+    )
 
-    list(httpx_auth.auth_flow(req1))
-    list(httpx2_auth.auth_flow(req2))
+    signed_requests = list(auth.auth_flow(request))
 
-    assert captured[0] == captured[1]
-    assert req1.headers["Authorization"] == req2.headers["Authorization"] == "SIG bedrock-agentcore/us-east-1"
+    assert isinstance(auth, httpx2.Auth)
+    assert auth.requires_request_body is True
+    assert signed_requests == [request]
+    assert captured == [("POST", "https://runtime.example.com/mcp", body, "application/json")]
+    assert request.headers["Authorization"] == "SIG bedrock-agentcore/us-east-1"
+    assert request.headers["X-Amz-Security-Token"] == "session-token"
+    provider.assert_called_once_with()
+    credentials.get_frozen_credentials.assert_called_once_with()

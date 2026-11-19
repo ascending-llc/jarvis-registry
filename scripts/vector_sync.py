@@ -31,7 +31,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 
 from registry.container import RegistryContainer
@@ -79,7 +79,7 @@ class Weaviate:
             f'{{Get{{{cls}(where:{{path:["{id_field}"],operator:Equal,valueText:"{id_val}"}})'
             f"{{{fields} _additional{{lastUpdateTimeUnix}}}}}}}}"
         )
-        resp = httpx.post(f"{self._url}/v1/graphql", headers=self._headers, json={"query": query}, timeout=20)
+        resp = httpx2.post(f"{self._url}/v1/graphql", headers=self._headers, json={"query": query}, timeout=20)
         resp.raise_for_status()
         payload = resp.json()
         if payload.get("errors"):

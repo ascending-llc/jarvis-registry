@@ -2,8 +2,7 @@ import json
 import logging
 import time
 
-import httpx
-from httpx import AsyncClient
+import httpx2
 from pydantic import BaseModel
 
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
@@ -19,8 +18,8 @@ _TOKEN_REFRESH_SKEW_SECONDS = 60
 _MAX_LOGGED_ERROR_CHARS = 500
 
 
-def _raise_for_status_logged(resp: httpx.Response) -> None:
-    """Log Google's error status and message before raising, since httpx's exception keeps only the status line.
+def _raise_for_status_logged(resp: httpx2.Response) -> None:
+    """Log Google's error status and message before raising, since httpx2's exception keeps only the status line.
 
     Decides on `status_code` rather than `is_success`, which test doubles that set only `status_code` don't honor.
     """
@@ -56,11 +55,11 @@ class CloudIdentityGroupsClient:
         self._token_uri: str = "https://oauth2.googleapis.com/token"
         self._access_token: str | None = None
         self._token_expiry: float = 0.0
-        self._http: httpx.AsyncClient | None = None
+        self._http: httpx2.AsyncClient | None = None
 
-    def _client(self) -> AsyncClient:
+    def _client(self) -> httpx2.AsyncClient:
         if self._http is None:
-            self._http = httpx.AsyncClient(timeout=30.0)
+            self._http = httpx2.AsyncClient(timeout=30.0)
         return self._http
 
     async def aclose(self) -> None:

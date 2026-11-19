@@ -14,7 +14,7 @@ import traceback
 from typing import Any, NamedTuple, cast
 from urllib.parse import urlencode, urlparse
 
-import httpx
+import httpx2
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -1412,7 +1412,7 @@ async def exchange_code_for_token(
     provider_config: AuthProviderConfig | EntraConfig,
     callback_uri: str,
 ) -> dict[str, Any]:
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         token_data = {
             "grant_type": provider_config["grant_type"],
             "client_id": provider_config["client_id"],
@@ -1427,7 +1427,7 @@ async def exchange_code_for_token(
 
 
 async def get_user_info(access_token: str, provider_config: AuthProviderConfig | EntraConfig) -> dict:
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {access_token}"}
         response = await client.get(provider_config["user_info_url"], headers=headers)
         response.raise_for_status()

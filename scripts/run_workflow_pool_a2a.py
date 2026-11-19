@@ -29,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 from dotenv import load_dotenv
 
@@ -189,7 +189,7 @@ def _api(registry_url: str, path: str) -> str:
 
 
 async def _create_and_run(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     args: argparse.Namespace,
     token: str,
 ) -> tuple[str, dict]:
@@ -266,7 +266,7 @@ async def main() -> int:
         print(f"  Pool step : {args.a2a_pool}")
         print(f"\nRunning workflow with prompt: {args.prompt!r}\n")
         headers = _session_headers(registry_token)
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx2.AsyncClient(timeout=30) as client:
             workflow_id, run = await _create_and_run(client, args, registry_token)
             selected_agents = await _load_selected_agents(run["id"])
             _print_results(run, selected_agents)

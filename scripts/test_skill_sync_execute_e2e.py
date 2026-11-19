@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import dotenv
-import httpx
+import httpx2
 from bson import ObjectId
 from pymongo import MongoClient
 from pymongo.database import Database
@@ -237,7 +237,7 @@ class SkillSyncExecuteE2E:
 
         base_url = os.environ.get("BASE_URL", DEFAULT_BASE_URL).rstrip("/")
         self.api = f"{base_url}/api/v1/skill-sync-sources"
-        self.client = httpx.Client(
+        self.client = httpx2.Client(
             headers={
                 "Content-Type": "application/json",
                 "Cookie": cookie,

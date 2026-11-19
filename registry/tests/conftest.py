@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from bson import ObjectId
 from fastapi.testclient import TestClient
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from registry_pkgs.testing.fixtures import setup_registry_test_env
 

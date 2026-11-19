@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Any
 
-import httpx
+import httpx2
 
 from registry_pkgs.core.jwt_utils import (
     decode_jwt_with_jwk,
@@ -70,7 +70,7 @@ class GoogleProvider(AuthProvider):
 
         try:
             logger.debug(f"Fetching JWKS from {self.jwks_url}")
-            async with httpx.AsyncClient() as client:
+            async with httpx2.AsyncClient() as client:
                 response = await client.get(self.jwks_url, timeout=10)
                 response.raise_for_status()
                 self._jwks_cache = response.json()

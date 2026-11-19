@@ -24,12 +24,12 @@ import sys
 import uuid
 from urllib.parse import quote
 
-import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.client.base_client import BaseClient
 from a2a.client.middleware import ClientCallContext
 from a2a.types import Message, Part, Role, Task, TextPart
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.workflows.a2a_client import A2ACallResult, _consume_stream, _result_from_task
 from registry_pkgs.workflows.a2a_executor import _a2a_result_to_step_output
 from registry_pkgs.workflows.helpers import step_output_to_prompt_text
@@ -49,7 +49,7 @@ def _check(label: str, condition: bool, detail: str = "") -> None:
     _failures.append(label)
 
 
-async def _invoke(hc: httpx.AsyncClient, agent_card, text: str) -> Message | Task | None:
+async def _invoke(hc: a2a_http.AsyncClient, agent_card, text: str) -> Message | Task | None:
     """Send a text message and return the raw A2A response."""
     session_id = str(uuid.uuid4())
     headers = {
@@ -124,7 +124,7 @@ def _validate_common(step_out, mode: str) -> None:
     print(f"    prompt length: {len(prompt)} chars")
 
 
-async def _test_message_mode(hc: httpx.AsyncClient, agent_card) -> None:
+async def _test_message_mode(hc: a2a_http.AsyncClient, agent_card) -> None:
     print("\n" + "=" * 60)
     print("=== MESSAGE MODE ===")
     print("Sending 'message' to trigger Message response...\n")
@@ -143,7 +143,7 @@ async def _test_message_mode(hc: httpx.AsyncClient, agent_card) -> None:
     _validate_common(step_out, "message")
 
 
-async def _test_task_mode(hc: httpx.AsyncClient, agent_card) -> None:
+async def _test_task_mode(hc: a2a_http.AsyncClient, agent_card) -> None:
     print("\n" + "=" * 60)
     print("=== TASK MODE ===")
     print("Sending 'hello media test' to trigger Task response...\n")
@@ -185,7 +185,7 @@ async def main() -> int:
     print(f"Agent ARN: {agent_arn}")
     print(f"Mode: {mode_filter}\n")
 
-    async with httpx.AsyncClient(timeout=_TIMEOUT, headers={"Authorization": f"Bearer {bearer_token}"}) as hc:
+    async with a2a_http.AsyncClient(timeout=_TIMEOUT, headers={"Authorization": f"Bearer {bearer_token}"}) as hc:
         resolver = A2ACardResolver(httpx_client=hc, base_url=base_url)
         agent_card = await resolver.get_agent_card()
         print(f"Agent: {agent_card.name}")

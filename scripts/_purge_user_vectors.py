@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from grpc import RpcError
-from httpx import HTTPError
+from httpx import HTTPError  # noqa: TID251  # weaviate-client raises classic httpx errors
 from pydantic import Field, SecretStr
 from weaviate.exceptions import WeaviateBaseError
 

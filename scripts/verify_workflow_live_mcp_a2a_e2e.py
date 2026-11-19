@@ -28,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 from dotenv import load_dotenv
 
@@ -289,7 +289,7 @@ async def _assert_results(run_id: str) -> int:
     return 0
 
 
-async def _run_lifecycle(client: httpx.AsyncClient, args: argparse.Namespace, headers: dict, wf_id: str) -> int:
+async def _run_lifecycle(client: httpx2.AsyncClient, args: argparse.Namespace, headers: dict, wf_id: str) -> int:
     resp = await client.post(
         _api(args.registry_url, f"/workflows/{wf_id}/runs"),
         headers=headers,
@@ -361,7 +361,7 @@ async def amain(args: argparse.Namespace) -> int:
 
         try:
             headers = _session_headers(token)
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx2.AsyncClient(timeout=30) as client:
                 return await _run_lifecycle(client, args, headers, str(definition.id))
         finally:
             if not args.keep_data:

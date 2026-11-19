@@ -1,6 +1,6 @@
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 from auth_server.core.config import settings
@@ -166,7 +166,7 @@ class TestEntraGetScopeGroups:
         provider = _provider()
 
         with (
-            patch("auth_server.providers.entra.httpx.AsyncClient", side_effect=RuntimeError("graph down")),
+            patch("auth_server.providers.entra.httpx2.AsyncClient", side_effect=RuntimeError("graph down")),
             patch("auth_server.providers.entra.log_group_resolution_failure") as mock_log,
         ):
             groups = await provider.get_scope_groups("access-token")
@@ -199,12 +199,12 @@ class TestEntraGetScopeGroups:
         """A same-named group grants nothing unless Graph confirms the configured ID."""
         provider = _provider()
         admin_id = next(iter(provider.scope_group_ids))
-        response = httpx.Response(
+        response = httpx2.Response(
             200,
             json={"value": [admin_id.upper()] if is_member else []},
-            request=httpx.Request("POST", "https://graph.microsoft.com/v1.0/me/checkMemberGroups"),
+            request=httpx2.Request("POST", "https://graph.microsoft.com/v1.0/me/checkMemberGroups"),
         )
-        with patch("auth_server.providers.entra.httpx.AsyncClient") as client_class:
+        with patch("auth_server.providers.entra.httpx2.AsyncClient") as client_class:
             client = client_class.return_value.__aenter__.return_value
             client.post = AsyncMock(return_value=response)
             groups = await provider.get_scope_groups("access-token")
@@ -224,9 +224,9 @@ class TestEntraGetScopeGroups:
     )
     async def test_invalid_graph_response_never_grants_groups(self, payload: dict) -> None:
         provider = _provider()
-        response = httpx.Response(200, json=payload, request=httpx.Request("POST", "https://graph.microsoft.com"))
+        response = httpx2.Response(200, json=payload, request=httpx2.Request("POST", "https://graph.microsoft.com"))
         with (
-            patch("auth_server.providers.entra.httpx.AsyncClient") as client_class,
+            patch("auth_server.providers.entra.httpx2.AsyncClient") as client_class,
             patch("auth_server.providers.entra.log_group_resolution_failure") as log_failure,
         ):
             client_class.return_value.__aenter__.return_value.post = AsyncMock(return_value=response)
@@ -236,23 +236,23 @@ class TestEntraGetScopeGroups:
     @pytest.mark.parametrize("status", [403, 429, 500])
     async def test_http_error_returns_empty_groups_and_logs(self, status: int) -> None:
         provider = _provider()
-        response = httpx.Response(status, request=httpx.Request("POST", "https://graph.microsoft.com"))
+        response = httpx2.Response(status, request=httpx2.Request("POST", "https://graph.microsoft.com"))
         with (
-            patch("auth_server.providers.entra.httpx.AsyncClient") as client_class,
+            patch("auth_server.providers.entra.httpx2.AsyncClient") as client_class,
             patch("auth_server.providers.entra.log_group_resolution_failure") as log_failure,
         ):
             client_class.return_value.__aenter__.return_value.post = AsyncMock(return_value=response)
             assert await provider.get_scope_groups("access-token") == []
-        assert isinstance(log_failure.call_args.args[1], httpx.HTTPStatusError)
+        assert isinstance(log_failure.call_args.args[1], httpx2.HTTPStatusError)
 
     async def test_timeout_logs_full_exception_details(self, caplog: pytest.LogCaptureFixture) -> None:
         provider = _provider()
-        with patch("auth_server.providers.entra.httpx.AsyncClient") as client_class:
+        with patch("auth_server.providers.entra.httpx2.AsyncClient") as client_class:
             client_class.return_value.__aenter__.return_value.post = AsyncMock(
-                side_effect=httpx.ReadTimeout("graph timed out")
+                side_effect=httpx2.ReadTimeout("graph timed out")
             )
             assert await provider.get_scope_groups("access-token") == []
         record = next(r for r in caplog.records if "Group resolution failed for provider=entra" in r.getMessage())
         assert "graph timed out" in record.getMessage()
         assert record.exc_info is not None
-        assert record.exc_info[0] is httpx.ReadTimeout
+        assert record.exc_info[0] is httpx2.ReadTimeout

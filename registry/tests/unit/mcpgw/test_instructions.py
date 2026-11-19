@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
-import httpx
+import httpx2
 import pytest
 from mcp import Client
 
@@ -45,10 +45,10 @@ async def _gateway_session() -> AsyncIterator[Client]:
         "pending_consent_store",
     )
 
-    def reject_request(request: httpx.Request) -> httpx.Response:
+    def reject_request(request: httpx2.Request) -> httpx2.Response:
         raise AssertionError(f"Unexpected outgoing request: {request.method} {request.url}")
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(reject_request)) as proxy_client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(reject_request)) as proxy_client:
         container = cast(
             "RegistryContainer",
             SimpleNamespace(mcpgw_downstream_transport=proxy_client, **{name: object() for name in dependencies}),

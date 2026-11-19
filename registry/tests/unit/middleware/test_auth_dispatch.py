@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from httpx import Response
+from httpx2 import Response
 from starlette.testclient import TestClient
 from starlette.types import Receive, Scope, Send
 

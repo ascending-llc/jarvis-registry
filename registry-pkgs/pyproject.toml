@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     # Core dependencies
+    "httpx2>=2.16.0,<3",
+    "authlib>=1.8.0",
     "pydantic>=2.11.3",
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",

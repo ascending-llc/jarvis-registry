@@ -10,7 +10,7 @@ import pytest
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from httpx import Response
+from httpx2 import Response
 from redis.exceptions import RedisError
 
 from registry.api.v1.mcp.consent_routes import router as consent_router

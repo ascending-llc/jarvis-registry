@@ -2,7 +2,7 @@ import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
+import httpx2
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -149,8 +149,8 @@ _SEARCH_URL = "https://cloudidentity.googleapis.com/v1/groups/-/memberships:sear
 _GROUP_URL = "https://cloudidentity.googleapis.com/v1/groups/1"
 
 
-def _error_resp(url: str, status: int = 403, **kwargs) -> httpx.Response:
-    return httpx.Response(status, request=httpx.Request("GET", url), **kwargs)
+def _error_resp(url: str, status: int = 403, **kwargs) -> httpx2.Response:
+    return httpx2.Response(status, request=httpx2.Request("GET", url), **kwargs)
 
 
 def _google_error(message: str) -> dict:
@@ -195,7 +195,7 @@ async def test_search_error_logs_google_message_and_raises(caplog):
     message = "Error(4013): Insufficient permissions to retrieve memberships."
     client._http.get = AsyncMock(return_value=_error_resp(_SEARCH_URL, json=_google_error(message)))
 
-    with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
+    with caplog.at_level(logging.WARNING), pytest.raises(httpx2.HTTPStatusError):
         await client.list_transitive_groups_for_member("a@x.com")
 
     logged = caplog.records[-1].getMessage()
@@ -208,7 +208,7 @@ async def test_get_group_error_logs_google_message_and_raises(caplog):
     client = _client_with_token()
     client._http.get = AsyncMock(return_value=_error_resp(_GROUP_URL, json=_google_error("denied")))
 
-    with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
+    with caplog.at_level(logging.WARNING), pytest.raises(httpx2.HTTPStatusError):
         await client.get_group("groups/1")
 
     logged = caplog.records[-1].getMessage()
@@ -221,7 +221,7 @@ async def test_error_with_non_json_body_logs_text(caplog):
     client = _client_with_token()
     client._http.get = AsyncMock(return_value=_error_resp(_GROUP_URL, status=502, text="<html>Bad Gateway</html>"))
 
-    with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
+    with caplog.at_level(logging.WARNING), pytest.raises(httpx2.HTTPStatusError):
         await client.get_group("groups/1")
 
     assert "<html>Bad Gateway</html>" in caplog.records[-1].getMessage()
@@ -231,7 +231,7 @@ async def test_error_message_is_truncated(caplog):
     client = _client_with_token()
     client._http.get = AsyncMock(return_value=_error_resp(_GROUP_URL, json=_google_error("x" * 2000)))
 
-    with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPStatusError):
+    with caplog.at_level(logging.WARNING), pytest.raises(httpx2.HTTPStatusError):
         await client.get_group("groups/1")
 
     logged = caplog.records[-1].getMessage()

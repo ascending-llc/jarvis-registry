@@ -32,7 +32,7 @@ import sys
 import time
 from pathlib import Path
 
-import httpx
+import httpx2
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -113,7 +113,7 @@ async def _trigger_and_wait(
     token: str,
 ) -> dict:
     headers = {"Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx2.AsyncClient(timeout=30) as client:
         response = await client.post(
             _api(registry_url, f"/workflows/{definition_id}/runs"),
             headers=headers,

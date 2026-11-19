@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 from fastapi import status as http_status
@@ -28,7 +28,7 @@ from .skill_sync_token_service import SkillSyncTokenService
 
 # Sized for the interactive dry-run test-connect request; the shared GitHub client's default
 # (30s connect / 60s read) is tuned for tarball downloads and too slow for a synchronous check.
-_TEST_CONNECTION_GITHUB_TIMEOUT = httpx.Timeout(10.0)
+_TEST_CONNECTION_GITHUB_TIMEOUT = httpx2.Timeout(10.0)
 
 
 @dataclass

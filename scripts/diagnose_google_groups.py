@@ -34,7 +34,7 @@ import json
 import sys
 from pathlib import Path
 
-import httpx
+import httpx2
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from registry_pkgs.core.config import GOOGLE_CUSTOMER_ID_PATTERN
@@ -88,7 +88,7 @@ def resolve_customer_id(override: str | None, setting: str) -> str:
     return customer_id
 
 
-def print_http_error(exc: httpx.HTTPStatusError) -> None:
+def print_http_error(exc: httpx2.HTTPStatusError) -> None:
     response = exc.response
     print(f"  FAILED: HTTP {response.status_code} {response.reason_phrase}")
     print(f"  Request: {exc.request.method} {exc.request.url}")
@@ -112,9 +112,9 @@ async def group_owner(client: CloudIdentityGroupsClient, resource_name: str) -> 
     """Return the group's `parent` (`customers/<customer ID>` for Google Groups), the value GOOGLE_CUSTOMER_ID takes."""
     try:
         group = await client.get_group(resource_name)
-    except httpx.HTTPStatusError as exc:
+    except httpx2.HTTPStatusError as exc:
         return f"(groups.get failed: HTTP {exc.response.status_code})"
-    except httpx.HTTPError as exc:
+    except httpx2.HTTPError as exc:
         return f"(groups.get failed: {type(exc).__name__})"
     return group.get("parent", "(no parent field)")
 
@@ -124,10 +124,10 @@ async def diagnose_member(client: CloudIdentityGroupsClient, email: str, allowed
     print(f"\n=== {email}")
     try:
         groups = await client.list_transitive_groups_for_member(email)
-    except httpx.HTTPStatusError as exc:
+    except httpx2.HTTPStatusError as exc:
         print_http_error(exc)
         return False
-    except httpx.HTTPError as exc:
+    except httpx2.HTTPError as exc:
         print(f"  FAILED: network error {type(exc).__name__}: {exc}")
         return False
     except ValueError as exc:

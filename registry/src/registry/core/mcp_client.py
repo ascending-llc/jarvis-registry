@@ -15,7 +15,6 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
 
-import httpx
 import httpx2
 from mcp import Client
 from mcp.client.sse import sse_client
@@ -440,8 +439,6 @@ async def _get_from_streamable_http(
     mcp_url = strategy.modify_url(mcp_url)
 
     logger.info(f"Connecting to MCP server: {mcp_url}")
-
-    # Import httpx for custom client
 
     try:
         # Create custom httpx2 client with headers; the recorder captures the session id off the wire
@@ -921,7 +918,7 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
         return None
 
     try:
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             headers={"User-Agent": settings.registry_app_name}, follow_redirects=True
         ) as http_client:
             result = await discover_mcp_oauth(base_url, http_client=http_client)
