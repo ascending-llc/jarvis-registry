@@ -5,6 +5,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SkillFileMetadata } from '@/services/skill/type';
 
 import { SKILL_MARKDOWN_PATH } from './constants';
+import type { IndexedScanFinding } from './skillScan';
+import { resolveScanFilePath, SCAN_SEVERITIES, SCAN_SEVERITY_CLASSES } from './skillScan';
 
 export type SkillFileTreeNode =
   | { type: 'file'; name: string; path: string }
@@ -83,11 +85,21 @@ export const buildSkillFileTree = (files: SkillFileMetadata[]): SkillFileTreeNod
 
 type SkillFileTreeProps = {
   files: SkillFileMetadata[];
+  scanFindings?: IndexedScanFinding[];
+  findingsTruncated?: boolean;
+  olderFindings?: boolean;
   selectedPath: string;
   onSelect: (path: string) => void;
 };
 
-const SkillFileTree: React.FC<SkillFileTreeProps> = ({ files, selectedPath, onSelect }) => {
+const SkillFileTree: React.FC<SkillFileTreeProps> = ({
+  files,
+  selectedPath,
+  onSelect,
+  scanFindings = [],
+  findingsTruncated = false,
+  olderFindings = false,
+}) => {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const selectedFileRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => buildSkillFileTree(files), [files]);
@@ -118,6 +130,10 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({ files, selectedPath, onSe
   const renderNode = (node: SkillFileTreeNode, depth: number): React.ReactNode => {
     if (node.type === 'file') {
       const selected = node.path === selectedPath;
+      const findings = scanFindings.filter(
+        finding => finding.severity !== 'info' && resolveScanFilePath(finding.filePath, [node.path]) === node.path,
+      );
+      const severity = SCAN_SEVERITIES.find(level => findings.some(finding => finding.severity === level));
       return (
         <button
           type='button'
@@ -133,7 +149,15 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({ files, selectedPath, onSe
           }`}
         >
           <DocumentTextIcon className='h-[13px] w-[13px] flex-shrink-0' />
-          <span className='truncate'>{node.name}</span>
+          <span className='min-w-0 flex-1 truncate'>{node.name}</span>
+          {severity && (
+            <span
+              className={`rounded px-1.5 text-xs ${SCAN_SEVERITY_CLASSES[severity]}`}
+              aria-label={`${findings.length} ${severity} or lower findings${findingsTruncated ? ', report truncated' : ''}`}
+            >
+              {findings.length}
+            </span>
+          )}
         </button>
       );
     }
@@ -154,14 +178,26 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({ files, selectedPath, onSe
           ) : (
             <FolderIcon className='h-[13px] w-[13px] flex-shrink-0' />
           )}
-          <span className='truncate'>{node.name}</span>
+          <span className='min-w-0 flex-1 truncate'>{node.name}</span>
         </button>
         {expanded && node.children.map(child => renderNode(child, depth + 1))}
       </div>
     );
   };
 
-  return <nav aria-label='Skill files'>{nodes.map(node => renderNode(node, 0))}</nav>;
+  return (
+    <nav aria-label='Skill files'>
+      {nodes.map(node => renderNode(node, 0))}
+      {olderFindings && scanFindings.length > 0 && (
+        <p className='px-2 pt-2 text-xs text-[var(--jarvis-warning-text)]'>Counts are from a previous version.</p>
+      )}
+      {findingsTruncated && (
+        <p className='px-2 pt-2 text-xs text-[var(--jarvis-muted)]'>
+          Counts reflect the returned findings. The report is truncated.
+        </p>
+      )}
+    </nav>
+  );
 };
 
 export default SkillFileTree;

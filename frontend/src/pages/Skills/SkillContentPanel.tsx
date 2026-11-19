@@ -5,10 +5,13 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import SERVICES from '@/services';
+import type { SkillScanResponse } from '@/services/skill/scanTypes';
 import type { SkillFileContent, SkillFileMetadata } from '@/services/skill/type';
 import { SKILL_MARKDOWN_PATH } from './constants';
 import HighlightedTextarea from './HighlightedTextarea';
+import SkillSourceView from './SkillSourceView';
 import { resolveSkillFilePath } from './skillFileLinks';
+import type { SkillScanTarget } from './skillScan';
 import {
   getLanguageFromClassName,
   getLanguageFromPath,
@@ -19,6 +22,12 @@ import type { EditorMode } from './types';
 
 type SkillContentPanelProps = {
   skillId: string | null;
+  skillVersion?: number | null;
+  scan?: SkillScanResponse | null;
+  scanTarget?: SkillScanTarget | null;
+  hasUnsavedChanges?: boolean;
+  onShowFinding?: (key: string) => void;
+  onRefreshContent?: () => void;
   selectedPath: string;
   markdown: string;
   markdownBody: string;
@@ -56,6 +65,12 @@ const formatBytes = (bytes?: number): string => {
 
 const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
   skillId,
+  skillVersion = null,
+  scan = null,
+  scanTarget = null,
+  hasUnsavedChanges = false,
+  onShowFinding,
+  onRefreshContent,
   selectedPath,
   markdown,
   markdownBody,
@@ -71,6 +86,12 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
 }) => {
   const [fileState, setFileState] = useState<FileLoadState>({ status: 'idle' });
   const [retryToken, setRetryToken] = useState(0);
+  const [sourceMode, setSourceMode] = useState(false);
+  const showSource = sourceMode && editorMode !== 'edit' && Boolean(skillId);
+
+  useEffect(() => {
+    if (scanTarget?.path === selectedPath) setSourceMode(true);
+  }, [scanTarget, selectedPath]);
   const cacheRef = useRef<Map<string, SkillFileContent>>(new Map());
   const requestSequenceRef = useRef(0);
   const isSkillMarkdown = selectedPath === SKILL_MARKDOWN_PATH;
@@ -96,10 +117,10 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
     cacheRef.current.clear();
     requestSequenceRef.current += 1;
     setFileState({ status: 'idle' });
-  }, [skillId]);
+  }, [skillId, skillVersion]);
 
   useEffect(() => {
-    if (isSkillMarkdown) {
+    if (isSkillMarkdown || showSource) {
       requestSequenceRef.current += 1;
       setFileState({ status: 'idle' });
       return;
@@ -109,15 +130,14 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
       return;
     }
 
-    const cacheKey = `${skillId}:${selectedPath}`;
+    const sequence = ++requestSequenceRef.current;
+    const cacheKey = `${skillId}:${skillVersion}:${selectedPath}`;
     const cached = cacheRef.current.get(cacheKey);
     if (cached) {
       setFileState({ status: 'loaded', data: cached });
       return;
     }
 
-    const sequence = requestSequenceRef.current + 1;
-    requestSequenceRef.current = sequence;
     setFileState({ status: 'loading' });
 
     SERVICES.SKILL.getSkillFile(skillId, selectedPath)
@@ -134,7 +154,7 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
     return () => {
       if (requestSequenceRef.current === sequence) requestSequenceRef.current += 1;
     };
-  }, [isSkillMarkdown, retryToken, selectedPath, skillId]);
+  }, [isSkillMarkdown, retryToken, selectedPath, skillId, skillVersion, showSource]);
 
   const renderSupportingFile = () => {
     if (fileState.status === 'idle' || fileState.status === 'loading') {
@@ -201,6 +221,29 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
     <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)]'>
       <div className='flex min-w-0 flex-shrink-0 items-center justify-between border-b border-[color:var(--jarvis-border)] px-4 py-3'>
         <span className='min-w-0 truncate font-mono text-xs text-[var(--jarvis-muted)]'>{selectedPath}</span>
+        {skillId && (
+          <div className='ml-auto mr-3 flex gap-2 text-xs'>
+            <button
+              type='button'
+              aria-pressed={!showSource}
+              onClick={() => setSourceMode(false)}
+              className={!showSource ? 'text-[var(--jarvis-primary-text)]' : 'text-[var(--jarvis-muted)]'}
+            >
+              Preview
+            </button>
+            <button
+              type='button'
+              aria-pressed={showSource}
+              onClick={() => {
+                setSourceMode(true);
+                onEditorModeChange('preview');
+              }}
+              className={showSource ? 'text-[var(--jarvis-primary-text)]' : 'text-[var(--jarvis-muted)]'}
+            >
+              Source
+            </button>
+          </div>
+        )}
         {isSkillMarkdown ? (
           canEdit && (
             <button
@@ -222,125 +265,149 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
       </div>
 
       <div className='min-h-0 min-w-0 flex-1 overflow-auto'>
-        {isSkillMarkdown && editorMode === 'edit' && canEdit && (
-          <HighlightedTextarea value={markdown} ariaLabel='SKILL.md content' onChange={onMarkdownChange} />
+        {showSource && skillId && (
+          <SkillSourceView
+            skillId={skillId}
+            skillVersion={skillVersion}
+            path={selectedPath}
+            scan={scan}
+            target={scanTarget}
+            dirty={hasUnsavedChanges && isSkillMarkdown}
+            onShowFinding={key => onShowFinding?.(key)}
+            onShowPreview={() => setSourceMode(false)}
+            onRefreshContent={onRefreshContent}
+            canRefreshContent={!hasUnsavedChanges}
+          />
         )}
+        {!showSource && (
+          <>
+            {isSkillMarkdown && editorMode === 'edit' && canEdit && (
+              <HighlightedTextarea value={markdown} ariaLabel='SKILL.md content' onChange={onMarkdownChange} />
+            )}
 
-        {isSkillMarkdown && (editorMode !== 'edit' || !canEdit) && (
-          <div className='min-w-0 [overflow-wrap:anywhere] px-7 py-7 sm:px-9 sm:py-8'>
-            {markdownError && (
-              <div className='mb-5 rounded-lg border border-[color:var(--jarvis-danger)]/30 bg-[var(--jarvis-danger-soft)] px-4 py-3 text-sm text-[var(--jarvis-danger-text)]'>
-                {markdownError}
+            {isSkillMarkdown && (editorMode !== 'edit' || !canEdit) && (
+              <div className='min-w-0 [overflow-wrap:anywhere] px-7 py-7 sm:px-9 sm:py-8'>
+                {markdownError && (
+                  <div className='mb-5 rounded-lg border border-[color:var(--jarvis-danger)]/30 bg-[var(--jarvis-danger-soft)] px-4 py-3 text-sm text-[var(--jarvis-danger-text)]'>
+                    {markdownError}
+                  </div>
+                )}
+                {markdownError ? (
+                  <pre
+                    className='skill-syntax-highlight overflow-auto whitespace-pre-wrap font-mono text-[13px] leading-6 text-[var(--jarvis-text)]'
+                    dangerouslySetInnerHTML={{ __html: highlightedInvalidMarkdown }}
+                  />
+                ) : (
+                  <>
+                    <pre
+                      className='skill-syntax-highlight mb-6 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--jarvis-card-muted)] p-4 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'
+                      dangerouslySetInnerHTML={{ __html: highlightedFrontmatter }}
+                    />
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        h1: ({ children }) => (
+                          <h1 className='mb-4 text-2xl font-bold text-[var(--jarvis-text-strong)]'>{children}</h1>
+                        ),
+                        h2: ({ children }) => (
+                          <h2 className='mb-2.5 mt-5 text-base font-bold text-[var(--jarvis-text-strong)]'>
+                            {children}
+                          </h2>
+                        ),
+                        h3: ({ children }) => (
+                          <h3 className='mb-2 mt-4 text-[15px] font-bold text-[var(--jarvis-text-strong)]'>
+                            {children}
+                          </h3>
+                        ),
+                        p: ({ children }) => (
+                          <p className='mb-4 min-w-0 break-words text-[14.5px] leading-[1.75] text-[var(--jarvis-text)]'>
+                            {children}
+                          </p>
+                        ),
+                        ul: ({ children }) => <ul className='my-0 min-w-0 list-disc space-y-2 pl-5'>{children}</ul>,
+                        ol: ({ children }) => <ol className='my-0 min-w-0 list-decimal space-y-2 pl-5'>{children}</ol>,
+                        li: ({ children }) => (
+                          <li className='min-w-0 break-words text-sm leading-[1.6] text-[var(--jarvis-text)]'>
+                            {children}
+                          </li>
+                        ),
+                        strong: ({ children }) => (
+                          <strong className='font-bold text-[var(--jarvis-text-strong)]'>{children}</strong>
+                        ),
+                        pre: ({ children }) => (
+                          <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:rounded-none [&>code]:bg-transparent [&>code]:p-0 [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
+                            {children}
+                          </pre>
+                        ),
+                        code: ({ children, className }) => {
+                          const language = getLanguageFromClassName(className);
+                          if (language) {
+                            return (
+                              <code
+                                className={`skill-syntax-highlight ${className ?? ''} font-mono text-[12.5px]`}
+                                dangerouslySetInnerHTML={{ __html: highlightCode(String(children), language) }}
+                              />
+                            );
+                          }
+                          return (
+                            <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
+                              {children}
+                            </code>
+                          );
+                        },
+                        a: ({ children, href }) => {
+                          const linkedSkillFilePath = onSelectFile
+                            ? resolveSkillFilePath(href, availableFilePaths)
+                            : null;
+                          return (
+                            <a
+                              href={href}
+                              target={linkedSkillFilePath ? undefined : '_blank'}
+                              rel={linkedSkillFilePath ? undefined : 'noreferrer'}
+                              onClick={event => {
+                                if (!linkedSkillFilePath) return;
+                                event.preventDefault();
+                                onSelectFile?.(linkedSkillFilePath);
+                              }}
+                              className='break-words text-[var(--jarvis-primary-text)] underline'
+                            >
+                              {children}
+                            </a>
+                          );
+                        },
+                        img: ({ src, alt, title }) => (
+                          <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
+                        ),
+                        table: ({ children }) => (
+                          <div className='mb-4 max-w-full overflow-auto rounded-lg border border-[color:var(--jarvis-border)]'>
+                            <table className='w-full min-w-max border-collapse text-left text-[13px]'>{children}</table>
+                          </div>
+                        ),
+                        thead: ({ children }) => (
+                          <thead className='bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text-strong)]'>
+                            {children}
+                          </thead>
+                        ),
+                        tbody: ({ children }) => (
+                          <tbody className='divide-y divide-[color:var(--jarvis-border)]'>{children}</tbody>
+                        ),
+                        tr: ({ children }) => <tr>{children}</tr>,
+                        th: ({ children }) => <th className='min-w-0 break-words px-3 py-2 font-bold'>{children}</th>,
+                        td: ({ children }) => (
+                          <td className='min-w-0 break-words px-3 py-2 text-[var(--jarvis-text)]'>{children}</td>
+                        ),
+                      }}
+                    >
+                      {markdownBody}
+                    </ReactMarkdown>
+                  </>
+                )}
               </div>
             )}
-            {markdownError ? (
-              <pre
-                className='skill-syntax-highlight overflow-auto whitespace-pre-wrap font-mono text-[13px] leading-6 text-[var(--jarvis-text)]'
-                dangerouslySetInnerHTML={{ __html: highlightedInvalidMarkdown }}
-              />
-            ) : (
-              <>
-                <pre
-                  className='skill-syntax-highlight mb-6 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--jarvis-card-muted)] p-4 font-mono text-[12.5px] leading-[1.7] text-[var(--jarvis-text)]'
-                  dangerouslySetInnerHTML={{ __html: highlightedFrontmatter }}
-                />
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    h1: ({ children }) => (
-                      <h1 className='mb-4 text-2xl font-bold text-[var(--jarvis-text-strong)]'>{children}</h1>
-                    ),
-                    h2: ({ children }) => (
-                      <h2 className='mb-2.5 mt-5 text-base font-bold text-[var(--jarvis-text-strong)]'>{children}</h2>
-                    ),
-                    h3: ({ children }) => (
-                      <h3 className='mb-2 mt-4 text-[15px] font-bold text-[var(--jarvis-text-strong)]'>{children}</h3>
-                    ),
-                    p: ({ children }) => (
-                      <p className='mb-4 min-w-0 break-words text-[14.5px] leading-[1.75] text-[var(--jarvis-text)]'>
-                        {children}
-                      </p>
-                    ),
-                    ul: ({ children }) => <ul className='my-0 min-w-0 list-disc space-y-2 pl-5'>{children}</ul>,
-                    ol: ({ children }) => <ol className='my-0 min-w-0 list-decimal space-y-2 pl-5'>{children}</ol>,
-                    li: ({ children }) => (
-                      <li className='min-w-0 break-words text-sm leading-[1.6] text-[var(--jarvis-text)]'>
-                        {children}
-                      </li>
-                    ),
-                    strong: ({ children }) => (
-                      <strong className='font-bold text-[var(--jarvis-text-strong)]'>{children}</strong>
-                    ),
-                    pre: ({ children }) => (
-                      <pre className='my-4 max-w-full overflow-auto whitespace-pre rounded-lg bg-[var(--jarvis-card-muted)] p-4 text-[12.5px] leading-[1.7] [overflow-wrap:normal] [&>code]:rounded-none [&>code]:bg-transparent [&>code]:p-0 [&>code]:whitespace-pre [&>code]:[overflow-wrap:normal]'>
-                        {children}
-                      </pre>
-                    ),
-                    code: ({ children, className }) => {
-                      const language = getLanguageFromClassName(className);
-                      if (language) {
-                        return (
-                          <code
-                            className={`skill-syntax-highlight ${className ?? ''} font-mono text-[12.5px]`}
-                            dangerouslySetInnerHTML={{ __html: highlightCode(String(children), language) }}
-                          />
-                        );
-                      }
-                      return (
-                        <code className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 font-mono text-[12.5px] [overflow-wrap:anywhere]'>
-                          {children}
-                        </code>
-                      );
-                    },
-                    a: ({ children, href }) => {
-                      const linkedSkillFilePath = onSelectFile ? resolveSkillFilePath(href, availableFilePaths) : null;
-                      return (
-                        <a
-                          href={href}
-                          target={linkedSkillFilePath ? undefined : '_blank'}
-                          rel={linkedSkillFilePath ? undefined : 'noreferrer'}
-                          onClick={event => {
-                            if (!linkedSkillFilePath) return;
-                            event.preventDefault();
-                            onSelectFile?.(linkedSkillFilePath);
-                          }}
-                          className='break-words text-[var(--jarvis-primary-text)] underline'
-                        >
-                          {children}
-                        </a>
-                      );
-                    },
-                    img: ({ src, alt, title }) => (
-                      <img src={src} alt={alt ?? ''} title={title} className='h-auto max-w-full' />
-                    ),
-                    table: ({ children }) => (
-                      <div className='mb-4 max-w-full overflow-auto rounded-lg border border-[color:var(--jarvis-border)]'>
-                        <table className='w-full min-w-max border-collapse text-left text-[13px]'>{children}</table>
-                      </div>
-                    ),
-                    thead: ({ children }) => (
-                      <thead className='bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text-strong)]'>
-                        {children}
-                      </thead>
-                    ),
-                    tbody: ({ children }) => (
-                      <tbody className='divide-y divide-[color:var(--jarvis-border)]'>{children}</tbody>
-                    ),
-                    tr: ({ children }) => <tr>{children}</tr>,
-                    th: ({ children }) => <th className='min-w-0 break-words px-3 py-2 font-bold'>{children}</th>,
-                    td: ({ children }) => (
-                      <td className='min-w-0 break-words px-3 py-2 text-[var(--jarvis-text)]'>{children}</td>
-                    ),
-                  }}
-                >
-                  {markdownBody}
-                </ReactMarkdown>
-              </>
-            )}
-          </div>
-        )}
 
-        {!isSkillMarkdown && renderSupportingFile()}
+            {!isSkillMarkdown && renderSupportingFile()}
+          </>
+        )}
       </div>
     </div>
   );

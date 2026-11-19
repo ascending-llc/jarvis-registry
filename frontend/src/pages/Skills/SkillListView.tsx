@@ -12,10 +12,11 @@ import type React from 'react';
 
 import IconButton from '@/components/IconButton';
 import type { SkillMetadata } from '@/services/skill/type';
-
+import SkillScanBadge from './SkillScanBadge';
 import SkillSourceChip from './SkillSourceChip';
 import { getSkillDisplayName } from './skillDraft';
 import type { SkillSort, SkillSortColumn } from './skillListQuery';
+import { getScanStatusDetails } from './skillScan';
 
 type SkillListViewProps = {
   skills: SkillMetadata[];
@@ -25,9 +26,14 @@ type SkillListViewProps = {
   refreshing: boolean;
   error: string | null;
   hasActiveConditions: boolean;
+  activeScanFilter?: string;
+  onClearScanFilter?: () => void;
   onRetry: () => void;
   onRefresh: () => void;
   onOpenSkill: (skillId: string) => void;
+  onOpenSecurity?: (skillId: string) => void;
+  onOpenScanSettings?: () => void;
+  canConfigureScan?: boolean;
   onCreate: () => void;
   onShare: (skill: SkillMetadata) => void;
   onDelete: (skill: SkillMetadata) => void;
@@ -36,6 +42,7 @@ type SkillListViewProps = {
 const SORT_HEADERS: { column: SkillSortColumn; label: string }[] = [
   { column: 'name', label: 'Skill' },
   { column: 'source', label: 'Source' },
+  { column: 'security', label: 'Security' },
   { column: 'author', label: 'Author' },
   { column: 'updatedAt', label: 'Last updated' },
 ];
@@ -60,15 +67,20 @@ const SkillListView: React.FC<SkillListViewProps> = ({
   refreshing,
   error,
   hasActiveConditions,
+  activeScanFilter,
+  onClearScanFilter,
   onRetry,
   onRefresh,
   onOpenSkill,
   onCreate,
+  onOpenSecurity,
+  onOpenScanSettings,
+  canConfigureScan = false,
   onShare,
   onDelete,
 }) => (
   <section className='flex min-h-0 flex-1 flex-col overflow-y-auto px-0 pt-2 md:px-8'>
-    <div className='mb-2 flex flex-shrink-0 items-start justify-between gap-4'>
+    <div className='mb-2 flex flex-shrink-0 flex-wrap items-start justify-between gap-4'>
       <div className='min-w-0 flex-1'>
         <h1 className='text-2xl font-bold tracking-[-0.01em] text-[var(--jarvis-text-strong)]'>Skills</h1>
         <p className='mb-7 mt-2 text-sm leading-[1.6] text-[var(--jarvis-muted)]'>
@@ -77,7 +89,12 @@ const SkillListView: React.FC<SkillListViewProps> = ({
         </p>
       </div>
 
-      <div className='flex flex-shrink-0 items-center gap-3'>
+      <div className='flex flex-shrink-0 flex-wrap items-center gap-3'>
+        {canConfigureScan && (
+          <button type='button' className='btn-secondary' onClick={onOpenScanSettings}>
+            Scan settings
+          </button>
+        )}
         <IconButton
           ariaLabel='Refresh skills'
           tooltip='Refresh'
@@ -100,9 +117,17 @@ const SkillListView: React.FC<SkillListViewProps> = ({
       </div>
     </div>
 
+    {activeScanFilter && (
+      <div className='mb-3 flex flex-wrap items-center gap-2 text-xs text-[var(--jarvis-muted)]'>
+        <span>Scan filter · {activeScanFilter}</span>
+        <button type='button' onClick={onClearScanFilter} className='text-[var(--jarvis-primary-text)] hover:underline'>
+          Clear scan filter
+        </button>
+      </div>
+    )}
     <div className='min-h-0 flex-1 overflow-x-auto'>
-      <div className='grid min-w-[640px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border)] px-1 py-2.5 text-[13px] text-[var(--jarvis-muted)]'>
-        <div className='grid min-w-0 grid-cols-[2fr_1fr_1fr_1fr] gap-3'>
+      <div className='grid min-w-[800px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border)] px-1 py-2.5 text-[13px] text-[var(--jarvis-muted)]'>
+        <div className='grid min-w-0 grid-cols-[2fr_1fr_1.4fr_1fr_1fr] gap-3'>
           {SORT_HEADERS.map(({ column, label }) => {
             const active = sort.column === column;
             const ascending = sort.direction === 'asc';
@@ -114,7 +139,9 @@ const SkillListView: React.FC<SkillListViewProps> = ({
                 onClick={() => onSortChange(column)}
                 aria-label={
                   active
-                    ? `${label}, sorted ${ascending ? 'ascending' : 'descending'}. Click to sort ${ascending ? 'descending' : 'ascending'}.`
+                    ? column === 'security'
+                      ? 'Security, sorted by risk. Click to restore default order.'
+                      : `${label}, sorted ${ascending ? 'ascending' : 'descending'}. Click to sort ${ascending ? 'descending' : 'ascending'}.`
                     : `Sort by ${label}`
                 }
                 className={`flex items-center gap-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--jarvis-primary)] ${active ? 'text-[var(--jarvis-text)]' : ''}`}
@@ -144,8 +171,8 @@ const SkillListView: React.FC<SkillListViewProps> = ({
       )}
 
       {!loading && error && (
-        <div className='flex min-h-56 flex-col items-center justify-center px-6 text-center'>
-          <p className='text-base font-semibold text-[var(--jarvis-text-strong)]'>Failed to load skills</p>
+        <div role='alert' className='flex flex-col items-center justify-center px-6 py-5 text-center'>
+          <p className='text-base font-semibold text-[var(--jarvis-text-strong)]'>Failed to refresh skills</p>
           <p className='mt-2 max-w-lg text-sm text-[var(--jarvis-muted)]'>{error}</p>
           <button type='button' onClick={onRetry} className='btn-primary mt-5'>
             Retry
@@ -159,7 +186,7 @@ const SkillListView: React.FC<SkillListViewProps> = ({
           <p className='mt-3 text-base font-semibold text-[var(--jarvis-text-strong)]'>No skills found</p>
           <p className='mt-2 text-sm text-[var(--jarvis-muted)]'>
             {hasActiveConditions
-              ? 'Try adjusting your search or status filter.'
+              ? 'Try adjusting your search or filters.'
               : 'Create a reusable skill by writing its instructions.'}
           </p>
           {!hasActiveConditions && (
@@ -171,18 +198,17 @@ const SkillListView: React.FC<SkillListViewProps> = ({
       )}
 
       {!loading &&
-        !error &&
         skills.map(skill => (
           <div
             key={skill.id}
-            className='group grid min-w-[640px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border-soft)] px-1 transition hover:bg-[var(--jarvis-card-muted)]'
+            className='group grid min-w-[800px] grid-cols-[minmax(0,1fr)_64px] items-center gap-3 border-b border-[color:var(--jarvis-border-soft)] px-1 transition hover:bg-[var(--jarvis-card-muted)]'
           >
-            <button
-              type='button'
-              onClick={() => onOpenSkill(skill.id)}
-              className='grid min-w-0 grid-cols-[2fr_1fr_1fr_1fr] items-center gap-3 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--jarvis-primary)]'
-            >
-              <span className='flex min-w-0 items-center gap-2.5'>
+            <div className='grid min-w-0 grid-cols-[2fr_1fr_1.4fr_1fr_1fr] items-center gap-3 py-4 text-left focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[var(--jarvis-primary)]'>
+              <button
+                type='button'
+                onClick={() => onOpenSkill(skill.id)}
+                className='flex min-w-0 items-center gap-2.5 text-left'
+              >
                 <span className='flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-[5px] bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]'>
                   <DocumentTextIcon className='h-3 w-3' />
                 </span>
@@ -198,15 +224,24 @@ const SkillListView: React.FC<SkillListViewProps> = ({
                 >
                   {skill.enabled ? 'Enabled' : 'Disabled'}
                 </span>
-              </span>
+              </button>
               <span className='flex min-w-0'>
                 <SkillSourceChip origin={skill.origin} />
               </span>
+              <button
+                type='button'
+                onClick={() => (onOpenSecurity ?? onOpenSkill)(skill.id)}
+                className='min-w-0 text-left'
+                aria-label={`View security scan for ${getSkillDisplayName(skill)}, ${getScanStatusDetails(skill.scanSummary)}`}
+                title={getScanStatusDetails(skill.scanSummary)}
+              >
+                <SkillScanBadge summary={skill.scanSummary} />
+              </button>
               <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>
                 {skill.authorName?.trim() || '—'}
               </span>
               <span className='text-[13.5px] text-[var(--jarvis-muted)]'>{formatUpdatedDate(skill.updatedAt)}</span>
-            </button>
+            </div>
             <span className='flex items-center justify-end gap-0.5 pr-1'>
               {skill.permissions?.SHARE === true && (
                 <IconButton

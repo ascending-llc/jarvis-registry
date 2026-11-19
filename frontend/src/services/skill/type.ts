@@ -1,3 +1,5 @@
+import type { SkillScanBriefResponse } from './scanTypes';
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 export type ClaudeCodeSkillFrontmatter = {
@@ -62,6 +64,7 @@ export type SkillMetadata = {
   permissions?: SkillPermissions | null;
   updatedAt?: string | null;
   deletedAt?: string | null;
+  scanSummary?: SkillScanBriefResponse | null;
 };
 
 export type SkillDetail = Omit<SkillMetadata, 'path' | 'deletedAt'> & {

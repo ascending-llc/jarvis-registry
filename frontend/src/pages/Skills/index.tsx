@@ -9,27 +9,42 @@ import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import { APP_ROUTES } from '@/routes';
 import SERVICES from '@/services';
+import type { ModelGatewaySelection } from '@/services/model/type';
 import type { RequestErrorPayload, ValidationIssue } from '@/services/request';
-import type { SkillDetail, SkillMetadata } from '@/services/skill/type';
+import type { SkillScanResponse } from '@/services/skill/scanTypes';
+import type { SkillMetadata } from '@/services/skill/type';
+import type { SkillScanFilter } from '@/types/layout';
 
 import { SKILL_MARKDOWN_PATH } from './constants';
 import DeleteSkillDialog from './DeleteSkillDialog';
 import SkillEditorView from './SkillEditorView';
 import SkillListView from './SkillListView';
+import SkillScanSettingsDialog from './SkillScanSettingsDialog';
 import {
   applySkillMarkdownInput,
   cloneDraft,
   createDraft,
   createEmptyDraft,
   getSkillDisplayName,
+  getSkillMarkdownInput,
   metadataFromDetail,
   toCreateRequest,
   toUpdateRequest,
   updateSkillMarkdownMetadata,
   validateDraft,
 } from './skillDraft';
-import { DEFAULT_SKILL_SORT, getNextSkillSort, matchesSkillSearch, type SkillSort, sortSkills } from './skillListQuery';
+import {
+  DEFAULT_SKILL_SORT,
+  getNextSkillSort,
+  matchesSkillScanFilter,
+  matchesSkillSearch,
+  SKILL_SCAN_FILTERS,
+  type SkillSort,
+  sortSkills,
+} from './skillListQuery';
+import { isScanActive, SKILL_SCAN_POLL_INTERVAL_MS, type SkillScanTarget, toScanBrief } from './skillScan';
 import type { EditorMode, SkillDraft, SkillPageError, SkillStatusFilter } from './types';
+import useSkillScan from './useSkillScan';
 
 const getRequestError = (error: unknown): RequestErrorPayload => {
   if (!error || typeof error !== 'object') {
@@ -70,9 +85,20 @@ const removeSkillDeletePermission = (skill: SkillMetadata): SkillMetadata => {
 const SkillsPage: React.FC = () => {
   const { user } = useAuth();
   const { showToast } = useGlobal();
-  const { skills, setSkills, skillStats, skillLoading, skillError, refreshSkillData } = useServer();
+  const {
+    skills,
+    setSkills,
+    skillStats,
+    skillLoading,
+    skillError,
+    refreshSkillData,
+    updateSkillMetadata,
+    updateSkillScanSummary,
+    setModelSelection,
+  } = useServer();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get('tab') === 'security' ? 'security' : 'files';
   const skillId = searchParams.get('skill');
   const isCreate = !skillId && searchParams.get('create') === 'true';
   const isList = !skillId && !isCreate;
@@ -80,6 +106,7 @@ const SkillsPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [sort, setSort] = useState<SkillSort>(DEFAULT_SKILL_SORT);
   const [statusFilter, setStatusFilter] = useState<SkillStatusFilter>('all');
+  const [scanFilter, setScanFilter] = useState<SkillScanFilter>('all');
 
   const [snapshot, setSnapshot] = useState<SkillDraft | null>(null);
   const [draft, setDraft] = useState<SkillDraft | null>(null);
@@ -93,11 +120,71 @@ const SkillsPage: React.FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<SkillMetadata | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [scanSettingsOpen, setScanSettingsOpen] = useState(false);
+  const [scanTarget, setScanTarget] = useState<SkillScanTarget | null>(null);
+  const [selectedFindingKey, setSelectedFindingKey] = useState<string | null>(null);
+  const hasUnsavedChanges = Boolean(
+    draft &&
+      snapshot &&
+      (getSkillMarkdownInput(draft.markdown) !== getSkillMarkdownInput(snapshot.markdown) ||
+        draft.category !== snapshot.category ||
+        draft.alwaysApply !== snapshot.alwaysApply),
+  );
+  const canRequestScan = Boolean(
+    user?.scopes?.includes('skills-write') && draft?.id === skillId && draft?.permissions?.EDIT,
+  );
+  const canConfigureScan = Boolean(user?.scopes?.includes('models-write') && user?.scopes?.includes('models-read'));
+  const handleScanChange = useCallback(
+    (scan: SkillScanResponse) => {
+      updateSkillScanSummary(scan.skillId, scan.skillVersion, toScanBrief(scan));
+    },
+    [updateSkillScanSummary],
+  );
+  const scanState = useSkillScan({
+    skillId,
+    skillVersion: draft?.id === skillId ? (draft?.version ?? null) : null,
+    enabled: Boolean(skillId && draft?.id === skillId && !detailError),
+    canRequestScan: canRequestScan && !hasUnsavedChanges && !saving && !toggling,
+    onScanChange: handleScanChange,
+  });
+  const reportIdentity = `${scanState.scan?.summary?.contentDigest ?? ''}:${scanState.scan?.summary?.scannedAt ?? ''}`;
+  useEffect(() => {
+    setScanTarget(null);
+    setSelectedFindingKey(null);
+  }, [skillId, reportIdentity]);
+
+  const changeTab = (tab: 'files' | 'security') => {
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', tab);
+    setSearchParams(next);
+  };
+  const handleLocateFinding = (target: SkillScanTarget) => {
+    setScanTarget(target);
+    setSelectedFindingKey(null);
+    setSelectedPath(target.path);
+    setEditorMode('preview');
+    changeTab('files');
+  };
+  const handleShowFinding = (key: string) => {
+    setSelectedFindingKey(key);
+    changeTab('security');
+  };
+  const handleRequestScan = async () => {
+    const result = await scanState.requestScan();
+    if (result?.httpStatus === 202) showToast('Scan request accepted.', 'success');
+    if (result?.httpStatus === 200) showToast('Current scan state loaded. No new scan was queued.', 'info');
+  };
+  const handleScanSettingsSaved = (selection: ModelGatewaySelection) => {
+    setModelSelection(selection);
+    showToast('Scan settings saved.', 'success');
+    void refreshSkillData(true, { afterWrite: true });
+    if (skillId) void scanState.refresh();
+  };
 
   const detailRequestRef = useRef(0);
   const skipNextDetailLoadRef = useRef<string | null>(null);
 
-  const loadSkillDetail = useCallback(async (id: string) => {
+  const loadSkillDetail = useCallback(async (id: string, preserveFile = false) => {
     const requestId = detailRequestRef.current + 1;
     detailRequestRef.current = requestId;
     setDetailLoading(true);
@@ -108,7 +195,9 @@ const SkillsPage: React.FC = () => {
       const nextDraft = createDraft(detail);
       setSnapshot(cloneDraft(nextDraft));
       setDraft(nextDraft);
-      setSelectedPath(SKILL_MARKDOWN_PATH);
+      setSelectedPath(current =>
+        preserveFile && detail.files.some(file => file.relativePath === current) ? current : SKILL_MARKDOWN_PATH,
+      );
       setEditorMode('preview');
     } catch (error) {
       if (detailRequestRef.current !== requestId) return;
@@ -120,9 +209,17 @@ const SkillsPage: React.FC = () => {
     }
   }, []);
 
+  const handleRefreshContent = async () => {
+    if (!skillId || hasUnsavedChanges || saving || toggling) return;
+    setScanTarget(null);
+    await loadSkillDetail(skillId, true);
+    await scanState.refresh();
+  };
+
   useEffect(() => {
     detailRequestRef.current += 1;
     setShareTarget(null);
+    setScanSettingsOpen(false);
     setDeleteTarget(null);
     setDeleting(false);
 
@@ -156,16 +253,65 @@ const SkillsPage: React.FC = () => {
     setDetailError(null);
   }, [isCreate, loadSkillDetail, skillId, user?.username]);
 
-  const filteredSkills = useMemo(() => {
-    const visibleSkills = skills
-      .filter(skill => {
-        if (statusFilter === 'enabled' && !skill.enabled) return false;
-        if (statusFilter === 'disabled' && skill.enabled) return false;
-        return true;
-      })
-      .filter(skill => matchesSkillSearch(skill, searchTerm));
-    return sortSkills(visibleSkills, sort);
-  }, [searchTerm, skills, statusFilter, sort]);
+  const matchedSkills = useMemo(
+    () =>
+      skills
+        .filter(skill => {
+          if (statusFilter === 'enabled' && !skill.enabled) return false;
+          if (statusFilter === 'disabled' && skill.enabled) return false;
+          return true;
+        })
+        .filter(skill => matchesSkillSearch(skill, searchTerm)),
+    [searchTerm, skills, statusFilter],
+  );
+  const filteredSkills = useMemo(
+    () =>
+      sortSkills(
+        matchedSkills.filter(skill => matchesSkillScanFilter(skill, scanFilter)),
+        sort,
+      ),
+    [matchedSkills, scanFilter, sort],
+  );
+  const scanFilterItems = useMemo(
+    () =>
+      SKILL_SCAN_FILTERS.map(item => ({
+        ...item,
+        count: matchedSkills.filter(skill => matchesSkillScanFilter(skill, item.value)).length,
+      })),
+    [matchedSkills],
+  );
+
+  useEffect(() => {
+    if (!isList) return;
+    const refreshVisibleList = () => {
+      if (!document.hidden) void refreshSkillData(true);
+    };
+    refreshVisibleList();
+    document.addEventListener('visibilitychange', refreshVisibleList);
+    return () => document.removeEventListener('visibilitychange', refreshVisibleList);
+  }, [isList, refreshSkillData]);
+
+  const hasActiveScans = skills.some(skill => isScanActive(skill.scanSummary?.scanStatus));
+  useEffect(() => {
+    if (!isList || !hasActiveScans || skillError || refreshing) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(timer);
+      if (disposed || document.hidden) return;
+      timer = setTimeout(async () => {
+        await refreshSkillData(true);
+        schedule();
+      }, SKILL_SCAN_POLL_INTERVAL_MS);
+    };
+    schedule();
+    document.addEventListener('visibilitychange', schedule);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', schedule);
+    };
+  }, [isList, hasActiveScans, skillError, refreshing, refreshSkillData]);
 
   const navigateToList = () => navigate(APP_ROUTES.skills);
   const navigateToCreate = () => navigate(`${APP_ROUTES.skills}?create=true`);
@@ -183,6 +329,7 @@ const SkillsPage: React.FC = () => {
   };
 
   const handleSelectFile = (path: string) => {
+    setScanTarget(null);
     setSelectedPath(path);
     if (path !== SKILL_MARKDOWN_PATH) setEditorMode('preview');
   };
@@ -210,11 +357,6 @@ const SkillsPage: React.FC = () => {
 
   const handleCategoryChange = (category: string) => {
     setDraft(current => (current ? { ...current, category } : current));
-  };
-
-  const updateListFromDetail = (detail: SkillDetail) => {
-    const metadata = metadataFromDetail(detail);
-    setSkills(current => [metadata, ...current.filter(skill => skill.id !== metadata.id)]);
   };
 
   const makeDraftReadOnly = () => {
@@ -252,6 +394,7 @@ const SkillsPage: React.FC = () => {
       return;
     }
 
+    const saveRequestId = detailRequestRef.current;
     setSaving(true);
     try {
       if (draft.id === null) {
@@ -271,25 +414,31 @@ const SkillsPage: React.FC = () => {
           }
         }
 
+        updateSkillMetadata(metadataFromDetail(finalDetail));
+        void refreshSkillData(true);
+        if (saveRequestId !== detailRequestRef.current) return;
         const nextDraft = createDraft(finalDetail, draft.markdown.value);
         setSnapshot(cloneDraft(nextDraft));
         setDraft(nextDraft);
-        updateListFromDetail(finalDetail);
         skipNextDetailLoadRef.current = finalDetail.id;
         navigateToSkill(finalDetail.id, true);
         if (toggleWarning) showToast(toggleWarning, 'error');
-        else showToast('Skill created successfully.', 'success');
+        else showToast('Skill created. View scan updates in Security.', 'success');
         return;
       }
 
       const updated = await SERVICES.SKILL.updateSkill(draft.id, toUpdateRequest(draft));
+      updateSkillMetadata(metadataFromDetail(updated));
+      void refreshSkillData(true);
+      if (saveRequestId !== detailRequestRef.current) return;
       const nextDraft = createDraft(updated, draft.markdown.value);
       setSnapshot(cloneDraft(nextDraft));
       setDraft(nextDraft);
-      updateListFromDetail(updated);
-      showToast('Skill updated successfully.', 'success');
+      void scanState.refresh(updated.version);
+      showToast('Skill saved. View scan updates in Security.', 'success');
     } catch (error) {
-      handleMutationError(error, 'Failed to save skill. Your draft has been preserved.');
+      if (saveRequestId === detailRequestRef.current)
+        handleMutationError(error, 'Failed to save skill. Your draft has been preserved.');
     } finally {
       setSaving(false);
     }
@@ -302,13 +451,14 @@ const SkillsPage: React.FC = () => {
       return;
     }
 
+    const toggleRequestId = detailRequestRef.current;
     const nextEnabled = !draft.enabled;
     setToggling(true);
     try {
       const result = await SERVICES.SKILL.toggleSkillState(draft.id, { enabled: nextEnabled });
       const updatedAt = new Date().toISOString();
-      setDraft(current => (current ? { ...current, enabled: result.enabled } : current));
-      setSnapshot(current => (current ? { ...current, enabled: result.enabled } : current));
+      setDraft(current => (current?.id === result.id ? { ...current, enabled: result.enabled } : current));
+      setSnapshot(current => (current?.id === result.id ? { ...current, enabled: result.enabled } : current));
       setSkills(current => {
         const updatedSkill = current.find(skill => skill.id === result.id);
         if (!updatedSkill) return current;
@@ -317,8 +467,9 @@ const SkillsPage: React.FC = () => {
           ...current.filter(skill => skill.id !== result.id),
         ];
       });
+      void refreshSkillData(true);
     } catch (error) {
-      handleMutationError(error, 'Failed to update skill status.');
+      if (toggleRequestId === detailRequestRef.current) handleMutationError(error, 'Failed to update skill status.');
     } finally {
       setToggling(false);
     }
@@ -379,10 +530,18 @@ const SkillsPage: React.FC = () => {
     activeFilter: statusFilter,
     onFilterChange: setStatusFilter,
     showStatusFilters: isList,
+    scanFilters: { active: scanFilter, items: scanFilterItems, onChange: setScanFilter },
   };
 
   return (
     <Layout searchConfig={searchConfig} skillsNavigation={skillsNavigation}>
+      {canConfigureScan && (
+        <SkillScanSettingsDialog
+          isOpen={scanSettingsOpen}
+          onClose={() => setScanSettingsOpen(false)}
+          onSaved={handleScanSettingsSaved}
+        />
+      )}
       {shareTarget && (
         <ShareModal
           itemName={getSkillDisplayName(shareTarget)}
@@ -409,10 +568,17 @@ const SkillsPage: React.FC = () => {
           loading={skillLoading}
           refreshing={refreshing}
           error={skillError}
-          hasActiveConditions={Boolean(searchTerm.trim()) || statusFilter !== 'all'}
+          hasActiveConditions={Boolean(searchTerm.trim()) || statusFilter !== 'all' || scanFilter !== 'all'}
+          activeScanFilter={
+            scanFilter === 'all' ? undefined : scanFilterItems.find(item => item.value === scanFilter)?.label
+          }
+          onClearScanFilter={() => setScanFilter('all')}
           onRetry={() => void refreshSkillData()}
           onRefresh={() => void handleRefreshSkills()}
           onOpenSkill={id => navigateToSkill(id)}
+          onOpenSecurity={id => navigate(`${APP_ROUTES.skills}?skill=${encodeURIComponent(id)}&tab=security`)}
+          onOpenScanSettings={() => setScanSettingsOpen(true)}
+          canConfigureScan={canConfigureScan}
           onCreate={navigateToCreate}
           onShare={setShareTarget}
           onDelete={setDeleteTarget}
@@ -437,6 +603,17 @@ const SkillsPage: React.FC = () => {
           onToggle={() => void handleToggle()}
           onReset={handleReset}
           onSave={() => void handleSave()}
+          activeTab={isCreate ? 'files' : activeTab}
+          onTabChange={changeTab}
+          scanState={scanState}
+          canRequestScan={canRequestScan}
+          hasUnsavedChanges={hasUnsavedChanges}
+          scanTarget={scanTarget}
+          selectedFindingKey={selectedFindingKey}
+          onLocateFinding={handleLocateFinding}
+          onShowFinding={handleShowFinding}
+          onRequestScan={() => void handleRequestScan()}
+          onRefreshContent={() => void handleRefreshContent()}
         />
       )}
     </Layout>
