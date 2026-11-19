@@ -3,7 +3,6 @@ import time
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 from a2a.client import ClientConfig
 from a2a.types import (
@@ -25,6 +24,7 @@ from beanie import PydanticObjectId
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState, use_span
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.testing.federation_metadata import (
@@ -680,7 +680,6 @@ async def test_call_a2a_negotiates_transport_when_card_disagrees_with_config():
 async def test_call_a2a_forwards_shared_httpx_client_to_client_config():
     """When the caller supplies an httpx_client, it must be put on ClientConfig
     so the SDK reuses the same connection pool instead of creating a fresh one."""
-    import httpx as _httpx
 
     agent = _make_agent()
     mock_factory, _ = _mock_client([_msg("ok")])
@@ -691,7 +690,7 @@ async def test_call_a2a_forwards_shared_httpx_client_to_client_config():
         captured_configs.append(config)
         return mock_factory
 
-    shared = _httpx.AsyncClient()
+    shared = a2a_http.AsyncClient()
     try:
         with (
             patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
@@ -710,12 +709,11 @@ async def test_call_a2a_does_not_close_shared_httpx_client():
     """When httpx_client is supplied, call_a2a must skip `async with client`
     so the shared pool stays alive across multiple calls. We assert by
     checking that `mock_client.__aexit__` was NOT awaited."""
-    import httpx as _httpx
 
     agent = _make_agent()
     mock_factory, mock_client = _mock_client([_msg("ok")])
 
-    shared = _httpx.AsyncClient()
+    shared = a2a_http.AsyncClient()
     try:
         with (
             patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
@@ -963,7 +961,7 @@ async def test_call_a2a_reuses_agentcore_session_header_across_polling_requests(
         [(submitted, None)],
         get_task_responses=[completed],
     )
-    httpx_client = httpx.AsyncClient()
+    httpx_client = a2a_http.AsyncClient()
 
     with (
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
@@ -1083,7 +1081,7 @@ def test_ensure_a2a_result_fields_leaves_message_result_untouched():
 async def test_call_a2a_tolerates_azure_foundry_missing_artifact_id():
     """Azure Foundry returns Task artifacts without artifact_id; the call must succeed."""
     agent = _azure_foundry_agent()
-    httpx_client = httpx.AsyncClient()
+    httpx_client = a2a_http.AsyncClient()
 
     raw_response = {
         "jsonrpc": "2.0",

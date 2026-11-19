@@ -409,13 +409,12 @@ class TestA2AExecutor:
         httpx_client to call_a2a so the workflow step reuses the shared pool."""
         from unittest.mock import patch
 
-        import httpx
-
+        from registry_pkgs.core import a2a_http
         from registry_pkgs.workflows.a2a_client import A2ACallResult
         from registry_pkgs.workflows.a2a_executor import make_a2a_executor
 
         agent = _a2a_agent()
-        shared = httpx.AsyncClient()
+        shared = a2a_http.AsyncClient()
         try:
             executor = make_a2a_executor(
                 agent,

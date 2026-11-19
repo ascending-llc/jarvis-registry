@@ -123,7 +123,7 @@ def _patch_httpx():
     fake_client.__aenter__ = AsyncMock(return_value=fake_client)
     fake_client.__aexit__ = AsyncMock(return_value=None)
     return patch(
-        "registry.services.federation.azure_foundry_discovery.httpx.AsyncClient",
+        "registry.services.federation.azure_foundry_discovery.a2a_http.AsyncClient",
         return_value=fake_client,
     )
 

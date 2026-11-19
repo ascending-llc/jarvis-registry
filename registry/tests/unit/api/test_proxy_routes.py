@@ -928,9 +928,8 @@ async def test_get_proxy_strips_client_trace_headers_and_creates_span(monkeypatc
 
 
 async def test_forward_a2a_strips_client_trace_headers_and_creates_span(monkeypatch):
-    import httpx
-
     from registry.api import proxy_routes
+    from registry_pkgs.core import a2a_http
 
     exporter = _tracer_with_exporter(monkeypatch)
 
@@ -939,7 +938,7 @@ async def test_forward_a2a_strips_client_trace_headers_and_creates_span(monkeypa
     class _Ctx:
         async def __aenter__(self):
             return SimpleNamespace(
-                headers=httpx.Headers({"content-type": "application/json"}),
+                headers=a2a_http.Headers({"content-type": "application/json"}),
                 status_code=200,
                 aread=AsyncMock(return_value=b"{}"),
             )

@@ -1,7 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from httpx import AsyncClient, Auth, Limits, Timeout
-
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
@@ -9,7 +8,7 @@ from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
 _ClientCacheConfig = tuple[bool, AgentCoreRuntimeJwtConfig | None]
 
 
-class AuthServerJwtAuth(Auth):
+class AuthServerJwtAuth(a2a_http.Auth):
     def __init__(
         self,
         *,
@@ -63,12 +62,12 @@ class A2AProxyClientRegistry:
         self._jwt_signing_config = jwt_signing_config
         self._jwt_subject = jwt_subject
         self._expires_in_seconds = jwt_expires_in_seconds
-        self._limits = Limits(
+        self._limits = a2a_http.Limits(
             max_connections=max_connections,
             max_keepalive_connections=max_keepalive_connections,
         )
 
-        self._dict: dict[str, tuple[_ClientCacheConfig, AsyncClient]] = {}
+        self._dict: dict[str, tuple[_ClientCacheConfig, a2a_http.AsyncClient]] = {}
 
     def _build_auth(
         self,
@@ -91,7 +90,7 @@ class A2AProxyClientRegistry:
         *,
         agentcore_jwt: bool = False,
         runtime_jwt_config: AgentCoreRuntimeJwtConfig | None = None,
-    ) -> AsyncClient:
+    ) -> a2a_http.AsyncClient:
         cache_config = (agentcore_jwt, runtime_jwt_config)
         cached = self._dict.get(agent_slug)
         if cached is not None:
@@ -110,8 +109,8 @@ class A2AProxyClientRegistry:
             runtime_jwt_config=runtime_jwt_config,
         )
 
-        client = AsyncClient(
-            timeout=Timeout(30.0, read=60.0),
+        client = a2a_http.AsyncClient(
+            timeout=a2a_http.Timeout(30.0, read=60.0),
             follow_redirects=True,
             limits=self._limits,
             auth=auth,

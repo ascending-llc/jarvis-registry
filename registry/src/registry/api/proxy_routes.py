@@ -34,6 +34,7 @@ from registry.core.proxy_responses import (
     server_consent_response,
     url_elicitation_response,
 )
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.exceptions import (
     DownstreamAuthRejectedException,
@@ -628,7 +629,7 @@ async def _serve_managed_agent_card(
 async def _forward_a2a(
     request: Request,
     target_url: str,
-    proxy_client: httpx.AsyncClient,
+    proxy_client: a2a_http.AsyncClient,
     agent_path: str,
     is_jsonrpc: bool = False,
 ) -> Response:
@@ -655,7 +656,7 @@ async def _forward_a2a(
             # Use 5 min timeout when forwarding GET stream.
             # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
             stream_context = proxy_client.stream(
-                request.method, target_url, headers=headers, content=body, params=params, timeout=httpx.Timeout(300)
+                request.method, target_url, headers=headers, content=body, params=params, timeout=a2a_http.Timeout(300)
             )
             backend_response = await stream_context.__aenter__()
 
@@ -737,7 +738,7 @@ async def _forward_a2a(
                 if not is_stream:
                     await stream_context.__aexit__(None, None, None)
 
-        except httpx.TimeoutException:
+        except a2a_http.TimeoutException:
             logger.error(f"A2A proxy timeout for agent [{agent_path}] {target_url}")
             if is_jsonrpc:
                 return _jsonrpc_a2a_error_response(-32603, "Gateway timeout communicating with agent")

@@ -762,7 +762,7 @@ async def test_resolve_card_succeeds_on_third_base_url_attempt():
     )
 
     with (
-        patch("registry.services.a2a_agent_service.httpx.AsyncClient", return_value=_AsyncCM(object())),
+        patch("registry.services.a2a_agent_service.a2a_http.AsyncClient", return_value=_AsyncCM(object())),
         patch("registry.services.a2a_agent_service.A2ACardResolver", return_value=resolver) as MockResolver,
     ):
         result = await service._resolve_agent_card_with_fallback(
@@ -784,7 +784,9 @@ async def test_resolve_card_passes_auth_headers_to_httpx_client():
     headers = {"Authorization": "Bearer token-123"}
 
     with (
-        patch("registry.services.a2a_agent_service.httpx.AsyncClient", return_value=_AsyncCM(object())) as MockClient,
+        patch(
+            "registry.services.a2a_agent_service.a2a_http.AsyncClient", return_value=_AsyncCM(object())
+        ) as MockClient,
         patch("registry.services.a2a_agent_service.A2ACardResolver", return_value=resolver),
     ):
         await service._resolve_agent_card_with_fallback(
@@ -1029,7 +1031,7 @@ async def test_resolve_card_with_path_override_skips_generic_well_known_paths():
     resolver.get_agent_card = AsyncMock(return_value=card)
 
     with (
-        patch("registry.services.a2a_agent_service.httpx.AsyncClient", return_value=_AsyncCM(object())),
+        patch("registry.services.a2a_agent_service.a2a_http.AsyncClient", return_value=_AsyncCM(object())),
         patch("registry.services.a2a_agent_service.A2ACardResolver", return_value=resolver) as MockResolver,
     ):
         result = await service._resolve_agent_card_with_fallback(
