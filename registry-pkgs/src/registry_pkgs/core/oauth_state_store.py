@@ -436,8 +436,7 @@ class OAuthStateStore:
                     logger.warning("OAuth device code key exists without TTL: %s", key)
                 return False
 
-            self._redis.set(key, self._json_store.dumps_json(data), ex=remaining_ttl)
-            return True
+            return bool(self._redis.set(key, self._json_store.dumps_json(data), xx=True, keepttl=True))
         except RedisError:
             logger.exception("Failed to update OAuth device code")
             raise

@@ -878,7 +878,8 @@ class TestRefreshTokenRotation:
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
         test_consent_store.default_client_consent = False
-        test_consent_store.grant_client_consent("user-id-123", client_id)
+        grant_id = test_consent_store.grant_client_consent("user-id-123", client_id)
+        refresh_tokens_storage[old_refresh_token]["consent_grant_id"] = grant_id
         try:
             response = test_client_with_identity_service.post(
                 f"{API_PREFIX}/oauth2/token",
@@ -895,6 +896,7 @@ class TestRefreshTokenRotation:
         new_refresh_token = response.json()["refresh_token"]
         assert old_refresh_token not in refresh_tokens_storage
         assert new_refresh_token in refresh_tokens_storage
+        assert refresh_tokens_storage[new_refresh_token]["consent_grant_id"] == grant_id
 
     @pytest.mark.parametrize("client_id", ["mcp-client-user-gen", CLAUDE_DESKTOP_CLIENT_ID])
     def test_old_refresh_token_cannot_be_reused(
@@ -908,7 +910,7 @@ class TestRefreshTokenRotation:
 
         # Setup initial refresh token
         monkeypatch.setattr(test_consent_store, "default_client_consent", False)
-        test_consent_store.grant_client_consent("user-id-123", client_id)
+        grant_id = test_consent_store.grant_client_consent("user-id-123", client_id)
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
@@ -921,6 +923,7 @@ class TestRefreshTokenRotation:
 
         refresh_tokens_storage[old_refresh_token] = {
             "client_id": client_id,
+            "consent_grant_id": grant_id,
             "user_info": user_info,
             "scope": "mcp-proxy-ops",
             "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,

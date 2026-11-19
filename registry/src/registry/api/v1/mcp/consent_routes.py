@@ -1,5 +1,6 @@
 """Consent APIs for MCP direct-connect authorization flows."""
 
+import asyncio
 import logging
 from typing import Any
 
@@ -14,6 +15,7 @@ from registry_pkgs.oauth.schemas import ConsentScopeDisplay, DownstreamConsentCo
 
 from ....auth.dependencies import CurrentUser
 from ....constants import DownstreamOAuthConstants
+from ....core.config import settings
 from ....deps import (
     get_a2a_agent_service,
     get_consent_store,
@@ -28,6 +30,7 @@ from ....services.oauth.downstream_device_service import (
     initiate_device_layer_a,
     mark_device_denied,
     mark_device_failed,
+    persist_device_consent,
     resolve_device_nonce,
 )
 from ....services.oauth.mcp_service import MCPService
@@ -142,11 +145,11 @@ async def approve_downstream_consent(
     try:
         # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
         # that still legitimately belongs to its rightful owner.
-        pending = _peek_regular_consent(pending_store, body.nonce)
+        pending = await asyncio.to_thread(_peek_regular_consent, pending_store, body.nonce)
         if pending is None or pending["user_id"] != user_context["user_id"]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
 
-        consumed = pending_store.consume(body.nonce)
+        consumed = await asyncio.to_thread(pending_store.consume, body.nonce)
         if consumed is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
         pending = consumed
@@ -161,25 +164,33 @@ async def approve_downstream_consent(
                     server_service=server_service,
                 )
             except Exception:
-                if not mark_device_failed(pending["device_code"], store):
+                if not await asyncio.to_thread(mark_device_failed, pending["device_code"], store):
                     logger.warning("Device authorization expired while recording a Layer A startup failure")
                 raise
             if auth_url is None:
-                if not mark_device_failed(pending["device_code"], store):
+                if not await asyncio.to_thread(mark_device_failed, pending["device_code"], store):
                     logger.warning("Device authorization expired while recording a Layer A startup failure")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Failed to initiate downstream OAuth flow",
                 )
             try:
-                consent_store.grant_client_consent(pending["user_id"], pending["client_id"])
+                await asyncio.to_thread(
+                    persist_device_consent,
+                    device_code=pending["device_code"],
+                    user_id=pending["user_id"],
+                    client_id=pending["client_id"],
+                    store=store,
+                    consent_store=consent_store,
+                )
             except Exception:
-                if not mark_device_failed(pending["device_code"], store):
+                if not await asyncio.to_thread(mark_device_failed, pending["device_code"], store):
                     logger.warning("Device authorization expired while recording a consent persistence failure")
                 raise
             return {"redirect_url": auth_url}
 
-        consent_store.grant_client_consent(pending["user_id"], pending["client_id"])
+        if pending["client_id"] != settings.jwt_token_config.registry_client_id:
+            await asyncio.to_thread(consent_store.grant_client_consent, pending["user_id"], pending["client_id"])
         redirect = await _build_downstream_authorize_redirect(
             user_id=pending["user_id"],
             server_path=pending["server_path"],
