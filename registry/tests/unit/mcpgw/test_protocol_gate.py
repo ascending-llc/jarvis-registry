@@ -151,6 +151,7 @@ async def test_sdk_auto_client_falls_back_to_2025_11_25_against_gated_app(monkey
     receiving the gateway instructions."""
     # TestClient/ASGITransport use a non-production Host; the DNS-rebinding guard is orthogonal here.
     monkeypatch.setattr(settings, "mcpgw_enable_dns_rebinding_protection", False)
+    monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", False)
 
     def _reject(request: httpx.Request) -> httpx.Response:
         raise AssertionError(f"Unexpected outgoing request: {request.method} {request.url}")

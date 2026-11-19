@@ -299,9 +299,10 @@ def test_stale_session_id_is_served_not_404(auth_headers):
     assert "result" in msgs[-1], "stale-session SSE body was truncated/cancelled"
 
 
-def test_modern_protocol_header_rejected_when_gate_off(auth_headers):
+def test_modern_protocol_header_rejected_when_gate_off(auth_headers, monkeypatch):
     """With the kill switch off, a 2026-07-28 request to the gateway is rejected with -32022 before it
     reaches the MCP app, so clients fall back to 2025-11-25."""
+    monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", False)
     headers = {**auth_headers, "MCP-Protocol-Version": "2026-07-28"}
     with _pod_client(_container_stub(_FakeRedis(), has_consent=True)) as pod:
         resp = pod.post(_MCP_PATH, content=json.dumps(_tools_list()).encode(), headers=headers)
@@ -610,9 +611,10 @@ async def test_modern_retry_accept_with_consent_reaches_downstream(auth_headers,
         assert downstream.count("tools/call") == 1
 
 
-def test_modern_request_rejected_when_gate_off(auth_headers):
+def test_modern_request_rejected_when_gate_off(auth_headers, monkeypatch):
     """With the kill switch off a 2026-07-28 tools/call is rejected with -32022 before the MCP app, so the
     client renegotiates 2025-11-25 (companion to the handshake-era -32042 path above)."""
+    monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", False)
     body = _modern_execute_tool(url_elicitation=True)
     with _pod_client(_container_stub(_FakeRedis(), has_consent=False)) as pod:
         resp = pod.post(_MCP_PATH, content=json.dumps(body).encode(), headers=_modern_headers(auth_headers))
