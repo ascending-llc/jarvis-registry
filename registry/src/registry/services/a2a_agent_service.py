@@ -10,13 +10,13 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from a2a.client import A2ACardResolver, A2AClientHTTPError
 from a2a.types import AgentCard
 from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.exceptions import (
     A2AAgentCardNotFoundException,
@@ -194,7 +194,7 @@ class A2AAgentService:
         agent_card_path_override: str | None = None,
     ) -> AgentCard:
         """Fetch an agent card from an explicit or known path with deterministic errors."""
-        timeout = httpx.Timeout(timeout_seconds)
+        timeout = a2a_http.Timeout(timeout_seconds)
         last_404_error: Exception | None = None
         first_non_404_http_error: Exception | None = None
         first_transport_error: Exception | None = None
@@ -206,7 +206,7 @@ class A2AAgentService:
             else [".well-known/agent-card.json", ".well-known/agent.json", ""]
         )
 
-        async with httpx.AsyncClient(timeout=timeout, headers=auth_headers or {}) as client:
+        async with a2a_http.AsyncClient(timeout=timeout, headers=auth_headers or {}) as client:
             for path in well_known_paths:
                 try:
                     resolver = A2ACardResolver(
@@ -226,7 +226,7 @@ class A2AAgentService:
                     logger.error(f"HTTP error (non-404) fetching from {base_url}/{path}: {e}")
                     if first_non_404_http_error is None:
                         first_non_404_http_error = e
-                except (httpx.HTTPError, httpx.TimeoutException) as e:
+                except (a2a_http.HTTPError, a2a_http.TimeoutException) as e:
                     logger.error(f"Transport error fetching from {base_url}/{path}: {e}")
                     if first_transport_error is None:
                         first_transport_error = e

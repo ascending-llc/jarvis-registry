@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import httpx
-
 from registry.core.a2a_proxy import A2AProxyClientRegistry
+from registry_pkgs.core import a2a_http
 from registry_pkgs.federation.azure_foundry_client_cache import AzureFoundryClientCache
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
@@ -41,7 +40,7 @@ class A2AClientRegistry:
         self._agentcore_registry = agentcore_registry
         self._azure_client_cache = azure_client_cache
 
-    async def get_client(self, agent: A2AAgent) -> httpx.AsyncClient:
+    async def get_client(self, agent: A2AAgent) -> a2a_http.AsyncClient:
         if is_azure_foundry_runtime(agent):
             return await self._azure_client_cache.get_client(agent)
 

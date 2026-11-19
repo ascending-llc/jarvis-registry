@@ -141,7 +141,7 @@ class TestWorkflowRunnerModelSelection:
 
 
 @pytest.mark.unit
-@patch("registry.container.httpx.AsyncClient")
+@patch("registry.container.a2a_http.AsyncClient")
 def test_a2a_httpx_client_pool_limits_come_from_settings(mock_async_client):
     """Long A2A reads hold pooled connections for the whole call, so the pool size must
     stay settings-tunable rather than hardcoded."""

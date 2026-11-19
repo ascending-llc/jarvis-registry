@@ -34,6 +34,7 @@ from registry.core.proxy_responses import (
     server_consent_response,
     url_elicitation_response,
 )
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.exceptions import (
     DownstreamAuthRejectedException,
@@ -167,34 +168,42 @@ def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
-# Content-codings that httpx's automatic response decoding (`Response.aread`/`aiter_bytes`) is
-# actually able to reverse *in this process*. Derived directly from httpx's own decoder registry
-# rather than a hand-maintained list, because the real answer is environment-dependent: `br`
-# (Brotli) and `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages
-# happen to be installed -- `httpx/_decoders.py` builds `SUPPORTED_DECODERS` by probing those
-# imports at module load time and popping the entry when the import fails. A hardcoded list would
-# silently drift from that reality the moment an optional codec dependency is added or removed
-# (e.g. this repo currently has `zstandard` but not `brotli`) -- exactly the class of bug this
-# check exists to prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) httpx module, so this
-# is a deliberate, narrow coupling to non-public API: if a future httpx version restructures or
-# removes it, this import fails loudly at process start-up rather than silently going stale. See
+# Content-codings the MCP proxy client's automatic response decoding (`Response.aread`/`aiter_bytes`)
+# is actually able to reverse *in this process*. A2A responses are read by a different client
+# library (classic httpx via `registry_pkgs.core.a2a_http`) and are checked against that library's
+# own set, `a2a_http.DECODABLE_CONTENT_ENCODINGS`: the two sets can diverge (e.g. `zstd` support is
+# probed independently by each library), so each response must be checked against the decoder set
+# of the client that read it. Derived directly from the library's own decoder registry rather than
+# a hand-maintained list, because the real answer is environment-dependent: `br` (Brotli) and
+# `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages happen to be
+# installed -- `httpx/_decoders.py` builds `SUPPORTED_DECODERS` by probing those imports at module
+# load time and popping the entry when the import fails. A hardcoded list would silently drift from
+# that reality the moment an optional codec dependency is added or removed (e.g. this repo
+# currently has `zstandard` but not `brotli`) -- exactly the class of bug this check exists to
+# prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) module, so this is a deliberate, narrow
+# coupling to non-public API: if a future version restructures or removes it, this import fails
+# loudly at process start-up rather than silently going stale. See
 # `test_httpx_decoders_supported_decoders_is_accessible` in the test suite for a canary that fails
 # the moment CI's httpx version breaks this assumption, before it could surface as a prod bug.
 _HTTPX_DECODABLE_CONTENT_ENCODINGS = frozenset(SUPPORTED_DECODERS.keys())
 
 
-def _pop_content_encoding_if_fully_decoded(response_headers: dict[str, str], backend_headers: httpx.Headers) -> None:
+def _pop_content_encoding_if_fully_decoded(
+    response_headers: dict[str, str], backend_headers: httpx.Headers, decodable_encodings: frozenset[str]
+) -> None:
     """
     Strip `Content-Encoding` from the outgoing response headers, but only when every coding it
-    lists is one that httpx's `aread()`/`aiter_bytes()` actually reversed already.
+    lists is in the supplied decoder set of the client that read the response.
 
-    We read the backend response body via `aread()`/`aiter_bytes()` above, which auto-decompresses
-    it according to `Content-Encoding` -- but only for codings httpx recognizes (see
-    `_HTTPX_DECODABLE_CONTENT_ENCODINGS`). Any other content-coding token -- a legitimate one httpx
-    just doesn't support (e.g. the RFC 8188 `aes128gcm` encryption coding), or plain Brotli/Zstandard
-    in a deployment missing the optional codec package -- is silently left alone by httpx: it drops
-    the unrecognized token and decodes nothing for it, with no error raised. The bytes we're holding
-    are then still in their original encoded form even though nothing looks wrong.
+    The caller read the backend response body via `aread()`/`aiter_bytes()`, which auto-decompresses
+    it according to `Content-Encoding` -- but only for codings that client library recognizes, which
+    the caller passes as `decodable_encodings` (`_HTTPX_DECODABLE_CONTENT_ENCODINGS` for MCP
+    responses, `a2a_http.DECODABLE_CONTENT_ENCODINGS` for A2A responses). Any other content-coding
+    token -- a legitimate one the library doesn't support (e.g. the RFC 8188 `aes128gcm` encryption
+    coding), or plain Brotli/Zstandard in a deployment missing the optional codec package -- is
+    silently left alone: the library drops the unrecognized token and decodes nothing for it, with
+    no error raised. The bytes we're holding are then still in their original encoded form even
+    though nothing looks wrong.
 
     If we always stripped `Content-Encoding` regardless, we would forward those still-encoded bytes
     to our client while the header tells it no further decoding is needed -- a correctness bug, not
@@ -205,7 +214,7 @@ def _pop_content_encoding_if_fully_decoded(response_headers: dict[str, str], bac
     """
     encodings = backend_headers.get_list("content-encoding", split_commas=True)
 
-    if encodings and all(value.strip().lower() in _HTTPX_DECODABLE_CONTENT_ENCODINGS for value in encodings):
+    if encodings and all(value.strip().lower() in decodable_encodings for value in encodings):
         response_headers.pop("content-encoding", None)
 
 
@@ -455,7 +464,9 @@ async def _forward_to_downstream(
                 # Content-Encoding whenever httpx knows how to (see
                 # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
                 # unchanged in that case would tell our client to decode an already-decoded body.
-                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                _pop_content_encoding_if_fully_decoded(
+                    response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+                )
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -470,7 +481,9 @@ async def _forward_to_downstream(
             response_headers.pop("content-length", None)
             # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
             # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
-            _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+            _pop_content_encoding_if_fully_decoded(
+                response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+            )
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
@@ -628,7 +641,7 @@ async def _serve_managed_agent_card(
 async def _forward_a2a(
     request: Request,
     target_url: str,
-    proxy_client: httpx.AsyncClient,
+    proxy_client: a2a_http.AsyncClient,
     agent_path: str,
     is_jsonrpc: bool = False,
 ) -> Response:
@@ -655,7 +668,7 @@ async def _forward_a2a(
             # Use 5 min timeout when forwarding GET stream.
             # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
             stream_context = proxy_client.stream(
-                request.method, target_url, headers=headers, content=body, params=params, timeout=httpx.Timeout(300)
+                request.method, target_url, headers=headers, content=body, params=params, timeout=a2a_http.Timeout(300)
             )
             backend_response = await stream_context.__aenter__()
 
@@ -691,7 +704,9 @@ async def _forward_a2a(
                     # Content-Encoding whenever httpx knows how to (see
                     # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
                     # unchanged in that case would tell our client to decode an already-decoded body.
-                    _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                    _pop_content_encoding_if_fully_decoded(
+                        response_headers, backend_response.headers, a2a_http.DECODABLE_CONTENT_ENCODINGS
+                    )
                     return Response(
                         content=content_bytes,
                         status_code=backend_response.status_code,
@@ -706,7 +721,9 @@ async def _forward_a2a(
                 response_headers.pop("content-length", None)
                 # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
                 # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
-                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                _pop_content_encoding_if_fully_decoded(
+                    response_headers, backend_response.headers, a2a_http.DECODABLE_CONTENT_ENCODINGS
+                )
                 response_headers.update(
                     {
                         "Cache-Control": "no-cache",
@@ -737,7 +754,7 @@ async def _forward_a2a(
                 if not is_stream:
                     await stream_context.__aexit__(None, None, None)
 
-        except httpx.TimeoutException:
+        except a2a_http.TimeoutException:
             logger.error(f"A2A proxy timeout for agent [{agent_path}] {target_url}")
             if is_jsonrpc:
                 return _jsonrpc_a2a_error_response(-32603, "Gateway timeout communicating with agent")
@@ -1283,6 +1300,11 @@ async def dynamic_mcp_get_proxy(
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
+            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk -- see
+            # `_pop_content_encoding_if_fully_decoded`.
+            _pop_content_encoding_if_fully_decoded(
+                response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+            )
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",

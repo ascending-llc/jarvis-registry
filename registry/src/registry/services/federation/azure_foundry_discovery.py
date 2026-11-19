@@ -5,11 +5,11 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from a2a.client import A2ACardResolver
 from azure.ai.projects.aio import AIProjectClient
 from beanie import PydanticObjectId
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import (
@@ -84,7 +84,7 @@ class AzureFoundryDiscoveryClient:
 
         # Enrich with the full agentCard/v0.3 (parallel; failures kept per-agent).
         headers = await auth.build_headers()
-        async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(60.0)) as http_client:
+        async with a2a_http.AsyncClient(headers=headers, timeout=a2a_http.Timeout(60.0)) as http_client:
             outcomes = await run_bounded(
                 agents,
                 lambda agent: self._enrich_agent_card(agent, http_client),
@@ -272,7 +272,7 @@ class AzureFoundryDiscoveryClient:
     async def _enrich_agent_card(
         self,
         agent: A2AAgent,
-        http_client: httpx.AsyncClient,
+        http_client: a2a_http.AsyncClient,
     ) -> None:
         metadata = agent.federationMetadata
         if not isinstance(metadata, AzureFoundryFederationMetadata):

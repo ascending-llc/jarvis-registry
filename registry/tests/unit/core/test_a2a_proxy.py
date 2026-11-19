@@ -1,8 +1,8 @@
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from httpx import AsyncClient, Request
 
 from registry.core.a2a_proxy import A2AProxyClientRegistry
+from registry_pkgs.core.a2a_http import AsyncClient, Request
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig

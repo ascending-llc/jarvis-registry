@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-import httpx
 from agno.run.cancel import set_cancellation_manager
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.structured_logging import configure_structured_logging
 from registry_pkgs.database.leased_job import interruptible_sleep
 from registry_pkgs.database.mongodb import MongoDB, close_mongodb, init_mongodb
@@ -110,7 +110,7 @@ async def _wait_for_claim_capacity(
 async def _build_runner(
     directive_queue: DirectiveQueue,
     redis_client: Any,
-    http_client: httpx.AsyncClient,
+    http_client: a2a_http.AsyncClient,
     azure_client_cache: AzureFoundryClientCache,
     azure_model_credential: AzureModelCredential,
 ) -> WorkflowRunner:
@@ -301,7 +301,7 @@ async def main() -> None:
     lease_owner = f"workflow-worker-{uuid4()}"
 
     # read=None: workflow runs can be long-lived (LLM inference, external API calls)
-    http_client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0))
+    http_client = a2a_http.AsyncClient(timeout=a2a_http.Timeout(connect=30.0, read=None, write=60.0, pool=30.0))
     azure_client_cache = AzureFoundryClientCache(encryption_key=settings.encryption_key)
     azure_model_credential = AzureModelCredential()
     runner = await _build_runner(

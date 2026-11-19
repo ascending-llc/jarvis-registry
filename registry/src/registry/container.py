@@ -12,6 +12,7 @@ from beanie import PydanticObjectId
 from mcp.client.caching import InMemoryResponseCacheStore
 from redis import Redis
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
@@ -475,12 +476,12 @@ class RegistryContainer:
         return DownstreamEraCache(self.redis_client, self.settings.redis_key_prefix)
 
     @cached_property
-    def a2a_httpx_client(self) -> httpx.AsyncClient:
+    def a2a_httpx_client(self) -> a2a_http.AsyncClient:
         """Shared httpx client for A2A agent invocations (workflow executors + mcpgw)."""
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
+        return a2a_http.AsyncClient(
+            timeout=a2a_http.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
-            limits=httpx.Limits(
+            limits=a2a_http.Limits(
                 max_connections=self.settings.a2a_max_connections,
                 max_keepalive_connections=self.settings.a2a_max_keepalive_connections,
             ),

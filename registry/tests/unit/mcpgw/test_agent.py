@@ -358,9 +358,9 @@ async def test_execute_agent_rejects_missing_user_context():
 @pytest.mark.asyncio
 async def test_execute_agent_resolves_registry_client_before_call_a2a():
     """The McpAppContext registry must provide the client passed to call_a2a."""
-    import httpx
+    from registry_pkgs.core import a2a_http
 
-    shared = httpx.AsyncClient()
+    shared = a2a_http.AsyncClient()
     try:
         a2a_client_registry = SimpleNamespace(get_client=AsyncMock(return_value=shared))
         ctx = _make_ctx(a2a_client_registry=a2a_client_registry)
