@@ -1300,6 +1300,11 @@ async def dynamic_mcp_get_proxy(
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
+            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk -- see
+            # `_pop_content_encoding_if_fully_decoded`.
+            _pop_content_encoding_if_fully_decoded(
+                response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+            )
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
