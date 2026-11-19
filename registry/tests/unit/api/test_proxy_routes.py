@@ -1847,3 +1847,37 @@ async def test_forward_mcp_uses_own_decoder_set(
     else:
         assert response.body == body
     context.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.parametrize("can_decode", [False, True])
+async def test_get_proxy_strips_content_encoding_only_when_decoded(
+    monkeypatch: pytest.MonkeyPatch, can_decode: bool
+) -> None:
+    from registry_pkgs.core import a2a_http
+
+    _token_header_builder(monkeypatch, ["api-key"])
+    # Opposite capabilities ensure the GET path fails if wired to the A2A decoder set.
+    supported = frozenset({"gzip"})
+    monkeypatch.setattr(proxy_routes, "_HTTPX_DECODABLE_CONTENT_ENCODINGS", supported if can_decode else frozenset())
+    monkeypatch.setattr(a2a_http, "DECODABLE_CONTENT_ENCODINGS", frozenset() if can_decode else supported)
+    body = b"data: {}\n\n"
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield body
+
+    backend = SimpleNamespace(
+        headers=httpx2.Headers({"content-type": "text/event-stream", "content-encoding": "gzip"}),
+        status_code=200,
+        aiter_bytes=chunks,
+    )
+    context = AsyncMock()
+    context.__aenter__.return_value = backend
+    client = Mock()
+    client.stream.return_value = context
+
+    response = await _get(client, _make_server(), Mock())
+
+    assert response.status_code == 200
+    assert response.headers.get("content-encoding") == (None if can_decode else "gzip")
+    assert b"".join([chunk async for chunk in response.body_iterator]) == body
+    context.__aexit__.assert_awaited_once()

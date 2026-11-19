@@ -168,18 +168,21 @@ def _sanitize_hop_by_hop_headers(headers: httpx2.Headers | a2a_http.Headers) -> 
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
-# Each client library uses its own decoder set for its responses.
-# MCP content-codings that httpx2's automatic response decoding (`Response.aread`/`aiter_bytes`) is
-# actually able to reverse *in this process*. Derived directly from httpx2's own decoder registry
-# rather than a hand-maintained list, because the real answer is environment-dependent: `br`
-# (Brotli) and `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages
-# happen to be installed -- `httpx2/_decoders.py` builds `SUPPORTED_DECODERS` by probing those
-# imports at module load time and popping the entry when the import fails. A hardcoded list would
-# silently drift from that reality the moment an optional codec dependency is added or removed
-# (e.g. this repo currently has `zstandard` but not `brotli`) -- exactly the class of bug this
-# check exists to prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) httpx2 module, so this
-# is a deliberate, narrow coupling to non-public API: if a future httpx2 version restructures or
-# removes it, this import fails loudly at process start-up rather than silently going stale. See
+# Content-codings the MCP proxy client's automatic response decoding (`Response.aread`/`aiter_bytes`)
+# is actually able to reverse *in this process*. A2A responses are read by a different client
+# library (classic httpx via `registry_pkgs.core.a2a_http`) and are checked against that library's
+# own set, `a2a_http.DECODABLE_CONTENT_ENCODINGS`: the two sets can diverge (e.g. `zstd` support is
+# probed independently by each library), so each response must be checked against the decoder set
+# of the client that read it. Derived directly from the library's own decoder registry rather than
+# a hand-maintained list, because the real answer is environment-dependent: `br` (Brotli) and
+# `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages happen to be
+# installed -- `httpx2/_decoders.py` builds `SUPPORTED_DECODERS` by probing those imports at module
+# load time and popping the entry when the import fails. A hardcoded list would silently drift from
+# that reality the moment an optional codec dependency is added or removed (e.g. this repo
+# currently has `zstandard` but not `brotli`) -- exactly the class of bug this check exists to
+# prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) module, so this is a deliberate, narrow
+# coupling to non-public API: if a future version restructures or removes it, this import fails
+# loudly at process start-up rather than silently going stale. See
 # `test_httpx2_decoders_supported_decoders_is_accessible` in the test suite for a canary that fails
 # the moment CI's httpx2 version breaks this assumption, before it could surface as a prod bug.
 _HTTPX_DECODABLE_CONTENT_ENCODINGS = frozenset(SUPPORTED_DECODERS.keys())
@@ -194,10 +197,15 @@ def _pop_content_encoding_if_fully_decoded(
     Strip `Content-Encoding` from the outgoing response headers, but only when every coding it
     lists is in the supplied decoder set of the client that read the response.
 
-    We read the backend response body via `aread()`/`aiter_bytes()`, which auto-decompresses
-    it according to `Content-Encoding` for codings recognized by that response's client (see
-    `decodable_encodings`). Unknown codings, such as RFC 8188 `aes128gcm` or optional codecs
-    missing from the deployment, can leave the bytes in their original encoded form.
+    The caller read the backend response body via `aread()`/`aiter_bytes()`, which auto-decompresses
+    it according to `Content-Encoding` -- but only for codings that client library recognizes, which
+    the caller passes as `decodable_encodings` (`_HTTPX_DECODABLE_CONTENT_ENCODINGS` for MCP
+    responses, `a2a_http.DECODABLE_CONTENT_ENCODINGS` for A2A responses). Any other content-coding
+    token -- a legitimate one the library doesn't support (e.g. the RFC 8188 `aes128gcm` encryption
+    coding), or plain Brotli/Zstandard in a deployment missing the optional codec package -- is
+    silently left alone: the library drops the unrecognized token and decodes nothing for it, with
+    no error raised. The bytes we're holding are then still in their original encoded form even
+    though nothing looks wrong.
 
     If we always stripped `Content-Encoding` regardless, we would forward those still-encoded bytes
     to our client while the header tells it no further decoding is needed -- a correctness bug, not
@@ -1294,6 +1302,11 @@ async def dynamic_mcp_get_proxy(
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
+            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk -- see
+            # `_pop_content_encoding_if_fully_decoded`.
+            _pop_content_encoding_if_fully_decoded(
+                response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+            )
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",

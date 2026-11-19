@@ -21,7 +21,8 @@ HTTPError = httpx.HTTPError
 HTTPStatusError = httpx.HTTPStatusError
 TimeoutException = httpx.TimeoutException
 
-# Codings this client's aread()/aiter_bytes() can reverse in this process.
+# Codings this client's aread()/aiter_bytes() can reverse in this process. See
+# registry.api.proxy_routes._pop_content_encoding_if_fully_decoded.
 DECODABLE_CONTENT_ENCODINGS: frozenset[str] = frozenset(SUPPORTED_DECODERS.keys())
 
 __all__ = [
