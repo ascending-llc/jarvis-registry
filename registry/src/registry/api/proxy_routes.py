@@ -168,6 +168,7 @@ def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
+# Each client library uses its own decoder set for its responses.
 # Content-codings that httpx's automatic response decoding (`Response.aread`/`aiter_bytes`) is
 # actually able to reverse *in this process*. Derived directly from httpx's own decoder registry
 # rather than a hand-maintained list, because the real answer is environment-dependent: `br`
@@ -184,14 +185,16 @@ def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
 _HTTPX_DECODABLE_CONTENT_ENCODINGS = frozenset(SUPPORTED_DECODERS.keys())
 
 
-def _pop_content_encoding_if_fully_decoded(response_headers: dict[str, str], backend_headers: httpx.Headers) -> None:
+def _pop_content_encoding_if_fully_decoded(
+    response_headers: dict[str, str], backend_headers: httpx.Headers, decodable_encodings: frozenset[str]
+) -> None:
     """
     Strip `Content-Encoding` from the outgoing response headers, but only when every coding it
-    lists is one that httpx's `aread()`/`aiter_bytes()` actually reversed already.
+    lists is in the supplied decoder set of the client that read the response.
 
     We read the backend response body via `aread()`/`aiter_bytes()` above, which auto-decompresses
     it according to `Content-Encoding` -- but only for codings httpx recognizes (see
-    `_HTTPX_DECODABLE_CONTENT_ENCODINGS`). Any other content-coding token -- a legitimate one httpx
+    `decodable_encodings`). Any other content-coding token -- a legitimate one httpx
     just doesn't support (e.g. the RFC 8188 `aes128gcm` encryption coding), or plain Brotli/Zstandard
     in a deployment missing the optional codec package -- is silently left alone by httpx: it drops
     the unrecognized token and decodes nothing for it, with no error raised. The bytes we're holding
@@ -206,7 +209,7 @@ def _pop_content_encoding_if_fully_decoded(response_headers: dict[str, str], bac
     """
     encodings = backend_headers.get_list("content-encoding", split_commas=True)
 
-    if encodings and all(value.strip().lower() in _HTTPX_DECODABLE_CONTENT_ENCODINGS for value in encodings):
+    if encodings and all(value.strip().lower() in decodable_encodings for value in encodings):
         response_headers.pop("content-encoding", None)
 
 
@@ -456,7 +459,9 @@ async def _forward_to_downstream(
                 # Content-Encoding whenever httpx knows how to (see
                 # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
                 # unchanged in that case would tell our client to decode an already-decoded body.
-                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                _pop_content_encoding_if_fully_decoded(
+                    response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+                )
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -471,7 +476,9 @@ async def _forward_to_downstream(
             response_headers.pop("content-length", None)
             # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
             # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
-            _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+            _pop_content_encoding_if_fully_decoded(
+                response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+            )
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
@@ -692,7 +699,9 @@ async def _forward_a2a(
                     # Content-Encoding whenever httpx knows how to (see
                     # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
                     # unchanged in that case would tell our client to decode an already-decoded body.
-                    _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                    _pop_content_encoding_if_fully_decoded(
+                        response_headers, backend_response.headers, a2a_http.DECODABLE_CONTENT_ENCODINGS
+                    )
                     return Response(
                         content=content_bytes,
                         status_code=backend_response.status_code,
@@ -707,7 +716,9 @@ async def _forward_a2a(
                 response_headers.pop("content-length", None)
                 # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
                 # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
-                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                _pop_content_encoding_if_fully_decoded(
+                    response_headers, backend_response.headers, a2a_http.DECODABLE_CONTENT_ENCODINGS
+                )
                 response_headers.update(
                     {
                         "Cache-Control": "no-cache",

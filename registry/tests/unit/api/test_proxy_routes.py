@@ -1744,3 +1744,106 @@ async def test_direct_client_notification_keeps_local_202(monkeypatch: pytest.Mo
     assert response.status_code == 202
     assert not response.body and not requests
     builder.assert_not_awaited()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_forward_a2a_uses_own_decoder_set(monkeypatch: pytest.MonkeyPatch, streaming: bool) -> None:
+    from registry.api import proxy_routes
+    from registry_pkgs.core import a2a_http
+
+    coding = "gzip"
+    assert coding in a2a_http.DECODABLE_CONTENT_ENCODINGS
+    monkeypatch.setattr(proxy_routes, "_HTTPX_DECODABLE_CONTENT_ENCODINGS", frozenset())
+    headers = a2a_http.Headers(
+        {
+            "content-type": "text/event-stream" if streaming else "application/json",
+            "content-encoding": coding,
+        }
+    )
+
+    async def chunks():
+        yield b"{}"
+
+    backend = SimpleNamespace(headers=headers, status_code=200, aread=AsyncMock(return_value=b"{}"), aiter_bytes=chunks)
+    context = AsyncMock()
+    context.__aenter__.return_value = backend
+    client = Mock()
+    client.stream.return_value = context
+    request = Request(
+        {"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": []}, receive=_proxy_receive()
+    )
+
+    response = await proxy_routes._forward_a2a(request, "https://agent.example.com", client, "test-agent")
+
+    assert response.status_code == 200
+    assert "content-encoding" not in response.headers
+    if streaming:
+        assert b"".join([chunk async for chunk in response.body_iterator]) == b"{}"
+    else:
+        assert response.body == b"{}"
+    context.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.parametrize("coding,removed", [("GZip, deflate", True), ("unknown", False), ("gzip, unknown", False)])
+def test_encoding_header_requires_all_supported_codings(coding: str, removed: bool) -> None:
+    from registry.api import proxy_routes
+    from registry_pkgs.core import a2a_http
+
+    headers = a2a_http.Headers({"content-encoding": coding})
+    outgoing = dict(headers)
+    proxy_routes._pop_content_encoding_if_fully_decoded(outgoing, headers, a2a_http.DECODABLE_CONTENT_ENCODINGS)
+    assert ("content-encoding" not in outgoing) is removed
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("can_decode", [False, True])
+async def test_forward_mcp_uses_own_decoder_set(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool, can_decode: bool
+) -> None:
+    import gzip
+
+    from registry.core.proxy_call import ProxyCall
+    from registry_pkgs.core import a2a_http
+
+    # Opposite capabilities ensure either MCP call site fails if wired to A2A.
+    supported = frozenset({"gzip"})
+    monkeypatch.setattr(proxy_routes, "_HTTPX_DECODABLE_CONTENT_ENCODINGS", supported if can_decode else frozenset())
+    monkeypatch.setattr(a2a_http, "DECODABLE_CONTENT_ENCODINGS", frozenset() if can_decode else supported)
+    plain_body = b"data: {}\n\n" if streaming else b"{}"
+    body = plain_body if can_decode else gzip.compress(plain_body)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield body
+
+    backend = SimpleNamespace(
+        headers=httpx.Headers(
+            {
+                "content-type": "text/event-stream" if streaming else "application/json",
+                "content-encoding": "gzip",
+            }
+        ),
+        status_code=200,
+        aread=AsyncMock(return_value=body),
+        aiter_bytes=chunks,
+    )
+    context = AsyncMock()
+    context.__aenter__.return_value = backend
+    client = Mock()
+    client.stream.return_value = context
+    proxy_call = ProxyCall.from_message(1, "tools/list", {}, b"{}", None)
+
+    response = await proxy_routes._forward_to_downstream(
+        call=proxy_call,
+        request=_proxy_post_request([]),
+        target_url="https://mcp.example.com",
+        proxy_client=client,
+        headers={},
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("content-encoding") == (None if can_decode else "gzip")
+    if streaming:
+        assert b"".join([chunk async for chunk in response.body_iterator]) == body
+    else:
+        assert response.body == body
+    context.__aexit__.assert_awaited_once()
