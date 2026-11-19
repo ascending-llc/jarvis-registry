@@ -22,7 +22,7 @@ import logging
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
+import httpx2
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
     build_protected_resource_metadata_discovery_urls,
@@ -74,11 +74,11 @@ def _validate_prm_resource(resource: str, server_url: str) -> None:
         raise OAuthDiscoveryError(f"Protected resource metadata names resource {resource!r}, not {server_url!r}")
 
 
-async def _fetch_json(http_client: httpx.AsyncClient, url: str) -> dict[str, Any] | None:
+async def _fetch_json(http_client: httpx2.AsyncClient, url: str) -> dict[str, Any] | None:
     """GET a well-known document; None for a non-200 or a body that isn't a JSON object."""
     try:
         response = await http_client.get(url, timeout=DISCOVERY_TIMEOUT_SECONDS)
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         raise OAuthDiscoveryError(f"Failed to fetch OAuth metadata from {url}: {e}") from e
     if response.status_code != 200:
         logger.debug("OAuth discovery candidate %s answered %s", url, response.status_code)
@@ -91,7 +91,7 @@ async def _fetch_json(http_client: httpx.AsyncClient, url: str) -> dict[str, Any
     return body if isinstance(body, dict) else None
 
 
-async def _probe_challenge(http_client: httpx.AsyncClient, server_url: str) -> str | None:
+async def _probe_challenge(http_client: httpx2.AsyncClient, server_url: str) -> str | None:
     """Send an unauthenticated request and return the 401's WWW-Authenticate header, if any."""
     try:
         # Stream so an unauthenticated server that answers with an open SSE stream can't hang us.
@@ -102,16 +102,16 @@ async def _probe_challenge(http_client: httpx.AsyncClient, server_url: str) -> s
                 logger.debug("OAuth discovery probe of %s answered %s", server_url, response.status_code)
                 return None
             return response.headers.get("WWW-Authenticate")
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         raise OAuthDiscoveryError(f"Failed to probe {server_url} for an OAuth challenge: {e}") from e
 
 
-async def _discover(server_url: str, http_client: httpx.AsyncClient, www_authenticate: str | None) -> DiscoveryResult:
+async def _discover(server_url: str, http_client: httpx2.AsyncClient, www_authenticate: str | None) -> DiscoveryResult:
     if www_authenticate is None:
         www_authenticate = await _probe_challenge(http_client, server_url)
 
     # The SDK helper reads the header from a Response.
-    challenge = httpx.Response(401, headers={"WWW-Authenticate": www_authenticate} if www_authenticate else {})
+    challenge = httpx2.Response(401, headers={"WWW-Authenticate": www_authenticate} if www_authenticate else {})
     resource_metadata_url = extract_field_from_www_auth(challenge, "resource_metadata")
     www_auth_scope = extract_field_from_www_auth(challenge, "scope")
 
@@ -179,7 +179,7 @@ async def _discover(server_url: str, http_client: httpx.AsyncClient, www_authent
 async def discover_mcp_oauth(
     server_url: str,
     *,
-    http_client: httpx.AsyncClient,
+    http_client: httpx2.AsyncClient,
     www_authenticate: str | None = None,
 ) -> DiscoveryResult:
     """Run MCP OAuth discovery for ``server_url``.

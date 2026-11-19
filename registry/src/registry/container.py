@@ -6,7 +6,6 @@ from functools import cached_property, partial
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-import httpx
 import httpx2
 from beanie import PydanticObjectId
 from mcp.client.caching import InMemoryResponseCacheStore
@@ -442,12 +441,12 @@ class RegistryContainer:
         )
 
     @cached_property
-    def mcp_proxy_client(self) -> httpx.AsyncClient:
-        """Shared httpx client for the direct-proxy `/proxy/{server}` routes and skill-sync's GitHub/OAuth calls."""
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, read=60.0),
+    def mcp_proxy_client(self) -> httpx2.AsyncClient:
+        """Shared httpx2 client for the direct-proxy `/proxy/{server}` routes and skill-sync's GitHub/OAuth calls."""
+        return httpx2.AsyncClient(
+            timeout=httpx2.Timeout(30.0, read=60.0),
             follow_redirects=True,
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
         )
 
     @cached_property
@@ -477,7 +476,7 @@ class RegistryContainer:
 
     @cached_property
     def a2a_httpx_client(self) -> a2a_http.AsyncClient:
-        """Shared httpx client for A2A agent invocations (workflow executors + mcpgw)."""
+        """Shared classic httpx client for A2A agent invocations (workflow executors + mcpgw)."""
         return a2a_http.AsyncClient(
             timeout=a2a_http.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,

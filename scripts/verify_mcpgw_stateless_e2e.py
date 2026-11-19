@@ -42,7 +42,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
+import httpx2
 from bson import ObjectId
 from dotenv import load_dotenv
 from redis import Redis
@@ -131,7 +131,7 @@ def _rpc(
         if raw_body is not None
         else json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
     )
-    with httpx.Client(timeout=15) as client:
+    with httpx2.Client(timeout=15) as client:
         with client.stream("POST", url, headers=headers, content=body) as resp:
             has_session = "mcp-session-id" in {k.lower() for k in resp.headers}
             ctype = resp.headers.get("content-type", "")
@@ -145,7 +145,7 @@ def _rpc(
                             except json.JSONDecodeError:
                                 message = None
                             break
-                except httpx.RemoteProtocolError:
+                except httpx2.RemoteProtocolError:
                     # Stream closed mid-body without a clean terminator — a cancelled/truncated response.
                     message = None
             return RpcResult(resp.status_code, has_session, ctype, message)

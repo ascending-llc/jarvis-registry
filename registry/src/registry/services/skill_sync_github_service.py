@@ -4,7 +4,7 @@ import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
+import httpx2
 
 from registry_pkgs.models.enums import SkillSyncJobErrorCode
 
@@ -56,7 +56,7 @@ class SkillSyncGitHubService:
     decompression safeguards. It does not interpret Skill metadata or write database state.
     """
 
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
+    def __init__(self, http_client: httpx2.AsyncClient) -> None:
         self._http_client = http_client
 
     async def resolve_commit_sha(
@@ -66,7 +66,7 @@ class SkillSyncGitHubService:
         repo: str,
         ref: str,
         access_token: str,
-        timeout: httpx.Timeout | None = None,
+        timeout: httpx2.Timeout | None = None,
     ) -> str:
         """Resolve a mutable branch or tag to the immutable commit used by this job.
 
@@ -87,7 +87,7 @@ class SkillSyncGitHubService:
             return response.json()["sha"]
         except GitHubDownloadError:
             raise
-        except (httpx.HTTPError, KeyError, TypeError) as exc:
+        except (httpx2.HTTPError, KeyError, TypeError) as exc:
             raise GitHubDownloadError(
                 f"Failed to resolve commit SHA for {ref}: {exc}",
                 SkillSyncJobErrorCode.DOWNLOAD_FAILED,
@@ -127,7 +127,7 @@ class SkillSyncGitHubService:
                 return commit_sha
         except GitHubDownloadError:
             raise
-        except httpx.HTTPError as exc:
+        except httpx2.HTTPError as exc:
             raise GitHubDownloadError(
                 f"GitHub API request failed: {exc}",
                 SkillSyncJobErrorCode.DOWNLOAD_FAILED,
@@ -153,7 +153,7 @@ class SkillSyncGitHubService:
             ) from exc
 
 
-def _raise_for_github_status(response: httpx.Response, owner: str, repo: str, ref: str) -> None:
+def _raise_for_github_status(response: httpx2.Response, owner: str, repo: str, ref: str) -> None:
     if response.status_code in (401, 403):
         raise GitHubDownloadError(
             f"GitHub authentication failed (HTTP {response.status_code})",

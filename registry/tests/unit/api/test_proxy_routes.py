@@ -13,7 +13,7 @@ from typing import Any, Literal
 from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
-import httpx
+import httpx2
 import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException, Response
@@ -682,21 +682,21 @@ async def test_http_json_proxy_gets_client_from_a2a_client_registry(monkeypatch,
     forward.assert_awaited_once_with(request, "https://agent.example.com/a2a/tasks/1", proxy_client, "test-agent")
 
 
-def test_httpx_decoders_supported_decoders_is_accessible():
+def test_httpx2_decoders_supported_decoders_is_accessible():
     """
     Canary for the private-API coupling in `_HTTPX_DECODABLE_CONTENT_ENCODINGS`
     (registry/src/registry/api/proxy_routes.py).
 
-    That constant is derived from `httpx._decoders.SUPPORTED_DECODERS`, an underscore-prefixed
-    module that is not part of httpx's public API and could be renamed, restructured, or removed
-    in a future httpx version without a deprecation warning. If that ever happens, we want it
+    That constant is derived from `httpx2._decoders.SUPPORTED_DECODERS`, an underscore-prefixed
+    module that is not part of httpx2's public API and could be renamed, restructured, or removed
+    in a future httpx2 version without a deprecation warning. If that ever happens, we want it
     caught here as a fast, obvious CI failure -- not later as a mystifying prod bug where the
     proxy silently mis-forwards still-compressed bytes because the derived set quietly went empty
     or the import broke in some less direct way.
     """
-    import httpx
+    import httpx2
 
-    assert frozenset(httpx._decoders.SUPPORTED_DECODERS.keys())
+    assert frozenset(httpx2._decoders.SUPPORTED_DECODERS.keys())
 
 
 def _proxy_receive():
@@ -748,7 +748,7 @@ async def _run_proxy_and_capture(monkeypatch, msg_body: dict, extra_headers=None
     class _FakeStreamCtx:
         async def __aenter__(self):
             return SimpleNamespace(
-                headers=httpx.Headers({"content-type": "application/json"}),
+                headers=httpx2.Headers({"content-type": "application/json"}),
                 status_code=200,
                 aread=AsyncMock(return_value=b'{"jsonrpc":"2.0","id":1,"result":{}}'),
             )
@@ -865,7 +865,7 @@ _ATTACKER_TRACE_HEADERS = [
 
 
 async def test_get_proxy_strips_client_trace_headers_and_creates_span(monkeypatch):
-    import httpx
+    import httpx2
 
     from registry.api import proxy_routes
 
@@ -879,7 +879,7 @@ async def test_get_proxy_strips_client_trace_headers_and_creates_span(monkeypatc
     class _Ctx:
         async def __aenter__(self):
             return SimpleNamespace(
-                headers=httpx.Headers({"content-type": "text/event-stream"}),
+                headers=httpx2.Headers({"content-type": "text/event-stream"}),
                 status_code=200,
                 aiter_bytes=lambda: iter(()),
             )
@@ -1002,7 +1002,7 @@ class _FakeDownstream:
         class _Ctx:
             async def __aenter__(self):
                 return SimpleNamespace(
-                    headers=httpx.Headers(response_headers),
+                    headers=httpx2.Headers(response_headers),
                     status_code=status,
                     aread=AsyncMock(return_value=b'{"jsonrpc":"2.0","id":1,"result":{}}'),
                     aiter_bytes=lambda: iter(()),
@@ -1318,13 +1318,13 @@ async def _direct_run(
     store: Mock | None = None,
     pending: _PendingConsentStore | Mock | None = None,
     acl: Mock | None = None,
-) -> tuple[Response, list[httpx.Request], AsyncMock, Mock, _PendingConsentStore | Mock]:
+) -> tuple[Response, list[httpx2.Request], AsyncMock, Mock, _PendingConsentStore | Mock]:
     requests = []
     statuses = iter(statuses)
 
-    def downstream(request: httpx.Request) -> httpx.Response:
+    def downstream(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
-        return httpx.Response(next(statuses), json={"jsonrpc": "2.0", "id": message.get("id"), "result": {}})
+        return httpx2.Response(next(statuses), json={"jsonrpc": "2.0", "id": message.get("id"), "result": {}})
 
     async def build(**kwargs: Any) -> dict[str, str]:
         if reauth:
@@ -1336,7 +1336,7 @@ async def _direct_run(
     store = store if store is not None else _consent_store(has_server_consent=consent)
     pending = pending if pending is not None else _PendingConsentStore()
     oauth = Mock(recover_from_unauthorized=AsyncMock())
-    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(downstream)) as client:
         response = await dynamic_mcp_post_proxy(
             request=_direct_request(message, version, raw),
             user_id=VALID_OBJECT_ID,
@@ -1704,7 +1704,7 @@ async def test_direct_downstream_input_result_passthrough_and_close(streaming: b
     payload = b'{ "jsonrpc":"2.0","id":1,"result":{"resultType":"input_required", "requestState":"opaque", "inputRequests":{"downstream":{"method":"elicitation/create","params":{"mode":"url","url":"https://example.com","message":"approve"}}}} }'
     wire = b"data: " + payload + b"\n\n" if streaming else payload
 
-    class BodyStream(httpx.AsyncByteStream):
+    class BodyStream(httpx2.AsyncByteStream):
         closed = False
 
         async def __aiter__(self) -> AsyncIterator[bytes]:
@@ -1716,15 +1716,15 @@ async def test_direct_downstream_input_result_passthrough_and_close(streaming: b
 
     stream = BodyStream()
 
-    def downstream(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def downstream(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             200, headers={"content-type": "text/event-stream" if streaming else "application/json"}, stream=stream
         )
 
     message = _direct_message()
     request = _direct_request(message)
     call = ProxyCall.from_message(1, "tools/call", message, await request.body(), _MODERN)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(downstream)) as client:
         response = await proxy_routes._forward_to_downstream(
             call=call, request=request, target_url="https://example.com/mcp", proxy_client=client, headers={}
         )
@@ -1816,7 +1816,7 @@ async def test_forward_mcp_uses_own_decoder_set(
         yield body
 
     backend = SimpleNamespace(
-        headers=httpx.Headers(
+        headers=httpx2.Headers(
             {
                 "content-type": "text/event-stream" if streaming else "application/json",
                 "content-encoding": "gzip",
@@ -1866,7 +1866,7 @@ async def test_get_proxy_strips_content_encoding_only_when_decoded(
         yield body
 
     backend = SimpleNamespace(
-        headers=httpx.Headers({"content-type": "text/event-stream", "content-encoding": "gzip"}),
+        headers=httpx2.Headers({"content-type": "text/event-stream", "content-encoding": "gzip"}),
         status_code=200,
         aiter_bytes=chunks,
     )

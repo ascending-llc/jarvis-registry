@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
+import httpx2
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -178,7 +178,7 @@ def _api(base_url: str, path: str) -> str:
 
 
 async def _create_workflow(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     base_url: str,
     headers: dict[str, str],
     name: str,
@@ -198,7 +198,7 @@ async def _create_workflow(
 
 
 async def _enable_workflow(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     base_url: str,
     headers: dict[str, str],
     workflow_id: str,
@@ -213,7 +213,7 @@ async def _enable_workflow(
 
 
 async def _trigger_run(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     base_url: str,
     headers: dict[str, str],
     workflow_id: str,
@@ -231,7 +231,7 @@ async def _trigger_run(
 
 
 async def _poll_run(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     base_url: str,
     headers: dict[str, str],
     workflow_id: str,
@@ -258,7 +258,7 @@ async def _poll_run(
 
 
 async def _delete_workflow(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     base_url: str,
     headers: dict[str, str],
     workflow_id: str,
@@ -269,7 +269,7 @@ async def _delete_workflow(
 
 
 async def _run_scenario(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     base_url: str,
     headers: dict[str, str],
     scenario_id: int,
@@ -345,7 +345,7 @@ async def _run_scenario(
             result.error = run.get("errorSummary", result.run_status)
             log.error("  ✗ FAILED — status=%s  error=%s", result.run_status, result.error)
 
-    except httpx.HTTPStatusError as exc:
+    except httpx2.HTTPStatusError as exc:
         result.elapsed = time.monotonic() - t0
         body = exc.response.text[:300]
         result.error = f"HTTP {exc.response.status_code}: {body}"
@@ -458,7 +458,7 @@ async def main() -> int:
     print()
 
     results: list[ScenarioResult] = []
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx2.AsyncClient(timeout=30) as client:
         for sid in scenarios_to_run:
             result = await _run_scenario(
                 client,

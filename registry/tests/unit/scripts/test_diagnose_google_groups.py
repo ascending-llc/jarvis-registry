@@ -4,7 +4,7 @@ import json
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
+import httpx2
 import pytest
 
 from registry_pkgs.google.cloud_identity_client import GoogleWorkspaceGroupInfo
@@ -70,9 +70,9 @@ def test_malformed_customer_id_setting_exits_2(monkeypatch, fake_client, capsys)
 @pytest.mark.unit
 def test_http_error_prints_google_body(monkeypatch, fake_client, capsys):
     body = {"error": {"code": 403, "message": "Error(4013): Insufficient permissions", "status": "PERMISSION_DENIED"}}
-    request = httpx.Request("GET", _SEARCH_URL)
-    response = httpx.Response(403, json=body, request=request)
-    fake_client.return_value.list_transitive_groups_for_member.side_effect = httpx.HTTPStatusError(
+    request = httpx2.Request("GET", _SEARCH_URL)
+    response = httpx2.Response(403, json=body, request=request)
+    fake_client.return_value.list_transitive_groups_for_member.side_effect = httpx2.HTTPStatusError(
         "forbidden", request=request, response=response
     )
 

@@ -1,6 +1,6 @@
 import logging
 
-import httpx
+import httpx2
 from fastapi import APIRouter
 
 from ...core.config import settings
@@ -13,7 +13,7 @@ router = APIRouter()
 async def get_oauth2_providers():
     """Fetch available OAuth2 providers from auth server"""
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx2.AsyncClient() as client:
             logger.info(f"Fetching OAuth2 providers from {settings.auth_server_url}/oauth2/providers")
             response = await client.get(f"{settings.auth_server_url}/oauth2/providers", timeout=5.0)
             logger.info(f"OAuth2 providers response: status={response.status_code}")

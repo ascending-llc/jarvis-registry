@@ -5,7 +5,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 
-import httpx
+import httpx2
 
 from registry_pkgs.google.cloud_identity_client import CloudIdentityGroupsClient
 
@@ -80,7 +80,7 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
         self._graph_url = graph_url.rstrip("/")
         self._access_token: str | None = None
         self._token_expiry: float = 0.0
-        self._http = httpx.AsyncClient(timeout=30.0)
+        self._http = httpx2.AsyncClient(timeout=30.0)
 
     async def _get_token(self) -> str:
         if self._access_token and time.monotonic() < self._token_expiry - 60:

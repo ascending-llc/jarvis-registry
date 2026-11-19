@@ -171,7 +171,7 @@ async def _successful_callback(
     group_service.sync_user_group_memberships = AsyncMock(side_effect=sync_side_effect)
 
     with (
-        patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+        patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client,
         patch("registry.api.redirect_routes.decrypt_value", return_value="verifier"),
         patch("registry.api.redirect_routes.decode_jwt", return_value={"sub": "someone", "user_id": "12345"}),
         patch("registry.api.redirect_routes.filter_known_groups", return_value=[]),

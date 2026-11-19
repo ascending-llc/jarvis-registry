@@ -13,7 +13,7 @@ from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
@@ -449,7 +449,7 @@ class TestOAuth2CallbackStandardFlow:
         *,
         flow: Literal["browser", "device"] = "browser",
         requested_scope: str | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Drive a Google callback, optionally using a mocked userinfo fallback response."""
         with (
             patch("auth_server.routes.oauth_flow.exchange_code_for_token") as mock_exchange_token,

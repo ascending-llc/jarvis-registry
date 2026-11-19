@@ -4,7 +4,6 @@ import json
 from typing import Any, Literal
 from unittest.mock import AsyncMock
 
-import httpx
 import httpx2
 import pytest
 from mcp import Client
@@ -41,14 +40,14 @@ async def _sdk_flow(
     upstream: list[dict[str, Any]] = []
     prompts: list[ElicitRequestParams] = []
 
-    def downstream(request: httpx.Request) -> httpx.Response:
+    def downstream(request: httpx2.Request) -> httpx2.Response:
         message = json.loads(request.content)
         sent.append(message)
         method = message["method"]
         result: dict[str, Any]
         if method == "server/discover":
             if not modern:
-                return httpx.Response(
+                return httpx2.Response(
                     200,
                     json={
                         "jsonrpc": "2.0",
@@ -76,13 +75,13 @@ async def _sdk_flow(
             raise AssertionError(method)
         if modern and method in {"server/discover", "tools/list"}:
             result.update(cacheScope="private", ttlMs=0)
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": message["id"], "result": result})
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": message["id"], "result": result})
 
     async def build(**kwargs: Any) -> dict[str, str]:
         return kwargs["additional_headers"]
 
     monkeypatch.setattr(proxy_routes, "build_authenticated_headers", build)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(downstream)) as proxy_client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(downstream)) as proxy_client:
         container = _container_stub(_FakeRedis(), has_consent=False)
         container.mcp_proxy_client = proxy_client
         container.server_service.extract_server_path = AsyncMock(return_value="/github")

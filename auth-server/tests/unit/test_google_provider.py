@@ -221,7 +221,7 @@ class TestGoogleJwksCaching:
         provider = _provider()
         jwks = {"keys": [{"kid": "kid-1"}]}
 
-        with patch("auth_server.providers.google.httpx.AsyncClient") as mock_client_cls:
+        with patch("auth_server.providers.google.httpx2.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value.__aenter__.return_value
             mock_response = AsyncMock()
             mock_response.json = lambda: jwks

@@ -113,7 +113,7 @@ class TestAuthRoutes:
         """Test successful OAuth2 providers fetch."""
         mock_providers = [{"name": "google", "display_name": "Google"}, {"name": "github", "display_name": "GitHub"}]
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.json.return_value = {"providers": mock_providers}
@@ -127,17 +127,21 @@ class TestAuthRoutes:
     @pytest.mark.asyncio
     async def test_get_oauth2_providers_failure(self):
         """Test OAuth2 providers fetch failure."""
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.get.side_effect = Exception("Network error")
 
             providers = await get_oauth2_providers()
 
             assert providers == []
+            mock_client.assert_called_once_with()
+            mock_client.return_value.__aenter__.return_value.get.assert_awaited_once_with(
+                f"{token_settings.auth_server_url}/oauth2/providers", timeout=5.0
+            )
 
     @pytest.mark.asyncio
     async def test_get_oauth2_providers_bad_response(self):
         """Test OAuth2 providers fetch with bad response."""
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.status_code = 404
 
@@ -221,7 +225,7 @@ class TestAuthRoutes:
         mock_user.role = "user"
         mock_user.idp_id = "12345-6789"
 
-        # Mock httpx AsyncClient for OAuth token exchange
+        # Mock httpx2 AsyncClient for OAuth token exchange
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"access_token": "test-access-token"}
@@ -234,7 +238,7 @@ class TestAuthRoutes:
         }
 
         with (
-            patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client,
             patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
             patch("registry.api.redirect_routes.decode_jwt") as mock_decoder,
             patch(
@@ -278,7 +282,7 @@ class TestAuthRoutes:
         mock_user_service.get_user_by_user_id = AsyncMock()
 
         with (
-            patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client,
             patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
             patch("registry.api.redirect_routes.decode_jwt") as mock_decoder,
         ):
@@ -310,7 +314,7 @@ class TestAuthRoutes:
     @pytest.mark.asyncio
     async def test_oauth2_callback_missing_user_id_never_creates_user(self, mock_request, mock_code, mock_settings):
         """An auth-server token must already identify a provisioned user."""
-        # Mock httpx AsyncClient to return a token without user_id
+        # Mock httpx2 AsyncClient to return a token without user_id
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"access_token": "test-access-token-no-user-id"}
@@ -329,7 +333,7 @@ class TestAuthRoutes:
 
         mock_user_service = Mock()
         with (
-            patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client,
             patch("registry.api.redirect_routes.decode_jwt") as mock_decoder,
             patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
         ):
@@ -408,12 +412,12 @@ class TestAuthRoutes:
     async def test_oauth2_callback_general_exception(self, mock_request, mock_code):
         """Test OAuth2 callback with general exception."""
         with patch("registry.api.redirect_routes.logger"):
-            # Mock httpx to return a failed response (non-200)
+            # Mock httpx2 to return a failed response (non-200)
             mock_response = Mock()
             mock_response.status_code = 500
 
             with (
-                patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+                patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client,
                 patch("registry.api.redirect_routes.decode_jwt") as mock_decoder,
                 patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
             ):
@@ -1009,7 +1013,7 @@ class TestAuthRoutes:
         }
 
         with (
-            patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client,
             patch("registry.api.redirect_routes.decrypt_value", return_value="verifier"),
             patch("registry.api.redirect_routes.decode_jwt", return_value=user_claims),
             patch(
@@ -1076,7 +1080,7 @@ class TestAuthRoutes:
         }
 
         with (
-            patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.httpx2.AsyncClient") as mock_client,
             patch("registry.api.redirect_routes.decrypt_value", return_value="verifier"),
             patch("registry.api.redirect_routes.decode_jwt", return_value=user_claims),
             patch(

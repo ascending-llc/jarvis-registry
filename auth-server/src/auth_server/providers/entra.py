@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Any
 
-import httpx
+import httpx2
 from pydantic import BaseModel, StrictStr
 
 from registry_pkgs.core.jwt_utils import (
@@ -118,7 +118,7 @@ class EntraIdProvider(AuthProvider):
 
         try:
             logger.debug(f"Fetching JWKS from {self.jwks_url}")
-            async with httpx.AsyncClient() as client:
+            async with httpx2.AsyncClient() as client:
                 response = await client.get(self.jwks_url, timeout=10)
                 response.raise_for_status()
 
@@ -186,7 +186,7 @@ class EntraIdProvider(AuthProvider):
             logger.debug("Checking configured scope-group membership with Graph API")
             headers = {"Authorization": f"Bearer {access_token}"}
             groups_url = f"{self.graph_url}/v1.0/me/checkMemberGroups"
-            async with httpx.AsyncClient() as client:
+            async with httpx2.AsyncClient() as client:
                 response = await client.post(
                     groups_url, headers=headers, json={"groupIds": list(self.scope_group_ids)}, timeout=10
                 )

@@ -4,7 +4,7 @@ import logging
 import secrets
 from urllib.parse import urlencode
 
-import httpx
+import httpx2
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from redis import Redis
 from redis.exceptions import RedisError
@@ -34,7 +34,7 @@ class SkillSyncOAuthService:
         *,
         flow_state_manager: FlowStateManager,
         token_service: SkillSyncTokenService,
-        http_client: httpx.AsyncClient,
+        http_client: httpx2.AsyncClient,
         redis_client: Redis,
         redis_key_prefix: str,
     ) -> None:

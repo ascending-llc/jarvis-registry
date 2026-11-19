@@ -128,7 +128,7 @@ async def test_resolve_access_token_returns_none_when_no_valid_tokens(monkeypatc
 
 @pytest.mark.asyncio
 async def test_resolve_access_token_returns_none_when_refresh_fails(monkeypatch, service):
-    import httpx
+    import httpx2
 
     user_id = str(PydanticObjectId())
     source_id = PydanticObjectId()
@@ -140,7 +140,7 @@ async def test_resolve_access_token_returns_none_when_refresh_fails(monkeypatch,
         "registry.services.skill_sync_token_service.decrypt_value",
         lambda value: f"decrypted-{value}",
     )
-    monkeypatch.setattr(service, "refresh_tokens", AsyncMock(side_effect=httpx.HTTPError("boom")))
+    monkeypatch.setattr(service, "refresh_tokens", AsyncMock(side_effect=httpx2.HTTPError("boom")))
 
     result = await service.resolve_access_token(
         user_id=user_id,

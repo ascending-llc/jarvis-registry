@@ -1,4 +1,4 @@
-import httpx
+import httpx2
 from fastapi import Depends, Request
 from redis import Redis
 
@@ -97,7 +97,7 @@ def get_embedding_maintenance_watcher(
     return container.embedding_maintenance_watcher
 
 
-def get_mcp_proxy_client(container: RegistryContainer = Depends(get_container)) -> httpx.AsyncClient:
+def get_mcp_proxy_client(container: RegistryContainer = Depends(get_container)) -> httpx2.AsyncClient:
     return container.mcp_proxy_client
 
 

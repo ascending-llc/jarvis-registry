@@ -3,7 +3,6 @@
 import json
 from types import SimpleNamespace
 
-import httpx
 import httpx2
 import pytest
 from mcp import Client
@@ -153,10 +152,10 @@ async def test_sdk_auto_client_falls_back_to_2025_11_25_against_gated_app(monkey
     monkeypatch.setattr(settings, "mcpgw_enable_dns_rebinding_protection", False)
     monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", False)
 
-    def _reject(request: httpx.Request) -> httpx.Response:
+    def _reject(request: httpx2.Request) -> httpx2.Response:
         raise AssertionError(f"Unexpected outgoing request: {request.method} {request.url}")
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(_reject)) as proxy_client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(_reject)) as proxy_client:
         container = SimpleNamespace(
             mcpgw_downstream_transport=proxy_client, **{name: object() for name in _GATEWAY_DEPS}
         )

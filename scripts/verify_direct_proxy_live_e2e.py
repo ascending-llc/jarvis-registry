@@ -30,7 +30,6 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-import httpx
 import httpx2
 import uvicorn
 from bson import ObjectId
@@ -113,7 +112,7 @@ class LiveProbe:
             kwargs.update(username=mongo_cfg.mongodb_username, password=mongo_cfg.mongodb_password)
         self.mongo: AsyncMongoClient = AsyncMongoClient(mongo_cfg.mongo_uri, **kwargs)
         self.db = self.mongo.get_default_database()
-        self.http = httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False)
+        self.http = httpx2.AsyncClient(timeout=15, trust_env=False, follow_redirects=False)
 
     def check(self, name: str, condition: bool) -> None:
         self.checks.append({"name": name, "passed": bool(condition)})
@@ -152,7 +151,7 @@ class LiveProbe:
         token: str | None = None,
         raw: bytes | None = None,
         url_user_id: str | None = None,
-    ) -> tuple[httpx.Response, dict[str, Any]]:
+    ) -> tuple[httpx2.Response, dict[str, Any]]:
         headers = {
             "Authorization": "Bearer " + (token or self.token()),
             "Content-Type": "application/json",
@@ -750,7 +749,6 @@ async def main() -> int:
     parser.add_argument("--registry-url", default="http://127.0.0.1:7860")
     args = parser.parse_args()
     require_local_targets(args.registry_url)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpx2").setLevel(logging.WARNING)
     return await LiveProbe(args.registry_url).run_all()
 

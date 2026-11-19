@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 
 from registry_pkgs.oauth import discovery as discovery_module
@@ -22,35 +22,35 @@ def _load(name: str) -> dict[str, Any]:
 
 
 class _Recorder:
-    """httpx.MockTransport handler serving fixed responses by (method, url) and recording requests."""
+    """httpx2.MockTransport handler serving fixed responses by (method, url) and recording requests."""
 
-    def __init__(self, routes: dict[tuple[str, str], httpx.Response]):
+    def __init__(self, routes: dict[tuple[str, str], httpx2.Response]):
         self.routes = routes
         self.requests: list[tuple[str, str]] = []
 
-    def __call__(self, request: httpx.Request) -> httpx.Response:
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
         key = (request.method, str(request.url))
         self.requests.append(key)
-        return self.routes.get(key, httpx.Response(404))
+        return self.routes.get(key, httpx2.Response(404))
 
-    def client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=httpx.MockTransport(self))
+    def client(self) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(transport=httpx2.MockTransport(self))
 
     @property
     def urls(self) -> list[str]:
         return [url for _, url in self.requests]
 
 
-def _atlassian_routes() -> dict[tuple[str, str], httpx.Response]:
+def _atlassian_routes() -> dict[tuple[str, str], httpx2.Response]:
     challenge = _load("atlassian_v2_challenge.json")
     as_metadata = _load("atlassian_v2_as_metadata.json")
     return {
-        ("POST", ATLASSIAN_URL): httpx.Response(401, headers={"WWW-Authenticate": challenge["www-authenticate"]}),
-        ("GET", ATLASSIAN_PRM_URL): httpx.Response(200, json=_load("atlassian_v2_prm.json")),
+        ("POST", ATLASSIAN_URL): httpx2.Response(401, headers={"WWW-Authenticate": challenge["www-authenticate"]}),
+        ("GET", ATLASSIAN_PRM_URL): httpx2.Response(200, json=_load("atlassian_v2_prm.json")),
         (
             "GET",
             "https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
-        ): httpx.Response(200, json=as_metadata),
+        ): httpx2.Response(200, json=as_metadata),
     }
 
 
@@ -100,14 +100,14 @@ async def test_supplied_www_authenticate_skips_probe_and_uses_its_scope() -> Non
 async def test_prm_candidates_tried_header_then_path_then_root() -> None:
     header_url = "https://mcp.example.com/custom-prm"
     routes = {
-        ("POST", "https://mcp.example.com/a/mcp"): httpx.Response(
+        ("POST", "https://mcp.example.com/a/mcp"): httpx2.Response(
             401, headers={"WWW-Authenticate": f'Bearer resource_metadata="{header_url}"'}
         ),
-        ("GET", "https://mcp.example.com/.well-known/oauth-protected-resource"): httpx.Response(
+        ("GET", "https://mcp.example.com/.well-known/oauth-protected-resource"): httpx2.Response(
             200,
             json={"resource": "https://mcp.example.com/a/mcp", "authorization_servers": ["https://as.example.com"]},
         ),
-        ("GET", "https://as.example.com/.well-known/oauth-authorization-server"): httpx.Response(
+        ("GET", "https://as.example.com/.well-known/oauth-authorization-server"): httpx2.Response(
             200,
             json={
                 "issuer": "https://as.example.com",
@@ -133,10 +133,10 @@ async def test_prm_candidates_tried_header_then_path_then_root() -> None:
 async def test_as_candidates_follow_sdk_order() -> None:
     as_url = "https://as.example.com/tenant"
     routes = {
-        ("GET", "https://mcp.example.com/.well-known/oauth-protected-resource/mcp"): httpx.Response(
+        ("GET", "https://mcp.example.com/.well-known/oauth-protected-resource/mcp"): httpx2.Response(
             200, json={"resource": "https://mcp.example.com/mcp", "authorization_servers": [as_url]}
         ),
-        ("GET", "https://as.example.com/tenant/.well-known/openid-configuration"): httpx.Response(
+        ("GET", "https://as.example.com/tenant/.well-known/openid-configuration"): httpx2.Response(
             200,
             json={
                 "issuer": as_url,
@@ -160,8 +160,8 @@ async def test_as_candidates_follow_sdk_order() -> None:
 @pytest.mark.asyncio
 async def test_legacy_branch_without_prm() -> None:
     routes = {
-        ("POST", "https://mcp.notion.com/mcp"): httpx.Response(401),
-        ("GET", "https://mcp.notion.com/.well-known/oauth-authorization-server"): httpx.Response(
+        ("POST", "https://mcp.notion.com/mcp"): httpx2.Response(401),
+        ("GET", "https://mcp.notion.com/.well-known/oauth-authorization-server"): httpx2.Response(
             200, json=_load("notion_as_metadata.json")
         ),
     }
@@ -179,7 +179,9 @@ async def test_legacy_branch_without_prm() -> None:
 async def test_legacy_branch_issuer_mismatch_only_warns(caplog: pytest.LogCaptureFixture) -> None:
     as_metadata = {**_load("notion_as_metadata.json"), "issuer": "https://other.notion.com"}
     routes = {
-        ("GET", "https://mcp.notion.com/.well-known/oauth-authorization-server"): httpx.Response(200, json=as_metadata),
+        ("GET", "https://mcp.notion.com/.well-known/oauth-authorization-server"): httpx2.Response(
+            200, json=as_metadata
+        ),
     }
     async with _Recorder(routes).client() as client:
         result = await discover_mcp_oauth("https://mcp.notion.com/mcp", http_client=client)
@@ -191,16 +193,16 @@ async def test_legacy_branch_issuer_mismatch_only_warns(caplog: pytest.LogCaptur
 @pytest.mark.asyncio
 async def test_hubspot_root_resource_accepted() -> None:
     routes = {
-        ("POST", "https://mcp.hubspot.com"): httpx.Response(
+        ("POST", "https://mcp.hubspot.com"): httpx2.Response(
             401,
             headers={
                 "WWW-Authenticate": 'Bearer resource_metadata="https://mcp.hubspot.com/.well-known/oauth-protected-resource"'
             },
         ),
-        ("GET", "https://mcp.hubspot.com/.well-known/oauth-protected-resource"): httpx.Response(
+        ("GET", "https://mcp.hubspot.com/.well-known/oauth-protected-resource"): httpx2.Response(
             200, json={**_load("hubspot_prm.json"), "resource": "https://mcp.hubspot.com/"}
         ),
-        ("GET", "https://mcp.hubspot.com/.well-known/oauth-authorization-server"): httpx.Response(
+        ("GET", "https://mcp.hubspot.com/.well-known/oauth-authorization-server"): httpx2.Response(
             200, json=_load("hubspot_as_metadata.json")
         ),
     }
@@ -218,7 +220,7 @@ async def test_hubspot_root_resource_accepted() -> None:
 )
 async def test_prm_resource_for_another_resource_rejected(resource: str) -> None:
     routes = _atlassian_routes()
-    routes[("GET", ATLASSIAN_PRM_URL)] = httpx.Response(
+    routes[("GET", ATLASSIAN_PRM_URL)] = httpx2.Response(
         200, json={**_load("atlassian_v2_prm.json"), "resource": resource}
     )
     async with _Recorder(routes).client() as client:
@@ -229,7 +231,7 @@ async def test_prm_resource_for_another_resource_rejected(resource: str) -> None
 @pytest.mark.asyncio
 async def test_prm_resource_path_prefix_accepted() -> None:
     routes = _atlassian_routes()
-    routes[("GET", ATLASSIAN_PRM_URL)] = httpx.Response(
+    routes[("GET", ATLASSIAN_PRM_URL)] = httpx2.Response(
         200, json={**_load("atlassian_v2_prm.json"), "resource": "https://mcp.atlassian.com/v2/"}
     )
     async with _Recorder(routes).client() as client:
@@ -244,7 +246,7 @@ async def test_prm_issuer_mismatch_rejected() -> None:
         "GET",
         "https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
     )
-    routes[key] = httpx.Response(
+    routes[key] = httpx2.Response(
         200, json={**_load("atlassian_v2_as_metadata.json"), "issuer": "https://auth.atlassian.com"}
     )
     async with _Recorder(routes).client() as client:
@@ -262,8 +264,8 @@ async def test_no_as_metadata_raises() -> None:
 @pytest.mark.asyncio
 async def test_invalid_documents_are_skipped() -> None:
     routes = _atlassian_routes()
-    routes[("GET", ATLASSIAN_PRM_URL)] = httpx.Response(200, content=b"<html>not json</html>")
-    routes[("GET", "https://mcp.atlassian.com/.well-known/oauth-protected-resource")] = httpx.Response(
+    routes[("GET", ATLASSIAN_PRM_URL)] = httpx2.Response(200, content=b"<html>not json</html>")
+    routes[("GET", "https://mcp.atlassian.com/.well-known/oauth-protected-resource")] = httpx2.Response(
         200, json={"unexpected": True}
     )
     # Neither PRM parses, so the legacy branch looks for AS metadata at the origin and finds none.
@@ -274,13 +276,13 @@ async def test_invalid_documents_are_skipped() -> None:
 
 @pytest.mark.asyncio
 async def test_transport_error_raises_discovery_error() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("boom", request=request)
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("boom", request=request)
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
         with pytest.raises(OAuthDiscoveryError) as exc_info:
             await discover_mcp_oauth(ATLASSIAN_URL, http_client=client)
-    assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
+    assert isinstance(exc_info.value.__cause__, httpx2.ConnectError)
 
 
 @pytest.mark.asyncio
@@ -288,15 +290,15 @@ async def test_total_timeout_bounds_the_chain(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(discovery_module, "DISCOVERY_TOTAL_TIMEOUT_SECONDS", 0.2)
     calls = 0
 
-    async def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
         nonlocal calls
         calls += 1
         await asyncio.sleep(0.15)  # below the per-request limit, but several of them exceed the total
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
     loop = asyncio.get_running_loop()
     started = loop.time()
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
         with pytest.raises(OAuthDiscoveryError, match="exceeded"):
             await discover_mcp_oauth(ATLASSIAN_URL, http_client=client)
     assert loop.time() - started < 1.0
@@ -307,11 +309,11 @@ async def test_total_timeout_bounds_the_chain(monkeypatch: pytest.MonkeyPatch) -
 async def test_each_request_carries_the_per_request_timeout() -> None:
     seen: list[dict[str, Any]] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(request.extensions["timeout"])
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=60.0) as client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), timeout=60.0) as client:
         with pytest.raises(OAuthDiscoveryError):
             await discover_mcp_oauth(ATLASSIAN_URL, http_client=client)
     assert seen

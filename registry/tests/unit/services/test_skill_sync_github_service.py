@@ -3,7 +3,7 @@ import tarfile
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 
 from registry.services.skill_sync_github_service import (
@@ -54,7 +54,7 @@ class _FakeResponse:
 
 
 def _make_client(*, get_response: _FakeResponse, stream_response: _FakeResponse | None = None) -> AsyncMock:
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=get_response)
 
     if stream_response is not None:
@@ -69,7 +69,7 @@ def _make_client(*, get_response: _FakeResponse, stream_response: _FakeResponse 
 
 
 def _make_streaming_error_client(*, get_response: _FakeResponse, stream_exc: Exception) -> AsyncMock:
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=get_response)
 
     @asynccontextmanager
@@ -91,7 +91,7 @@ def _sha_response(sha: str = "a" * 40) -> _FakeResponse:
 @pytest.mark.asyncio
 async def test_resolve_commit_sha_success():
     sha = "a" * 40
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(json_data={"sha": sha}))
     service = SkillSyncGitHubService(client)
     result = await service.resolve_commit_sha(owner="org", repo="repo", ref="main", access_token="tok")
@@ -100,7 +100,7 @@ async def test_resolve_commit_sha_success():
 
 @pytest.mark.asyncio
 async def test_resolve_commit_sha_auth_failed():
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=401))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
@@ -110,7 +110,7 @@ async def test_resolve_commit_sha_auth_failed():
 
 @pytest.mark.asyncio
 async def test_resolve_commit_sha_not_found():
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=404))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
@@ -125,7 +125,7 @@ async def test_resolve_commit_sha_not_found():
 async def test_download_tarball_success(tmp_path):
     tarball = _make_tarball({"skills/hello/SKILL.md": b"# Hello"})
     sha = "a" * 40
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_sha_response(sha))
     streamed_urls: list[str] = []
 
@@ -148,7 +148,7 @@ async def test_download_tarball_success(tmp_path):
 
 @pytest.mark.asyncio
 async def test_download_tarball_auth_failed(tmp_path):
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=401))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
@@ -160,7 +160,7 @@ async def test_download_tarball_auth_failed(tmp_path):
 
 @pytest.mark.asyncio
 async def test_download_tarball_forbidden(tmp_path):
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=403))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
@@ -172,7 +172,7 @@ async def test_download_tarball_forbidden(tmp_path):
 
 @pytest.mark.asyncio
 async def test_download_tarball_rate_limited(tmp_path):
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=429))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
@@ -184,7 +184,7 @@ async def test_download_tarball_rate_limited(tmp_path):
 
 @pytest.mark.asyncio
 async def test_download_tarball_not_found(tmp_path):
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=404))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
@@ -196,7 +196,7 @@ async def test_download_tarball_not_found(tmp_path):
 
 @pytest.mark.asyncio
 async def test_download_tarball_server_error(tmp_path):
-    client = AsyncMock(spec=httpx.AsyncClient)
+    client = AsyncMock(spec=httpx2.AsyncClient)
     client.get = AsyncMock(return_value=_FakeResponse(status_code=500))
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:
@@ -224,7 +224,7 @@ async def test_download_tarball_too_large(tmp_path):
 async def test_download_tarball_network_error(tmp_path):
     client = _make_streaming_error_client(
         get_response=_sha_response(),
-        stream_exc=httpx.ConnectError("connection refused"),
+        stream_exc=httpx2.ConnectError("connection refused"),
     )
     service = SkillSyncGitHubService(client)
     with pytest.raises(GitHubDownloadError) as exc_info:

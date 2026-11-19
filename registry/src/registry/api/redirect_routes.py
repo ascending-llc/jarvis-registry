@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import quote, urlencode, urlparse
 
-import httpx
+import httpx2
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Depends, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -159,7 +159,7 @@ def _is_valid_oauth2_state(client_state: dict[str, Any], expected_nonce: str | N
 async def get_oauth2_providers():
     """Fetch available OAuth2 providers from auth server"""
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx2.AsyncClient() as client:
             logger.info(f"Fetching OAuth2 providers from {settings.auth_server_url}/oauth2/providers")
             response = await client.get(f"{settings.auth_server_url}/oauth2/providers", timeout=5.0)
             logger.info(f"OAuth2 providers response: status={response.status_code}")
@@ -291,7 +291,7 @@ async def oauth2_callback(
 
         # Exchange authorization code for JWT access token (standard OAuth2 flow)
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx2.AsyncClient() as client:
                 response = await client.post(
                     f"{settings.auth_server_url}/oauth2/token",
                     data={
@@ -326,7 +326,7 @@ async def oauth2_callback(
 
                 logger.info("OAuth2 callback exchanged code for JWT token for user ID %s", user_claims.get("sub"))
 
-        except httpx.TimeoutException:
+        except httpx2.TimeoutException:
             logger.error("Timeout exchanging authorization code with auth server")
             return _oauth2_login_error_response("oauth2_timeout", clear_oauth2_login_cookies=True)
         except Exception:

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
@@ -1401,14 +1401,14 @@ class TestDeviceFlowCallbackAndConsent:
             "empty": [],
             "outage": [],
         }[membership]
-        response = httpx.Response(
+        response = httpx2.Response(
             503 if membership == "outage" else 200,
             json={"value": group_ids},
-            request=httpx.Request("POST", "https://graph.microsoft.com/v1.0/me/checkMemberGroups"),
+            request=httpx2.Request("POST", "https://graph.microsoft.com/v1.0/me/checkMemberGroups"),
         )
         with (
             patch("auth_server.routes.oauth_flow.exchange_code_for_token", new_callable=AsyncMock) as exchange,
-            patch("auth_server.providers.entra.httpx.AsyncClient") as http_client,
+            patch("auth_server.providers.entra.httpx2.AsyncClient") as http_client,
             patch("auth_server.routes.oauth_flow.get_user_info", new_callable=AsyncMock) as fallback,
         ):
             exchange.return_value = {"access_token": "provider-token", "id_token": "id-token"}
@@ -1795,7 +1795,7 @@ class TestCallbackIdentityResolution:
         groups: list[str] | None = None,
         requested_scope: str | None = None,
         identity_error: Exception | None = None,
-    ) -> tuple[httpx.Response, Mock, str | None]:
+    ) -> tuple[httpx2.Response, Mock, str | None]:
         _configure_oauth2(client)
         provider = _mock_entra_provider({"groups": ["jarvis-registry-admin"] if groups is None else groups})
         client.app.dependency_overrides[get_auth_provider] = lambda: provider

@@ -4,7 +4,7 @@ import json
 
 from unittest.mock import AsyncMock, Mock, patch
 
-import httpx
+import httpx2
 import pytest
 
 from registry_pkgs.oauth.errors import OAuthTokenEndpointError
@@ -91,7 +91,7 @@ class TestOAuthClientRegisterClient:
     @pytest.mark.asyncio
     async def test_register_client_success(self, oauth_client, mock_metadata):
         """Test successful client registration"""
-        # Mock httpx response
+        # Mock httpx2 response
         mock_response = Mock()
         mock_response.is_success = True
         mock_response.json.return_value = {
@@ -103,7 +103,7 @@ class TestOAuthClientRegisterClient:
             "token_endpoint_auth_method": "client_secret_basic",
         }
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("registry_pkgs.oauth.oauth_client.httpx2.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
@@ -142,7 +142,7 @@ class TestOAuthClientRegisterClient:
             "scope": "api:read api:write",
         }
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("registry_pkgs.oauth.oauth_client.httpx2.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
@@ -187,14 +187,14 @@ class TestOAuthClientRegisterClient:
         mock_response.status_code = 400
         mock_response.text = "Invalid client metadata"
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("registry_pkgs.oauth.oauth_client.httpx2.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
             mock_client.post = AsyncMock(return_value=mock_response)
             mock_client_class.return_value = mock_client
 
-            with pytest.raises(httpx.HTTPError, match="Client registration failed"):
+            with pytest.raises(httpx2.HTTPError, match="Client registration failed"):
                 await oauth_client.register_client(
                     server_url="https://example.com",
                     metadata=mock_metadata,
@@ -213,7 +213,7 @@ class TestOAuthClientRegisterClient:
             "token_endpoint_auth_method": "client_secret_post",
         }
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("registry_pkgs.oauth.oauth_client.httpx2.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
@@ -242,7 +242,7 @@ class TestOAuthClientRegisterClient:
             "client_secret": "secret_jkl",
         }
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("registry_pkgs.oauth.oauth_client.httpx2.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
@@ -737,7 +737,7 @@ class TestExchangeCodeForTokensResourceIndicator:
         mock_response_obj = Mock()
         mock_response_obj.status_code = 500
         mock_response_obj.text = '{"error":"server_error","error_description":"internal"}'
-        http_error = httpx.HTTPStatusError(
+        http_error = httpx2.HTTPStatusError(
             "500 Internal Server Error", request=mock_request, response=mock_response_obj
         )
 
@@ -753,16 +753,16 @@ class TestExchangeCodeForTokensResourceIndicator:
 
 
 def _mock_token_endpoint(handler):
-    """Patch AsyncOAuth2Client so the real Authlib client talks to an httpx.MockTransport."""
+    """Patch AsyncOAuth2Client so the real Authlib client talks to an httpx2.MockTransport."""
     from authlib.integrations.httpx_client import AsyncOAuth2Client as RealAsyncOAuth2Client
 
     def factory(**kwargs):
-        return RealAsyncOAuth2Client(transport=httpx.MockTransport(handler), **kwargs)
+        return RealAsyncOAuth2Client(transport=httpx2.MockTransport(handler), **kwargs)
 
     return patch("registry_pkgs.oauth.oauth_client.AsyncOAuth2Client", side_effect=factory)
 
 
-def _form(request: httpx.Request) -> dict[str, str]:
+def _form(request: httpx2.Request) -> dict[str, str]:
     from urllib.parse import parse_qsl
 
     return dict(parse_qsl(request.content.decode()))
@@ -784,16 +784,16 @@ class TestRegisterClientExplicitScope:
         )
 
     async def _register(self, oauth_client, metadata, response_body, *, scope):
-        seen: list[httpx.Request] = []
+        seen: list[httpx2.Request] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
-            return httpx.Response(201, json=response_body)
+            return httpx2.Response(201, json=response_body)
 
-        real_async_client = httpx.AsyncClient
+        real_async_client = httpx2.AsyncClient
         with patch(
-            "registry_pkgs.oauth.oauth_client.httpx.AsyncClient",
-            side_effect=lambda **kw: real_async_client(transport=httpx.MockTransport(handler), **kw),
+            "registry_pkgs.oauth.oauth_client.httpx2.AsyncClient",
+            side_effect=lambda **kw: real_async_client(transport=httpx2.MockTransport(handler), **kw),
         ):
             result = await oauth_client.register_client(
                 server_url="https://mcp.example.com/mcp",
@@ -851,9 +851,9 @@ class TestRefreshTokensRequestAndErrors:
     async def test_refresh_body_has_resource_and_no_scope(self, oauth_client):
         seen: list[dict[str, str]] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(_form(request))
-            return httpx.Response(200, json={"access_token": "new", "token_type": "Bearer", "expires_in": 60})
+            return httpx2.Response(200, json={"access_token": "new", "token_type": "Bearer", "expires_in": 60})
 
         with _mock_token_endpoint(handler):
             tokens = await oauth_client.refresh_tokens(
@@ -871,9 +871,9 @@ class TestRefreshTokensRequestAndErrors:
     async def test_refresh_without_resource_omits_it(self, oauth_client):
         seen: list[dict[str, str]] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(_form(request))
-            return httpx.Response(200, json={"access_token": "new", "token_type": "Bearer"})
+            return httpx2.Response(200, json={"access_token": "new", "token_type": "Bearer"})
 
         with _mock_token_endpoint(handler):
             await oauth_client.refresh_tokens(self.CONFIG, "refresh-1")
@@ -890,10 +890,10 @@ class TestRefreshTokensRequestAndErrors:
         ],
     )
     async def test_refresh_4xx_raises_token_endpoint_error(self, oauth_client, status, body, code):
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             if body is None:
-                return httpx.Response(status, content=b"<html>bad</html>")
-            return httpx.Response(status, json=body)
+                return httpx2.Response(status, content=b"<html>bad</html>")
+            return httpx2.Response(status, json=body)
 
         with _mock_token_endpoint(handler), pytest.raises(OAuthTokenEndpointError) as exc_info:
             await oauth_client.refresh_tokens(self.CONFIG, "refresh-1")
@@ -902,8 +902,8 @@ class TestRefreshTokensRequestAndErrors:
 
     @pytest.mark.asyncio
     async def test_refresh_5xx_returns_none(self, oauth_client):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(503, json={"error": "temporarily_unavailable"})
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(503, json={"error": "temporarily_unavailable"})
 
         with _mock_token_endpoint(handler):
             assert await oauth_client.refresh_tokens(self.CONFIG, "refresh-1") is None
@@ -933,9 +933,9 @@ class TestExchangeCodeTokenEndpointErrors:
         )
         seen: list[dict[str, str]] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(_form(request))
-            return httpx.Response(401, json={"error": "invalid_client"})
+            return httpx2.Response(401, json={"error": "invalid_client"})
 
         from authlib.integrations.httpx_client import AsyncOAuth2Client as RealAsyncOAuth2Client
 
@@ -949,7 +949,7 @@ class TestExchangeCodeTokenEndpointErrors:
                 redirect_uri=client.redirect_uri,
                 token_endpoint_auth_method="client_secret_post",
                 code_challenge_method="S256",
-                transport=httpx.MockTransport(handler),
+                transport=httpx2.MockTransport(handler),
             )
             return real
 
