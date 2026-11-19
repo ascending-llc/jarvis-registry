@@ -14,7 +14,7 @@ from registry_pkgs.core.client_categories import (
     AUTHORIZATION_CODE_GRANT_TYPE,
     REFRESH_TOKEN_GRANT_TYPE,
 )
-from registry_pkgs.core.consent_store import LEGACY_CONSENT_GRANT_ID, ConsentStore, consent_grant_matches
+from registry_pkgs.core.consent_store import ConsentStore, consent_grant_matches, effective_consent_grant_id
 from registry_pkgs.core.downstream_oauth import DEVICE_CODE_GRANT_TYPE, oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token_with_scope
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
@@ -159,12 +159,15 @@ class TokenGrantService:
             return _oauth_error("unauthorized_client", f"client is not authorized for {grant_type}")
         return None
 
-    def _check_consent_grant(self, client_id: str, user_id: str, presented: str | None) -> JSONResponse | None:
+    def _resolve_consent_grant(
+        self, client_id: str, user_id: str, presented: str | None
+    ) -> tuple[str | None, JSONResponse | None]:
+        """Return ``(grant_id_to_carry, error)``; registry-app clients are consent-exempt and carry none."""
         if is_registry_client(client_id):
-            return None
-        if consent_grant_matches(self._consent_store.get_client_grant_id(user_id, client_id), presented):
-            return None
-        return _oauth_error("invalid_grant", "User consent is required. Restart the authorization flow.")
+            return None, None
+        if not consent_grant_matches(self._consent_store.get_client_grant_id(user_id, client_id), presented):
+            return None, _oauth_error("invalid_grant", "User consent is required. Restart the authorization flow.")
+        return effective_consent_grant_id(presented), None
 
     def _mint_response(
         self,
@@ -265,13 +268,11 @@ class TokenGrantService:
         user_id = _stored_user_id(user_info)
         if user_id is None:
             return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
-        presented_grant_id = auth_code_data.get("consent_grant_id")
-        consent_error = self._check_consent_grant(request.client_id, user_id, presented_grant_id)
+        consent_grant_id, consent_error = self._resolve_consent_grant(
+            request.client_id, user_id, auth_code_data.get("consent_grant_id")
+        )
         if consent_error is not None:
             return consent_error
-        consent_grant_id = None
-        if not is_registry_client(request.client_id):
-            consent_grant_id = presented_grant_id if presented_grant_id is not None else LEGACY_CONSENT_GRANT_ID
         resolved_scopes = auth_code_data.get("resolved_scope")
         if resolved_scopes is None:
             logger.info("No resolved_scope in auth code, computing from groups (backward compatibility)")
@@ -341,13 +342,11 @@ class TokenGrantService:
         user_id = _stored_user_id(user_info)
         if user_id is None:
             return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
-        presented_grant_id = device_data.get("consent_grant_id")
-        consent_error = self._check_consent_grant(request.client_id, user_id, presented_grant_id)
+        consent_grant_id, consent_error = self._resolve_consent_grant(
+            request.client_id, user_id, device_data.get("consent_grant_id")
+        )
         if consent_error is not None:
             return consent_error
-        consent_grant_id = None
-        if not is_registry_client(request.client_id):
-            consent_grant_id = presented_grant_id if presented_grant_id is not None else LEGACY_CONSENT_GRANT_ID
         refresh_token = secrets.token_urlsafe(32)
         response = self._mint_response(
             client_id=request.client_id,
@@ -386,13 +385,11 @@ class TokenGrantService:
         user_id = _stored_user_id(user_info)
         if user_id is None:
             return _oauth_error("invalid_grant", SIGN_IN_AGAIN)
-        presented_grant_id = refresh_data.get("consent_grant_id")
-        consent_error = self._check_consent_grant(request.client_id, user_id, presented_grant_id)
+        consent_grant_id, consent_error = self._resolve_consent_grant(
+            request.client_id, user_id, refresh_data.get("consent_grant_id")
+        )
         if consent_error is not None:
             return consent_error
-        consent_grant_id = None
-        if not is_registry_client(request.client_id):
-            consent_grant_id = presented_grant_id if presented_grant_id is not None else LEGACY_CONSENT_GRANT_ID
 
         issued_at = int(time.time())
         requested_scopes = (refresh_data.get("scope") or "").split()

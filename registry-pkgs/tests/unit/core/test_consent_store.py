@@ -13,6 +13,7 @@ from registry_pkgs.core.consent_store import (
     ConsentStore,
     PendingConsentStore,
     consent_grant_matches,
+    effective_consent_grant_id,
 )
 from registry_pkgs.core.oauth_state_store import CLIENT_TTL_SECONDS
 
@@ -113,6 +114,14 @@ def test_missing_app_consent_does_not_slide_resource_hash_ttl(
 )
 def test_consent_grant_matches(stored: str | None, presented: str | None, matches: bool) -> None:
     assert consent_grant_matches(stored, presented) is matches
+
+
+@pytest.mark.parametrize(
+    ("presented", "effective"),
+    [(None, LEGACY_CONSENT_GRANT_ID), ("g1", "g1"), ("", "")],
+)
+def test_effective_consent_grant_id(presented: str | None, effective: str) -> None:
+    assert effective_consent_grant_id(presented) == effective
 
 
 @pytest.mark.parametrize("kind", ["server", "agent"])

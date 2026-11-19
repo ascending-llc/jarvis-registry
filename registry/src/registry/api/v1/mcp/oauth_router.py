@@ -13,10 +13,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from redis import Redis
 
 from registry_pkgs.core.consent_store import (
-    LEGACY_CONSENT_GRANT_ID,
     ConsentStore,
     PendingConsentStore,
     consent_grant_matches,
+    effective_consent_grant_id,
 )
 from registry_pkgs.core.downstream_oauth import (
     DEVICE_CODE_GRANT_TYPE,
@@ -911,17 +911,18 @@ def _downstream_refresh_data(
     return data
 
 
-def _check_downstream_consent_grant(
+def _resolve_downstream_consent_grant(
     consent_store: ConsentStore,
     user_id: str,
     client_id: str,
     presented: str | None,
-) -> JSONResponse | None:
+) -> tuple[str | None, JSONResponse | None]:
+    """Return ``(grant_id_to_carry, error)``; the registry app is consent-exempt and carries none."""
     if client_id == settings.jwt_token_config.registry_client_id:
-        return None
+        return None, None
     if not consent_grant_matches(consent_store.get_client_grant_id(user_id, client_id), presented):
-        return _oauth_token_error("invalid_grant", "User consent is required. Restart the authorization flow.")
-    return None
+        return None, _oauth_token_error("invalid_grant", "User consent is required. Restart the authorization flow.")
+    return effective_consent_grant_id(presented), None
 
 
 def _mint_downstream_access_token(user_id: str, client_id: str, server_path: str) -> str:
@@ -1002,13 +1003,11 @@ def _downstream_authorization_code_grant(
     if user_id != bound_user_id or server_path != bound_server_path:
         return _oauth_token_error("invalid_grant", "code does not match this endpoint")
 
-    grant_id = entry.get("consent_grant_id")
-    consent_error = _check_downstream_consent_grant(consent_store, user_id, client_id, grant_id)
+    effective_grant_id, consent_error = _resolve_downstream_consent_grant(
+        consent_store, user_id, client_id, entry.get("consent_grant_id")
+    )
     if consent_error is not None:
         return consent_error
-    effective_grant_id = None
-    if client_id != settings.jwt_token_config.registry_client_id:
-        effective_grant_id = grant_id if grant_id is not None else LEGACY_CONSENT_GRANT_ID
 
     access_token = _mint_downstream_access_token(bound_user_id, client_id, bound_server_path)
     refresh_token = secrets.token_urlsafe(32)
@@ -1052,13 +1051,11 @@ def _downstream_refresh_token_grant(
     if token_data.get("user_id") != user_id or token_data.get("server_path") != server_path:
         return _oauth_token_error("invalid_grant", "refresh_token does not match this endpoint")
 
-    grant_id = token_data.get("consent_grant_id")
-    consent_error = _check_downstream_consent_grant(consent_store, user_id, client_id, grant_id)
+    effective_grant_id, consent_error = _resolve_downstream_consent_grant(
+        consent_store, user_id, client_id, token_data.get("consent_grant_id")
+    )
     if consent_error is not None:
         return consent_error
-    effective_grant_id = None
-    if client_id != settings.jwt_token_config.registry_client_id:
-        effective_grant_id = grant_id if grant_id is not None else LEGACY_CONSENT_GRANT_ID
 
     new_refresh_token = secrets.token_urlsafe(32)
     rotated = store.rotate_refresh_token(
@@ -1123,13 +1120,11 @@ def _downstream_device_code_grant(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    grant_id = device_data.get("consent_grant_id")
-    consent_error = _check_downstream_consent_grant(consent_store, user_id, client_id, grant_id)
+    effective_grant_id, consent_error = _resolve_downstream_consent_grant(
+        consent_store, user_id, client_id, device_data.get("consent_grant_id")
+    )
     if consent_error is not None:
         return consent_error
-    effective_grant_id = None
-    if client_id != settings.jwt_token_config.registry_client_id:
-        effective_grant_id = grant_id if grant_id is not None else LEGACY_CONSENT_GRANT_ID
 
     access_token = _mint_downstream_access_token(user_id, client_id, server_path)
     refresh_token = secrets.token_urlsafe(32)

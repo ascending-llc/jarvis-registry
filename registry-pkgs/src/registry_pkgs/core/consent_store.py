@@ -30,10 +30,14 @@ return exists
 """
 
 
+def effective_consent_grant_id(presented_grant_id: str | None) -> str:
+    """Unstamped credentials belong to the legacy grant."""
+    return LEGACY_CONSENT_GRANT_ID if presented_grant_id is None else presented_grant_id
+
+
 def consent_grant_matches(stored_grant_id: str | None, presented_grant_id: str | None) -> bool:
-    """Unstamped credentials belong to the legacy grant; a missing consent never matches."""
-    effective_grant_id = LEGACY_CONSENT_GRANT_ID if presented_grant_id is None else presented_grant_id
-    return stored_grant_id is not None and stored_grant_id == effective_grant_id
+    """A missing consent never matches; unstamped credentials match only the legacy grant."""
+    return stored_grant_id is not None and stored_grant_id == effective_consent_grant_id(presented_grant_id)
 
 
 class ConsentStore:
