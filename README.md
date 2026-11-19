@@ -39,6 +39,20 @@ It solves one of the hardest problems in enterprise AI: giving AI copilots and a
 
 ---
 
+## Private agent skills and access checks
+
+Jarvis Skill Gateway is the private agent skill registry within Jarvis Registry for coding teams that want a customer-operated catalog alongside MCP and agent governance. It manages complete `SKILL.md` packages and individual skill permissions for users and groups. Developers authenticate with the [AI Skills CLI](docs/features/ai-skills-cli.md) to sync accessible packages to Claude Code, Codex, Cursor and GitHub Copilot.
+
+For production planning, use the [documented Helm reference](docs/deployment-guide.md) on an existing Amazon EKS or Azure AKS cluster; Docker Compose is the local starting point. Keep content review in Git, import the reviewed revision into Registry, and verify the installed package in the coding client.
+
+| Engineering question | Guide |
+|---|---|
+| Is Git enough, or do we need per-skill sharing and central distribution? | [Git repository or private agent skill registry?](docs/walkthroughs/git-vs-private-skill-registry.md) |
+| Does MCP server access stop a caller who already knows the server ID and tool name? | [MCP access control: test user permissions](docs/walkthroughs/mcp-access-control.md) |
+| How do approved private skills reach developers, receive updates and lose access? | [Private skill import, updates and access removal](docs/walkthroughs/private-skill-lifecycle.md) |
+
+These guides include concrete checks and sample files. Skill delivery is separate from MCP tool authorization; removing Registry access does not erase independent downloaded copies.
+
 ## Quick Start
 
 ```bash
@@ -62,18 +76,6 @@ open http://localhost:80
 ```
 
 See the full [Get Started guide](docs/quick-start.md) for detailed instructions.
-
-## Private agent skills and access checks
-
-Jarvis Registry also includes **Skill Gateway**, a private catalog for approved agent skills. Keep source review in your Git provider, import an approved revision, and share the resulting skill through Registry access controls. The Jarvis Registry CLI delivers accessible skills to supported coding-client directories.
-
-| Engineering question | Guide |
-|---|---|
-| Is Git enough, or do we need per-skill sharing and central distribution? | [Git repository or private agent skill registry?](docs/walkthroughs/git-vs-private-skill-registry.md) |
-| Does MCP server access stop a caller who already knows the server ID and tool name? | [MCP access control: test user permissions](docs/walkthroughs/mcp-access-control.md) |
-| How do approved private skills reach developers, receive updates and lose access? | [Private skill import, updates and access removal](docs/walkthroughs/private-skill-lifecycle.md) |
-
-These guides include concrete checks and sample files. Skill delivery is separate from MCP tool authorization; removing Registry access does not erase independent downloaded copies.
 
 ## Documentation
 
