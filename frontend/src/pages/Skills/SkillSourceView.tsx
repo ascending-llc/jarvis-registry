@@ -1,17 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import SERVICES from '@/services';
-import type { SkillScanResponse, SkillScanSeverity } from '@/services/skill/scanTypes';
+import type { SkillScanResponse } from '@/services/skill/scanTypes';
 import { SKILL_MARKDOWN_PATH } from './constants';
+import SkillScanFindingCard from './SkillScanFindingCard';
 import { composeSkillMarkdown } from './skillDraft';
 import {
   formatScanDate,
+  getFileScanFindings,
   getScanErrorMessage,
-  type IndexedScanFinding,
-  indexScanFindings,
-  resolveScanFilePath,
-  SCAN_SEVERITIES,
-  SCAN_SEVERITY_CLASSES,
+  getScanLineRange,
+  groupScanFindingsByLocation,
+  isScanForVersion,
+  type LocatedScanFinding,
+  SCAN_SEVERITY_COLORS,
   type SkillScanTarget,
 } from './skillScan';
 
@@ -19,6 +21,8 @@ type Props = {
   skillId: string;
   skillVersion: number | null;
   path: string;
+  sourceKey: string;
+  sourceCache: Map<string, string>;
   scan: SkillScanResponse | null;
   target: SkillScanTarget | null;
   dirty: boolean;
@@ -36,41 +40,12 @@ type SourceState = {
   versionMatches: boolean;
 };
 
-const LINE_MARKER_COLORS: Record<SkillScanSeverity, string> = {
-  critical: 'text-[var(--jarvis-danger-text)]',
-  high: 'text-[var(--jarvis-orange)]',
-  medium: 'text-[var(--jarvis-warning-text)]',
-  low: 'text-[var(--jarvis-muted)]',
-  info: 'text-[var(--jarvis-info-text)]',
-};
-
-const getRange = (
-  finding: IndexedScanFinding,
-  lineCount: number,
-  composedMarkdown: string | null,
-): [number, number] | null => {
-  const start = finding.startLine;
-  const end = finding.endLine ?? start;
-  if (start === null || end === null || !Number.isInteger(start) || !Number.isInteger(end)) return null;
-  if (start < 1 || end < start) return null;
-  // 主文件的 frontmatter 由详情数据重组，原始行号不一定适用于展示内容。
-  if (composedMarkdown !== null) {
-    const snippet = finding.snippet?.replace(/\r\n/g, '\n').trim();
-    if (!snippet) return null;
-    const offset = composedMarkdown.indexOf(snippet);
-    if (offset < 0 || composedMarkdown.indexOf(snippet, offset + 1) !== -1) return null;
-    const matchedStart = composedMarkdown.slice(0, offset).split('\n').length;
-    const matchedEnd = matchedStart + snippet.split('\n').length - 1;
-    return [matchedStart, matchedEnd];
-  }
-  if (end > lineCount) return null;
-  return [start, end];
-};
-
 const SkillSourceView = ({
   skillId,
   skillVersion,
   path,
+  sourceKey,
+  sourceCache,
   scan,
   target,
   dirty,
@@ -79,35 +54,41 @@ const SkillSourceView = ({
   onRefreshContent,
   canRefreshContent,
 }: Props) => {
-  const sourceKey = `${skillId}:${skillVersion}:${path}`;
-  const [source, setSource] = useState<SourceState>({
-    key: '',
-    content: null,
-    loading: true,
-    error: null,
-    versionMatches: false,
+  const [source, setSource] = useState<SourceState>(() => {
+    const cached = sourceCache.get(sourceKey);
+    return {
+      key: sourceKey,
+      content: cached ?? null,
+      loading: cached === undefined,
+      error: null,
+      versionMatches: cached !== undefined,
+    };
   });
   const [retry, setRetry] = useState(0);
   const [expandedLine, setExpandedLine] = useState<number | null>(null);
+  const calloutId = useId();
   const lineRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
-  const reportKey = scan?.summary?.scannedAt;
 
   useEffect(() => {
     let disposed = false;
     setExpandedLine(null);
+    const cached = sourceCache.get(sourceKey);
+    if (cached !== undefined) {
+      setSource({ key: sourceKey, content: cached, loading: false, error: null, versionMatches: true });
+      return;
+    }
     setSource({ key: sourceKey, content: null, loading: true, error: null, versionMatches: false });
+    const acceptSource = (content: string, versionMatches: boolean) => {
+      if (disposed) return;
+      if (versionMatches) sourceCache.set(sourceKey, content);
+      setSource({ key: sourceKey, content, loading: false, error: null, versionMatches });
+    };
     const load = async () => {
       try {
         if (path === SKILL_MARKDOWN_PATH) {
           const detail = await SERVICES.SKILL.getSkillDetail(skillId);
           if (disposed) return;
-          setSource({
-            key: sourceKey,
-            content: composeSkillMarkdown(detail),
-            loading: false,
-            error: null,
-            versionMatches: detail.version === skillVersion,
-          });
+          acceptSource(composeSkillMarkdown(detail), detail.version === skillVersion);
           return;
         }
         const file = await SERVICES.SKILL.getSkillFile(skillId, path);
@@ -118,14 +99,7 @@ const SkillSourceView = ({
           throw new Error('Original file text is unavailable. Open Preview to read the skill.');
         const content = file.content;
         const detail = await SERVICES.SKILL.getSkillDetail(skillId);
-        if (disposed) return;
-        setSource({
-          key: sourceKey,
-          content,
-          loading: false,
-          error: null,
-          versionMatches: detail.version === skillVersion,
-        });
+        acceptSource(content, detail.version === skillVersion);
       } catch (error) {
         if (!disposed)
           setSource({
@@ -141,45 +115,33 @@ const SkillSourceView = ({
     return () => {
       disposed = true;
     };
-  }, [path, skillId, skillVersion, sourceKey, retry, reportKey]);
+  }, [path, skillId, skillVersion, sourceKey, sourceCache, retry]);
 
   const current = source.key === sourceKey;
   const lines = useMemo(() => (source.content ?? '').split(/\r\n|\n/), [source.content]);
-  const findings = useMemo(
-    () => indexScanFindings(scan).filter(finding => resolveScanFilePath(finding.filePath, [path]) === path),
-    [scan, path],
-  );
-  const versionMatches = Boolean(
-    current &&
-      source.versionMatches &&
-      scan?.summary &&
-      !scan.stale &&
-      scan.summary.skillVersion === skillVersion &&
-      scan.skillVersion === skillVersion,
-  );
+  const findings = useMemo(() => getFileScanFindings(scan, path), [scan, path]);
+  const versionMatches = current && source.versionMatches && isScanForVersion(scan, skillVersion);
   const canMark = versionMatches && !dirty;
-  const { markers, ranges } = useMemo(() => {
-    const markers = new Map<number, IndexedScanFinding[]>();
-    const ranges = new Map<string, [number, number]>();
-    if (!canMark) return { markers, ranges };
+  const { markers, findingLines } = useMemo(() => {
+    const markers = new Map<number, LocatedScanFinding[]>();
+    const findingLines = new Map<string, number>();
+    if (!canMark) return { markers, findingLines };
     const composedMarkdown = path === SKILL_MARKDOWN_PATH ? lines.join('\n') : null;
-    for (const finding of findings) {
-      const range = getRange(finding, lines.length, composedMarkdown);
-      if (!range) continue;
-      ranges.set(finding.key, range);
-      const entries = markers.get(range[0]);
-      if (entries) entries.push(finding);
-      else markers.set(range[0], [finding]);
+    const located = findings.flatMap(finding => {
+      const range = getScanLineRange(finding, lines.length, composedMarkdown);
+      return range ? [{ finding, range }] : [];
+    });
+    for (const {
+      findings: entries,
+      range: [line],
+    } of groupScanFindingsByLocation(located)) {
+      markers.set(line, entries);
+      for (const { finding } of entries) findingLines.set(finding.key, line);
     }
-    return { markers, ranges };
+    return { markers, findingLines };
   }, [canMark, findings, lines, path]);
-  const targetRange = target && target.scanVersion === skillVersion ? ranges.get(target.findingKey) : undefined;
-  const targetLine = targetRange?.[0] ?? null;
-  const activeFindings = expandedLine === null ? [] : (markers.get(expandedLine) ?? []);
-  const highlightEnd =
-    expandedLine === targetLine && targetRange
-      ? targetRange[1]
-      : activeFindings.reduce((end, finding) => Math.max(end, ranges.get(finding.key)?.[1] ?? 0), 0);
+  const targetLine =
+    target?.path === path && target.scanVersion === skillVersion ? findingLines.get(target.findingKey) : undefined;
   const backToFinding = target?.path === path && (
     <button
       type='button'
@@ -191,12 +153,12 @@ const SkillSourceView = ({
   );
 
   useEffect(() => {
-    if (source.loading || target?.path !== path || targetLine === null) return;
+    if (source.loading || !target || targetLine === undefined) return;
     setExpandedLine(targetLine);
     const button = lineRefs.current.get(targetLine);
     button?.scrollIntoView({ block: 'center' });
     button?.focus({ preventScroll: true });
-  }, [source.loading, target, targetLine, path]);
+  }, [source.loading, target, targetLine]);
 
   if (!current || source.loading)
     return (
@@ -221,19 +183,17 @@ const SkillSourceView = ({
     );
 
   let notice: string | null = null;
+  const unplaced = canMark ? findings.filter(finding => !findingLines.has(finding.key)).length : 0;
   if (dirty) notice = 'Unsaved changes. Line markers are hidden until the current content is saved and scanned.';
   else if (!source.versionMatches || (scan?.summary && !versionMatches))
     notice = 'Content changed since this report. Findings remain available in Security.';
-  else if (target?.path === path && !targetRange)
+  else if (target?.path === path && targetLine === undefined)
     notice =
       target.startLine === null
         ? 'The report lists this file without a line number.'
         : `The scanner reported line ${target.startLine}. Its location could not be verified in this file.`;
-  else if (
-    path === SKILL_MARKDOWN_PATH &&
-    findings.some(finding => finding.startLine !== null && !ranges.has(finding.key))
-  )
-    notice = 'Some scan locations could not be matched to the displayed file. See Security for the reported locations.';
+  else if (unplaced > 0)
+    notice = `${unplaced} ${unplaced === 1 ? 'finding could' : 'findings could'} not be placed on a source line. See Security for details.`;
 
   return (
     <div>
@@ -260,59 +220,66 @@ const SkillSourceView = ({
           Markers from the scan of version {scan.summary.skillVersion} · {formatScanDate(scan.summary.scannedAt)}
         </p>
       )}
-      <div className='max-w-full overflow-x-auto py-3 font-mono text-xs leading-6 text-[var(--jarvis-text)]'>
+      <div className='my-2 bg-[var(--jarvis-card-muted)] py-2 font-mono text-[12.5px] leading-6 text-[var(--jarvis-text)]'>
         {lines.map((line, index) => {
           const lineNumber = index + 1;
           const entries = markers.get(lineNumber) ?? [];
-          const highest = SCAN_SEVERITIES.find(severity => entries.some(finding => finding.severity === severity));
-          const highlighted =
-            entries.length > 0 || (expandedLine !== null && lineNumber >= expandedLine && lineNumber <= highlightEnd);
+          const highest = entries[0]?.finding.severity;
+          const expanded = expandedLine === lineNumber;
           return (
             <div key={lineNumber}>
-              <div className={`flex min-w-full items-start ${highlighted ? 'bg-[var(--jarvis-warning-soft)]' : ''}`}>
-                <span
-                  aria-hidden='true'
-                  className='w-12 flex-none select-none pr-2 text-right text-[var(--jarvis-muted)]'
-                >
-                  {lineNumber}
+              <div
+                className='flex min-w-0 items-start'
+                style={
+                  expanded && highest
+                    ? {
+                        backgroundColor: `color-mix(in srgb, ${SCAN_SEVERITY_COLORS[highest]} 10%, transparent)`,
+                      }
+                    : undefined
+                }
+              >
+                <span aria-hidden='true' className='flex h-6 w-3 shrink-0 justify-center'>
+                  {highest && (
+                    <span className='w-[3px] rounded-full' style={{ backgroundColor: SCAN_SEVERITY_COLORS[highest] }} />
+                  )}
                 </span>
-                <span className='w-7 flex-none'>
-                  {entries.length > 0 && (
+                <span className='flex h-6 w-6 shrink-0 items-center justify-center'>
+                  {highest && (
                     <button
                       type='button'
                       ref={node => {
                         if (node) lineRefs.current.set(lineNumber, node);
                         else lineRefs.current.delete(lineNumber);
                       }}
-                      aria-label={`Line ${lineNumber}, ${entries.length} scan findings`}
-                      aria-expanded={expandedLine === lineNumber}
-                      className={`w-6 font-bold ${LINE_MARKER_COLORS[highest ?? 'low']}`}
+                      aria-label={`Line ${lineNumber}, ${highest} severity, ${entries.length} ${entries.length === 1 ? 'finding' : 'findings'}`}
+                      title={
+                        entries.length === 1 ? entries[0].finding.title : `${entries.length} findings at this location`
+                      }
+                      aria-expanded={expanded}
+                      aria-controls={expanded ? calloutId : undefined}
+                      className='group grid h-6 w-6 place-items-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--jarvis-primary)]'
                       onClick={() => setExpandedLine(value => (value === lineNumber ? null : lineNumber))}
+                      style={{ color: SCAN_SEVERITY_COLORS[highest] }}
                     >
-                      ●
+                      <span
+                        aria-hidden='true'
+                        className={`h-2.5 w-2.5 rounded-full border-2 border-[color:var(--jarvis-card-muted)] bg-current ring-1 ring-current transition-transform group-hover:scale-125 ${expanded ? 'scale-125' : ''}`}
+                      />
                     </button>
                   )}
                 </span>
+                <span
+                  aria-hidden='true'
+                  className='w-10 flex-none select-none pr-3 text-right tabular-nums text-[var(--jarvis-muted)]'
+                >
+                  {lineNumber}
+                </span>
                 <code className='min-w-0 flex-1 whitespace-pre-wrap break-words pr-4'>{line || '\u00a0'}</code>
               </div>
-              {expandedLine === lineNumber && entries.length > 0 && (
-                <div className='space-y-3 border-y border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 font-sans'>
-                  {entries.map(finding => (
-                    <div key={finding.key}>
-                      <span className={`mr-2 rounded px-2 py-1 ${SCAN_SEVERITY_CLASSES[finding.severity]}`}>
-                        {finding.severity}
-                      </span>
-                      <strong>{finding.title}</strong>
-                      <p className='mt-1 text-[var(--jarvis-muted)]'>{finding.tool}</p>
-                      <p>{finding.message}</p>
-                      <button
-                        type='button'
-                        className='mt-1 text-[var(--jarvis-primary-text)] underline'
-                        onClick={() => onShowFinding(finding.key)}
-                      >
-                        View in Security
-                      </button>
-                    </div>
+              {expanded && entries.length > 0 && (
+                <div id={calloutId} className='mb-2 ml-9 mr-3 mt-1.5 max-w-[560px] space-y-2 font-sans sm:ml-[76px]'>
+                  {entries.map(({ finding }) => (
+                    <SkillScanFindingCard key={finding.key} finding={finding} onShowFinding={onShowFinding} />
                   ))}
                 </div>
               )}

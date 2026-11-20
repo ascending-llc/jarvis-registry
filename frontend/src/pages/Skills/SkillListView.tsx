@@ -3,6 +3,7 @@ import {
   ArrowPathIcon,
   ArrowUpIcon,
   ChevronUpDownIcon,
+  Cog6ToothIcon,
   DocumentTextIcon,
   PlusIcon,
   ShareIcon,
@@ -12,11 +13,10 @@ import type React from 'react';
 
 import IconButton from '@/components/IconButton';
 import type { SkillMetadata } from '@/services/skill/type';
-import SkillScanBadge from './SkillScanBadge';
+import SkillScanBadgeButton from './SkillScanBadgeButton';
 import SkillSourceChip from './SkillSourceChip';
 import { getSkillDisplayName } from './skillDraft';
 import type { SkillSort, SkillSortColumn } from './skillListQuery';
-import { getScanStatusDetails } from './skillScan';
 
 type SkillListViewProps = {
   skills: SkillMetadata[];
@@ -33,7 +33,6 @@ type SkillListViewProps = {
   onOpenSkill: (skillId: string) => void;
   onOpenSecurity?: (skillId: string) => void;
   onOpenScanSettings?: () => void;
-  canConfigureScan?: boolean;
   onCreate: () => void;
   onShare: (skill: SkillMetadata) => void;
   onDelete: (skill: SkillMetadata) => void;
@@ -75,7 +74,6 @@ const SkillListView: React.FC<SkillListViewProps> = ({
   onCreate,
   onOpenSecurity,
   onOpenScanSettings,
-  canConfigureScan = false,
   onShare,
   onDelete,
 }) => (
@@ -90,8 +88,14 @@ const SkillListView: React.FC<SkillListViewProps> = ({
       </div>
 
       <div className='flex flex-shrink-0 flex-wrap items-center gap-3'>
-        {canConfigureScan && (
-          <button type='button' className='btn-secondary' onClick={onOpenScanSettings}>
+        {onOpenScanSettings && (
+          <button
+            type='button'
+            aria-haspopup='dialog'
+            onClick={onOpenScanSettings}
+            className='inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] px-3 text-sm font-medium text-[var(--jarvis-text)] transition-colors hover:bg-[var(--jarvis-card-muted)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--jarvis-primary)]'
+          >
+            <Cog6ToothIcon aria-hidden='true' className='h-4 w-4 shrink-0' />
             Scan settings
           </button>
         )}
@@ -228,15 +232,11 @@ const SkillListView: React.FC<SkillListViewProps> = ({
               <span className='flex min-w-0'>
                 <SkillSourceChip origin={skill.origin} />
               </span>
-              <button
-                type='button'
-                onClick={() => (onOpenSecurity ?? onOpenSkill)(skill.id)}
-                className='min-w-0 text-left'
-                aria-label={`View security scan for ${getSkillDisplayName(skill)}, ${getScanStatusDetails(skill.scanSummary)}`}
-                title={getScanStatusDetails(skill.scanSummary)}
-              >
-                <SkillScanBadge summary={skill.scanSummary} />
-              </button>
+              <SkillScanBadgeButton
+                summary={skill.scanSummary}
+                skillName={getSkillDisplayName(skill)}
+                onOpen={() => (onOpenSecurity ?? onOpenSkill)(skill.id)}
+              />
               <span className='truncate text-[13.5px] text-[var(--jarvis-muted)]'>
                 {skill.authorName?.trim() || '—'}
               </span>

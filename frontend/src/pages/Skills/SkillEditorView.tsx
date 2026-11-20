@@ -318,10 +318,10 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
                   {tab === 'files' ? 'Files' : 'Security'}
                   {tab === 'security' && riskCount > 0 && (
                     <span
-                      title={`Scan of version ${scan?.summary?.skillVersion}`}
+                      title={`${riskCount} risk ${riskCount === 1 ? 'finding' : 'findings'} across the skill · Scan of version ${scan?.summary?.skillVersion}`}
                       className='rounded-full bg-[var(--jarvis-orange-soft)] px-2 py-0.5 text-xs font-medium text-[var(--jarvis-orange)]'
                     >
-                      <span className='sr-only'>Risk findings </span>
+                      <span className='sr-only'>Risk findings across the skill </span>
                       {riskCount}
                     </span>
                   )}
@@ -363,6 +363,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
                   files={supportingFiles}
                   selectedPath={selectedPath}
                   onSelect={onSelectFile}
+                  onOpenSecurity={onTabChange ? () => onTabChange('security') : undefined}
                   scanFindings={scanFindings}
                   olderFindings={olderFileFindings}
                   findingsTruncated={scanState?.scan?.results.some(result => result.findingsTruncated)}

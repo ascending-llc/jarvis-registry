@@ -2,6 +2,7 @@ import { ChevronDownIcon } from '@heroicons/react/24/outline';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { SkillScanResponse, SkillScanSeverity } from '@/services/skill/scanTypes';
 import {
+  formatReportedScanLines,
   formatScanDate,
   type IndexedScanFinding,
   indexScanFindings,
@@ -71,11 +72,8 @@ const SkillSecurityPanel = ({
     const resolvedPath = resolveScanFilePath(finding.filePath, availableFilePaths);
     const scanVersion = scan?.summary?.skillVersion;
     const canLocate = resolvedPath !== null && scanVersion !== undefined;
-    const lineRange =
-      finding.startLine !== null
-        ? ` · L${finding.startLine}${finding.endLine !== null && finding.endLine !== finding.startLine ? `–${finding.endLine}` : ''}`
-        : '';
-    const location = finding.filePath ? `${finding.filePath}${lineRange}` : null;
+    const reportedLines = formatReportedScanLines(finding);
+    const location = finding.filePath ? `${finding.filePath}${reportedLines ? ` · ${reportedLines}` : ''}` : null;
 
     const borderColors: Record<SkillScanSeverity, string> = {
       critical: 'border-l-[var(--jarvis-danger)]',
@@ -93,7 +91,7 @@ const SkillSecurityPanel = ({
           else findingRefs.current.delete(finding.key);
         }}
         tabIndex={-1}
-        className={`overflow-hidden rounded-xl border border-[var(--jarvis-border)] border-l-[3px] bg-[var(--jarvis-card)] outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] ${borderColors[finding.severity]}`}
+        className={`overflow-hidden rounded-xl border border-[var(--jarvis-border)] border-l-[3px] bg-[var(--jarvis-card)] outline-none ${borderColors[finding.severity]}`}
       >
         <div className='flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pt-3.5'>
           <span
@@ -129,7 +127,12 @@ const SkillSecurityPanel = ({
                   });
                 }}
                 className='break-all text-left font-mono text-xs text-[var(--jarvis-primary-text)] hover:underline'
-                aria-label={`Locate ${finding.title} in ${location}`}
+                aria-label={`Open ${finding.title} in Source${reportedLines ? `, reported at ${reportedLines}` : ''}`}
+                title={
+                  reportedLines
+                    ? `Scanner reported ${reportedLines}. Open the matching location in Source.`
+                    : 'Open file in Source.'
+                }
               >
                 {location} ↗
               </button>

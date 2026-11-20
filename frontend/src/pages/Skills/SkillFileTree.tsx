@@ -90,12 +90,14 @@ type SkillFileTreeProps = {
   olderFindings?: boolean;
   selectedPath: string;
   onSelect: (path: string) => void;
+  onOpenSecurity?: () => void;
 };
 
 const SkillFileTree: React.FC<SkillFileTreeProps> = ({
   files,
   selectedPath,
   onSelect,
+  onOpenSecurity,
   scanFindings = [],
   findingsTruncated = false,
   olderFindings = false,
@@ -103,6 +105,23 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const selectedFileRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => buildSkillFileTree(files), [files]);
+  const { findingsByPath, findingsWithoutFile } = useMemo(() => {
+    const paths = [SKILL_MARKDOWN_PATH, ...files.map(file => file.relativePath)];
+    const findingsByPath = new Map<string, IndexedScanFinding[]>();
+    let findingsWithoutFile = 0;
+    for (const finding of scanFindings) {
+      if (finding.severity === 'info') continue;
+      const path = resolveScanFilePath(finding.filePath, paths);
+      if (!path) {
+        findingsWithoutFile++;
+        continue;
+      }
+      const entries = findingsByPath.get(path);
+      if (entries) entries.push(finding);
+      else findingsByPath.set(path, [finding]);
+    }
+    return { findingsByPath, findingsWithoutFile };
+  }, [files, scanFindings]);
 
   useEffect(() => {
     const ancestorPaths = getAncestorFolderPaths(selectedPath);
@@ -130,9 +149,7 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({
   const renderNode = (node: SkillFileTreeNode, depth: number): React.ReactNode => {
     if (node.type === 'file') {
       const selected = node.path === selectedPath;
-      const findings = scanFindings.filter(
-        finding => finding.severity !== 'info' && resolveScanFilePath(finding.filePath, [node.path]) === node.path,
-      );
+      const findings = findingsByPath.get(node.path) ?? [];
       const severity = SCAN_SEVERITIES.find(level => findings.some(finding => finding.severity === level));
       return (
         <button
@@ -153,7 +170,8 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({
           {severity && (
             <span
               className={`rounded px-1.5 text-xs ${SCAN_SEVERITY_CLASSES[severity]}`}
-              aria-label={`${findings.length} ${severity} or lower findings${findingsTruncated ? ', report truncated' : ''}`}
+              title={`${findings.length} risk ${findings.length === 1 ? 'finding' : 'findings'} in this file`}
+              aria-label={`${findings.length} risk ${findings.length === 1 ? 'finding' : 'findings'} in this file${findingsTruncated ? ', report truncated' : ''}`}
             >
               {findings.length}
             </span>
@@ -188,6 +206,22 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({
   return (
     <nav aria-label='Skill files'>
       {nodes.map(node => renderNode(node, 0))}
+      {findingsWithoutFile > 0 && (
+        <div className='px-2 pt-2 text-xs text-[var(--jarvis-muted)]'>
+          <p>
+            {findingsWithoutFile} {findingsWithoutFile === 1 ? 'finding has' : 'findings have'} no matching file.
+          </p>
+          {onOpenSecurity && (
+            <button
+              type='button'
+              className='mt-1 text-[var(--jarvis-primary-text)] hover:underline'
+              onClick={onOpenSecurity}
+            >
+              View in Security
+            </button>
+          )}
+        </div>
+      )}
       {olderFindings && scanFindings.length > 0 && (
         <p className='px-2 pt-2 text-xs text-[var(--jarvis-warning-text)]'>Counts are from a previous version.</p>
       )}

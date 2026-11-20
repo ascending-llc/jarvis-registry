@@ -9,6 +9,19 @@ import type {
 
 export const SKILL_SCAN_POLL_INTERVAL_MS = 5_000;
 export const SCAN_SEVERITIES: SkillScanSeverity[] = ['critical', 'high', 'medium', 'low', 'info'];
+
+export const compareScanFindingSeverity = (
+  a: Pick<SkillScanFindingResponse, 'severity'>,
+  b: Pick<SkillScanFindingResponse, 'severity'>,
+) => SCAN_SEVERITIES.indexOf(a.severity) - SCAN_SEVERITIES.indexOf(b.severity);
+
+export const SCAN_SEVERITY_COLORS: Record<SkillScanSeverity, string> = {
+  critical: 'var(--jarvis-danger)',
+  high: 'var(--jarvis-orange)',
+  medium: 'var(--jarvis-warning)',
+  low: 'var(--jarvis-muted)',
+  info: 'var(--jarvis-info-text)',
+};
 export const SCAN_SEVERITY_CLASSES: Record<SkillScanSeverity, string> = {
   critical: 'bg-[var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)]',
   high: 'bg-[var(--jarvis-orange-soft)] text-[var(--jarvis-orange)]',
@@ -29,6 +42,38 @@ export const SCAN_REASON_LABELS: Record<SkillScanReason, string> = {
 };
 
 export type IndexedScanFinding = SkillScanFindingResponse & { key: string; toolIndex: number };
+export type ScanLineRange = [start: number, end: number];
+export type LocatedScanFinding = { finding: IndexedScanFinding; range: ScanLineRange };
+
+export const formatReportedScanLines = ({
+  startLine,
+  endLine,
+}: Pick<SkillScanFindingResponse, 'startLine' | 'endLine'>): string | null =>
+  startLine === null ? null : `L${startLine}${endLine !== null && endLine !== startLine ? `–${endLine}` : ''}`;
+
+type ScanLocationGroup = { range: ScanLineRange; findings: LocatedScanFinding[] };
+
+// Use the first line shared by the group so broad scanner context does not create a second marker.
+export const groupScanFindingsByLocation = (findings: LocatedScanFinding[]): ScanLocationGroup[] => {
+  const byStart = [...findings].sort((a, b) => a.range[0] - b.range[0]);
+  const groups: ScanLocationGroup[] = [];
+  let group: ScanLocationGroup | undefined;
+  for (const entry of byStart) {
+    const [start, end] = entry.range;
+    if (group && start <= group.range[1]) {
+      group.range = [start, Math.min(group.range[1], end)];
+      group.findings.push(entry);
+    } else {
+      group = { range: [start, end], findings: [entry] };
+      groups.push(group);
+    }
+  }
+  for (const { findings: entries } of groups) {
+    entries.sort((a, b) => compareScanFindingSeverity(a.finding, b.finding));
+  }
+  return groups;
+};
+
 export type SkillScanTarget = {
   findingKey: string;
   path: string;
@@ -135,16 +180,67 @@ export const resolveScanFilePath = (path: string | null, availablePaths: readonl
   return availablePaths.find(available => available.replace(/\\/g, '/').replace(/^\.\//, '') === normalized) ?? null;
 };
 
+export const getFileScanFindings = (scan: SkillScanResponse | null, path: string) =>
+  indexScanFindings(scan).filter(finding => resolveScanFilePath(finding.filePath, [path]) === path);
+
+export const isScanForVersion = (scan: SkillScanResponse | null, skillVersion: number | null) =>
+  Boolean(
+    scan?.summary && !scan.stale && scan.summary.skillVersion === skillVersion && scan.skillVersion === skillVersion,
+  );
+
+export const getScanLineRange = (
+  finding: IndexedScanFinding,
+  lineCount: number,
+  composedMarkdown: string | null,
+): ScanLineRange | null => {
+  const start = finding.startLine;
+  const end = finding.endLine ?? start;
+  if (start === null || end === null || !Number.isInteger(start) || !Number.isInteger(end)) return null;
+  if (start < 1 || end < start) return null;
+  // 主文件的 frontmatter 由详情数据重组，原始行号不一定适用于展示内容。
+  if (composedMarkdown !== null) {
+    const snippet = finding.snippet?.replace(/\r\n/g, '\n').trim();
+    if (!snippet) return null;
+    const offset = composedMarkdown.indexOf(snippet);
+    if (offset < 0 || composedMarkdown.indexOf(snippet, offset + 1) !== -1) return null;
+    const matchedStart = composedMarkdown.slice(0, offset).split('\n').length;
+    const matchedEnd = matchedStart + snippet.split('\n').length - 1;
+    return [matchedStart, matchedEnd];
+  }
+  return end <= lineCount ? [start, end] : null;
+};
+
 export const formatScanDate = (value: string | null | undefined): string => {
   if (!value) return 'Unknown time';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? 'Unknown time' : date.toLocaleString();
 };
 
-export const getScanStatusDetails = (summary: SkillScanBriefResponse | null | undefined): string => {
-  const { label, notes } = getScanPresentation(summary);
+export const getScanTooltip = (summary: SkillScanBriefResponse | null | undefined) => {
+  const { label } = getScanPresentation(summary);
   const breakdown = summary ? formatRiskBreakdown(summary.severityCounts) : '';
-  return [label, breakdown, summary?.scannedAt && `Last scanned ${formatScanDate(summary.scannedAt)}`, ...notes]
-    .filter(Boolean)
-    .join(' · ');
+  const lines: string[] = [];
+  const status = summary?.scanStatus;
+  const completed = status === 'completed';
+  const title =
+    completed && summary?.status === 'skipped' ? 'Can’t scan this skill' : (completed && breakdown) || label;
+  if (summary?.scannedAt) {
+    const date = formatScanDate(summary.scannedAt);
+    const previous = breakdown || (summary.status === 'succeeded' ? 'No findings' : 'Report available');
+    lines.push(completed ? `Last scanned ${date}` : `Previous report: ${previous} · ${date}`);
+  } else if (isScanActive(status)) {
+    lines.push('No previous report.');
+  } else if (status === 'not_scanned') {
+    lines.push('This skill has no scan report yet.');
+  }
+  if (status === 'failed' || (completed && (summary?.status === 'failed' || summary?.status === 'skipped'))) {
+    lines.push('Open Security for scan details.');
+  }
+  if (summary?.stale) lines.push('The skill content changed after this scan.');
+  if (summary?.outdatedTool) lines.push('The scan used an older scanner or model configuration.');
+  if (summary?.status === 'partial' && (completed || summary.scannedAt)) {
+    lines.push(completed ? 'Some scan checks could not finish.' : 'The previous report has partial results.');
+  }
+  if (title === 'No findings') lines.push('A scan can miss issues.');
+  return { title, lines };
 };

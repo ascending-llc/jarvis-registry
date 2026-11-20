@@ -113,7 +113,7 @@ const SkillScanSummary = ({
             )}
           </span>
           {breakdown && (
-            <p className='text-sm text-[var(--jarvis-text)]'>
+            <p className='text-[13px]/5 font-normal text-[var(--jarvis-text)] dark:text-[#c7cbd6]'>
               {scan?.scanStatus !== 'completed' && 'Previous report · '}
               {breakdown}
             </p>
@@ -121,7 +121,7 @@ const SkillScanSummary = ({
           {summary && (
             <p
               title={`Report for version ${summary.skillVersion} · ${formatScanDate(summary.scannedAt)}`}
-              className='text-sm text-[var(--jarvis-muted)]'
+              className='text-[13px]/5 font-normal text-[var(--jarvis-muted)] dark:text-[#a1a8b8]'
             >
               Last scanned {scannedAtLabel}
               {reportTrigger && ` · ${reportTrigger}`}

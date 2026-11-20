@@ -535,13 +535,11 @@ const SkillsPage: React.FC = () => {
 
   return (
     <Layout searchConfig={searchConfig} skillsNavigation={skillsNavigation}>
-      {canConfigureScan && (
-        <SkillScanSettingsDialog
-          isOpen={scanSettingsOpen}
-          onClose={() => setScanSettingsOpen(false)}
-          onSaved={handleScanSettingsSaved}
-        />
-      )}
+      <SkillScanSettingsDialog
+        isOpen={canConfigureScan && scanSettingsOpen}
+        onClose={() => setScanSettingsOpen(false)}
+        onSaved={handleScanSettingsSaved}
+      />
       {shareTarget && (
         <ShareModal
           itemName={getSkillDisplayName(shareTarget)}
@@ -577,8 +575,7 @@ const SkillsPage: React.FC = () => {
           onRefresh={() => void handleRefreshSkills()}
           onOpenSkill={id => navigateToSkill(id)}
           onOpenSecurity={id => navigate(`${APP_ROUTES.skills}?skill=${encodeURIComponent(id)}&tab=security`)}
-          onOpenScanSettings={() => setScanSettingsOpen(true)}
-          canConfigureScan={canConfigureScan}
+          onOpenScanSettings={canConfigureScan ? () => setScanSettingsOpen(true) : undefined}
           onCreate={navigateToCreate}
           onShare={setShareTarget}
           onDelete={setDeleteTarget}
