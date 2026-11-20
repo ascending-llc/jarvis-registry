@@ -82,12 +82,14 @@ Requires the Registry session cookie and `user-read`. The session determines who
 | `registrationExpired` | boolean | The DCR registration is gone. Show the remaining approvals. |
 | `sharedAcrossDevices` | boolean | True for Claude Desktop and Registry CLI. Consent applies to all of this user's installations of that app. |
 | `revokesTokens` | boolean | If true, whole-app revocation blocks further code and refresh token exchanges for that grant. Issued access tokens can last until expiry. If false, interactive tokens survive revocation. |
-| `clientUri` | string or null | App website supplied at registration. |
+| `clientUri` | string or null | App website supplied at registration. Only absolute `http`/`https` URLs are returned; any other value is `null`. |
 | `redirectUris` | string[] | Registered redirect URIs for DCR clients, otherwise `[]`. |
 | `registeredAt` | integer or null | DCR registration time in Unix seconds. |
 | `registrationIp` | string or null | IP recorded at dynamic registration. |
 | `softwareName`, `softwareVersion` | string or null each | Software reported by an MCP DCR client. These can be missing even with a valid registration. |
 | `resources` | ConsentResourceOutput[] | This app's resource approvals. |
+
+DCR clients register themselves, so `displayName`, `clientUri` and `redirectUris` are whatever the app supplied and are not verified. Render them as plain text, not HTML. If you link `clientUri`, open it with `rel="noopener noreferrer"`. A DCR app can name itself after a first-party app (e.g. "Claude Desktop"), so identify first-party apps by `category` (`claude_desktop`, `registry_cli`), never by `displayName`.
 
 | ConsentResourceOutput field | Type | Meaning |
 |---|---|---|

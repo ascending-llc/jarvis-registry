@@ -168,3 +168,34 @@ async def test_resources_are_batched_across_clients(
         ("unknown", "research", None),
     ]
     assert [r.name for r in other.resources] == ["Research", "Live server"]
+
+
+@pytest.mark.parametrize(
+    ("client_uri", "expected"),
+    [
+        ("https://example.org/app", "https://example.org/app"),
+        ("HTTP://example.org", "HTTP://example.org"),
+        ("javascript:alert(1)", None),
+        (" javascript:alert(1)", None),
+        ("java\tscript:alert(1)", None),
+        ("data:text/html,<script>alert(1)</script>", None),
+        ("https:no-host", None),
+        ("//example.org", None),
+        ("http://[invalid", None),
+        (123, None),
+        (None, None),
+    ],
+)
+async def test_client_uri_is_returned_only_for_http_urls(
+    service: ConsentManagementService, stores: tuple[Mock, Mock, Mock], client_uri: object, expected: str | None
+) -> None:
+    consents, registrations, _ = stores
+    consents.list_client_ids.return_value = ["mcp-client-a"]
+    consents.get_entries.return_value = {"mcp-client-a": [APP]}
+    registrations.get_clients_without_ttl_slide.return_value = {
+        "mcp-client-a": {"client_name": "A", "client_uri": client_uri}
+    }
+
+    (client,) = (await service.list_clients(USER_ID)).clients
+
+    assert client.clientUri == expected

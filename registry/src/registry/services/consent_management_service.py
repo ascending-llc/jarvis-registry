@@ -3,6 +3,7 @@
 import asyncio
 from operator import attrgetter
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.types import InitializeRequestParams
 
@@ -16,6 +17,22 @@ from registry_pkgs.core.consent_store import ConsentEntry, ConsentEntryKind, Con
 from registry_pkgs.core.oauth_state_store import OAuthClientStore
 
 _DCR_CATEGORIES = (ClientCategory.MCP_DCR, ClientCategory.A2A_DCR)
+_WEB_URI_SCHEMES = frozenset({"http", "https"})
+
+
+def _web_uri(value: Any) -> str | None:
+    """Return a DCR-supplied ``client_uri`` only if it is an absolute http(s) URL.
+
+    Any client can register, so the value is untrusted; dropping other schemes keeps
+    ``javascript:`` and similar URLs from reaching a UI that renders it as a link.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    return value if parts.scheme.lower() in _WEB_URI_SCHEMES and parts.netloc else None
 
 
 def _client_output(
@@ -43,7 +60,7 @@ def _client_output(
         registrationExpired=category in _DCR_CATEGORIES and registration is None,
         sharedAcrossDevices=static is not None,
         revokesTokens=not interactive,
-        clientUri=metadata.get("client_uri"),
+        clientUri=_web_uri(metadata.get("client_uri")),
         redirectUris=metadata.get("redirect_uris") or [],
         registeredAt=metadata.get("registered_at"),
         registrationIp=metadata.get("ip_address"),
