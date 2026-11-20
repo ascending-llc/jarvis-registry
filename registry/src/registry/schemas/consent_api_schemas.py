@@ -40,3 +40,7 @@ class ConsentClientOutput(APIBaseModel):
 
 class ConsentClientListResponse(APIBaseModel):
     clients: list[ConsentClientOutput]
+
+
+class ConsentErrorResponse(APIBaseModel):
+    detail: str

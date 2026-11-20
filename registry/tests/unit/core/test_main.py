@@ -142,7 +142,7 @@ class TestMainApplication:
         assert app.description == "A registry and management system for Model Context Protocol (MCP) servers"
         assert app.version == settings.build_version
 
-    def test_consent_list_openapi_requires_session_cookie(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_consent_list_openapi_contract(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(settings, "session_cookie_name", "custom_registry_session")
         test_app = FastAPI()
         test_app.include_router(consent_router, prefix="/api/v1")
@@ -154,6 +154,15 @@ class TestMainApplication:
         assert scheme["type"] == "apiKey"
         assert scheme["in"] == "cookie"
         assert scheme["name"] == "custom_registry_session"
+
+        responses = operation["responses"]
+        for status_code in ("401", "403", "500"):
+            assert responses[status_code]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ConsentErrorResponse"
+            }
+        error = schema["components"]["schemas"]["ConsentErrorResponse"]
+        assert error["required"] == ["detail"]
+        assert error["properties"]["detail"]["type"] == "string"
 
     def test_health_route(self):
         """Test the basic health endpoint registered on the app."""
