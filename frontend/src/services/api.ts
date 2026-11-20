@@ -102,6 +102,8 @@ const API = {
 
   // skill
   getSkillsList: SKILL_BASE_URL,
+  getSkillScan: (id: string) => `${SKILL_BASE_URL}/${id}/scan`,
+  requestSkillScan: (id: string) => `${SKILL_BASE_URL}/${id}/scan`,
   getSkillDetail: (id: string) => `${SKILL_BASE_URL}/${id}`,
   getSkillFile: (id: string, filePath: string) =>
     `${SKILL_BASE_URL}/${id}/files/${filePath.split('/').map(encodeURIComponent).join('/')}`,
@@ -128,6 +130,7 @@ const API = {
   updateModelSource: (id: string) => `${MODEL_SOURCE_BASE_URL}/${id}`,
   deleteModelSource: (id: string) => `${MODEL_SOURCE_BASE_URL}/${id}`,
   getModelGatewaySelection: MODEL_GATEWAY_SELECTION_BASE_URL,
+  setSkillScanModel: `${MODEL_GATEWAY_SELECTION_BASE_URL}/skill-scan-model`,
   setDefaultWorkflowModel: `${MODEL_GATEWAY_SELECTION_BASE_URL}/default-workflow-model`,
   setEmbeddingModel: `${MODEL_GATEWAY_SELECTION_BASE_URL}/embedding-model`,
   getEmbeddingReindexJobs: `${MODEL_GATEWAY_SELECTION_BASE_URL}/embedding-model/reindex-jobs`,

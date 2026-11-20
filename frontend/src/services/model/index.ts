@@ -39,6 +39,11 @@ const setDefaultWorkflowModel: (modelSourceId: string) => Promise<TYPE.ModelGate
 const setEmbeddingModel: (modelSourceId: string) => Promise<TYPE.ModelGatewaySelection> = async modelSourceId =>
   await Request.put(API.setEmbeddingModel, { modelSourceId });
 
+const setSkillScanModel = async (modelSourceId: string | null): Promise<TYPE.ModelGatewaySelection> => {
+  const data: TYPE.SetSkillScanModelRequest = { modelSourceId };
+  return await Request.put(API.setSkillScanModel, data);
+};
+
 const getEmbeddingReindexJobs: (limit?: number) => Promise<TYPE.EmbeddingReindexJobsResponse> = async (limit = 10) =>
   await Request.get(API.getEmbeddingReindexJobs, { limit });
 
@@ -52,5 +57,6 @@ export default {
   getGatewaySelection,
   setDefaultWorkflowModel,
   setEmbeddingModel,
+  setSkillScanModel,
   getEmbeddingReindexJobs,
 };

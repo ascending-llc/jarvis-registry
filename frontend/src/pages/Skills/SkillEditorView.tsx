@@ -1,12 +1,15 @@
 import { ArrowLeftIcon, EyeIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-
 import { SKILL_MARKDOWN_PATH } from './constants';
 import SkillCategoryMenu from './SkillCategoryMenu';
 import SkillContentPanel from './SkillContentPanel';
 import SkillFileTree from './SkillFileTree';
+import SkillScanSummary from './SkillScanSummary';
+import SkillSecurityPanel from './SkillSecurityPanel';
 import { formatSkillVersion, getSkillMarkdownInput, splitSkillMarkdown } from './skillDraft';
+import { getRiskCount, indexScanFindings, type SkillScanTarget } from './skillScan';
 import type { EditorMode, SkillDraft, SkillPageError } from './types';
+import type useSkillScan from './useSkillScan';
 
 type SkillEditorViewProps = {
   draft: SkillDraft | null;
@@ -27,6 +30,17 @@ type SkillEditorViewProps = {
   onToggle: () => void;
   onReset: () => void;
   onSave: () => void;
+  activeTab?: 'files' | 'security';
+  onTabChange?: (tab: 'files' | 'security') => void;
+  scanState?: ReturnType<typeof useSkillScan>;
+  canRequestScan?: boolean;
+  hasUnsavedChanges?: boolean;
+  scanTarget?: SkillScanTarget | null;
+  selectedFindingKey?: string | null;
+  onLocateFinding?: (target: SkillScanTarget) => void;
+  onShowFinding?: (key: string) => void;
+  onRequestScan?: () => void;
+  onRefreshContent?: () => void;
 };
 
 const SkillEditorView: React.FC<SkillEditorViewProps> = ({
@@ -48,6 +62,17 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
   onToggle,
   onReset,
   onSave,
+  activeTab = 'files',
+  onTabChange,
+  scanState,
+  canRequestScan = false,
+  hasUnsavedChanges = false,
+  scanTarget = null,
+  selectedFindingKey = null,
+  onLocateFinding,
+  onShowFinding,
+  onRequestScan,
+  onRefreshContent,
 }) => {
   if (loading) {
     return (
@@ -98,6 +123,11 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
 
   const canEdit = draft.id === null || draft.permissions?.EDIT === true;
   const isSkillMarkdown = selectedPath === SKILL_MARKDOWN_PATH;
+  const scan = scanState?.scan ?? null;
+  const scanFindings = indexScanFindings(scan);
+  const riskCount = scan?.summary ? getRiskCount(scan.summary.severityCounts) : 0;
+  const olderFileFindings = Boolean(scan?.summary && (scan.stale || scan.summary.skillVersion !== draft.version));
+  const availableFilePaths = [SKILL_MARKDOWN_PATH, ...draft.files.map(file => file.relativePath)];
   const parsedMarkdown = draft.markdown.parsed;
   const markdownError = draft.markdown.invalidInput?.message ?? null;
   let frontmatterSource = '';
@@ -132,7 +162,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
       <div className='flex flex-shrink-0 flex-wrap items-start justify-between gap-6'>
         <div className='min-w-0 flex-1 basis-80'>
           <div className='mb-2 text-[12.5px] text-[var(--jarvis-muted)]'>Name</div>
-          {editorMode === 'edit' && canEdit ? (
+          {editorMode === 'edit' && canEdit && activeTab === 'files' ? (
             <input
               type='text'
               value={parsedMarkdown.displayTitle}
@@ -181,7 +211,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
               </span>
             </button>
           )}
-          {canEdit && isSkillMarkdown && (
+          {canEdit && isSkillMarkdown && activeTab === 'files' && (
             <button
               type='button'
               disabled={saving || toggling}
@@ -196,75 +226,176 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
               {editorMode === 'edit' ? 'Preview' : 'Edit'}
             </button>
           )}
-          {editorMode === 'edit' && canEdit && (
+          {editorMode === 'edit' && canEdit && activeTab === 'files' && (
             <SkillCategoryMenu value={draft.category} disabled={saving} onChange={onCategoryChange} />
           )}
         </div>
       </div>
 
       <div className='mt-5 min-h-0 min-w-0 flex-1 overflow-auto pr-1'>
-        <div className='mb-2.5 text-[13px] font-semibold text-[var(--jarvis-text)]'>Description</div>
-        {editorMode === 'edit' && canEdit ? (
-          <input
-            type='text'
-            value={parsedMarkdown.description}
-            maxLength={1024}
-            aria-label='Skill description'
-            placeholder='Describe what this skill does'
-            disabled={markdownError !== null}
-            onChange={event => onDescriptionChange(event.target.value)}
-            className='block h-11 w-full rounded-md border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] px-3 py-2 text-sm text-[var(--jarvis-text)] outline-none transition placeholder:text-[var(--jarvis-input-placeholder)] focus:border-[var(--jarvis-primary)] focus:bg-[var(--jarvis-input-bg-focus)] focus:ring-2 focus:ring-[color:var(--jarvis-primary)]/20 disabled:cursor-not-allowed disabled:opacity-60'
-          />
-        ) : (
-          <div className='flex h-11 min-w-0 w-full items-center overflow-hidden rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-input-bg)] px-3 text-sm text-[var(--jarvis-muted)]'>
-            <span className='min-w-0 flex-1 truncate'>{parsedMarkdown.description || 'No description'}</span>
-          </div>
-        )}
-        {editorMode === 'edit' && canEdit && isSkillMarkdown && (
-          <div
-            className={`mt-2 text-xs ${
-              markdownError ? 'text-[var(--jarvis-danger-text)]' : 'text-[var(--jarvis-muted)]'
-            }`}
-          >
-            {markdownError ? (
-              <>Fix the SKILL.md frontmatter to resume Name and Description synchronization.</>
-            ) : (
-              <>
-                Synced with the <strong className='font-semibold text-[var(--jarvis-text)]'>name</strong> and{' '}
-                <strong className='font-semibold text-[var(--jarvis-text)]'>description</strong> fields at the top of
-                the markdown below.
-              </>
-            )}
-          </div>
-        )}
-
-        <div
-          className={`mt-5 min-w-0 items-start gap-4 ${supportingFiles.length > 0 ? 'flex flex-col md:flex-row' : 'flex'}`}
-        >
-          {supportingFiles.length > 0 && (
-            <aside className='w-full flex-none overflow-auto rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-2 md:w-[216px]'>
-              <SkillFileTree files={supportingFiles} selectedPath={selectedPath} onSelect={onSelectFile} />
-            </aside>
+        <div className='mb-4'>
+          <div className='mb-2.5 text-[13px] font-semibold text-[var(--jarvis-text)]'>Description</div>
+          {editorMode === 'edit' && canEdit && activeTab === 'files' ? (
+            <input
+              type='text'
+              value={parsedMarkdown.description}
+              maxLength={1024}
+              aria-label='Skill description'
+              placeholder='Describe what this skill does'
+              disabled={markdownError !== null}
+              onChange={event => onDescriptionChange(event.target.value)}
+              className='block h-11 w-full rounded-md border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] px-3 py-2 text-sm text-[var(--jarvis-text)] outline-none transition placeholder:text-[var(--jarvis-input-placeholder)] focus:border-[var(--jarvis-primary)] focus:bg-[var(--jarvis-input-bg-focus)] focus:ring-2 focus:ring-[color:var(--jarvis-primary)]/20 disabled:cursor-not-allowed disabled:opacity-60'
+            />
+          ) : (
+            <div className='flex h-11 min-w-0 w-full items-center overflow-hidden rounded-md border border-[color:var(--jarvis-border)] bg-[var(--jarvis-input-bg)] px-3 text-sm text-[var(--jarvis-muted)]'>
+              <span className='min-w-0 flex-1 truncate'>{parsedMarkdown.description || 'No description'}</span>
+            </div>
           )}
-          <SkillContentPanel
-            skillId={draft.id}
-            selectedPath={selectedPath}
-            markdown={getSkillMarkdownInput(draft.markdown)}
-            markdownBody={parsedMarkdown.body}
-            frontmatterSource={frontmatterSource}
-            markdownError={markdownError}
-            editorMode={editorMode}
-            canEdit={canEdit}
-            fileMetadata={selectedMetadata}
-            availableFilePaths={draft.files.map(file => file.relativePath)}
-            onSelectFile={onSelectFile}
-            onMarkdownChange={onMarkdownChange}
-            onEditorModeChange={onEditorModeChange}
-          />
+          {editorMode === 'edit' && canEdit && isSkillMarkdown && (
+            <div
+              className={`mt-2 text-xs ${
+                markdownError ? 'text-[var(--jarvis-danger-text)]' : 'text-[var(--jarvis-muted)]'
+              }`}
+            >
+              {markdownError ? (
+                <>Fix the SKILL.md frontmatter to resume Name and Description synchronization.</>
+              ) : (
+                <>
+                  Synced with the <strong className='font-semibold text-[var(--jarvis-text)]'>name</strong> and{' '}
+                  <strong className='font-semibold text-[var(--jarvis-text)]'>description</strong> fields at the top of
+                  the markdown below.
+                </>
+              )}
+            </div>
+          )}
+        </div>
+        {draft.id && scanState && (
+          <>
+            <SkillScanSummary
+              scan={scanState.scan}
+              loading={scanState.loading}
+              refreshing={scanState.refreshing}
+              requesting={scanState.requesting}
+              error={scanState.error}
+              requestError={scanState.requestError}
+              canRequestScan={canRequestScan && !scanState.forbidden}
+              hasUnsavedChanges={hasUnsavedChanges}
+              busy={saving || toggling}
+              onRefresh={() => void scanState.refresh()}
+              onRequestScan={() => onRequestScan?.()}
+            />
+            <div
+              role='tablist'
+              aria-label='Skill details'
+              className='mb-5 mt-4 flex gap-6 border-b border-[var(--jarvis-border)]'
+            >
+              {(['files', 'security'] as const).map(tab => (
+                <button
+                  key={tab}
+                  type='button'
+                  id={`skill-${tab}-tab`}
+                  role='tab'
+                  aria-selected={activeTab === tab}
+                  tabIndex={activeTab === tab ? 0 : -1}
+                  aria-controls={`skill-${tab}-panel`}
+                  onKeyDown={event => {
+                    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                    event.preventDefault();
+                    const next =
+                      event.key === 'Home'
+                        ? 'files'
+                        : event.key === 'End'
+                          ? 'security'
+                          : tab === 'files'
+                            ? 'security'
+                            : 'files';
+                    onTabChange?.(next);
+                    document.getElementById(`skill-${next}-tab`)?.focus();
+                  }}
+                  className={`inline-flex items-center gap-2 border-b-2 px-1 py-3 text-sm ${activeTab === tab ? 'border-[var(--jarvis-primary)] text-[var(--jarvis-primary-text)]' : 'border-transparent text-[var(--jarvis-muted)]'}`}
+                  onClick={() => onTabChange?.(tab)}
+                >
+                  {tab === 'files' ? 'Files' : 'Security'}
+                  {tab === 'security' && riskCount > 0 && (
+                    <span
+                      title={`${riskCount} risk ${riskCount === 1 ? 'finding' : 'findings'} across the skill · Scan of version ${scan?.summary?.skillVersion}`}
+                      className='rounded-full bg-[var(--jarvis-orange-soft)] px-2 py-0.5 text-xs font-medium text-[var(--jarvis-orange)]'
+                    >
+                      <span className='sr-only'>Risk findings across the skill </span>
+                      {riskCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        {draft.id && scanState && (
+          <div
+            id='skill-security-panel'
+            role='tabpanel'
+            aria-labelledby='skill-security-tab'
+            hidden={activeTab !== 'security'}
+          >
+            <SkillSecurityPanel
+              scan={scanState.scan}
+              loading={scanState.loading}
+              error={scanState.error}
+              availableFilePaths={availableFilePaths}
+              selectedFindingKey={selectedFindingKey}
+              canRequestScan={canRequestScan && !scanState.forbidden}
+              onLocate={target => onLocateFinding?.(target)}
+            />
+          </div>
+        )}
+        <div
+          id='skill-files-panel'
+          role={draft.id ? 'tabpanel' : undefined}
+          aria-labelledby={draft.id ? 'skill-files-tab' : undefined}
+          hidden={activeTab !== 'files'}
+        >
+          <div
+            className={`mt-5 min-w-0 items-start gap-4 ${supportingFiles.length > 0 ? 'flex flex-col md:flex-row' : 'flex'}`}
+          >
+            {(supportingFiles.length > 0 || scanFindings.length > 0) && (
+              <aside className='w-full flex-none overflow-auto rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-2 md:w-[216px]'>
+                <SkillFileTree
+                  files={supportingFiles}
+                  selectedPath={selectedPath}
+                  onSelect={onSelectFile}
+                  onOpenSecurity={onTabChange ? () => onTabChange('security') : undefined}
+                  scanFindings={scanFindings}
+                  olderFindings={olderFileFindings}
+                  findingsTruncated={scanState?.scan?.results.some(result => result.findingsTruncated)}
+                />
+              </aside>
+            )}
+            <SkillContentPanel
+              skillId={draft.id}
+              skillVersion={draft.version}
+              scan={scanState?.scan}
+              scanTarget={scanTarget}
+              hasUnsavedChanges={hasUnsavedChanges}
+              onShowFinding={onShowFinding}
+              onRefreshContent={onRefreshContent}
+              selectedPath={selectedPath}
+              markdown={getSkillMarkdownInput(draft.markdown)}
+              markdownBody={parsedMarkdown.body}
+              frontmatterSource={frontmatterSource}
+              markdownError={markdownError}
+              editorMode={editorMode}
+              canEdit={canEdit}
+              fileMetadata={selectedMetadata}
+              availableFilePaths={draft.files.map(file => file.relativePath)}
+              onSelectFile={onSelectFile}
+              onMarkdownChange={onMarkdownChange}
+              onEditorModeChange={onEditorModeChange}
+            />
+          </div>
         </div>
       </div>
 
-      {canEdit && (
+      {canEdit && activeTab === 'files' && (
         <div className='mt-2 flex flex-shrink-0 justify-end border-t border-[color:var(--jarvis-border)] pt-5'>
           <div className='flex items-center gap-4'>
             <button
