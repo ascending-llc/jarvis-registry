@@ -3,8 +3,12 @@
 import json
 import logging
 import secrets
-from typing import Any
+from dataclasses import dataclass
+from enum import StrEnum
+from time import perf_counter
+from typing import Any, Self
 
+from bson import ObjectId
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -16,6 +20,8 @@ CLIENT_CONSENT_FIELD = "jarvis-registry-client-id-consent"
 LEGACY_CONSENT_GRANT_ID = "1"
 PENDING_CONSENT_TTL_SECONDS = 600
 _GRANT_ID_BYTES = 16
+_AGENT_FIELD_PREFIX = "agent:"
+_SCAN_COUNT = 1000
 
 _GET_CLIENT_GRANT_SCRIPT = """
 local value = redis.call('HGET', KEYS[1], ARGV[1])
@@ -40,6 +46,40 @@ def consent_grant_matches(stored_grant_id: str | None, presented_grant_id: str |
     return stored_grant_id is not None and stored_grant_id == effective_consent_grant_id(presented_grant_id)
 
 
+class ConsentEntryKind(StrEnum):
+    APP = "app"
+    MCP_SERVER = "mcp_server"
+    A2A_AGENT = "a2a_agent"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ConsentEntry:
+    kind: ConsentEntryKind
+    path: str
+
+    @classmethod
+    def from_field(cls, field: str) -> Self:
+        if field == CLIENT_CONSENT_FIELD:
+            return cls(ConsentEntryKind.APP, "")
+        if field.startswith(_AGENT_FIELD_PREFIX):
+            return cls(ConsentEntryKind.A2A_AGENT, field.removeprefix(_AGENT_FIELD_PREFIX))
+        if field.startswith("/"):
+            return cls(ConsentEntryKind.MCP_SERVER, field)
+        return cls(ConsentEntryKind.UNKNOWN, field)
+
+    def to_field(self) -> str:
+        if self.kind == ConsentEntryKind.APP:
+            return CLIENT_CONSENT_FIELD
+        if self.kind == ConsentEntryKind.A2A_AGENT:
+            return f"{_AGENT_FIELD_PREFIX}{self.path}"
+        if self.kind == ConsentEntryKind.MCP_SERVER:
+            if self.path == CLIENT_CONSENT_FIELD or self.path.startswith(_AGENT_FIELD_PREFIX):
+                raise ValueError("Server path collides with a reserved consent field")
+            return self.path
+        raise ValueError("Cannot encode an unknown consent field")
+
+
 class ConsentStore:
     """Per-(user_id, client_id) consent hash shared across auth-server and registry."""
 
@@ -53,6 +93,43 @@ class ConsentStore:
         client_id: str,
     ) -> str:
         return f"{self._key_prefix}:mcp:consent:{user_id}:{client_id}"
+
+    def list_client_ids(self, user_id: str) -> list[str]:
+        """Scan this user's consent hashes, counting every cursor reply, including empty pages."""
+        if not ObjectId.is_valid(user_id):
+            raise ValueError("Invalid user ID")
+        prefix = self._key(user_id, "")
+        started = perf_counter()
+        client_ids: set[str] = set()
+        cursor = rounds = 0
+        while True:
+            cursor, keys = self._redis.scan(cursor=cursor, match=f"{prefix}*", count=_SCAN_COUNT)
+            rounds += 1
+            client_ids.update(key.removeprefix(prefix) for key in keys)
+            if cursor == 0:
+                break
+        logger.info(
+            "Scanned consent hashes user_id=%s keys_found=%d scan_round_trips=%d elapsed_ms=%.1f",
+            user_id,
+            len(client_ids),
+            rounds,
+            (perf_counter() - started) * 1000,
+        )
+        return sorted(client_ids)
+
+    def get_entries(self, user_id: str, client_ids: list[str]) -> dict[str, list[ConsentEntry]]:
+        """Read surviving consent hashes without renewing them or returning grant IDs."""
+        if not client_ids:
+            return {}
+        with self._redis.pipeline(transaction=False) as pipe:
+            for client_id in client_ids:
+                pipe.hgetall(self._key(user_id, client_id))
+            hashes = pipe.execute()
+        return {
+            client_id: [ConsentEntry.from_field(field) for field in fields]
+            for client_id, fields in zip(client_ids, hashes, strict=True)
+            if fields
+        }
 
     def get_client_grant_id(
         self,
@@ -92,7 +169,7 @@ class ConsentStore:
         key = self._key(user_id, client_id)
         return self._has_consent_field(
             key,
-            server_path,
+            ConsentEntry(ConsentEntryKind.MCP_SERVER, server_path).to_field(),
             user_id=user_id,
             client_id=client_id,
             server_path=server_path,
@@ -107,7 +184,7 @@ class ConsentStore:
         key = self._key(user_id, client_id)
         self._grant_consent_field(
             key,
-            server_path,
+            ConsentEntry(ConsentEntryKind.MCP_SERVER, server_path).to_field(),
             user_id=user_id,
             client_id=client_id,
             server_path=server_path,
@@ -122,7 +199,7 @@ class ConsentStore:
         key = self._key(user_id, client_id)
         return self._has_consent_field(
             key,
-            f"agent:{agent_path}",
+            ConsentEntry(ConsentEntryKind.A2A_AGENT, agent_path).to_field(),
             user_id=user_id,
             client_id=client_id,
             server_path=agent_path,
@@ -137,7 +214,7 @@ class ConsentStore:
         key = self._key(user_id, client_id)
         self._grant_consent_field(
             key,
-            f"agent:{agent_path}",
+            ConsentEntry(ConsentEntryKind.A2A_AGENT, agent_path).to_field(),
             user_id=user_id,
             client_id=client_id,
             server_path=agent_path,
