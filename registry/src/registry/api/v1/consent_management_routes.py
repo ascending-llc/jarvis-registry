@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...auth.dependencies import CurrentUser
+from ...constants import OPENAPI_SESSION_COOKIE_SCHEME
 from ...deps import get_consent_management_service
 from ...schemas.consent_api_schemas import ConsentClientListResponse
 from ...services.consent_management_service import ConsentManagementService
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/consents", tags=["consent-management"])
 
 
-@router.get("/clients")
+@router.get("/clients", openapi_extra={"security": [{OPENAPI_SESSION_COOKIE_SCHEME: []}]})
 async def list_consent_clients(
     user_context: CurrentUser,
     service: ConsentManagementService = Depends(get_consent_management_service),

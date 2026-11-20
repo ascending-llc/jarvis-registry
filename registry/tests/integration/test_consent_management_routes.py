@@ -105,6 +105,14 @@ def test_gateway_bearer_without_cookie_is_rejected(client: TestClient) -> None:
     assert response.status_code == 401
 
 
+@pytest.mark.parametrize("subject", ["", "legacy-username"])
+def test_session_without_valid_user_id_is_unauthorized(client: TestClient, subject: str) -> None:
+    _sign_in(client, subject)
+    response = client.get(URL)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Session authentication required"}
+
+
 def test_cookie_without_user_read_is_forbidden(client: TestClient) -> None:
     _sign_in(client, USER_A, "servers-read")
     response = client.get(URL)

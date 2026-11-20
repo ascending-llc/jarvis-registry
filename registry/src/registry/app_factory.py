@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 
+from .constants import OPENAPI_SESSION_COOKIE_SCHEME
 from .core.config import settings
 from .core.exception_handler import register_validation_exception_handler
 from .mcpgw.core.client_info_store import ClientInfoCaptureMiddleware, ClientInfoStore
@@ -138,13 +139,18 @@ def _customize_openapi(app: FastAPI):
         )
 
         openapi_schema["components"]["securitySchemes"] = {
+            OPENAPI_SESSION_COOKIE_SCHEME: {
+                "type": "apiKey",
+                "in": "cookie",
+                "name": settings.session_cookie_name,
+            },
             "Bearer": {
                 "type": "http",
                 "scheme": "bearer",
                 "bearerFormat": "JWT",
                 "description": "JWT Bearer token obtained from the configured OAuth2 provider. "
                 "Include in Authorization header as: `Authorization: Bearer <token>`",
-            }
+            },
         }
 
         for path, path_item in openapi_schema["paths"].items():

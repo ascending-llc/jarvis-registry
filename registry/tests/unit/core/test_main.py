@@ -6,6 +6,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from registry.api.v1.consent_management_routes import router as consent_router
+from registry.app_factory import _customize_openapi
 from registry.core.config import settings
 from registry.main import app, lifespan
 
@@ -139,6 +141,19 @@ class TestMainApplication:
         assert app.title == "MCP Gateway Registry"
         assert app.description == "A registry and management system for Model Context Protocol (MCP) servers"
         assert app.version == settings.build_version
+
+    def test_consent_list_openapi_requires_session_cookie(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(settings, "session_cookie_name", "custom_registry_session")
+        test_app = FastAPI()
+        test_app.include_router(consent_router, prefix="/api/v1")
+
+        schema = _customize_openapi(test_app)()
+        operation = schema["paths"]["/api/v1/consents/clients"]["get"]
+        assert operation["security"] == [{"SessionCookie": []}]
+        scheme = schema["components"]["securitySchemes"]["SessionCookie"]
+        assert scheme["type"] == "apiKey"
+        assert scheme["in"] == "cookie"
+        assert scheme["name"] == "custom_registry_session"
 
     def test_health_route(self):
         """Test the basic health endpoint registered on the app."""

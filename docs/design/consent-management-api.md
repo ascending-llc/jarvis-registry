@@ -101,6 +101,6 @@ Errors return a string `detail`, for example `{"detail":"Session authentication 
 
 | HTTP status | Meaning |
 |---|---|
-| `401` | A valid Registry session cookie is required. |
-| `403` | The session lacks `user-read` or a user ID. |
+| `401` | A valid Registry session cookie identifying the user is required. |
+| `403` | The signed-in user lacks the `user-read` scope. |
 | `500` | The list could not be loaded. Offer a retry. |
