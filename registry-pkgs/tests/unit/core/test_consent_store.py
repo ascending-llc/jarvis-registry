@@ -1,7 +1,9 @@
 """Exercise consent Lua scripts and transactions against an in-memory Redis."""
 
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import call, patch
 
 import fakeredis
 import pytest
@@ -10,6 +12,8 @@ from registry_pkgs.core.consent_store import (
     CLIENT_CONSENT_FIELD,
     LEGACY_CONSENT_GRANT_ID,
     PENDING_CONSENT_TTL_SECONDS,
+    ConsentEntry,
+    ConsentEntryKind,
     ConsentStore,
     PendingConsentStore,
     consent_grant_matches,
@@ -18,6 +22,7 @@ from registry_pkgs.core.consent_store import (
 from registry_pkgs.core.oauth_state_store import CLIENT_TTL_SECONDS
 
 KEY_PREFIX = "jarvis-auth-server-test"
+USER_ID = "0123456789abcdef01234567"
 CONSENT_KEY = f"{KEY_PREFIX}:mcp:consent:user-1:client-1"
 
 
@@ -29,6 +34,84 @@ def redis_client() -> fakeredis.FakeRedis:
 @pytest.fixture
 def store(redis_client: fakeredis.FakeRedis) -> ConsentStore:
     return ConsentStore(redis_client=redis_client, key_prefix=KEY_PREFIX)
+
+
+@pytest.mark.parametrize(
+    ("field", "kind", "path"),
+    [
+        (CLIENT_CONSENT_FIELD, ConsentEntryKind.APP, ""),
+        ("/github", ConsentEntryKind.MCP_SERVER, "/github"),
+        ("agent:/github", ConsentEntryKind.A2A_AGENT, "/github"),
+    ],
+)
+def test_consent_fields_round_trip(field: str, kind: ConsentEntryKind, path: str) -> None:
+    entry = ConsentEntry.from_field(field)
+    assert entry == ConsentEntry(kind, path)
+    assert entry.to_field() == field
+
+
+def test_legacy_server_path_is_readable_as_unknown() -> None:
+    assert ConsentEntry(ConsentEntryKind.MCP_SERVER, "legacy").to_field() == "legacy"
+    entry = ConsentEntry.from_field("legacy")
+    assert entry == ConsentEntry(ConsentEntryKind.UNKNOWN, "legacy")
+    with pytest.raises(ValueError, match="unknown"):
+        entry.to_field()
+
+
+@pytest.mark.parametrize("path", [CLIENT_CONSENT_FIELD, "agent:/github"])
+def test_reserved_fields_are_rejected_as_server_paths(store: ConsentStore, path: str) -> None:
+    with pytest.raises(ValueError, match="reserved"):
+        ConsentEntry(ConsentEntryKind.MCP_SERVER, path).to_field()
+    with pytest.raises(ValueError, match="reserved"):
+        store.has_server_consent(USER_ID, "client", path)
+    with pytest.raises(ValueError, match="reserved"):
+        store.grant_server_consent(USER_ID, "client", path)
+
+
+def test_list_counts_empty_and_duplicate_scan_pages(
+    store: ConsentStore, redis_client: fakeredis.FakeRedis, caplog: pytest.LogCaptureFixture
+) -> None:
+    prefix = f"{KEY_PREFIX}:mcp:consent:{USER_ID}:"
+    pages = [(2, [f"{prefix}z"]), (4, []), (0, [f"{prefix}z", f"{prefix}a:1"])]
+    with caplog.at_level(logging.INFO), patch.object(redis_client, "scan", side_effect=pages) as scan:
+        assert store.list_client_ids(USER_ID) == ["a:1", "z"]
+    assert scan.call_args_list == [call(cursor=i, match=f"{prefix}*", count=1000) for i in (0, 2, 4)]
+    assert f"user_id={USER_ID} keys_found=2 scan_round_trips=3 elapsed_ms=" in caplog.text
+
+
+@pytest.mark.parametrize("user_id", ["", "*", "not-an-object-id"])
+def test_list_rejects_invalid_user_ids_before_scan(
+    store: ConsentStore, redis_client: fakeredis.FakeRedis, user_id: str
+) -> None:
+    with patch.object(redis_client, "scan") as scan, pytest.raises(ValueError, match="user ID"):
+        store.list_client_ids(user_id)
+    scan.assert_not_called()
+
+
+def test_list_and_get_entries_preserve_expiry_and_skip_vanished_hashes(
+    store: ConsentStore, redis_client: fakeredis.FakeRedis
+) -> None:
+    key = f"{KEY_PREFIX}:mcp:consent:{USER_ID}:client-1"
+    redis_client.hset(key, mapping={CLIENT_CONSENT_FIELD: "grant-id", "/github": "1", "agent:helper": "1"})
+    redis_client.pexpire(key, 100_250)
+    expires_at = redis_client.pexpiretime(key)
+    store.grant_server_consent(USER_ID, "vanished", "/other")
+    store.grant_server_consent("1123456789abcdef01234567", "another-users-client", "/private")
+
+    client_ids = store.list_client_ids(USER_ID)
+    assert client_ids == ["client-1", "vanished"]
+    redis_client.delete(f"{KEY_PREFIX}:mcp:consent:{USER_ID}:vanished")
+    with patch.object(redis_client, "pipeline", wraps=redis_client.pipeline) as pipeline:
+        entries = store.get_entries(USER_ID, client_ids)
+        assert store.get_entries(USER_ID, []) == {}
+    pipeline.assert_called_once_with(transaction=False)
+    assert set(entries) == {"client-1"}
+    assert set(entries["client-1"]) == {
+        ConsentEntry(ConsentEntryKind.APP, ""),
+        ConsentEntry(ConsentEntryKind.MCP_SERVER, "/github"),
+        ConsentEntry(ConsentEntryKind.A2A_AGENT, "helper"),
+    }
+    assert redis_client.pexpiretime(key) == expires_at
 
 
 def test_client_consent_uses_shared_hash_and_slides_ttl(redis_client: fakeredis.FakeRedis, store: ConsentStore) -> None:

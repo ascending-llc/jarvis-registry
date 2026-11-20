@@ -4,8 +4,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from registry_pkgs.core.client_categories import (
     AUTHORIZATION_CODE_GRANT_TYPE,
+    CLAUDE_DESKTOP_CLIENT_ID,
+    CLAUDE_DESKTOP_REDIRECT_URI,
     DEVICE_CODE_GRANT_TYPE,
     REFRESH_TOKEN_GRANT_TYPE,
+    REGISTRY_CLI_CLIENT_ID,
+    STATIC_CLIENT_METADATA,
     ClientCategory,
     get_builtin_max_scopes,
     get_client_max_scopes,
@@ -155,6 +159,20 @@ def test_static_client_policy_is_public(
     assert policy.allowed_grant_types == allowed_grant_types
     assert policy.token_endpoint_auth_method == "none"
     assert policy.default_scope == default_scope
+
+
+@pytest.mark.parametrize(
+    "client_id, name, redirect_uris",
+    [
+        (REGISTRY_CLI_CLIENT_ID, "Jarvis Registry CLI", []),
+        (CLAUDE_DESKTOP_CLIENT_ID, "Claude Desktop", [CLAUDE_DESKTOP_REDIRECT_URI]),
+    ],
+)
+def test_static_client_metadata(client_id: str, name: str, redirect_uris: list[str]) -> None:
+    metadata = STATIC_CLIENT_METADATA[client_id]
+    assert metadata["client_id"] == client_id
+    assert metadata["client_name"] == name
+    assert metadata["redirect_uris"] == redirect_uris
 
 
 def test_category_without_protocol_policy_returns_none():

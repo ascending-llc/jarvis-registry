@@ -42,6 +42,7 @@ from .mcpgw.core.client_info_store import ClientInfoStore
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.background_task_tracker import BackgroundTaskTracker
+from .services.consent_management_service import ConsentManagementService
 from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, gc_stale_embedding_generations
 from .services.embedding_reindex_execution_service import EmbeddingReindexExecutionService
 from .services.embedding_reindex_job_runner import EmbeddingReindexJobRunner
@@ -240,6 +241,17 @@ class RegistryContainer:
         return ConsentStore(
             redis_client=self.redis_client,
             key_prefix=self.settings.auth_server_redis_key_prefix,
+        )
+
+    @cached_property
+    def consent_management_service(self) -> ConsentManagementService:
+        return ConsentManagementService(
+            consent_store=self.consent_store,
+            oauth_client_store=self.oauth_client_store,
+            client_info_store=self.client_info_store,
+            jwt_config=self.settings.jwt_token_config,
+            server_service=self.server_service,
+            a2a_agent_service=self.a2a_agent_service,
         )
 
     @cached_property

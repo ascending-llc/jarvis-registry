@@ -425,6 +425,15 @@ class ServerServiceV1:
         """
         return await ExtendedMCPServer.find_one({"path": path})
 
+    async def get_names_by_paths(self, paths: set[str]) -> dict[str, str]:
+        """Resolve consent display names without fetching server credentials or tool definitions."""
+        if not paths:
+            return {}
+        cursor = ExtendedMCPServer.get_pymongo_collection().find(
+            {"path": {"$in": list(paths)}}, {"_id": 0, "path": 1, "serverName": 1}
+        )
+        return {server["path"]: server["serverName"] async for server in cursor}
+
     async def extract_server_path(self, request_path: str) -> str | None:
         """Return the longest registered path prefix that matches ``request_path``.
 

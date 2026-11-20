@@ -26,9 +26,12 @@ from auth_server.deps import get_auth_provider, get_identity_service, get_oauth2
 from auth_server.providers.factory import _create_entra_provider
 from auth_server.routes.consent_templates import render_device_server_error_page
 from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
-from auth_server.services.oauth_client_policy import CLAUDE_DESKTOP_REDIRECT_URI
 from auth_server.services.token_grant_service import TokenGrantService
-from registry_pkgs.core.client_categories import CLAUDE_DESKTOP_CLIENT_ID, REGISTRY_CLI_CLIENT_ID
+from registry_pkgs.core.client_categories import (
+    CLAUDE_DESKTOP_CLIENT_ID,
+    CLAUDE_DESKTOP_REDIRECT_URI,
+    REGISTRY_CLI_CLIENT_ID,
+)
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from tests.conftest import test_consent_store, test_pending_consent_store
