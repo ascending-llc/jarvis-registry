@@ -37,6 +37,18 @@ counters:
     unit: "1"
     capture: true
 
+  # Direct MCP proxy: forwarded POST requests (labels: server_name, method, status)
+  - name: mcp_proxy_requests_total
+    description: Total requests forwarded through the direct MCP proxy
+    unit: "1"
+    capture: true
+
+  # Direct MCP proxy: tool-level calls (labels: tool_name, server_name, status)
+  - name: mcp_proxy_tool_calls_total
+    description: Total tools/call requests forwarded through the direct MCP proxy
+    unit: "1"
+    capture: true
+
   # Auth requests (for middleware)
   - name: auth_requests_total
     description: Total number of authentication attempts
@@ -107,6 +119,12 @@ histograms:
   # Prompt retrieval latency
   - name: mcp_prompt_get_duration_seconds
     description: Prompt retrieval duration in seconds
+    unit: "s"
+    capture: true
+
+  # Direct proxy: forwarded request latency (labels: server_name, method, status)
+  - name: mcp_proxy_request_duration_seconds
+    description: Direct MCP proxy request duration in seconds
     unit: "s"
     capture: true
 

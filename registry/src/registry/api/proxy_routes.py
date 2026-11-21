@@ -4,6 +4,7 @@ Dynamic MCP server proxy routes.
 
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any
@@ -33,6 +34,7 @@ from registry.core.proxy_responses import (
     server_consent_response,
     url_elicitation_response,
 )
+from registry.utils.otel_metrics import record_proxy_request, record_proxy_tool_call, record_server_request
 from registry_pkgs.core import a2a_http
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.exceptions import (
@@ -1099,7 +1101,8 @@ async def dynamic_mcp_post_proxy(
     # would have responded with protected resource metadata doc according to RFC 9728.
     logger.info(f"Proxying {request.method} /{server_path} → {target_url}")
 
-    return await proxy_to_mcp_server(
+    started = time.perf_counter()
+    response = await proxy_to_mcp_server(
         call,
         request=request,
         target_url=target_url,
@@ -1108,6 +1111,13 @@ async def dynamic_mcp_post_proxy(
         oauth_service=oauth_service,
         proxy_client=proxy_client,
     )
+    # The proxy relays bytes verbatim, so the forwarded HTTP status is the only outcome signal
+    # available here; gateway-side refusals return before this point and are not counted.
+    forwarded_ok = 200 <= getattr(response, "status_code", 0) < 400
+    record_proxy_request(server.serverName, request.method, forwarded_ok, time.perf_counter() - started)
+    if call.method == "tools/call" and call.tool_name:
+        record_proxy_tool_call(call.tool_name, server.serverName, forwarded_ok)
+    return response
 
 
 @router.get("/server/{user_id}/{server_path:path}")
@@ -1213,6 +1223,9 @@ async def dynamic_mcp_get_proxy(
     # Proxy the request. At this point, auth_context must exist as UserContextDict. Otherwise the UnifiedAuthMiddleware
     # would have responded with protected resource metadata doc according to RFC 9728.
     logger.info(f"Proxying {request.method} /{server_path} → {target_url}")
+
+    # Counted when the downstream stream is initiated; refusals above return before this.
+    record_server_request(server.serverName)
 
     # ponytail: span ends on return; the SSE body drains afterward (same trade-off as the POST
     # proxy). It still covers auth, trace injection and the downstream connect/first-response.

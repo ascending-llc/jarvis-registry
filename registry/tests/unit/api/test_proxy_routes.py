@@ -673,6 +673,117 @@ async def test_post_proxy_disabled_tool_refused_before_consent_gate(monkeypatch)
     forward.assert_not_called()
 
 
+async def test_post_proxy_records_request_and_tool_call_on_forward(monkeypatch):
+    """A forwarded tools/call records both the proxy request and the tool-level metric,
+    classified from the forwarded HTTP status."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(
+            return_value={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "id": 1,
+                "params": {"name": "list_repos", "arguments": {}},
+            }
+        ),
+    )
+    forward = AsyncMock(return_value=Response(status_code=200))
+    monkeypatch.setattr("registry.api.proxy_routes.proxy_to_mcp_server", forward)
+    record_request = Mock()
+    record_tool_call = Mock()
+    monkeypatch.setattr("registry.api.proxy_routes.record_proxy_request", record_request)
+    monkeypatch.setattr("registry.api.proxy_routes.record_proxy_tool_call", record_tool_call)
+
+    await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server()),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+        pending_store=_PendingConsentStore(),
+    )
+
+    record_request.assert_called_once()
+    assert record_request.call_args.args[:3] == ("github", "POST", True)
+    assert record_request.call_args.args[3] >= 0  # duration
+    record_tool_call.assert_called_once_with("list_repos", "github", True)
+
+
+async def test_post_proxy_records_failure_status_from_downstream(monkeypatch):
+    """A non-2xx forwarded response is recorded as failure on both metrics."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(
+            return_value={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "id": 1,
+                "params": {"name": "list_repos", "arguments": {}},
+            }
+        ),
+    )
+    forward = AsyncMock(return_value=Response(status_code=500))
+    monkeypatch.setattr("registry.api.proxy_routes.proxy_to_mcp_server", forward)
+    record_request = Mock()
+    record_tool_call = Mock()
+    monkeypatch.setattr("registry.api.proxy_routes.record_proxy_request", record_request)
+    monkeypatch.setattr("registry.api.proxy_routes.record_proxy_tool_call", record_tool_call)
+
+    await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server()),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+        pending_store=_PendingConsentStore(),
+    )
+
+    assert record_request.call_args.args[2] is False
+    assert record_tool_call.call_args.args[2] is False
+
+
+async def test_post_proxy_no_tool_metric_for_handshake_methods(monkeypatch):
+    """Non tools/call forwards record the request metric only — there is no tool name to attribute."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": "tools/list", "id": 1}),
+    )
+    forward = AsyncMock(return_value=Response(status_code=200))
+    monkeypatch.setattr("registry.api.proxy_routes.proxy_to_mcp_server", forward)
+    record_request = Mock()
+    record_tool_call = Mock()
+    monkeypatch.setattr("registry.api.proxy_routes.record_proxy_request", record_request)
+    monkeypatch.setattr("registry.api.proxy_routes.record_proxy_tool_call", record_tool_call)
+
+    await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server()),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+        pending_store=_PendingConsentStore(),
+    )
+
+    record_request.assert_called_once()
+    assert record_request.call_args.args[:3] == ("github", "POST", True)
+    record_tool_call.assert_not_called()
+
+
 async def test_post_proxy_headless_agent_bypasses_server_consent(monkeypatch):
     monkeypatch.setattr(
         "registry.api.proxy_routes._parse_json_rpc_body",
@@ -1062,6 +1173,60 @@ async def test_get_proxy_strips_client_trace_headers_and_creates_span(monkeypatc
     assert "attacker" not in headers.get("baggage", "")
     assert "tracestate" not in headers
     assert any(s.name == "proxy.dynamic_mcp_get_proxy" for s in exporter.get_finished_spans())
+
+
+async def test_get_proxy_records_server_request_when_stream_initiates(monkeypatch):
+    """Opening the downstream SSE stream counts as one server request, mirroring the gateway's
+    per-server request counter; refusals (disabled server, wrong transport) return before it."""
+    import httpx2
+
+    from registry.api import proxy_routes
+
+    monkeypatch.setattr(
+        proxy_routes, "build_authenticated_headers", AsyncMock(side_effect=lambda **kw: dict(kw["additional_headers"]))
+    )
+    record_server_request = Mock()
+    monkeypatch.setattr(proxy_routes, "record_server_request", record_server_request)
+
+    class _Ctx:
+        async def __aenter__(self):
+            return SimpleNamespace(
+                headers=httpx2.Headers({"content-type": "text/event-stream"}),
+                status_code=200,
+                aiter_bytes=lambda: iter(()),
+            )
+
+        async def __aexit__(self, *a):
+            return False
+
+    proxy_client = Mock()
+    proxy_client.stream = lambda *a, **kw: _Ctx()
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "path": f"/proxy/server/{VALID_OBJECT_ID}/github",
+        "query_string": b"",
+        "headers": [(b"accept", b"text/event-stream")],
+        "path_params": {"user_id": VALID_OBJECT_ID, "server_path": "github"},
+    }
+
+    resp = await dynamic_mcp_get_proxy(
+        request=Request(scope, receive=_proxy_receive()),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(enabled=True)),
+        oauth_service=Mock(),
+        proxy_client=proxy_client,
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+    )
+
+    assert resp.status_code == 200
+    record_server_request.assert_called_once_with("github")
 
 
 async def test_forward_a2a_strips_client_trace_headers_and_creates_span(monkeypatch):

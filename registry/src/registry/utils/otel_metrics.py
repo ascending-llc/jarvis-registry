@@ -205,6 +205,52 @@ def record_server_request(server_name: str) -> None:
     metrics.record_counter("mcp_server_requests_total", 1, attributes)
 
 
+_PROXY_TOOL_NAME_LABEL_LIMIT = 100
+
+
+def record_proxy_request(server_name: str, method: str, success: bool, duration_seconds: float) -> None:
+    """
+    Record a POST forwarded through the direct MCP proxy (``/proxy/server/...``).
+
+    The direct proxy relays bytes verbatim and never parses the tool result, so unlike the
+    gateway's ``record_tool_execution`` the status reflects the forwarded HTTP outcome, not a
+    classified CallToolResult. Gateway-side refusals (ACL, consent, disabled tool/server,
+    transport) return before forwarding and are not counted here.
+
+    Requires these metrics in config:
+    - counter: mcp_proxy_requests_total
+    - histogram: mcp_proxy_request_duration_seconds
+    """
+    attributes = {
+        "server_name": server_name,
+        "method": method,
+        "status": "success" if success else "failure",
+    }
+
+    metrics.record_counter("mcp_proxy_requests_total", 1, attributes)
+    metrics.record_histogram("mcp_proxy_request_duration_seconds", duration_seconds, attributes)
+
+
+def record_proxy_tool_call(tool_name: str, server_name: str, success: bool) -> None:
+    """
+    Record a ``tools/call`` forwarded through the direct MCP proxy.
+
+    ``tool_name`` is client-supplied (JSON-RPC params) and unvalidated at this layer, so it is
+    truncated as a cardinality guard — the same reasoning as the ``resource_uri`` note on
+    ``record_resource_access``.
+
+    Requires this metric in config:
+    - counter: mcp_proxy_tool_calls_total
+    """
+    attributes = {
+        "tool_name": tool_name[:_PROXY_TOOL_NAME_LABEL_LIMIT],
+        "server_name": server_name,
+        "status": "success" if success else "failure",
+    }
+
+    metrics.record_counter("mcp_proxy_tool_calls_total", 1, attributes)
+
+
 def record_auth_request(
     mechanism: str,
     success: bool,
