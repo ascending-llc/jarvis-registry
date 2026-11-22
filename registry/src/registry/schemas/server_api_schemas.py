@@ -12,6 +12,9 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer
 
+from registry_pkgs.models.enums import McpAuthMode
+from registry_pkgs.models.extended_mcp_server import mcp_auth_mode_from_config
+
 from ..core.mcp_config import MCPTransport
 from ..schemas.acl_schema import ResourcePermissions
 from ..schemas.case_conversion import APIBaseModel
@@ -243,6 +246,7 @@ class ServerDetailResponse(APIBaseModel):
         default_factory=list, description="Downstream tool names currently disabled on this server"
     )
     resources: list[dict[str, Any]] | None = Field(None, description="List of available resources")
+    resourceTemplates: list[dict[str, Any]] | None = Field(None, description="List of available resource templates")
     prompts: list[dict[str, Any]] | None = Field(None, description="List of available prompts")
     initDuration: int | None = Field(None, description="Initialization duration in ms")
     author: str | None = Field(None, description="Author user ID")
@@ -454,7 +458,9 @@ def convert_to_detail(
     title = config.get("title") or server.serverName
     tools_str = config.get("tools", "")
     tool_functions = config.get("toolFunctions")
-    resources = config.get("resources", [])
+    # An OAuth server's concrete resources would be one user's data, so they are never shown.
+    resources = [] if mcp_auth_mode_from_config(config) is McpAuthMode.OAUTH else config.get("resources", [])
+    resource_templates = config.get("resourceTemplates", [])
     prompts = config.get("prompts", [])
     capabilities_str = config.get("capabilities", "{}")
     num_tools = server.numTools if hasattr(server, "numTools") else 0
@@ -482,6 +488,7 @@ def convert_to_detail(
         toolFunctions=tool_functions,
         disabledTools=list(getattr(server, "registryDisabledTools", None) or []),
         resources=resources,
+        resourceTemplates=resource_templates,
         prompts=prompts,
         initDuration=config.get("initDuration"),
         author=author_id,
