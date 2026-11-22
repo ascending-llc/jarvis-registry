@@ -538,7 +538,8 @@ async def read_resource_impl(
     async with ResourceAccessMetricsContext() as metrics_ctx:
         try:
             username = user_context.get("username", "unknown")
-            logger.info(f"resource read request from user '{username}' - {resource_uri} on {server_id}")
+            # The URI is left out: it can name a user's own files.
+            logger.info(f"resource read request from user '{username}' on {server_id}")
 
             server = None
             server = await _get_server_service(ctx).get_server_by_id(server_id)
@@ -552,13 +553,13 @@ async def read_resource_impl(
 
             metrics_ctx.set_server_name(server.serverName)
 
-            logger.info(f"Reading resource: {resource_uri} from server {server_id}")
+            logger.info(f"Reading resource from server {server_id}")
 
             # Track server request count
             record_server_request(server.serverName)
 
             # MOCK: Return hardcoded response for POC
-            logger.info(f"(MOCK) Returning cached search results for: {resource_uri}")
+            logger.info("(MOCK) Returning cached search results")
 
             # MOCK, NOTE: Use the following structure to return to our client the result of a `resource/read` from downstream MCPs.
             # Regarding the use of `EmbeddedResource`, see https://modelcontextprotocol.io/specification/2025-11-25/schema#embeddedresource
