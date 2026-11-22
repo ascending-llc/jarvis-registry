@@ -9,12 +9,14 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from registry.core.mcp_client import MCPServerData
 from registry.core.telemetry_decorators import (
     AuthMetricsContext,
     PromptExecutionMetricsContext,
     ResourceAccessMetricsContext,
     ToolExecutionMetricsContext,
     track_registry_operation,
+    track_tool_discovery,
 )
 from registry.utils.otel_metrics import record_tool_execution
 
@@ -317,3 +319,28 @@ class TestPromptExecutionMetricsContext:
             call_kwargs = mock_record.call_args[1]
             assert call_kwargs["success"] is False
             assert call_kwargs["error_type"] == "server_not_found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "success", "tools_count"),
+    [
+        (MCPServerData([{"name": "a"}, {"name": "b"}], [], [], {}, None), True, 2),
+        (MCPServerData(None, None, None, None, "boom"), False, 0),
+    ],
+)
+async def test_track_tool_discovery_reads_mcp_server_data(result, success, tools_count) -> None:
+    @track_tool_discovery
+    async def retrieve_from_server(self, server):
+        return result
+
+    server = Mock(serverName="srv", config={"type": "sse"})
+    with patch("registry.core.telemetry_decorators._record_tool_discovery") as record:
+        assert await retrieve_from_server(object(), server) is result
+
+    record.assert_called_once()
+    kwargs = record.call_args.kwargs
+    assert kwargs["server_name"] == "srv"
+    assert kwargs["transport_type"] == "sse"
+    assert kwargs["success"] is success
+    assert kwargs["tools_count"] == tools_count

@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx2
-from mcp.types import ClientCapabilities, Implementation, InitializeRequestParams
+from mcp.types import METHOD_NOT_FOUND, ClientCapabilities, Implementation, InitializeRequestParams
 from mcp_types.version import LATEST_HANDSHAKE_VERSION
 
 from registry.core.config import settings
@@ -28,6 +28,14 @@ from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
 
 logger = logging.getLogger(__name__)
+
+
+class McpJsonRpcMethodError(ValueError):
+    """A JSON-RPC error response from a runtime's MCP method; ``code`` is the JSON-RPC error code, if any."""
+
+    def __init__(self, message: str, code: int | None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class AgentCoreRuntimeInvoker:
@@ -126,8 +134,15 @@ class AgentCoreRuntimeInvoker:
         tools = result.tools or []
         config["toolFunctions"] = self._convert_tools_to_tool_functions(tools, server.serverName)
         config["tools"] = ", ".join(tool.get("name", "") for tool in tools if tool.get("name"))
-        config["resources"] = result.resources or []
-        config["prompts"] = result.prompts or []
+        # A listing that failed on its own (None) is left out of the discovered config; the federation update
+        # (FederationSyncService._copy_mcp_update_fields) then keeps the stored value for that key.
+        for key, value in (
+            ("resources", result.resources),
+            ("resourceTemplates", result.resource_templates),
+            ("prompts", result.prompts),
+        ):
+            if value is not None:
+                config[key] = value
         config["capabilities"] = (
             json.dumps(result.capabilities or {}, ensure_ascii=False) if result.capabilities else "{}"
         )
@@ -577,6 +592,31 @@ class AgentCoreRuntimeInvoker:
         except Exception as exc:
             return MCPServerData(None, None, None, None, f"SDK MCP invocation failed: {exc}")
 
+        # Optional listing: a runtime without template support must not fail enrichment.
+        resource_templates: list[dict[str, Any]] | None
+        try:
+            templates_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+                client=client,
+                runtime_arn=runtime_arn,
+                method="resources/templates/list",
+                params={},
+                request_id=self._next_request_id(),
+                runtime_session_id=runtime_session_id,
+                mcp_session_id=mcp_session_id,
+                protocol_version=protocol_version,
+            )
+            resource_templates = self._normalize_mcp_resource_templates(templates_result.get("resourceTemplates", []))
+        except McpJsonRpcMethodError as exc:
+            if exc.code == METHOD_NOT_FOUND:
+                # The runtime does not offer templates at all: a definite empty listing.
+                resource_templates = []
+            else:
+                logger.warning("resources/templates/list failed for runtime %s: %s", runtime_arn, exc)
+                resource_templates = None
+        except Exception as exc:
+            logger.warning("resources/templates/list failed for runtime %s: %s", runtime_arn, exc)
+            resource_templates = None
+
         tools = self._normalize_mcp_tools(tools_result.get("tools", []))
         resources = self._normalize_mcp_resources(resources_result.get("resources", []))
         prompts = self._normalize_mcp_prompts(prompts_result.get("prompts", []))
@@ -588,6 +628,7 @@ class AgentCoreRuntimeInvoker:
             capabilities=capabilities,
             requires_init=bool(runtime_session_id or mcp_session_id),
             error_message=None,
+            resource_templates=resource_templates,
         )
 
     async def _get_runtime_client(self, region: str, assume_role_arn: str | None = None) -> Any:
@@ -684,10 +725,12 @@ class AgentCoreRuntimeInvoker:
             )
 
         if response_payload.get("error"):
-            raise ValueError(
+            error = response_payload["error"]
+            raise McpJsonRpcMethodError(
                 "MCP method failed "
                 f"(method={method}, statusCode={response.get('statusCode')}, contentType={response.get('contentType')}, "
-                f"error={response_payload['error']}, body={response_text[:1000]})"
+                f"error={response_payload['error']}, body={response_text[:1000]})",
+                code=error.get("code") if isinstance(error, dict) else None,
             )
 
         return (
@@ -949,6 +992,21 @@ class AgentCoreRuntimeInvoker:
                     "description": resource.get("description"),
                     "mimeType": resource.get("mimeType"),
                     "annotations": resource.get("annotations"),
+                }
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_mcp_resource_templates(templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for template in templates or []:
+            normalized.append(
+                {
+                    "uriTemplate": template.get("uriTemplate"),
+                    "name": template.get("name"),
+                    "description": template.get("description"),
+                    "mimeType": template.get("mimeType"),
+                    "annotations": template.get("annotations"),
                 }
             )
         return normalized

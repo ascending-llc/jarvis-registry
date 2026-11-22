@@ -41,6 +41,7 @@ from ..constants import (
     VECTOR_DELETE_SKIPPED_FALLBACK,
     VECTOR_SYNC_SKIPPED_FALLBACK,
 )
+from ..core.mcp_client import MCPServerData
 from ..core.mcp_config import MCPTransport
 from ..core.mcp_downstream import DownstreamEraCache
 from ..core.telemetry_decorators import track_tool_discovery
@@ -64,6 +65,25 @@ def _extract_config_field(server: ExtendedMCPServer, field: str, default: Any = 
     if not server or not server.config:
         return default
     return server.config.get(field, default)
+
+
+def _capture_failure(error_message: str) -> MCPServerData:
+    """A failed capture: nothing was retrieved."""
+    return MCPServerData(None, None, None, None, error_message)
+
+
+def _count(items: list[Any] | None) -> int:
+    return len(items or [])
+
+
+def _captured_listings(captured: MCPServerData) -> dict[str, list[dict[str, Any]]]:
+    """Config fields to write from a capture. A listing that failed (None) is omitted, keeping the stored value."""
+    listings = {
+        "resources": captured.resources,
+        "resourceTemplates": captured.resource_templates,
+        "prompts": captured.prompts,
+    }
+    return {key: value for key, value in listings.items() if value is not None}
 
 
 def _get_current_utc_time() -> datetime:
@@ -618,34 +638,44 @@ class ServerServiceV1:
             return
 
         try:
-            _, resources, prompts, capabilities, error_msg = await self.retrieve_from_server(
+            captured = await self.retrieve_from_server(
                 server,
                 include_capabilities=True,
                 include_resources=True,
                 include_prompts=True,
                 user_id=user_id,
             )
-            if error_msg is not None:
-                logger.warning("Registration capabilities fetch failed for %s: %s", server.id, error_msg)
+            if captured.error_message is not None:
+                logger.warning("Registration capabilities fetch failed for %s: %s", server.id, captured.error_message)
                 return
 
             # The fetch can outlast the create route's reindex check, so check again before writing.
             raise_if_reindex_active(self._embedding_maintenance_watcher)
 
+            listings = _captured_listings(captured)
             fields: dict[str, Any] = {
-                "config.capabilities": json.dumps(capabilities),
-                "config.resources": resources or [],
-                "config.prompts": prompts or [],
+                "config.capabilities": json.dumps(captured.capabilities),
                 # A query update skips the model's save hooks, and the reindex watermark reads updatedAt.
                 "updatedAt": _get_current_utc_time(),
             }
+            for key, value in listings.items():
+                fields[f"config.{key}"] = value
             # Discovery sets requiresInit only when the upstream reported it.
             if "requiresInit" in server.config:
                 fields["config.requiresInit"] = server.config["requiresInit"]
+            # Resources, templates and prompts become vector documents. The query update skips the save hook
+            # that recomputes vectorContentHash, so stamp the pending marker in the same write and rebuild in
+            # full; the stale hash only costs one extra rebuild on the next save.
+            marker = self._mark_vector_sync_pending(server) if listings else None
+            if marker is not None:
+                fields["vectorSyncPendingAt"] = marker
+                fields["vectorSyncAttempts"] = 0
 
             result = await ExtendedMCPServer.find_one({"_id": server.id}).update({"$set": fields})
             if result.matched_count == 0:
                 logger.info("Server %s was deleted before its registration capabilities were stored", server.id)
+            elif marker is not None:
+                self.schedule_vector_sync(VectorSyncPlan(doc=server, marker=marker, full_resync=True))
         except EmbeddingReindexInProgressException:
             logger.info(
                 "Skipping registration capabilities write for %s during an embedding reindex; %s",
@@ -863,28 +893,26 @@ class ServerServiceV1:
             user_id: User ID (required for OAuth servers)
 
         Returns:
-            True if tools were successfully fetched and updated, False otherwise
+            True if the capture succeeded (including a server with zero tools), False otherwise
 
         Raises:
             OAuthReAuthRequiredError: the user must authorize this server before tools can be fetched.
         """
         # Use consolidated retrieve_from_server which handles both OAuth and apiKey
         logger.info(f"Fetching tools, resources, and prompts for server {server.serverName}")
-        (
-            tool_list,
-            resource_list,
-            prompt_list,
-            _,
-            error_msg,
-        ) = await self.retrieve_from_server(
+        captured = await self.retrieve_from_server(
             server=server,
             include_capabilities=False,
             include_resources=True,
             include_prompts=True,
             user_id=user_id,
         )
+        tool_list = captured.tools
+        error_msg = captured.error_message
 
-        if tool_list:
+        # tool_list=[] is a successful capture of a server that serves only resources/prompts (same rule as
+        # refresh_server_capabilities); only None means the capture failed.
+        if tool_list is not None:
             # Convert tool_list to toolFunctions format
             tool_functions = _convert_tool_list_to_functions(tool_list, server.serverName)
 
@@ -898,12 +926,13 @@ class ServerServiceV1:
             # Update numTools at root level
             server.numTools = len(tool_functions)
 
-            # Store resources and prompts in config
-            server.config["resources"] = resource_list or []
-            server.config["prompts"] = prompt_list or []
+            # Store resources, resource templates and prompts; a failed listing keeps the stored value.
+            server.config.update(_captured_listings(captured))
 
             logger.info(
-                f"Successfully fetched and updated {len(tool_functions)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts for {server.serverName}"
+                f"Successfully fetched and updated {len(tool_functions)} tools, {_count(captured.resources)} resources, "
+                f"{_count(captured.resource_templates)} resource templates, {_count(captured.prompts)} prompts "
+                f"for {server.serverName}"
             )
             return True
         else:
@@ -1075,15 +1104,10 @@ class ServerServiceV1:
         include_resources: bool = True,
         include_prompts: bool = True,
         user_id: str | None = None,
-    ) -> tuple[
-        list[dict[str, Any]] | None,
-        list[dict[str, Any]] | None,
-        list[dict[str, Any]] | None,
-        dict[str, Any] | None,
-        str | None,
-    ]:
+    ) -> MCPServerData:
         """
-        Consolidated method to retrieve tools, resources, prompts, and optionally capabilities from a server.
+        Consolidated method to retrieve tools, resources, resource templates, prompts, and optionally
+        capabilities from a server.
         Args:
             server: Server document
             include_capabilities: Whether to retrieve capabilities (default: True)
@@ -1092,10 +1116,13 @@ class ServerServiceV1:
             user_id: User ID for OAuth token retrieval (required for OAuth servers)
 
         Returns:
-            Tuple of (tool_list, resource_list, prompt_list, capabilities_dict, error_message)
-            - If successful: (tool_list, resource_list, prompt_list, capabilities_dict, None)
-            - If failed: (None, None, None, None, error_message)
-            - If include_capabilities=False: (tool_list, resource_list, prompt_list, None, None) or (None, None, None, None, error_message)
+            MCPServerData. On failure only ``error_message`` is set. On success ``error_message`` is None;
+            ``capabilities`` is None when ``include_capabilities=False``. A listing that failed on its own is
+            None (keep the stored value); one that was not requested is [].
+
+            For OAuth servers, ``resources/list`` is never called and ``resources`` is always []: the token
+            belongs to one user, so the concrete resources would be that user's data shown to every viewer.
+            Resource templates and prompts describe the server and are kept.
 
         Raises:
             OAuthReAuthRequiredError: the user must authorize this server before tools can be fetched.
@@ -1104,19 +1131,10 @@ class ServerServiceV1:
         url = config.get("url")
 
         if not url:
-            return None, None, None, None, "No URL configured"
+            return _capture_failure("No URL configured")
 
-        # Check if server requires OAuth
-        has_oauth = config.get("oauth") is not None
-
-        if has_oauth and not user_id:
-            return (
-                None,
-                None,
-                None,
-                None,
-                "OAuth server requires user_id for token retrieval",
-            )
+        if server.mcp_auth_mode is McpAuthMode.OAUTH and not user_id:
+            return _capture_failure("OAuth server requires user_id for token retrieval")
 
         # Get transport type
         try:
@@ -1137,17 +1155,22 @@ class ServerServiceV1:
                 raise
             except (OAuthTokenError, MissingUserIdError) as e:
                 # OAuth token errors or missing user ID
-                return None, None, None, None, f"Authentication error: {str(e)}"
+                return _capture_failure(f"Authentication error: {str(e)}")
             except AuthenticationError as e:
                 # Other authentication errors
-                return None, None, None, None, f"Authentication error: {str(e)}"
+                return _capture_failure(f"Authentication error: {str(e)}")
+
+            oauth = server.mcp_auth_mode is McpAuthMode.OAUTH
+            fetch_resources = include_resources and not oauth
 
             items_to_retrieve = []
             if include_capabilities:
                 items_to_retrieve.append("capabilities")
             items_to_retrieve.append("tools")
-            if include_resources:
+            if fetch_resources:
                 items_to_retrieve.append("resources")
+            if include_resources:
+                items_to_retrieve.append("resource templates")
             if include_prompts:
                 items_to_retrieve.append("prompts")
 
@@ -1162,7 +1185,8 @@ class ServerServiceV1:
                 url,
                 headers=headers,
                 transport_type=transport_type,
-                include_resources=include_resources,
+                include_resources=fetch_resources,
+                include_resource_templates=include_resources,
                 include_prompts=include_prompts,
                 server_id=str(server.id) if server.id else None,
                 era_cache=self.downstream_era_cache,
@@ -1170,53 +1194,46 @@ class ServerServiceV1:
             if result.requires_init is not None:
                 server.config["requiresInit"] = result.requires_init
 
-            if include_capabilities:
-                if result.tools is None or result.capabilities is None:
-                    error_msg = result.error_message or "Failed to retrieve tools and capabilities from MCP server"
-                    logger.warning(f"{error_msg} for {server.serverName}")
-                    return None, None, None, None, error_msg
+            if result.tools is None or (include_capabilities and result.capabilities is None):
+                error_msg = result.error_message or (
+                    "Failed to retrieve tools and capabilities from MCP server"
+                    if include_capabilities
+                    else "Failed to retrieve tools from MCP server"
+                )
+                logger.warning(f"{error_msg} for {server.serverName}")
+                return _capture_failure(error_msg)
 
-                logger.info(
-                    f"Retrieved {len(result.tools)} tools, {len(result.resources or [])} resources, {len(result.prompts or [])} prompts, and capabilities from {server.serverName}"
-                )
-                return (
-                    result.tools,
-                    result.resources,
-                    result.prompts,
-                    result.capabilities,
-                    None,
-                )
-            else:
-                if result.tools is None:
-                    error_msg = result.error_message or "Failed to retrieve tools from MCP server"
-                    logger.warning(f"{error_msg} for {server.serverName}")
-                    return None, None, None, None, error_msg
-
-                logger.info(
-                    f"Retrieved {len(result.tools)} tools, {len(result.resources or [])} resources, {len(result.prompts or [])} prompts from {server.serverName}"
-                )
-                return result.tools, result.resources, result.prompts, None, None
+            captured = MCPServerData(
+                tools=result.tools,
+                # Backstop: an OAuth server's concrete resources must overwrite (clear) the stored list.
+                resources=[] if oauth else result.resources,
+                prompts=result.prompts,
+                capabilities=result.capabilities if include_capabilities else None,
+                error_message=None,
+                requires_init=result.requires_init,
+                resource_templates=result.resource_templates,
+            )
+            logger.info(
+                f"Retrieved {len(captured.tools)} tools, {_count(captured.resources)} resources, "
+                f"{_count(captured.resource_templates)} resource templates, {_count(captured.prompts)} prompts"
+                f"{', and capabilities' if include_capabilities else ''} from {server.serverName}"
+            )
+            return captured
 
         except OAuthReAuthRequiredError:
             raise
         except Exception as e:
             error_msg = f"Error: {type(e).__name__} - {str(e)}"
             logger.error(f"Retrieval error for server {server.serverName}: {e}")
-            return None, None, None, None, error_msg
+            return _capture_failure(error_msg)
 
     async def retrieve_tools_and_capabilities_from_server(
         self,
         server: ExtendedMCPServer,
         user_id: str | None = None,
-    ) -> tuple[
-        list[dict[str, Any]] | None,
-        list[dict[str, Any]] | None,
-        list[dict[str, Any]] | None,
-        dict[str, Any] | None,
-        str | None,
-    ]:
+    ) -> MCPServerData:
         """
-        Retrieve tools, resources, prompts, and capabilities from a server using the MCP client.
+        Retrieve tools, resources, resource templates, prompts, and capabilities from a server using the MCP client.
 
         This is a best-effort attempt - failures are logged but don't prevent registration.
         Tools can be fetched on-demand later.
@@ -1226,10 +1243,7 @@ class ServerServiceV1:
             user_id: User ID for OAuth token retrieval (required for OAuth servers)
 
         Returns:
-            Tuple of (tool_list, resource_list, prompt_list, capabilities_dict, error_message)
-            - If successful, returns (tool_list, resource_list, prompt_list, capabilities_dict, None)
-            - If failed, returns (None, None, None, None, error_message)
-            - Empty results are acceptable for registration
+            MCPServerData, as described on ``retrieve_from_server``. Empty results are acceptable for registration.
         """
         return await self.retrieve_from_server(
             server,
@@ -1279,13 +1293,10 @@ class ServerServiceV1:
 
         # Use the same validation as registration: retrieve tools, resources, prompts, and capabilities
         # This is a more comprehensive health check than just HTTP GET
-        (
-            tool_list,
-            resource_list,
-            prompt_list,
-            capabilities,
-            tool_error,
-        ) = await self.retrieve_tools_and_capabilities_from_server(server, user_id)
+        captured = await self.retrieve_tools_and_capabilities_from_server(server, user_id)
+        tool_list = captured.tools
+        capabilities = captured.capabilities
+        tool_error = captured.error_message
 
         if tool_list is None or capabilities is None:
             # Capabilities refresh failed
@@ -1307,7 +1318,9 @@ class ServerServiceV1:
 
         # Capabilities refresh succeeded
         logger.info(
-            f"Capabilities refresh succeeded for {server.serverName}: retrieved {len(tool_list)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts, and capabilities"
+            f"Capabilities refresh succeeded for {server.serverName}: retrieved {len(tool_list)} tools, "
+            f"{_count(captured.resources)} resources, {_count(captured.resource_templates)} resource templates, "
+            f"{_count(captured.prompts)} prompts, and capabilities"
         )
 
         server.lastError = None
@@ -1343,11 +1356,11 @@ class ServerServiceV1:
             server.numTools = len(tool_functions)
             logger.info(f"Updated {len(tool_functions)} tools for {server.serverName} during capabilities refresh")
 
-        # Store resources and prompts
-        config["resources"] = resource_list or []
-        config["prompts"] = prompt_list or []
+        # Store resources, resource templates and prompts; a failed listing keeps the stored value.
+        config.update(_captured_listings(captured))
         logger.info(
-            f"Updated {len(resource_list or [])} resources and {len(prompt_list or [])} prompts for {server.serverName} during capabilities refresh"
+            f"Updated {_count(captured.resources)} resources, {_count(captured.resource_templates)} resource templates "
+            f"and {_count(captured.prompts)} prompts for {server.serverName} during capabilities refresh"
         )
 
         server.config = config
@@ -1364,7 +1377,7 @@ class ServerServiceV1:
         return {
             "server": server,
             "status": "success",
-            "status_message": f"Successfully refreshed capabilities (retrieved {len(tool_list)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts)",
+            "status_message": f"Successfully refreshed capabilities (retrieved {len(tool_list)} tools, {_count(captured.resources)} resources, {_count(captured.prompts)} prompts)",
             "last_checked": now,
             "response_time_ms": None,  # We don't track response time for MCP connections
         }

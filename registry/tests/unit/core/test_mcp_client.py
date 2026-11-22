@@ -3,15 +3,18 @@ Unit tests for mcp_client functions.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from registry.core.mcp_client import (
     MCPServerData,
+    _drain_listing,
     _get_from_sse,
     _get_from_streamable_http,
     _is_requires_init,
+    _list_optional_entities,
     get_tools_and_capabilities_from_server,
     initialize_mcp,
     perform_health_check,
@@ -29,15 +32,18 @@ def _mock_client_cm(session):
     return cm
 
 
-def _mock_mcp_session(*, capabilities=None, tools_response=None, resources=None, prompts=None):
+def _mock_mcp_session(*, capabilities=None, tools_response=None, resources=None, prompts=None, templates=None):
     """Build a mock post-handshake ``mcp.Client`` session with v2 snake_case attributes."""
     session = AsyncMock()
     session.protocol_version = "2025-11-25"
     session.server_info = Mock(name="server", version="1.0")
     session.server_capabilities = capabilities
     session.list_tools = AsyncMock(return_value=tools_response if tools_response is not None else Mock(tools=[]))
-    session.list_resources = AsyncMock(return_value=Mock(resources=resources or []))
-    session.list_prompts = AsyncMock(return_value=Mock(prompts=prompts or []))
+    # next_cursor=None: a bare Mock attribute is truthy and repeats, which the pagination guard treats as a
+    # misbehaving server and turns into a failed listing.
+    session.list_resources = AsyncMock(return_value=Mock(resources=resources or [], next_cursor=None))
+    session.list_resource_templates = AsyncMock(return_value=Mock(resource_templates=templates or [], next_cursor=None))
+    session.list_prompts = AsyncMock(return_value=Mock(prompts=prompts or [], next_cursor=None))
     return session
 
 
@@ -810,3 +816,190 @@ async def test_health_check_reports_unsupported_transport_without_network_io():
 
     assert result == (False, "unhealthy: unsupported transport 'websocket'", None, None)
     initialize.assert_not_called()
+
+
+def _page(items_attr: str, items: list, next_cursor: str | None) -> SimpleNamespace:
+    return SimpleNamespace(**{items_attr: items, "next_cursor": next_cursor})
+
+
+def _resource(uri: str) -> SimpleNamespace:
+    return SimpleNamespace(uri=uri, name=uri, description=None, mime_type="text/plain", annotations=None)
+
+
+def _template(uri_template: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        uri_template=uri_template, name="tpl", description="d", mime_type="application/json", annotations=None
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.core
+class TestOptionalListings:
+    """Pagination and failure semantics for resources, resource templates and prompts."""
+
+    async def test_drain_listing_follows_cursors_and_passes_cursor_keyword(self) -> None:
+        pages = {None: _page("resources", [1, 2], "c1"), "c1": _page("resources", [3], None)}
+        fetch = AsyncMock(side_effect=lambda cursor: pages[cursor])
+
+        items = await _drain_listing(fetch, "resources", "resources", "http://srv")
+
+        assert items == [1, 2, 3]
+        assert [call.args[0] for call in fetch.await_args_list] == [None, "c1"]
+
+    async def test_drain_listing_repeated_cursor_fails_only_that_listing(self, caplog) -> None:
+        fetch = AsyncMock(return_value=_page("prompts", [1], "same"))
+
+        assert await _drain_listing(fetch, "prompts", "prompts", "http://srv") is None
+        assert "repeated a pagination cursor" in caplog.text
+
+    async def test_drain_listing_method_not_found_is_a_definite_empty_listing(self) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        fetch = AsyncMock(side_effect=MCPError(-32601, "Method not found"))
+
+        assert await _drain_listing(fetch, "prompts", "prompts", "http://srv") == []
+
+    async def test_drain_listing_other_jsonrpc_error_returns_none(self) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        fetch = AsyncMock(side_effect=MCPError(-32603, "Internal error"))
+
+        assert await _drain_listing(fetch, "prompts", "prompts", "http://srv") is None
+
+    async def test_drain_listing_timeout_returns_none(self, monkeypatch) -> None:
+        monkeypatch.setattr(MCPClientConfig, "TOOLS_TIMEOUT", 0.01)
+
+        async def slow(_cursor):
+            await asyncio.sleep(1)
+
+        assert await _drain_listing(slow, "resources", "resources", "http://srv") is None
+
+    async def test_session_methods_receive_cursor_keyword(self) -> None:
+        session = _mock_mcp_session(capabilities=SimpleNamespace(resources=SimpleNamespace()))
+        session.list_resources = AsyncMock(
+            side_effect=[_page("resources", [_resource("a://1")], "c1"), _page("resources", [_resource("a://2")], None)]
+        )
+
+        resources, templates, prompts = await _list_optional_entities(
+            session, "http://srv", include_resources=True, include_resource_templates=True, include_prompts=True
+        )
+
+        assert [r["uri"] for r in resources] == ["a://1", "a://2"]
+        assert [call.kwargs for call in session.list_resources.await_args_list] == [{"cursor": None}, {"cursor": "c1"}]
+        session.list_resource_templates.assert_awaited_once_with(cursor=None)
+        session.list_prompts.assert_awaited_once_with(cursor=None)
+        assert templates == [] and prompts == []
+
+    async def test_templates_are_extracted(self) -> None:
+        session = _mock_mcp_session(
+            capabilities={"resources": {}}, templates=[_template("github://repo/{owner}/{repo}")]
+        )
+
+        _, templates, _ = await _list_optional_entities(
+            session, "http://srv", include_resources=True, include_resource_templates=True, include_prompts=True
+        )
+
+        assert templates == [
+            {
+                "uriTemplate": "github://repo/{owner}/{repo}",
+                "name": "tpl",
+                "description": "d",
+                "mimeType": "application/json",
+                "annotations": None,
+            }
+        ]
+
+    @pytest.mark.parametrize("capabilities", [None, {"tools": {}}, SimpleNamespace(resources=None)])
+    async def test_templates_are_definitely_empty_when_resources_capability_not_declared(self, capabilities) -> None:
+        session = _mock_mcp_session(capabilities=capabilities)
+
+        _, templates, _ = await _list_optional_entities(
+            session, "http://srv", include_resources=True, include_resource_templates=True, include_prompts=True
+        )
+
+        assert templates == []
+        session.list_resource_templates.assert_not_awaited()
+
+    async def test_not_requested_and_failed_are_none(self) -> None:
+        session = _mock_mcp_session(
+            capabilities={"resources": {}}, prompts=[SimpleNamespace(name="p", description=None, arguments=None)]
+        )
+        session.list_resource_templates = AsyncMock(side_effect=RuntimeError("Method not found"))
+
+        resources, templates, prompts = await _list_optional_entities(
+            session, "http://srv", include_resources=False, include_resource_templates=True, include_prompts=True
+        )
+
+        # Not requested: unknown, so the caller keeps what it stored.
+        assert resources is None
+        session.list_resources.assert_not_awaited()
+        assert templates is None
+        assert prompts == [{"name": "p", "description": None, "arguments": []}]
+
+    async def test_resource_uris_are_not_logged(self, caplog) -> None:
+        caplog.set_level("DEBUG", logger="registry.core.mcp_client")
+        session = _mock_mcp_session(resources=[_resource("gdrive:///alice/salary.xlsx")])
+
+        resources, _, _ = await _list_optional_entities(
+            session, "http://srv", include_resources=True, include_resource_templates=False, include_prompts=False
+        )
+
+        assert resources[0]["uri"] == "gdrive:///alice/salary.xlsx"
+        assert "salary" not in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.core
+async def test_capture_against_real_sdk_server(monkeypatch) -> None:
+    """End to end through the real mcp.Client: catches listing-call signature mismatches that mocks accept."""
+    import httpx2
+    from mcp.server.mcpserver import MCPServer
+    from tests.mcp_downstream_support import sdk_endpoint
+
+    server = MCPServer("capture-target")
+
+    @server.tool()
+    def ping() -> str:
+        return "pong"
+
+    @server.resource("test://doc", mime_type="text/plain")
+    def doc() -> str:
+        return "doc"
+
+    @server.resource("test://doc/{doc_id}", mime_type="text/plain")
+    def doc_by_id(doc_id: str) -> str:
+        return doc_id
+
+    @server.resource("ui://widget/app.html", mime_type="text/html;profile=mcp-app")
+    def widget() -> str:
+        return "<html></html>"
+
+    @server.prompt()
+    def greet(name: str) -> str:
+        return f"Hello {name}"
+
+    async with sdk_endpoint(server_override=server) as transport:
+        original = httpx2.AsyncClient
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kwargs: original(transport=transport, **kwargs))
+
+        result = await _get_from_streamable_http("http://downstream/mcp", headers={})
+
+    assert result.error_message is None
+    assert [tool["name"] for tool in result.tools] == ["ping"]
+    assert sorted(r["uri"] for r in result.resources) == ["test://doc", "ui://widget/app.html"]
+    assert [t["uriTemplate"] for t in result.resource_templates] == ["test://doc/{doc_id}"]
+    assert [p["name"] for p in result.prompts] == ["greet"]
+
+
+@pytest.mark.unit
+@pytest.mark.core
+async def test_templates_not_requested_are_none() -> None:
+    session = _mock_mcp_session(capabilities={"resources": {}})
+
+    _, templates, prompts = await _list_optional_entities(
+        session, "http://srv", include_resources=True, include_resource_templates=False, include_prompts=False
+    )
+
+    assert templates is None and prompts is None
+    session.list_resource_templates.assert_not_awaited()
+    session.list_prompts.assert_not_awaited()

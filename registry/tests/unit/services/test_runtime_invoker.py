@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -5,7 +6,7 @@ import pytest
 
 from registry.core.mcp_client import MCPServerData
 from registry.services.federation.agentcore_clients import AgentCoreClientProvider
-from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
+from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker, McpJsonRpcMethodError
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig
@@ -174,6 +175,8 @@ class TestAgentCoreRuntimeInvoker:
                 return {"resources": []}, "runtime-session-1", "mcp-session-1", "2025-11-05"
             if method == "prompts/list":
                 return {"prompts": []}, "runtime-session-1", "mcp-session-1", "2025-11-05"
+            if method == "resources/templates/list":
+                return {"resourceTemplates": []}, "runtime-session-1", "mcp-session-1", "2025-11-05"
             raise AssertionError(f"unexpected method {method}")
 
         async def _get_runtime_client(region, assume_role_arn=None):
@@ -200,7 +203,58 @@ class TestAgentCoreRuntimeInvoker:
             ("tools/list", "runtime-session-1", "mcp-session-1", "2025-11-05"),
             ("resources/list", "runtime-session-1", "mcp-session-1", "2025-11-05"),
             ("prompts/list", "runtime-session-1", "mcp-session-1", "2025-11-05"),
+            ("resources/templates/list", "runtime-session-1", "mcp-session-1", "2025-11-05"),
         ]
+        assert result.resource_templates == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("templates_outcome", "expected"),
+        [
+            (
+                {"resourceTemplates": [{"uriTemplate": "repo://{name}", "name": "repo", "mimeType": "text/plain"}]},
+                [
+                    {
+                        "uriTemplate": "repo://{name}",
+                        "name": "repo",
+                        "description": None,
+                        "mimeType": "text/plain",
+                        "annotations": None,
+                    }
+                ],
+            ),
+            (McpJsonRpcMethodError("MCP method failed (method=resources/templates/list)", code=-32603), None),
+            (McpJsonRpcMethodError("MCP method failed (method=resources/templates/list)", code=-32601), []),
+            (ValueError("non-JSON response"), None),
+        ],
+    )
+    async def test_invoke_mcp_runtime_via_sdk_captures_templates_and_tolerates_errors(
+        self, monkeypatch, templates_outcome, expected
+    ):
+        invoker = _build_invoker()
+
+        async def _fake_invoke_mcp_jsonrpc(**kwargs):
+            method = kwargs["method"]
+            if method == "resources/templates/list":
+                if isinstance(templates_outcome, Exception):
+                    raise templates_outcome
+                return templates_outcome, "rs", "ms", "2025-11-25"
+            key = method.split("/")[0]
+            return {key: []}, "rs", "ms", "2025-11-25"
+
+        monkeypatch.setattr(invoker, "_get_runtime_client", AsyncMock(return_value=object()))
+        monkeypatch.setattr(invoker, "_initialize_mcp_session", AsyncMock(return_value=("rs", "ms", "2025-11-25")))
+        monkeypatch.setattr(invoker, "_invoke_mcp_jsonrpc", _fake_invoke_mcp_jsonrpc)
+
+        result = await invoker._invoke_mcp_runtime_via_sdk(
+            metadata={"runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:account-id:runtime/runtime-demo-1"},
+            region="us-east-1",
+            runtime_detail=None,
+        )
+
+        assert result.error_message is None
+        assert result.tools == []
+        assert result.resource_templates == expected
 
     @pytest.mark.asyncio
     async def test_fetch_mcp_runtime_capabilities_iam_prefers_sdk_success(self, monkeypatch):
@@ -414,3 +468,28 @@ class TestAgentCoreRuntimeInvoker:
 
         assert headers["Authorization"] == "Bearer token-123"
         assert auth is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("error", "code"), [({"code": -32601, "message": "Method not found"}, -32601), ("boom", None)])
+async def test_invoke_mcp_jsonrpc_error_carries_jsonrpc_code(error, code):
+    invoker = _build_invoker()
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}).encode()
+    client = SimpleNamespace(
+        invoke_agent_runtime=lambda **_: {"response": body, "statusCode": 200, "contentType": "application/json"}
+    )
+
+    with pytest.raises(McpJsonRpcMethodError) as exc_info:
+        await invoker._invoke_mcp_jsonrpc(
+            client=client,
+            runtime_arn="arn:aws:bedrock-agentcore:us-east-1:account-id:runtime/runtime-demo-1",
+            method="resources/templates/list",
+            params={},
+            request_id=1,
+            runtime_session_id=None,
+            mcp_session_id=None,
+            protocol_version=None,
+        )
+
+    assert exc_info.value.code == code
+    assert isinstance(exc_info.value, ValueError)  # existing callers catch ValueError

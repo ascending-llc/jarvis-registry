@@ -115,17 +115,17 @@ def track_tool_discovery[F: Callable[..., Any]](func: F) -> F:
     Decorator to automatically track tool discovery metrics.
 
     Extracts server_name and transport_type from server argument,
-    and tools_count/success from result tuple.
+    and tools_count/success from the result's ``tools`` / ``error_message`` attributes.
 
     Expected function signature:
-        async def retrieve_from_server(self, server, ...) -> Tuple[tools, resources, prompts, caps, error]
+        async def retrieve_from_server(self, server, ...) -> MCPServerData
 
-    Success is determined by: error (last element) is None
-    Tools count is determined by: len(tools) if tools is not None
+    Success is determined by: result.error_message is None
+    Tools count is determined by: len(result.tools) if tools is not None
 
     Example:
         @track_tool_discovery
-        async def retrieve_from_server(self, server: ExtendedMCPServer, ...) -> Tuple[...]:
+        async def retrieve_from_server(self, server: ExtendedMCPServer, ...) -> MCPServerData:
             ...
     """
 
@@ -151,10 +151,10 @@ def track_tool_discovery[F: Callable[..., Any]](func: F) -> F:
             # Execute business logic
             result = await func(*args, **kwargs)
 
-            # Result is expected to be a tuple: (tools, resources, prompts, capabilities, error)
-            if isinstance(result, tuple) and len(result) >= 5:
-                tools, _resources, _prompts, _capabilities, error = result
-                success = error is None
+            # Read by attribute (duck-typed MCPServerData) so core doesn't import the MCP client module.
+            if hasattr(result, "error_message"):
+                success = result.error_message is None
+                tools = getattr(result, "tools", None)
                 if tools is not None:
                     tools_count = len(tools)
 

@@ -8,18 +8,22 @@ Refactored with centralized configuration and strategy pattern.
 import asyncio
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
+from types import SimpleNamespace
 from typing import Any
 
 import httpx2
 from mcp import Client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import MCPError
+from mcp.types import METHOD_NOT_FOUND
 
+from registry_pkgs.core.exceptions import MisimplementedSpecException
 from registry_pkgs.oauth.discovery import discover_mcp_oauth
 from registry_pkgs.oauth.errors import OAuthDiscoveryError
 
@@ -296,6 +300,8 @@ class MCPServerData:
     capabilities: dict[str, Any] | None
     error_message: str | None = None
     requires_init: bool | None = None
+    # None when not requested or when the listing failed, so callers keep the previously stored value.
+    resource_templates: list[dict[str, Any]] | None = None
 
 
 def _convert_pydantic_to_dict(obj: Any) -> dict:
@@ -407,6 +413,7 @@ async def _get_from_streamable_http(
     httpx_auth: Any = None,
     server_id: str | None = None,
     era_cache: DownstreamEraCache | None = None,
+    include_resource_templates: bool = True,
 ) -> MCPServerData:
     """
     Consolidated method to get tools, resources, prompts, and optionally capabilities using streamable-http transport.
@@ -421,6 +428,7 @@ async def _get_from_streamable_http(
         include_capabilities: Whether to retrieve and validate capabilities
         include_resources: Whether to retrieve resources
         include_prompts: Whether to retrieve prompts
+        include_resource_templates: Whether to retrieve resource templates (only when the server declares resources)
 
     Returns:
         MCPServerData containing tools, resources, prompts, and capabilities
@@ -471,29 +479,13 @@ async def _get_from_streamable_http(
                 # Extract tool details
                 tool_list = _extract_tool_details(tools_response)
 
-                # Extract resources if requested
-                resource_list = []
-                if include_resources:
-                    try:
-                        resources_response = await asyncio.wait_for(
-                            session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                        )
-                        resource_list = _extract_resource_details(resources_response)
-                    except Exception as e:
-                        logger.warning(f"Failed to retrieve resources from {mcp_url}: {e}")
-                        resource_list = []
-
-                # Extract prompts if requested
-                prompt_list = []
-                if include_prompts:
-                    try:
-                        prompts_response = await asyncio.wait_for(
-                            session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                        )
-                        prompt_list = _extract_prompt_details(prompts_response)
-                    except Exception as e:
-                        logger.warning(f"Failed to retrieve prompts from {mcp_url}: {e}")
-                        prompt_list = []
+                resource_list, resource_template_list, prompt_list = await _list_optional_entities(
+                    session,
+                    mcp_url,
+                    include_resources=include_resources,
+                    include_resource_templates=include_resource_templates,
+                    include_prompts=include_prompts,
+                )
 
                 requires_init = _is_requires_init(recorder.session_id)
                 return MCPServerData(
@@ -502,6 +494,7 @@ async def _get_from_streamable_http(
                     prompts=prompt_list,
                     capabilities=capabilities,
                     requires_init=requires_init,
+                    resource_templates=resource_template_list,
                 )
 
     except TimeoutError:
@@ -526,6 +519,7 @@ async def _get_from_sse(
     httpx_auth: Any = None,
     server_id: str | None = None,
     era_cache: DownstreamEraCache | None = None,
+    include_resource_templates: bool = True,
 ) -> MCPServerData:
     """
     Consolidated method to get tools, resources, prompts, and optionally capabilities using SSE transport.
@@ -540,6 +534,7 @@ async def _get_from_sse(
         include_capabilities: Whether to retrieve and validate capabilities
         include_resources: Whether to retrieve resources
         include_prompts: Whether to retrieve prompts
+        include_resource_templates: Whether to retrieve resource templates (only when the server declares resources)
 
     Returns:
         MCPServerData containing tools, resources, prompts, and capabilities
@@ -606,29 +601,13 @@ async def _get_from_sse(
                 # Extract tool details
                 tool_list = _extract_tool_details(tools_response)
 
-                # Extract resources if requested
-                resource_list = []
-                if include_resources:
-                    try:
-                        resources_response = await asyncio.wait_for(
-                            session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                        )
-                        resource_list = _extract_resource_details(resources_response)
-                    except Exception as e:
-                        logger.warning(f"Failed to retrieve resources from {mcp_server_url}: {e}")
-                        resource_list = []
-
-                # Extract prompts if requested
-                prompt_list = []
-                if include_prompts:
-                    try:
-                        prompts_response = await asyncio.wait_for(
-                            session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                        )
-                        prompt_list = _extract_prompt_details(prompts_response)
-                    except Exception as e:
-                        logger.warning(f"Failed to retrieve prompts from {mcp_server_url}: {e}")
-                        prompt_list = []
+                resource_list, resource_template_list, prompt_list = await _list_optional_entities(
+                    session,
+                    mcp_server_url,
+                    include_resources=include_resources,
+                    include_resource_templates=include_resource_templates,
+                    include_prompts=include_prompts,
+                )
 
                 return MCPServerData(
                     tools=tool_list,
@@ -636,6 +615,7 @@ async def _get_from_sse(
                     prompts=prompt_list,
                     capabilities=capabilities,
                     requires_init=requires_init,
+                    resource_templates=resource_template_list,
                 )
         message = f"Connection failed: SSE server rejected a request with HTTP {recorder.status_code}"
         logger.error(f"{message} ({mcp_server_url})")
@@ -790,11 +770,27 @@ def _extract_resource_details(resources_response) -> list[dict]:
                 }
             )
 
-    resource_uris = [str(r["uri"]) for r in resource_details_list]
-    logger.info(
-        f"Successfully retrieved details for {len(resource_details_list)} resources: {', '.join(resource_uris)}"
-    )
+    # Counts only: concrete resource URIs can name a user's own files.
+    logger.info("Successfully retrieved details for %d resources", len(resource_details_list))
     return resource_details_list
+
+
+def _extract_resource_template_details(templates: list[Any]) -> list[dict]:
+    """Extract resource template details from SDK ``ResourceTemplate`` objects."""
+    details = []
+    for template in templates:
+        annotations = getattr(template, "annotations", None)
+        details.append(
+            {
+                "uriTemplate": getattr(template, "uri_template", None),
+                "name": getattr(template, "name", None),
+                "description": getattr(template, "description", None),
+                "mimeType": getattr(template, "mime_type", None),
+                "annotations": _convert_pydantic_to_dict(annotations) if annotations else None,
+            }
+        )
+    logger.info("Successfully retrieved details for %d resource templates", len(details))
+    return details
 
 
 def _extract_prompt_details(prompts_response) -> list[dict]:
@@ -819,6 +815,85 @@ def _extract_prompt_details(prompts_response) -> list[dict]:
     return prompt_details_list
 
 
+async def _drain_listing(
+    fetch: Callable[[str | None], Awaitable[Any]],
+    items_attr: str,
+    label: str,
+    url: str,
+) -> list[Any] | None:
+    """Fetch every page of one ``*/list`` call under one deadline.
+
+    A server that answers JSON-RPC "Method not found" (-32601) does not offer this listing, so the result is a
+    definite []: stored entries the server no longer offers are cleared. Any other failure (timeout, repeated
+    cursor, server error) returns None, so the caller keeps the stored value and one optional listing never
+    fails a capture that already has its tools.
+    """
+    items: list[Any] = []
+    seen: set[str] = set()
+    cursor: str | None = None
+    try:
+        # One deadline for the entire listing, not a fresh timeout for every page.
+        async with asyncio.timeout(MCPClientConfig.TOOLS_TIMEOUT):
+            while True:
+                page = await fetch(cursor)
+                items.extend(getattr(page, items_attr, None) or [])
+                cursor = page.next_cursor
+                if not cursor:
+                    return items
+                if cursor in seen:
+                    raise MisimplementedSpecException(f"Downstream {label} listing repeated a pagination cursor.")
+                seen.add(cursor)
+    except MCPError as e:
+        if e.code == METHOD_NOT_FOUND:
+            logger.info(f"{url} does not offer {label} (method not found)")
+            return []
+        logger.warning(f"Failed to retrieve {label} from {url}: {type(e).__name__} - {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to retrieve {label} from {url}: {type(e).__name__} - {e}")
+        return None
+
+
+async def _list_optional_entities(
+    session: Client,
+    url: str,
+    *,
+    include_resources: bool,
+    include_resource_templates: bool,
+    include_prompts: bool,
+) -> tuple[list[dict] | None, list[dict] | None, list[dict] | None]:
+    """List resources, resource templates and prompts, each fully paginated.
+
+    Each element is None when it was not requested or its listing failed: the caller keeps whatever it
+    stored. Templates requested from a server that does not declare the resources capability are a
+    definite [] (the server offers none), so they are not listed.
+    """
+    resources: list[dict] | None = None
+    if include_resources:
+        raw = await _drain_listing(lambda c: session.list_resources(cursor=c), "resources", "resources", url)
+        resources = None if raw is None else _extract_resource_details(SimpleNamespace(resources=raw))
+
+    templates: list[dict] | None = None
+    capabilities = session.server_capabilities
+    declared = (
+        capabilities.get("resources") if isinstance(capabilities, dict) else getattr(capabilities, "resources", None)
+    )
+    if include_resource_templates and declared is None:
+        templates = []
+    elif include_resource_templates:
+        raw = await _drain_listing(
+            lambda c: session.list_resource_templates(cursor=c), "resource_templates", "resource templates", url
+        )
+        templates = None if raw is None else _extract_resource_template_details(raw)
+
+    prompts: list[dict] | None = None
+    if include_prompts:
+        raw = await _drain_listing(lambda c: session.list_prompts(cursor=c), "prompts", "prompts", url)
+        prompts = None if raw is None else _extract_prompt_details(SimpleNamespace(prompts=raw))
+
+    return resources, templates, prompts
+
+
 async def get_tools_and_capabilities_from_server(
     base_url: str,
     headers: dict[str, str] = None,
@@ -828,6 +903,7 @@ async def get_tools_and_capabilities_from_server(
     httpx_auth: Any = None,
     server_id: str | None = None,
     era_cache: DownstreamEraCache | None = None,
+    include_resource_templates: bool = True,
 ) -> MCPServerData:
     """
     Get tools, resources, prompts, and capabilities from server.
@@ -840,12 +916,14 @@ async def get_tools_and_capabilities_from_server(
         transport_type: Transport type ("streamable-http" or "sse"), auto-detected if None
         include_resources: Whether to retrieve resources (default: True)
         include_prompts: Whether to retrieve prompts (default: True)
+        include_resource_templates: Whether to retrieve resource templates (default: True)
 
     Returns:
         MCPServerData containing:
         - tools: List of tool dictionaries or None if failed
-        - resources: List of resource dictionaries or None if failed
-        - prompts: List of prompt dictionaries or None if failed
+        - resources: List of resource dictionaries (None if not requested or that listing failed)
+        - prompts: List of prompt dictionaries (None if not requested or that listing failed)
+        - resource_templates: List of resource template dictionaries (same convention)
         - capabilities: Server capabilities dictionary or None if failed
         - error_message: Error message if operation failed
     """
@@ -871,6 +949,7 @@ async def get_tools_and_capabilities_from_server(
                 include_capabilities=True,
                 include_resources=include_resources,
                 include_prompts=include_prompts,
+                include_resource_templates=include_resource_templates,
                 httpx_auth=httpx_auth,
                 server_id=server_id,
                 era_cache=era_cache,
@@ -883,6 +962,7 @@ async def get_tools_and_capabilities_from_server(
                 include_capabilities=True,
                 include_resources=include_resources,
                 include_prompts=include_prompts,
+                include_resource_templates=include_resource_templates,
                 httpx_auth=httpx_auth,
                 server_id=server_id,
                 era_cache=era_cache,

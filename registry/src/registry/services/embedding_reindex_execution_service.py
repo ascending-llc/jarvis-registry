@@ -46,12 +46,14 @@ _REINDEX_BATCH_SIZE = 200
 # runner's exhaustion check share one source; the runner imports it).
 _MAX_ATTEMPTS = 3
 # A request that passed the write gate just before it closed can still be committing: the longest
-# gated path is one full capability fetch (init + tools + resources + prompts, all sequential in
-# mcp_client) plus scheduling/poll slack. Derived from the MCP timeouts so it tracks any change to
-# them. Measured from startedAt, so a sweep that already ran longer waits for nothing.
+# gated path is one full capability fetch (init + tools + resources + resource templates + prompts,
+# all sequential in mcp_client, each listing under one TOOLS_TIMEOUT however many pages it has) plus
+# scheduling/poll slack. Derived from the MCP timeouts so it tracks any change to them. Measured from
+# startedAt, so a sweep that already ran longer waits for nothing.
 _CATCH_UP_SLACK_SECONDS = 10.0
+_CAPTURE_LISTINGS = 4
 _CATCH_UP_MIN_DELAY = timedelta(
-    seconds=MCPClientConfig.INIT_TIMEOUT + 3 * MCPClientConfig.TOOLS_TIMEOUT + _CATCH_UP_SLACK_SECONDS
+    seconds=MCPClientConfig.INIT_TIMEOUT + _CAPTURE_LISTINGS * MCPClientConfig.TOOLS_TIMEOUT + _CATCH_UP_SLACK_SECONDS
 )
 # updatedAt is stamped at save(), possibly before a surrounding transaction commits, and pod clocks
 # drift; widen the re-sync window backwards to be safe. Re-syncing extra documents is harmless.
