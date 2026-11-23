@@ -36,6 +36,7 @@ class _FakeRedis:
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
         self.get_calls = 0
+        self.mget_calls: list[list[str]] = []
         self.raise_on_set = False
         self.raise_on_get = False
 
@@ -49,6 +50,12 @@ class _FakeRedis:
         if self.raise_on_get:
             raise RedisError("boom")
         return self.store.get(key)
+
+    def mget(self, keys: list[str]) -> list[str | None]:
+        self.mget_calls.append(keys)
+        if self.raise_on_get:
+            raise RedisError("boom")
+        return [self.store.get(key) for key in keys]
 
 
 def test_client_info_key_dcr_form_for_mcp_client_id():
@@ -130,6 +137,35 @@ def test_store_load_returns_none_on_redis_error():
     redis.raise_on_get = True
     store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
     assert store.load("k1") is None
+
+
+def test_load_many_for_dcr_reads_user_keys_in_one_batch() -> None:
+    redis = _FakeRedis()
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    client_ids = ["mcp-client-abc", "mcp-client-missing", "mcp-client-invalid"]
+    keys = [f"{PREFIX}:mcpgw:client:{USER_ID}:{client_id}" for client_id in client_ids]
+    store.save(keys[0], _params("vscode"))
+    store.save(f"{PREFIX}:mcpgw:client:another-user:{client_ids[1]}", _params("other"))
+    redis.store[keys[2]] = "{invalid"
+
+    assert store.load_many_for_dcr(USER_ID, client_ids) == {
+        "mcp-client-abc": _params("vscode"),
+        "mcp-client-missing": None,
+        "mcp-client-invalid": None,
+    }
+    assert redis.mget_calls == [keys]
+    assert redis.get_calls == 0
+
+
+def test_load_many_for_dcr_skips_empty_input_and_propagates_read_failure() -> None:
+    redis = _FakeRedis()
+    redis.raise_on_get = True
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+
+    assert store.load_many_for_dcr(USER_ID, []) == {}
+    assert redis.mget_calls == []
+    with pytest.raises(RedisError):
+        store.load_many_for_dcr(USER_ID, ["mcp-client-abc"])
 
 
 def _scope(method: str = "POST", user: dict[str, Any] | None = None) -> dict[str, Any]:

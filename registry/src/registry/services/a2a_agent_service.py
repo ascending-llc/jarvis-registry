@@ -510,6 +510,17 @@ class A2AAgentService:
         """
         return await A2AAgent.find_one({"path": path})
 
+    async def get_names_by_paths(self, paths: set[str]) -> dict[str, str]:
+        """Resolve consent display names without fetching entire agent cards."""
+        if not paths:
+            return {}
+        cursor = A2AAgent.get_pymongo_collection().find(
+            {"path": {"$in": list(paths)}}, {"_id": 0, "path": 1, "config.title": 1, "card.name": 1}
+        )
+        return {
+            agent["path"]: (agent.get("config") or {}).get("title") or agent["card"]["name"] async for agent in cursor
+        }
+
     def build_managed_agent_card(self, agent: A2AAgent) -> dict[str, Any]:
         """Build an ephemeral Agent Card that advertises the Registry proxy and OAuth."""
         managed_card = agent.card.model_dump(mode="json", by_alias=True, exclude_none=True)

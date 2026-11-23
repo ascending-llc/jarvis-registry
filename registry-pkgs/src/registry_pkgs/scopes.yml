@@ -237,8 +237,11 @@ agents-share:
     endpoint: /permissions/agent/{resource_id}
 
 user-read:
-  description: "View your own account info and the registry version, generate personal access tokens, search the registry, and manage your MCP server connections and OAuth authorizations."
+  description: "View your own account info, app consents and the registry version, generate personal access tokens, search the registry, and manage your MCP server connections and OAuth authorizations."
   actions:
+  - action: list_consent_clients
+    method: GET
+    endpoint: /consents/clients
   - action: get_user_info
     method: GET
     endpoint: /auth/me
