@@ -16,7 +16,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult
 
 from registry.core.mcp_config import MCPTransport
-from registry.core.mcp_downstream import DownstreamEraCache, call_downstream_tool
+from registry.core.mcp_downstream import DownstreamEraCache, ToolCall, call_downstream
 from registry.core.mcp_transport import MethodRoutedTransport
 from tests.mcp_downstream_support import MemoryRedis
 
@@ -124,14 +124,13 @@ async def test_open_get_streams_never_starve_requests_or_cleanup(json_response: 
         async with _tcp_server(sdk_server, messages, http_methods, json_response=json_response) as url:
 
             async def invoke() -> CallToolResult:
-                return await call_downstream_tool(
+                return await call_downstream(
                     url=url,
                     transport_type=MCPTransport.STREAMABLE_HTTP,
                     server_id="s",
                     user_id="u",
                     headers={},
-                    tool_name="search",
-                    arguments={},
+                    operation=ToolCall("search", {}),
                     downstream_transport=pools,
                     response_cache=store,
                     era_cache=DownstreamEraCache(redis, "test"),

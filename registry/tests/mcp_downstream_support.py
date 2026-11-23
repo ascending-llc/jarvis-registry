@@ -94,6 +94,10 @@ async def sdk_endpoint(
     server_override: Any = None,
     stateless_http: bool = True,
     action: Callable[[Context], Awaitable[CallToolResult | InputRequiredResult]] | None = None,
+    resource_result: str | bytes = "done",
+    resource_action: Callable[[], Awaitable[str | bytes]] | None = None,
+    prompt_result: str = "done",
+    prompt_action: Callable[[Context], Awaitable[str]] | None = None,
 ) -> AsyncIterator[SDKTransport]:
     server = MCPServer("test-downstream", subscriptions=False, cache_hints={"tools/list": CacheHint(ttl_ms=ttl_ms)})
 
@@ -105,6 +109,18 @@ async def sdk_endpoint(
         if action:
             return await action(ctx)
         return result if result is not None else CallToolResult(content=[TextContent(type="text", text="done")])
+
+    @server.resource("test://doc", mime_type="text/plain")
+    async def doc() -> str | bytes:
+        return await resource_action() if resource_action else resource_result
+
+    @server.resource("test://doc/{id}", mime_type="text/plain")
+    async def doc_by_id(id: str) -> str | bytes:
+        return await resource_action() if resource_action else id
+
+    @server.prompt()
+    async def greet(name: str, ctx: Context) -> str:
+        return await prompt_action(ctx) if prompt_action else prompt_result.format(name=name)
 
     if server_override is not None:
         server = server_override

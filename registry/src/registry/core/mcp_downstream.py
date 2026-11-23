@@ -5,13 +5,14 @@ import hashlib
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any, Literal, overload
 
 import anyio
 import httpx2
 from mcp import Client
 from mcp.client.caching import CacheConfig, InMemoryResponseCacheStore
-from mcp.client.session import LoggingFnT
+from mcp.client.session import ClientSession, LoggingFnT
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.dispatcher import ProgressFnT
@@ -19,9 +20,11 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import (
     UNSUPPORTED_PROTOCOL_VERSION,
     CallToolResult,
+    GetPromptResult,
     Implementation,
     InputRequiredResult,
     LoggingLevel,
+    ReadResourceResult,
 )
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from redis import Redis
@@ -46,12 +49,34 @@ from .mcp_transport import (
 
 logger = logging.getLogger(__name__)
 _ERA_CACHE_TTL_SECONDS = 3600
+_MAX_ERA_NEGOTIATION_ATTEMPTS = 2
 _TOOL_LIST_CACHE_TTL_MS = 300_000
 _RESPONSE_CACHE_MAX_ENTRIES = 4096
 _DOWNSTREAM_FAILURE_MESSAGE = "Error calling downstream MCP server."
 # Level requested from 2026-07-28 downstream servers when relaying logs upstream (no effect on legacy servers).
 _DOWNSTREAM_LOG_LEVEL: LoggingLevel = "warning"
 DownstreamMode = Literal["legacy", "2026-07-28"]
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    tool_name: str
+    arguments: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class ResourceRead:
+    uri: str
+
+
+@dataclass(frozen=True)
+class PromptGet:
+    name: str
+    arguments: dict[str, str] | None
+
+
+type DownstreamOperation = ToolCall | ResourceRead | PromptGet
+type DownstreamResult = CallToolResult | ReadResourceResult | GetPromptResult | InputRequiredResult
 
 
 class DownstreamEraCache:
@@ -194,6 +219,226 @@ def _fail_fast_on_sse(recorder: ResponseRecorder, transport_type: MCPTransport) 
         yield
 
 
+@asynccontextmanager
+async def _open_client(
+    *,
+    url: str,
+    transport_type: MCPTransport,
+    server_id: str,
+    user_id: str,
+    headers: dict[str, str],
+    recorder: ResponseRecorder,
+    mode: DownstreamMode | Literal["auto"],
+    downstream_transport: httpx2.AsyncBaseTransport,
+    response_cache: InMemoryResponseCacheStore,
+    on_log: LoggingFnT | None,
+) -> AsyncIterator[Client]:
+    """Own one SDK connection while borrowing the pod-wide transport pool.
+
+    1. Partition tools/list metadata by user and the server's current endpoint.
+    2. Leave business requests to _send_operation, which bypasses the Client content cache.
+    """
+    async with _open_transport(url, transport_type, headers, recorder, downstream_transport) as transport:
+        async with Client(
+            transport,
+            mode=mode,
+            read_timeout_seconds=60,
+            client_info=Implementation(**settings.mcp_client_info),
+            logging_callback=on_log,
+            log_level=_DOWNSTREAM_LOG_LEVEL if on_log else None,
+            cache=CacheConfig(
+                store=response_cache,
+                partition=user_id,
+                target_id=_tool_list_cache_target(server_id, transport_type, url),
+                default_ttl_ms=_TOOL_LIST_CACHE_TTL_MS,
+            ),
+        ) as client:
+            yield client
+
+
+async def _load_tool_schema(client: Client, tool_name: str) -> None:
+    """Load the target tool's output schema for SDK result validation.
+
+    1. Stop paging when the tool is found or the listing ends; leave missing-tool handling to the SDK.
+    2. Run only for ToolCall; resource and prompt requests must not trigger tools/list.
+    """
+    try:
+        # 1. Share one deadline across all pages rather than resetting the timeout per page.
+        async with asyncio.timeout(MCPClientConfig.TOOLS_TIMEOUT):
+            listing = await client.list_tools()
+            cursors: set[str] = set()
+            while not any(tool.name == tool_name for tool in listing.tools) and listing.next_cursor:
+                cursor = listing.next_cursor
+                if cursor in cursors:
+                    raise MisimplementedSpecException("Downstream tools/list repeated a pagination cursor.")
+                cursors.add(cursor)
+                listing = await client.list_tools(cursor=cursor)
+    except TimeoutError as exc:
+        raise DownstreamHttpFailureException("Timed out fetching the downstream MCP tool list.") from exc
+
+
+async def _send_operation(
+    session: ClientSession,
+    operation: DownstreamOperation,
+    on_progress: ProgressFnT | None,
+) -> DownstreamResult:
+    """Dispatch one business request without retry, OAuth recovery or gateway rendering.
+
+    1. Use session methods to bypass content caching and the Client's interactive-input replay.
+    2. Return InputRequiredResult to the gateway unchanged via allow_input_required=True.
+    3. Forward progress only for tools/call, the only SDK method that supports this callback.
+    """
+    if isinstance(operation, ToolCall):
+        return await session.call_tool(
+            operation.tool_name,
+            operation.arguments,
+            allow_input_required=True,
+            progress_callback=on_progress,
+        )
+    if isinstance(operation, ResourceRead):
+        return await session.read_resource(operation.uri, allow_input_required=True)
+    return await session.get_prompt(operation.name, operation.arguments, allow_input_required=True)
+
+
+@overload
+async def call_downstream(
+    *,
+    url: str,
+    transport_type: MCPTransport,
+    server_id: str,
+    user_id: str,
+    headers: dict[str, str],
+    operation: ToolCall,
+    downstream_transport: httpx2.AsyncBaseTransport,
+    response_cache: InMemoryResponseCacheStore,
+    era_cache: DownstreamEraCache,
+    on_progress: ProgressFnT | None = None,
+    on_log: LoggingFnT | None = None,
+) -> CallToolResult | InputRequiredResult: ...
+
+
+@overload
+async def call_downstream(
+    *,
+    url: str,
+    transport_type: MCPTransport,
+    server_id: str,
+    user_id: str,
+    headers: dict[str, str],
+    operation: ResourceRead,
+    downstream_transport: httpx2.AsyncBaseTransport,
+    response_cache: InMemoryResponseCacheStore,
+    era_cache: DownstreamEraCache,
+    on_progress: ProgressFnT | None = None,
+    on_log: LoggingFnT | None = None,
+) -> ReadResourceResult | InputRequiredResult: ...
+
+
+@overload
+async def call_downstream(
+    *,
+    url: str,
+    transport_type: MCPTransport,
+    server_id: str,
+    user_id: str,
+    headers: dict[str, str],
+    operation: PromptGet,
+    downstream_transport: httpx2.AsyncBaseTransport,
+    response_cache: InMemoryResponseCacheStore,
+    era_cache: DownstreamEraCache,
+    on_progress: ProgressFnT | None = None,
+    on_log: LoggingFnT | None = None,
+) -> GetPromptResult | InputRequiredResult: ...
+
+
+async def call_downstream(
+    *,
+    url: str,
+    transport_type: MCPTransport,
+    server_id: str,
+    user_id: str,
+    headers: dict[str, str],
+    operation: DownstreamOperation,
+    downstream_transport: httpx2.AsyncBaseTransport,
+    response_cache: InMemoryResponseCacheStore,
+    era_cache: DownstreamEraCache,
+    on_progress: ProgressFnT | None = None,
+    on_log: LoggingFnT | None = None,
+) -> DownstreamResult:
+    """Connect, prepare, send and close one downstream operation.
+
+    The era cache remembers the protocol mode; the response cache stores tool-list metadata.
+    A rejected cached era allows one automatic negotiation retry, only before business send.
+    After send, a version error can invalidate the cache but cannot replay the operation here.
+    The caller owns bounded OAuth recovery and rendering of the native SDK result.
+    """
+    # 1. Normalize the transport and load the server's cached protocol era.
+    transport_type = MCPTransport(transport_type)
+    cached_mode = await era_cache.get(server_id)
+    for attempt in range(_MAX_ERA_NEGOTIATION_ATTEMPTS):
+        # 2. Isolate each attempt's HTTP state. Only the first attempt may reuse the cached era;
+        #    a retry uses SDK auto negotiation, including fallback to legacy when needed.
+        recorder = ResponseRecorder()
+        request_sent = False
+        connection_mode = cached_mode if attempt == 0 and cached_mode else "auto"
+        try:
+            # 2a. Guard setup, execution and teardown: an SSE POST rejection may otherwise
+            #     only be logged by the SDK while the request waits until its read timeout.
+            with _fail_fast_on_sse(recorder, transport_type):
+                async with _open_client(
+                    url=url,
+                    transport_type=transport_type,
+                    server_id=server_id,
+                    user_id=user_id,
+                    headers=headers,
+                    recorder=recorder,
+                    mode=connection_mode,
+                    downstream_transport=downstream_transport,
+                    response_cache=response_cache,
+                    on_log=on_log,
+                ) as client:
+                    # 3. Remember the selected era, then preload output schema only for tools.
+                    #    Resource and prompt requests skip listing entirely.
+                    await era_cache.record(server_id, client.protocol_version)
+                    if isinstance(operation, ToolCall):
+                        recorder.phase = DownstreamPhase.LISTING
+                        await _load_tool_schema(client, operation.tool_name)
+
+                    # 4. Mark before awaiting: the request may reach the downstream even if send fails.
+                    #    From this point, protocol-version recovery must never replay the operation.
+                    request_sent = True
+                    recorder.phase = DownstreamPhase.CALLING
+                    result = await _send_operation(client.session, operation, on_progress)
+                    # 5. Mark teardown before leaving the context, so a closing 401 cannot
+                    #    be mistaken for a rejected business request eligible for OAuth retry.
+                    recorder.phase = DownstreamPhase.CLOSING
+                return result
+            # 5a. SSE rejection cancellation skips the return above. Enter common error mapping
+            #     using the recorded HTTP status and WWW-Authenticate challenge.
+            raise DownstreamHttpFailureException(_DOWNSTREAM_FAILURE_MESSAGE)
+        except Exception as exc:
+            # 6. Unwrap SDK task-group failures without collapsing independent errors.
+            error = _single_error(exc)
+            # 7. Separate cache invalidation from retry eligibility. A version rejection after
+            #    send still clears stale metadata for the next call, but cannot replay this one.
+            version_rejected = isinstance(error, MCPError) and error.code == UNSUPPORTED_PROTOCOL_VERSION
+            rejected_before_send = not request_sent and recorder.first_rpc_status_code == 400
+            cached_era_rejected = cached_mode is not None and (version_rejected or rejected_before_send)
+            if cached_era_rejected:
+                await era_cache.delete(server_id)
+                can_retry_before_send = attempt == 0 and not request_sent
+                if can_retry_before_send:
+                    continue
+
+            # 8. Preserve the public error contract when retry is not allowed. In particular,
+            #    an HTTP 400 after business send may be invalid input, never a replay signal.
+            mapped = _map_error(error, recorder)
+            if mapped is exc:
+                raise
+            raise mapped from exc
+    raise AssertionError("unreachable")
+
+
 async def call_downstream_tool(
     *,
     url: str,
@@ -209,70 +454,16 @@ async def call_downstream_tool(
     on_progress: ProgressFnT | None = None,
     on_log: LoggingFnT | None = None,
 ) -> CallToolResult | InputRequiredResult:
-    transport_type = MCPTransport(transport_type)
-    cached_mode = await era_cache.get(server_id)
-    for attempt in range(2):
-        recorder = ResponseRecorder()
-        tool_sent = False
-        try:
-            # An SSE POST rejection cancels the block instead of waiting out the read timeout.
-            with _fail_fast_on_sse(recorder, transport_type):
-                async with _open_transport(url, transport_type, headers, recorder, downstream_transport) as transport:
-                    async with Client(
-                        transport,
-                        mode=cached_mode if attempt == 0 and cached_mode else "auto",
-                        read_timeout_seconds=60,
-                        client_info=Implementation(**settings.mcp_client_info),
-                        logging_callback=on_log,
-                        log_level=_DOWNSTREAM_LOG_LEVEL if on_log else None,
-                        cache=CacheConfig(
-                            store=response_cache,
-                            partition=user_id,
-                            target_id=_tool_list_cache_target(server_id, transport_type, url),
-                            default_ttl_ms=_TOOL_LIST_CACHE_TTL_MS,
-                        ),
-                    ) as client:
-                        await era_cache.record(server_id, client.protocol_version)
-                        recorder.phase = DownstreamPhase.LISTING
-                        try:
-                            # One deadline for the entire listing, not a fresh timeout for every page.
-                            async with asyncio.timeout(MCPClientConfig.TOOLS_TIMEOUT):
-                                listing = await client.list_tools()
-                                cursors: set[str] = set()
-                                while not any(tool.name == tool_name for tool in listing.tools) and listing.next_cursor:
-                                    cursor = listing.next_cursor
-                                    if cursor in cursors:
-                                        raise MisimplementedSpecException(
-                                            "Downstream tools/list repeated a pagination cursor."
-                                        )
-                                    cursors.add(cursor)
-                                    listing = await client.list_tools(cursor=cursor)
-                        except TimeoutError as exc:
-                            raise DownstreamHttpFailureException(
-                                "Timed out fetching the downstream MCP tool list."
-                            ) from exc
-                        tool_sent = True
-                        recorder.phase = DownstreamPhase.CALLING
-                        result = await client.session.call_tool(
-                            tool_name,
-                            arguments,
-                            allow_input_required=True,
-                            progress_callback=on_progress,
-                        )
-                        recorder.phase = DownstreamPhase.CLOSING
-                    return result
-            raise DownstreamHttpFailureException(_DOWNSTREAM_FAILURE_MESSAGE)  # mapped below from the status
-        except Exception as exc:
-            error = _single_error(exc)
-            version_error = isinstance(error, MCPError) and error.code == UNSUPPORTED_PROTOCOL_VERSION
-            # HTTP 400 after sending a tool may be invalid input, never an invitation to replay.
-            stale_mode = version_error or (not tool_sent and recorder.first_rpc_status_code == 400)
-            if cached_mode and stale_mode:
-                await era_cache.delete(server_id)
-                if attempt == 0 and not tool_sent:
-                    continue
-            mapped = _map_error(error, recorder)
-            if mapped is exc:
-                raise
-            raise mapped from exc
-    raise AssertionError("unreachable")
+    return await call_downstream(
+        url=url,
+        transport_type=transport_type,
+        server_id=server_id,
+        user_id=user_id,
+        headers=headers,
+        operation=ToolCall(tool_name, arguments),
+        downstream_transport=downstream_transport,
+        response_cache=response_cache,
+        era_cache=era_cache,
+        on_progress=on_progress,
+        on_log=on_log,
+    )

@@ -45,3 +45,23 @@ async def test_aclose_closes_both_pools_even_if_one_fails() -> None:
         await router.aclose()
 
     assert request_pool.closed == stream_pool.closed == 1
+
+
+@pytest.mark.parametrize(
+    "method,phase",
+    [
+        ("tools/call", "calling"),
+        ("resources/read", "calling"),
+        ("prompts/get", "calling"),
+        ("tools/list", "result_validation"),
+    ],
+)
+async def test_operation_requests_preserve_calling_phase(method: str, phase: str) -> None:
+    from registry.core.mcp_transport import DownstreamPhase, ResponseRecorder
+
+    recorder = ResponseRecorder()
+    recorder.phase = DownstreamPhase.CALLING
+    request = httpx2.Request("POST", "http://downstream/mcp", json={"jsonrpc": "2.0", "id": 1, "method": method})
+    await recorder.on_request(request)
+    assert recorder.phase == phase
+    assert recorder.method == method
