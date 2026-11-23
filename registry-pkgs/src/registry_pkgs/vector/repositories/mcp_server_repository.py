@@ -34,6 +34,8 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         # property was auto-inferred as `object` must be dropped + recreated
         # (`vector_sync.py --target mcp --clean`) for new inserts to succeed.
         "input_schema": "text",
+        # Declared explicitly so resource template documents don't depend on Weaviate auto-schema.
+        "resource_uri_template": "text",
     }
 
     def __init__(self, db_client: DatabaseClient):

@@ -1,10 +1,29 @@
+from collections.abc import AsyncIterator
+from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bson import ObjectId
 
 from registry.services.search.external_service import ExternalVectorSearchService
 from registry_pkgs.models.enums import MCPEntityType
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+
+@contextmanager
+def _current_auth(servers: list[dict]):
+    """Patch the read-time auth lookup that guards concrete resource documents."""
+
+    async def cursor() -> AsyncIterator[dict]:
+        for server in servers:
+            yield server
+
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+    collection.find.side_effect = lambda *_: cursor()
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
+        yield collection
 
 
 def _service() -> ExternalVectorSearchService:
@@ -159,9 +178,10 @@ async def test_search_mixed_respects_entity_filter_server_only():
 
 
 async def test_search_mixed_server_search_includes_resource_and_prompt_docs():
+    shared_id = ObjectId()
     docs = [
         _resource_doc(
-            server_id="s1",
+            server_id=str(shared_id),
             server_name="Docs",
             path="/docs",
             resource_name="manual",
@@ -179,7 +199,8 @@ async def test_search_mixed_server_search_includes_resource_and_prompt_docs():
     ]
     service = _service_returning(docs)
 
-    result = await service.search_mixed(query="manual", entity_types=["mcp_server"], max_results=10)
+    with _current_auth([{"_id": shared_id, "config": {"apiKey": {"key": "k"}}}]):
+        result = await service.search_mixed(query="manual", entity_types=["mcp_server"], max_results=10)
 
     servers = {s["server_name"]: s for s in result["servers"]}
     assert set(servers) == {"Docs", "Writer"}
@@ -201,13 +222,15 @@ async def test_search_mixed_tool_only_filters_out_resource_and_prompt_docs():
 
 
 async def test_search_mixed_combined_search_returns_resource_backed_server_but_only_tool_results():
+    server_id = str(ObjectId())
     docs = [
-        _resource_doc(server_id="s1", server_name="Docs", path="/docs", resource_name="manual", score=0.95),
-        _tool_doc(server_id="s1", server_name="Docs", path="/docs", tool_name="search", score=0.5),
+        _resource_doc(server_id=server_id, server_name="Docs", path="/docs", resource_name="manual", score=0.95),
+        _tool_doc(server_id=server_id, server_name="Docs", path="/docs", tool_name="search", score=0.5),
     ]
     service = _service_returning(docs)
 
-    result = await service.search_mixed(query="docs", entity_types=["mcp_server", "tool"], max_results=10)
+    with _current_auth([{"_id": ObjectId(server_id), "config": {}}]):
+        result = await service.search_mixed(query="docs", entity_types=["mcp_server", "tool"], max_results=10)
 
     assert len(result["servers"]) == 1
     assert result["servers"][0]["server_name"] == "Docs"
@@ -280,3 +303,40 @@ async def test_search_mixed_does_not_swallow_mapping_errors():
 
     with pytest.raises(AttributeError):
         await service.search_mixed(query="x", entity_types=["mcp_server", "tool"], max_results=10)
+
+
+async def test_search_mixed_never_builds_results_from_stale_oauth_resources():
+    oauth_id, shared_id = ObjectId(), ObjectId()
+    docs = [
+        # The OAuth server's best match is a stale resource naming another user's file.
+        _resource_doc(
+            server_id=str(oauth_id),
+            server_name="Drive",
+            path="/drive",
+            resource_name="salary",
+            score=0.9,
+            desc="Drive | URI: gdrive:///alice/salary.xlsx",
+        ),
+        _tool_doc(server_id=str(oauth_id), server_name="Drive", path="/drive", tool_name="search", score=0.4),
+        _resource_doc(
+            server_id=str(shared_id),
+            server_name="Docs",
+            path="/docs",
+            resource_name="manual",
+            score=0.8,
+            desc="Docs | URI: file:///manual.md",
+        ),
+    ]
+    service = _service_returning(docs)
+
+    with _current_auth(
+        [{"_id": oauth_id, "config": {"requiresOAuth": True}}, {"_id": shared_id, "config": {"apiKey": {"key": "k"}}}]
+    ):
+        result = await service.search_mixed(query="file", entity_types=["mcp_server", "tool"], max_results=10)
+
+    assert "salary" not in str(result)
+    servers = {s["server_name"]: s for s in result["servers"]}
+    # The OAuth server is still found through its tool; its description no longer comes from the resource.
+    assert set(servers) == {"Drive", "Docs"}
+    assert servers["Docs"]["match_context"] == "Docs | URI: file:///manual.md"
+    assert [t["tool_name"] for t in result["tools"]] == ["search"]

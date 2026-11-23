@@ -144,3 +144,28 @@ def test_connection_transport_accepts_streamable_http_aliases(transport: str) ->
 
     request = ServerConnectionTestRequest(url="https://example.com/mcp", transport=transport)
     assert request.transport is MCPTransport.STREAMABLE_HTTP
+
+
+_TEMPLATES = [
+    {"uriTemplate": "repo://{name}", "name": "repo", "description": None, "mimeType": None, "annotations": None}
+]
+
+
+@pytest.mark.parametrize(
+    ("oauth", "expected_resources"),
+    [(True, []), (False, [{"uri": "file:///a"}])],
+)
+def test_detail_returns_templates_and_hides_oauth_resources(oauth, expected_resources) -> None:
+    server = _server(None)
+    server.config["requiresOAuth"] = oauth
+    server.config["resources"] = [{"uri": "file:///a"}]
+    server.config["resourceTemplates"] = _TEMPLATES
+
+    detail = convert_to_detail(server).model_dump(by_alias=True)
+
+    assert detail["resourceTemplates"] == _TEMPLATES
+    assert detail["resources"] == expected_resources
+
+
+def test_detail_resource_templates_default_to_empty() -> None:
+    assert convert_to_detail(_server(None)).resourceTemplates == []

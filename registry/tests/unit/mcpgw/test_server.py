@@ -241,6 +241,20 @@ class TestExecutionMetricsWiring:
         assert "resource_uri" not in call_kwargs
 
     @pytest.mark.asyncio
+    async def test_read_resource_impl_never_logs_the_resource_uri(self, monkeypatch, caplog):
+        _patch_server_service(monkeypatch, SimpleNamespace(serverName="docs-server", path="/docs"))
+        caplog.set_level("DEBUG", logger="registry.mcpgw.tools.server")
+        with patch(f"{DECORATORS_PATH}._record_resource_access"):
+            await server.read_resource_impl(
+                user_context={"username": "alice"},
+                server_id="s1",
+                resource_uri="gdrive:///alice/salary.xlsx",
+                ctx=SimpleNamespace(),
+            )
+
+        assert "salary" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_read_resource_impl_records_server_not_found(self, monkeypatch):
         _patch_server_service(monkeypatch, None)
         with patch(f"{DECORATORS_PATH}._record_resource_access") as mock_record:
