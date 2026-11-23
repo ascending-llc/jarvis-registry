@@ -1,4 +1,6 @@
+import asyncio
 import json
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -493,3 +495,152 @@ async def test_invoke_mcp_jsonrpc_error_carries_jsonrpc_code(error, code):
 
     assert exc_info.value.code == code
     assert isinstance(exc_info.value, ValueError)  # existing callers catch ValueError
+
+
+_RUNTIME_ARN = "arn:aws:bedrock-agentcore:us-east-1:account-id:runtime/runtime-demo-1"
+_ITEM_KEYS = {"resources/list": "resources", "prompts/list": "prompts", "resources/templates/list": "resourceTemplates"}
+
+
+def _paged_runtime(monkeypatch, invoker, pages: dict[str, list]):
+    """Fake the SDK JSON-RPC calls. ``pages[method]`` is a list of page bodies or exceptions, served in order."""
+    calls: list[tuple[str, dict]] = []
+    served = {method: iter(bodies) for method, bodies in pages.items()}
+
+    async def _fake_invoke_mcp_jsonrpc(**kwargs):
+        method = kwargs["method"]
+        calls.append((method, kwargs["params"]))
+        if method == "tools/list":
+            return {"tools": []}, "rs", "ms", "2025-11-25"
+        body = next(served[method]) if method in served else {_ITEM_KEYS[method]: []}
+        if isinstance(body, Exception):
+            raise body
+        return body, "rs", "ms", "2025-11-25"
+
+    monkeypatch.setattr(invoker, "_get_runtime_client", AsyncMock(return_value=object()))
+    monkeypatch.setattr(invoker, "_initialize_mcp_session", AsyncMock(return_value=("rs", "ms", "2025-11-25")))
+    monkeypatch.setattr(invoker, "_invoke_mcp_jsonrpc", _fake_invoke_mcp_jsonrpc)
+    return calls
+
+
+async def _invoke_sdk(invoker) -> MCPServerData:
+    return await invoker._invoke_mcp_runtime_via_sdk(metadata={"runtimeArn": _RUNTIME_ARN}, region="us-east-1")
+
+
+@pytest.mark.asyncio
+async def test_sdk_listings_follow_every_page_and_echo_the_cursor(monkeypatch):
+    invoker = _build_invoker()
+    calls = _paged_runtime(
+        monkeypatch,
+        invoker,
+        {
+            "resources/list": [
+                {"resources": [{"uri": "a://1"}], "nextCursor": "r/2?x=é"},
+                {"resources": [{"uri": "a://2"}]},
+            ],
+            "prompts/list": [{"prompts": [{"name": "p1"}], "nextCursor": "p2"}, {"prompts": [{"name": "p2"}]}],
+            "resources/templates/list": [
+                {"resourceTemplates": [{"uriTemplate": "a://{x}"}], "nextCursor": "t2"},
+                {"resourceTemplates": [{"uriTemplate": "b://{y}"}]},
+            ],
+        },
+    )
+
+    result = await _invoke_sdk(invoker)
+
+    assert result.error_message is None
+    assert [r["uri"] for r in result.resources] == ["a://1", "a://2"]
+    assert [p["name"] for p in result.prompts] == ["p1", "p2"]
+    assert [t["uriTemplate"] for t in result.resource_templates] == ["a://{x}", "b://{y}"]
+    assert [(m, p) for m, p in calls if m != "tools/list"] == [
+        ("resources/list", {}),
+        ("resources/list", {"cursor": "r/2?x=é"}),
+        ("prompts/list", {}),
+        ("prompts/list", {"cursor": "p2"}),
+        ("resources/templates/list", {}),
+        ("resources/templates/list", {"cursor": "t2"}),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "template_pages",
+    [
+        # A repeated cursor never loops and never stores a partial listing.
+        [{"resourceTemplates": [{"uriTemplate": "a://{x}"}], "nextCursor": "same"}] * 3,
+        # A later page failing (even "method not found") keeps the stored templates instead of truncating them.
+        [
+            {"resourceTemplates": [{"uriTemplate": "a://{x}"}], "nextCursor": "t2"},
+            McpJsonRpcMethodError("MCP method failed", code=-32601),
+        ],
+        [
+            {"resourceTemplates": [{"uriTemplate": "a://{x}"}], "nextCursor": "t2"},
+            McpJsonRpcMethodError("MCP method failed", code=-32603),
+        ],
+    ],
+)
+async def test_sdk_template_listing_failure_after_first_page_keeps_stored_value(monkeypatch, template_pages):
+    invoker = _build_invoker()
+    _paged_runtime(monkeypatch, invoker, {"resources/templates/list": template_pages})
+
+    result = await _invoke_sdk(invoker)
+
+    assert result.error_message is None
+    assert result.resource_templates is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["resources/list", "prompts/list"])
+async def test_sdk_resource_or_prompt_page_failure_fails_invocation_for_http_fallback(monkeypatch, method):
+    invoker = _build_invoker()
+    key = _ITEM_KEYS[method]
+    _paged_runtime(
+        monkeypatch,
+        invoker,
+        {method: [{key: [{"name": "x", "uri": "a://x"}], "nextCursor": "c2"}, ValueError("boom")]},
+    )
+
+    result = await _invoke_sdk(invoker)
+
+    assert result.error_message is not None and result.error_message.startswith("SDK MCP invocation failed")
+
+
+@pytest.mark.asyncio
+async def test_sdk_listing_not_offered_is_a_definite_empty_listing(monkeypatch):
+    invoker = _build_invoker()
+    not_found = McpJsonRpcMethodError("MCP method failed", code=-32601)
+    _paged_runtime(
+        monkeypatch,
+        invoker,
+        {"resources/list": [not_found], "prompts/list": [not_found], "resources/templates/list": [not_found]},
+    )
+
+    result = await _invoke_sdk(invoker)
+
+    assert result.error_message is None
+    assert result.resources == [] and result.prompts == [] and result.resource_templates == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_listing_uses_one_deadline_for_all_pages(monkeypatch):
+    invoker = _build_invoker()
+    monkeypatch.setattr("registry.services.federation.agentcore_runtime.MCPClientConfig.TOOLS_TIMEOUT", 0.05)
+    _paged_runtime(monkeypatch, invoker, {})
+    fake = invoker._invoke_mcp_jsonrpc
+
+    async def _slow_templates(**kwargs):
+        if kwargs["method"] == "resources/templates/list":
+            await asyncio.sleep(0.03)  # each page fits the deadline; the listing as a whole does not
+            return (
+                {"resourceTemplates": [{"uriTemplate": "a://{x}"}], "nextCursor": str(uuid.uuid4())},
+                "rs",
+                None,
+                None,
+            )
+        return await fake(**kwargs)
+
+    monkeypatch.setattr(invoker, "_invoke_mcp_jsonrpc", _slow_templates)
+
+    result = await _invoke_sdk(invoker)
+
+    assert result.error_message is None
+    assert result.resource_templates is None

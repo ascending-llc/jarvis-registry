@@ -64,11 +64,61 @@ async def test_strip_step_clears_only_oauth_servers_with_set_only() -> None:
 
     ops = _ops(collection)
     assert len(ops) == 1
-    assert ops[0]._filter == {"_id": oauth_id, "config.resources.0": {"$exists": True}}
+    assert ops[0]._filter == {
+        "_id": oauth_id,
+        "config.resources.0": {"$exists": True},
+        "config.requiresOAuth": {"$exists": True, "$eq": True},
+        "config.oauth": {"$exists": False},
+        "config.runtimeAccess": {"$exists": False},
+    }
     assert set(ops[0]._doc) == {"$set"}
     assert ops[0]._doc["$set"]["config.resources"] == []
     assert ops[0]._doc["$set"]["vectorSyncAttempts"] == 0
     assert ops[0]._doc["$set"]["vectorSyncPendingAt"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config", "expected_auth_filter"),
+    [
+        (
+            {"oauth": {"client_id": "x"}},
+            {
+                "config.requiresOAuth": {"$exists": False},
+                "config.oauth": {"$exists": True, "$eq": {"client_id": "x"}},
+                "config.runtimeAccess": {"$exists": False},
+            },
+        ),
+        (
+            {"requiresOAuth": False, "oauth": {}, "runtimeAccess": {}},
+            {
+                "config.requiresOAuth": {"$exists": True, "$eq": False},
+                "config.oauth": {"$exists": True, "$eq": {}},
+                "config.runtimeAccess": {"$exists": True, "$eq": {}},
+            },
+        ),
+        (
+            {"requiresOAuth": None, "oauth": None, "runtimeAccess": None},
+            {
+                "config.requiresOAuth": {"$exists": True, "$eq": None},
+                "config.oauth": {"$exists": True, "$eq": None},
+                "config.runtimeAccess": {"$exists": True, "$eq": None},
+            },
+        ),
+    ],
+)
+async def test_strip_step_guards_all_authentication_fields(config: dict, expected_auth_filter: dict) -> None:
+    server_id = ObjectId()
+    db, collection = _db([{"_id": server_id, "config": config}])
+
+    await migration.up(db)
+
+    # Mocks do not evaluate Mongo filters; assert the CAS preconditions themselves.
+    assert _ops(collection)[0]._filter == {
+        "_id": server_id,
+        "config.resources.0": {"$exists": True},
+        **expected_auth_filter,
+    }
 
 
 @pytest.mark.asyncio

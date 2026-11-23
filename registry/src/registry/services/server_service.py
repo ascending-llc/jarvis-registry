@@ -625,7 +625,9 @@ class ServerServiceV1:
         """Best-effort capability discovery for a committed registration; never raises.
 
         Writes only the fetched fields with a targeted ``$set``: the creator already has the server ID, so a
-        whole-document save could revert a concurrent enable or edit, or re-insert a server deleted mid-fetch.
+        whole-document save could revert a concurrent enable or edit, or re-insert a server deleted mid-fetch. The
+        write is conditional on ``updatedAt`` still matching the snapshot, so a capture that a concurrent change
+        made stale is discarded instead of overwriting newer data.
         """
         if not server.config.get("url"):
             return
@@ -671,9 +673,17 @@ class ServerServiceV1:
                 fields["vectorSyncPendingAt"] = marker
                 fields["vectorSyncAttempts"] = 0
 
-            result = await ExtendedMCPServer.find_one({"_id": server.id}).update({"$set": fields})
+            # Write only if nothing changed the server since the snapshot: a URL or authentication edit, an enable or a
+            # refresh committed meanwhile is newer, and these listings (fetched from the old configuration) would
+            # overwrite it and be published to the index.
+            result = await ExtendedMCPServer.find_one({"_id": server.id, "updatedAt": server.updatedAt}).update(
+                {"$set": fields}
+            )
             if result.matched_count == 0:
-                logger.info("Server %s was deleted before its registration capabilities were stored", server.id)
+                logger.info(
+                    "Server %s was changed or deleted before its registration capabilities were stored; discarding them",
+                    server.id,
+                )
             elif marker is not None:
                 self.schedule_vector_sync(VectorSyncPlan(doc=server, marker=marker, full_resync=True))
         except EmbeddingReindexInProgressException:

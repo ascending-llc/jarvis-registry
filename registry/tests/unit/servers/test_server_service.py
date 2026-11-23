@@ -79,6 +79,7 @@ class TestFetchRegistrationCapabilities:
             serverName="registration-test",
             tags=["test"],
             numTools=0,
+            updatedAt=datetime(2026, 11, 23, 8, 0, 0, 123000, tzinfo=UTC),
             config={
                 "url": "https://mcp.example.com/mcp",
                 "type": "streamable-http",
@@ -140,7 +141,8 @@ class TestFetchRegistrationCapabilities:
             include_prompts=True,
             user_id="user-1",
         )
-        update.find_one.assert_called_once_with({"_id": server.id})
+        # Conditional on the snapshot's updatedAt, so a concurrent change discards this capture.
+        update.find_one.assert_called_once_with({"_id": server.id, "updatedAt": server.updatedAt})
         update.assert_awaited_once()
         fields = self._set_fields(update)
         assert fields == {
@@ -174,6 +176,26 @@ class TestFetchRegistrationCapabilities:
 
         assert "vectorSyncPendingAt" not in self._set_fields(update)
         schedule.assert_not_called()
+
+    async def test_capture_is_discarded_when_server_changed_meanwhile(
+        self, service: ServerServiceV1, server: ExtendedMCPServer, update: AsyncMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # An edit, enable or refresh committed during the fetch moved updatedAt on, so the conditional write misses.
+        update.return_value = Mock(matched_count=0)
+        snapshot = server.updatedAt
+
+        with (
+            patch.object(
+                service, "retrieve_from_server", AsyncMock(return_value=_captured([], [{"uri": "a://x"}], [], {}))
+            ),
+            patch.object(service, "schedule_vector_sync") as schedule,
+            caplog.at_level(_logging.INFO, logger="registry.services.server_service"),
+        ):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        assert update.find_one.call_args.args[0] == {"_id": server.id, "updatedAt": snapshot}
+        schedule.assert_not_called()
+        assert "changed or deleted before its registration capabilities were stored" in caplog.text
 
     async def test_no_vector_sync_when_server_was_deleted(
         self, service: ServerServiceV1, server: ExtendedMCPServer, update: AsyncMock
@@ -338,7 +360,7 @@ class TestFetchRegistrationCapabilities:
 
         update.assert_awaited_once()
         assert "upsert" not in update.await_args.kwargs
-        assert "was deleted before its registration capabilities were stored" in caplog.text
+        assert "was changed or deleted before its registration capabilities were stored" in caplog.text
 
 
 @pytest.mark.unit

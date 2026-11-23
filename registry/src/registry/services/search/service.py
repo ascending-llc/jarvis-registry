@@ -17,6 +17,7 @@ from ...auth.dependencies import UserContextDict
 from ...services.access_control_service import ACLService
 from ...utils.otel_metrics import record_tool_discovery
 from .base import VectorSearchService
+from .private_resources import drop_private_mcp_resources
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +105,8 @@ class SearchService:
         - agent/skill          -> A2a_agents collection (a2a_agent_repo)
 
         Results are merged and re-sorted by relevance_score before truncation to
-        ``top_n``. Every document embeds its server/agent context, so no MongoDB
-        lookup is required.
+        ``top_n``. Concrete MCP resources are checked against current MongoDB
+        authentication state so stale vectors cannot expose OAuth users' resources.
 
         Fail fast during a reindex before paying for ACL lookups; the
         DatabaseClient backstop would otherwise catch it at the Weaviate query.
@@ -201,14 +202,16 @@ class SearchService:
         if not search.include_disabled:
             filters["tool_enabled"] = True
         if not query:
-            return await self.mcp_server_repo.afilter(filters=filters, limit=search.top_n)
-        return await self.mcp_server_repo.asearch_with_rerank(
-            query=query,
-            k=search.top_n,
-            candidate_k=_candidate_k(search.top_n),
-            search_type=search.search_type,
-            filters=filters,
-        )
+            results = await self.mcp_server_repo.afilter(filters=filters, limit=search.top_n)
+        else:
+            results = await self.mcp_server_repo.asearch_with_rerank(
+                query=query,
+                k=search.top_n,
+                candidate_k=_candidate_k(search.top_n),
+                search_type=search.search_type,
+                filters=filters,
+            )
+        return await drop_private_mcp_resources(results)
 
     async def _search_a2a_documents(
         self,

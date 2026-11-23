@@ -7,6 +7,7 @@ from registry_pkgs.vector.enum.enums import RerankerProvider, SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from .base import VectorSearchService
+from .private_resources import drop_private_mcp_resources
 
 logger = logging.getLogger(__name__)
 
@@ -419,6 +420,10 @@ class ExternalVectorSearchService(VectorSearchService):
                     k=search_k,
                     filters=filters,
                 )
+
+            # Resource documents feed server results (their text can become a server's description), so stale
+            # OAuth resources are dropped before grouping.
+            docs = await drop_private_mcp_resources(docs)
 
             tools: list[dict[str, Any]] = []
             servers_by_key: dict[str, dict[str, Any]] = {}

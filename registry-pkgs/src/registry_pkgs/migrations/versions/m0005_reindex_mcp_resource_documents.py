@@ -62,12 +62,18 @@ async def up(db: AsyncDatabase) -> None:
 
     projection = {"config.requiresOAuth": 1, "config.oauth": 1, "config.runtimeAccess": 1}
     async for doc in servers.find(_HAS_RESOURCES, projection):
-        if not _is_oauth(doc.get("config") or {}):
+        config = doc.get("config") or {}
+        if not _is_oauth(config):
             continue
         matched += 1
+        # Do not strip shared resources saved after a concurrent authentication change.
+        auth_snapshot = {
+            f"config.{key}": ({"$exists": True, "$eq": config[key]} if key in config else {"$exists": False})
+            for key in ("requiresOAuth", "oauth", "runtimeAccess")
+        }
         ops.append(
             UpdateOne(
-                {"_id": doc["_id"], **_HAS_RESOURCES},
+                {"_id": doc["_id"], **_HAS_RESOURCES, **auth_snapshot},
                 {"$set": {"config.resources": [], "vectorSyncPendingAt": now, "vectorSyncAttempts": 0}},
             )
         )
