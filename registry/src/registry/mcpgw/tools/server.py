@@ -8,7 +8,7 @@ MCP Gateway Registry API Tools
 import logging
 import secrets
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, cast, overload
 from uuid import uuid4
 
 from beanie import PydanticObjectId
@@ -20,9 +20,11 @@ from mcp.types import (
     ElicitRequest,
     ElicitRequestURLParams,
     EmbeddedResource,
+    GetPromptResult,
     InputRequiredResult,
     LoggingMessageNotification,
     LoggingMessageNotificationParams,
+    ReadResourceResult,
     TextContent,
     TextResourceContents,
 )
@@ -53,8 +55,17 @@ from ...auth.dependencies import UserContextDict
 from ...constants import UrlElicitationInputKey
 from ...core.config import settings
 from ...core.mcp_config import NETWORK_TRANSPORTS, MCPTransport
-from ...core.mcp_downstream import DownstreamCallUnauthorized, call_downstream_tool
+from ...core.mcp_downstream import (
+    DownstreamCallUnauthorized,
+    DownstreamOperation,
+    DownstreamResult,
+    PromptGet,
+    ResourceRead,
+    ToolCall,
+    call_downstream,
+)
 from ...core.telemetry_decorators import (
+    ExecutionMetricsContext,
     PromptExecutionMetricsContext,
     ResourceAccessMetricsContext,
     ToolExecutionMetricsContext,
@@ -64,7 +75,7 @@ from ...services.generated_token_policy import is_consent_exempt
 from ...utils.mcp_headers import build_authenticated_headers
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
-from ..tracing import trace_tool_execution
+from ..tracing import trace_server_operation
 from .types import get_meta_field
 from .utils import (
     _build_url_elicitation_result,
@@ -85,6 +96,9 @@ _STALE_SERVER_ID_MESSAGE = (
     "or prompt_name together with its server_id. Never reuse this server_id."
 )
 
+type ResourceResultRenderer = Callable[[ReadResourceResult, ExtendedMCPServer], CallToolResult]
+type PromptResultRenderer = Callable[[GetPromptResult, ExtendedMCPServer], CallToolResult]
+
 
 def _get_server_service(ctx: Context[McpAppContext]):
     return ctx.request_context.lifespan_context.server_service
@@ -95,6 +109,7 @@ async def _user_can_view_server(
     user_id: str,
     server_id: PydanticObjectId,
 ) -> bool:
+    """Use the canonical ACL visibility set rather than duplicating server permission rules."""
     accessible = await acl_service.get_accessible_resource_ids(
         user_id=PydanticObjectId(user_id),
         resource_type=ResourceType.MCPSERVER.value,
@@ -122,6 +137,7 @@ def _downstream_input_result(
     *,
     has_other: bool = False,
 ) -> CallToolResult:
+    """Return terminal guidance for downstream input; do not fulfill it or replay the operation."""
     lines = [
         f"{request.message} Show the user this URL: {request.url}. Retry after the user finishes."
         for request in requests
@@ -139,27 +155,22 @@ async def _call_with_oauth_recovery(
     target_url: str,
     base_headers: dict[str, str],
     ctx_baggage: Any,
-    tool_name: str,
-    arguments: dict[str, Any] | None,
-    metrics_ctx: ToolExecutionMetricsContext,
-) -> CallToolResult | InputRequiredResult:
-    """Build fresh headers and call through the SDK, recovering once from a downstream 401.
+    operation: DownstreamOperation,
+    metrics_ctx: ExecutionMetricsContext,
+) -> DownstreamResult:
+    """Execute an authorized operation with at most one OAuth-driven retry.
 
-    For OAuth servers, a 401 (on session init or the call) gets one refresh and one retry; a 401 on
-    the retry goes to the loop guard (``recover_from_unauthorized`` with ``is_retry=True``). At most
-    two downstream sends happen: if the header rebuild after the retry's 401 still yields a token
-    (a concurrent login wrote one), the caller gets a "changed during this call" result instead of
-    a third send.
+    The caller has already applied ACL and consent checks. call_downstream owns connection setup,
+    protocol-era recovery and native SDK results; this wrapper owns credential recovery only.
+    Rebuild headers before each attempt, and recover using the token that attempt actually sent.
+    A second 401 runs the OAuth loop guard, never a third call_downstream invocation.
 
-    Returns:
-        The typed downstream result, or a ``CallToolResult`` error for the send limit.
-
-    Raises:
-        UrlElicitationRequiredException: The header rebuild requires an interactive login.
-        DownstreamAuthRejectedException: The loop guard tripped.
+    Returns native results or a gateway error result for unsupported transport / changed authorization.
+    Login-required and loop-guard exceptions are mapped by _execute_server_operation.
     """
     lifespan = ctx.request_context.lifespan_context
     oauth_service = lifespan.oauth_service
+    # 1. Reject unsupported transports before building credentials or attempting network I/O.
     configured_type = server.config.get("type")
     try:
         transport_type = MCPTransport(configured_type)
@@ -177,10 +188,12 @@ async def _call_with_oauth_recovery(
             ],
             isError=True,
         )
+    # 2. Capture client metadata for login flows; notification callbacks must not fail the operation.
     state_metadata = _get_state_metadata(get_client_params(ctx))
     oauth_enabled = server.mcp_auth_mode is McpAuthMode.OAUTH
 
     async def build_headers(extra: dict[str, str]) -> dict[str, str]:
+        """Resolve current credentials, then inject the same trace context for every attempt."""
         headers = await build_authenticated_headers(
             oauth_service=oauth_service,
             server=server,
@@ -189,10 +202,8 @@ async def _call_with_oauth_recovery(
             state_metadata=state_metadata,
             redis_client=lifespan.redis_client,
         )
-        # Propagate W3C trace context to the downstream MCP server.
+        # 2a. Preserve W3C trace propagation when OAuth recovery changes the authorization header.
         return inject_trace_context(headers, context=ctx_baggage)
-
-    sent_headers: dict[str, str] = {}
 
     async def on_progress(progress: float, total: float | None, message: str | None) -> None:
         try:
@@ -208,32 +219,39 @@ async def _call_with_oauth_recovery(
         except Exception:
             logger.exception("Unable to forward downstream log")
 
-    async def send() -> CallToolResult | InputRequiredResult:
-        nonlocal sent_headers
-        sent_headers = await build_headers(dict(base_headers))
-        return await call_downstream_tool(
+    async def send(headers: dict[str, str]) -> DownstreamResult:
+        """Send with this attempt's explicit header snapshot, without changing closure state."""
+        return await call_downstream(
             url=target_url,
             transport_type=transport_type,
             server_id=str(server.id),
             user_id=user_context["user_id"],
-            headers=sent_headers,
-            tool_name=tool_name,
-            arguments=arguments,
+            headers=headers,
+            operation=operation,
             downstream_transport=lifespan.downstream_transport,
             response_cache=lifespan.downstream_response_cache,
             era_cache=lifespan.downstream_era_cache,
-            on_progress=on_progress if get_progress_token(ctx) is not None else None,
+            on_progress=on_progress
+            if isinstance(operation, ToolCall) and get_progress_token(ctx) is not None
+            else None,
             on_log=on_log if ctx.protocol_version in HANDSHAKE_PROTOCOL_VERSIONS else None,
         )
 
+    sent_headers: dict[str, str] = {}
     is_retry = False
     while True:
         try:
-            result = await send()
+            # 3. Rebuild from a fresh base-header copy. Keep the snapshot local to this loop
+            #    and pass it explicitly to send so recovery uses the credential actually sent.
+            sent_headers = await build_headers(dict(base_headers))
+            # 4. Return completed native results unchanged. Only tool results carry is_error here.
+            result = await send(sent_headers)
             if isinstance(result, CallToolResult) and result.is_error:
                 metrics_ctx.set_error_type("downstream_tool_error")
             return result
         except DownstreamUnauthorizedException as exc:
+            # 5. Recover only OAuth failures from retry-safe phases. Result validation and
+            #    teardown failures must not cause the business operation to run again.
             if not oauth_enabled or (isinstance(exc, DownstreamCallUnauthorized) and not exc.oauth_retry_safe):
                 raise
             logger.info(f"Downstream {server.serverName} answered 401 (retry={is_retry}); running OAuth recovery")
@@ -245,270 +263,359 @@ async def _call_with_oauth_recovery(
                 is_retry=is_retry,
             )
             if is_retry:
-                # Send limit: a rebuild that raises (login required) propagates; one that yields a
-                # token is not sent.
+                # 6. The retry was also rejected. A header rebuild may request login or observe
+                #    a concurrent token update, but neither outcome permits a third send.
                 await build_headers(dict(base_headers))
                 metrics_ctx.set_error_type("downstream_auth_changed")
                 return _auth_changed_result(server.serverName)
             is_retry = True
 
 
-@trace_tool_execution
+def _operation_label(operation: DownstreamOperation) -> str:
+    return {ToolCall: "execute_tool", ResourceRead: "read_resource", PromptGet: "get_prompt"}[type(operation)]
+
+
+async def _authorize_server_call(
+    ctx: Context[McpAppContext],
+    operation: DownstreamOperation,
+    server_id: str,
+    metrics_ctx: ExecutionMetricsContext,
+) -> tuple[ExtendedMCPServer, UserContextDict] | CallToolResult:
+    """Apply access gates in order, returning an authorized server/user pair or a gateway error.
+
+    Keep consent last: missing identity, stale IDs, ACL denial, declined authorization and disabled
+    tools must stop before pending-consent state is created. ConsentRequiredException is handled
+    by the shared execution pipeline, not converted into an internal failure here.
+    """
+    label = _operation_label(operation)
+    # 1. Require an authenticated user before accessing server records or authorization stores.
+    user_context = _extract_authenticated_user_context(ctx)
+    if user_context is None:
+        logger.warning("%s: missing or invalid authenticated user context; rejecting server_id=%s", label, server_id)
+        metrics_ctx.set_error_type("unauthenticated")
+        return CallToolResult(
+            content=[TextContent(type="text", text="Authentication required: missing user context.")],
+            isError=True,
+        )
+
+    user_id = user_context["user_id"]
+    logger.info(
+        "%s: server call server_id=%s request_id=%s",
+        label,
+        server_id,
+        getattr(ctx.request_context, "request_id", None),
+    )
+
+    # 2. Resolve the discovered server ID; stale IDs are recoverable tool-result errors.
+    server = await _get_server_service(ctx).get_server_by_id(server_id)
+    if server is None:
+        metrics_ctx.set_error_type("server_not_found")
+        return CallToolResult(
+            content=[TextContent(type="text", text=_STALE_SERVER_ID_MESSAGE)],
+            isError=True,
+        )
+
+    metrics_ctx.set_server_name(server.serverName)
+
+    # 3. Enforce server visibility. A failed ACL lookup is unavailable, never implicit permission.
+    lifespan = ctx.request_context.lifespan_context
+    try:
+        can_view = await _user_can_view_server(lifespan.acl_service, user_id, server.id)
+    except RuntimeError:
+        logger.error(
+            "%s: ACL lookup failed user_id=%s server_id=%s",
+            label,
+            user_id,
+            server_id,
+            exc_info=True,
+        )
+        metrics_ctx.set_error_type("acl_lookup_failed")
+        return CallToolResult(
+            content=[TextContent(type="text", text="Service temporarily unavailable. Please try again later.")],
+            isError=True,
+        )
+    if not can_view:
+        logger.warning(
+            "%s: user_id=%s denied access to server_id=%s path=%s",
+            label,
+            user_id,
+            server_id,
+            server.path,
+        )
+        metrics_ctx.set_error_type("access_denied")
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=f"Access denied: server {server_id!r} is not in your accessible set.",
+                )
+            ],
+            isError=True,
+        )
+
+    # 4. Honor a declined authorization answer before opening another consent flow.
+    declined = authorization_declined_result(ctx)
+    if declined is not None:
+        metrics_ctx.set_error_type("authorization_declined")
+        return declined
+
+    # 5. Apply the disabled-tool gate only to ToolCall; it is not a server-wide resource/prompt gate.
+    if isinstance(operation, ToolCall) and server.is_tool_disabled(operation.tool_name):
+        tool_name = operation.tool_name
+        logger.info(
+            "%s: tool_name=%s is disabled on server_id=%s",
+            label,
+            tool_name,
+            server_id,
+        )
+        metrics_ctx.set_error_type("tool_disabled")
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Tool {tool_name!r} is currently disabled on server {server_id!r}. "
+                        "Do not retry this tool. Choose another matching discovered candidate "
+                        "or tell the user it is unavailable."
+                    ),
+                )
+            ],
+            isError=True,
+        )
+
+    # 6. Check consent last, preserving exempt clients and persisting state for browser approval.
+    client_id = user_context["client_id"]
+    requires_server_consent = not is_consent_exempt(
+        client_id,
+        settings.headless_agent_client_id,
+    )
+    if requires_server_consent and not await run_in_threadpool(
+        lifespan.consent_store.has_server_consent,
+        user_id,
+        client_id,
+        server.path,
+    ):
+        nonce = secrets.token_urlsafe(32)
+        elicitation_id = str(uuid4())
+        state_metadata = _get_state_metadata(get_client_params(ctx))
+        await run_in_threadpool(
+            lifespan.pending_consent_store.save,
+            nonce,
+            {
+                "user_id": user_id,
+                "client_id": client_id,
+                "server_path": server.path,
+                **state_metadata,
+                "elicitation_id": elicitation_id,
+            },
+        )
+        auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
+        raise ConsentRequiredException(
+            "Consent required to call this MCP server",
+            auth_url=auth_url,
+            server_name=server.serverName,
+            elicitation_id=elicitation_id,
+        )
+
+    return server, user_context
+
+
+@overload
+async def _execute_server_operation(
+    ctx: Context[McpAppContext],
+    operation: ToolCall,
+    server_id: str,
+    *,
+    metrics_ctx: ExecutionMetricsContext,
+) -> CallToolResult | InputRequiredResult: ...
+
+
+@overload
+async def _execute_server_operation(
+    ctx: Context[McpAppContext],
+    operation: ResourceRead,
+    server_id: str,
+    *,
+    metrics_ctx: ExecutionMetricsContext,
+    render: ResourceResultRenderer,
+) -> CallToolResult | InputRequiredResult: ...
+
+
+@overload
+async def _execute_server_operation(
+    ctx: Context[McpAppContext],
+    operation: PromptGet,
+    server_id: str,
+    *,
+    metrics_ctx: ExecutionMetricsContext,
+    render: PromptResultRenderer,
+) -> CallToolResult | InputRequiredResult: ...
+
+
+@trace_server_operation
+async def _execute_server_operation(
+    ctx: Context[McpAppContext],
+    operation: DownstreamOperation,
+    server_id: str,
+    *,
+    metrics_ctx: ExecutionMetricsContext,
+    render: ResourceResultRenderer | PromptResultRenderer | None = None,
+) -> CallToolResult | InputRequiredResult:
+    """Coordinate authorization, downstream execution and gateway-result mapping for all operations.
+
+    The decorator traces this whole pipeline, including rendering and handled failures. The caller
+    owns the metrics context; this function updates it without opening a second metrics lifecycle.
+    Registry consent / re-auth may return InputRequiredResult. Downstream interactive requests instead
+    become terminal guidance, so they do not start an automatic downstream-input replay loop.
+    """
+    try:
+        # 1. Complete every access gate before counting or sending a downstream request.
+        authorized = await _authorize_server_call(ctx, operation, server_id, metrics_ctx)
+        if isinstance(authorized, CallToolResult):
+            return authorized
+        server, user_context = authorized
+        # 2. Count the authorized server request and resolve its configured endpoint.
+        record_server_request(server.serverName)
+
+        target_url = get_target_url(server)
+
+        # 3. Share Accept and server baggage across operations; add tool identifiers only for ToolCall.
+        additional_headers = {
+            "Accept": "application/json, text/event-stream",
+        }
+
+        ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_SERVER_ID, bounded_baggage_value(server_id))
+        if isinstance(operation, ToolCall):
+            additional_headers["X-Tool-Name"] = bounded_baggage_value(operation.tool_name)
+            ctx_baggage = baggage.set_baggage(
+                BAGGAGE_KEY_MCP_TOOL_NAME, bounded_baggage_value(operation.tool_name), context=ctx_baggage
+            )
+
+        # 4. Delegate bounded credential recovery; call_downstream manages the SDK connection.
+        try:
+            result = await _call_with_oauth_recovery(
+                ctx,
+                server=server,
+                user_context=user_context,
+                target_url=target_url,
+                base_headers=additional_headers,
+                ctx_baggage=ctx_baggage,
+                operation=operation,
+                metrics_ctx=metrics_ctx,
+            )
+        except MCPError as exc:
+            # 5a. Convert legacy downstream URL elicitation into terminal user guidance.
+            if exc.code != URL_ELICITATION_REQUIRED:
+                raise
+            try:
+                requests = UrlElicitationRequiredError.from_error(exc.error).elicitations
+            except (ValidationError, ValueError, TypeError, AttributeError):
+                requests = []
+            metrics_ctx.set_error_type("downstream_input_required")
+            return _downstream_input_result(requests)
+        # 5b. Apply the same terminal mapping to modern downstream input-required results.
+        if isinstance(result, InputRequiredResult):
+            requests = [
+                request.params
+                for request in (result.input_requests or {}).values()
+                if isinstance(request, ElicitRequest) and isinstance(request.params, ElicitRequestURLParams)
+            ]
+            metrics_ctx.set_error_type("downstream_input_required")
+            has_other = len(requests) != len(result.input_requests or {}) or not requests
+            return _downstream_input_result(requests, has_other=has_other)
+        # 6. Render native resource/prompt results inside the span. Already-built tool or gateway
+        #    error results bypass renderers, which expect operation-specific native result fields.
+        if isinstance(result, CallToolResult):
+            rendered = result
+        elif isinstance(operation, ResourceRead) and isinstance(result, ReadResourceResult) and render is not None:
+            # 6a. Overloads enforce the operation/renderer pairing at the call site; the union
+            #     implementation needs an explicit narrowing for the corresponding callback.
+            rendered = cast(ResourceResultRenderer, render)(result, server)
+        elif isinstance(operation, PromptGet) and isinstance(result, GetPromptResult) and render is not None:
+            rendered = cast(PromptResultRenderer, render)(result, server)
+        else:
+            raise TypeError("Downstream result requires a matching operation and renderer")
+        metrics_ctx.set_success(not rendered.is_error)
+        return rendered
+    except UrlElicitationRequiredException as exc:
+        # 7a. Registry re-auth is a handled outcome; modern clients may pause for browser login.
+        metrics_ctx.set_error_type("url_elicitation")
+        template = (
+            f"Calling the '{exc.server_name}' MCP server requires the user to authorize (or re-authorize) it in a "
+            "browser. Show the user this {} so they can open it and authorize, then retry the same tool call once "
+            "they confirm they are done."
+        )
+        human_message = (
+            f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
+            "Please follow the URL to perform re-authorization in a browser window and come back again."
+        )
+        result = _build_url_elicitation_result(
+            ctx,
+            exc.auth_url,
+            template,
+            human_message,
+            input_key=UrlElicitationInputKey.AUTHORIZATION,
+        )
+        if isinstance(result, InputRequiredResult):
+            metrics_ctx.set_input_required()
+        return result
+    except ConsentRequiredException as exc:
+        # 7b. Registry consent uses its own input key so a retry can distinguish it from re-auth.
+        metrics_ctx.set_error_type("consent_required")
+        template = (
+            f"Calling the '{exc.server_name}' MCP server requires the user's explicit consent in a browser. "
+            "Show the user this {} so they can open it and approve, then retry the same tool call once they "
+            "confirm they are done."
+        )
+        human_message = (
+            "Jarvis Registry needs your explicit consent before this application can call the "
+            f"'{exc.server_name}' MCP server on your behalf. Please follow the URL to review and approve."
+        )
+        result = _build_url_elicitation_result(
+            ctx,
+            exc.auth_url,
+            template,
+            human_message,
+            input_key=UrlElicitationInputKey.CONSENT,
+            elicitation_id=exc.elicitation_id,
+        )
+        if isinstance(result, InputRequiredResult):
+            metrics_ctx.set_input_required()
+        return result
+    except DownstreamAuthRejectedException as exc:
+        # 7c. A rejected refreshed credential is terminal; do not initiate another login loop.
+        metrics_ctx.set_error_type("downstream_auth_rejected")
+        return CallToolResult(content=[TextContent(type="text", text=str(exc))], isError=True)
+    except (McpGatewayException, MCPError):
+        # 7d. Preserve classified gateway / protocol errors. The outer metrics context records failure.
+        raise
+    except Exception as exc:
+        # 7e. Wrap unexpected failures without exposing implementation details; retain the cause.
+        msg = f"unexpected exception during {_operation_label(operation)}_impl"
+        logger.exception(msg)
+
+        raise InternalServerException(msg) from exc
+
+
 async def execute_tool_impl(
     ctx: Context[McpAppContext],
     tool_name: str,
     arguments: dict[str, Any],
     server_id: str,
 ) -> CallToolResult | InputRequiredResult:
+    """Keep the public tool signature while delegating to the shared server-operation pipeline.
+
+    The shared pipeline first runs _authorize_server_call, then _call_with_oauth_recovery.
+    The OAuth wrapper delegates native requests to call_downstream. Tracing wraps the shared
+    pipeline; tool results already match the gateway wire type and need no resource/prompt renderer.
     """
-    Execute a specific downstream MCP tool.
-
-    Args:
-        ctx: The mcp.server.mcpserver.Context object that can be DI'ed into a tool call handler function.
-        tool_name: Resolved tool name to send to MCP server (e.g., 'tavily_search')
-        arguments: Tool-specific arguments as key-value pairs
-        server_id: Server ID from discovery (e.g., '6972e222755441652c23090f')
-
-    Returns: CallToolResult
-
-    Raises:
-        UrlElicitationRequiredError: The `mcp` package turns this into a URL mode elicitation error response to client.
-        McpGatewayException: All classifiable exceptions are raised as subclasses of McpGatewayException.
-            Caller of this function should filter on the subclasses to deal with specific exceptions differently.
-            E.g. catch a UrlElicitationRequiredException in order to return a URL mode elicitation to client.
-        MCPError: Raised when downstream MCP returned a JSON-RPC error response. We raise this exception from
-            the MCP Python SDK to forward the error response to our client.
-    """
-
     async with ToolExecutionMetricsContext(tool_name=tool_name, method="POST") as metrics_ctx:
-        try:
-            user_context = _extract_authenticated_user_context(ctx)
-            if user_context is None:
-                logger.warning(
-                    "execute_tool: missing or invalid authenticated user context; rejecting server_id=%s", server_id
-                )
-                metrics_ctx.set_error_type("unauthenticated")
-                return CallToolResult(
-                    content=[TextContent(type="text", text="Authentication required: missing user context.")],
-                    isError=True,
-                )
-
-            username = user_context.get("username", "unknown")
-            user_id = user_context["user_id"]
-            logger.info(f"Tool execution from user '{username}:{user_id}': {tool_name} on {server_id}")
-
-            server = await _get_server_service(ctx).get_server_by_id(server_id)
-            if server is None:
-                # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
-                metrics_ctx.set_error_type("server_not_found")
-                return CallToolResult(
-                    content=[TextContent(type="text", text=_STALE_SERVER_ID_MESSAGE)],
-                    isError=True,
-                )
-
-            metrics_ctx.set_server_name(server.serverName)
-
-            lifespan = ctx.request_context.lifespan_context
-            try:
-                can_view = await _user_can_view_server(lifespan.acl_service, user_id, server.id)
-            except RuntimeError:
-                logger.error(
-                    "execute_tool: ACL lookup failed user_id=%s server_id=%s",
-                    user_id,
-                    server_id,
-                    exc_info=True,
-                )
-                metrics_ctx.set_error_type("acl_lookup_failed")
-                return CallToolResult(
-                    content=[TextContent(type="text", text="Service temporarily unavailable. Please try again later.")],
-                    isError=True,
-                )
-            if not can_view:
-                logger.warning(
-                    "execute_tool: user_id=%s denied access to server_id=%s path=%s",
-                    user_id,
-                    server_id,
-                    server.path,
-                )
-                metrics_ctx.set_error_type("access_denied")
-                return CallToolResult(
-                    content=[
-                        TextContent(
-                            type="text",
-                            text=f"Access denied: server {server_id!r} is not in your accessible set.",
-                        )
-                    ],
-                    isError=True,
-                )
-
-            declined = authorization_declined_result(ctx)
-            if declined is not None:
-                metrics_ctx.set_error_type("authorization_declined")
-                return declined
-
-            if server.is_tool_disabled(tool_name):
-                logger.info(
-                    "execute_tool: tool_name=%s is disabled on server_id=%s",
-                    tool_name,
-                    server_id,
-                )
-                metrics_ctx.set_error_type("tool_disabled")
-                return CallToolResult(
-                    content=[
-                        TextContent(
-                            type="text",
-                            text=(
-                                f"Tool {tool_name!r} is currently disabled on server {server_id!r}. "
-                                "Do not retry this tool. Choose another matching discovered candidate "
-                                "or tell the user it is unavailable."
-                            ),
-                        )
-                    ],
-                    isError=True,
-                )
-
-            client_id = user_context["client_id"]
-            requires_server_consent = not is_consent_exempt(
-                client_id,
-                settings.headless_agent_client_id,
-            )
-            if requires_server_consent and not await run_in_threadpool(
-                lifespan.consent_store.has_server_consent,
-                user_id,
-                client_id,
-                server.path,
-            ):
-                nonce = secrets.token_urlsafe(32)
-                elicitation_id = str(uuid4())
-                state_metadata = _get_state_metadata(get_client_params(ctx))
-                await run_in_threadpool(
-                    lifespan.pending_consent_store.save,
-                    nonce,
-                    {
-                        "user_id": user_id,
-                        "client_id": client_id,
-                        "server_path": server.path,
-                        **state_metadata,
-                        "elicitation_id": elicitation_id,
-                    },
-                )
-                auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
-                raise ConsentRequiredException(
-                    "Consent required to call this MCP server",
-                    auth_url=auth_url,
-                    server_name=server.serverName,
-                    elicitation_id=elicitation_id,
-                )
-
-            # Track server request count
-            record_server_request(server.serverName)
-
-            # Build target URL using shared helper
-            target_url = get_target_url(server)
-
-            # Prepare base headers for downstream MCP server
-            additional_headers = {
-                "X-Tool-Name": bounded_baggage_value(tool_name),
-                "Accept": "application/json, text/event-stream",  # MCP servers require both
-            }
-
-            # Trace-context baggage reused for every downstream call in this tool execution
-            ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_TOOL_NAME, bounded_baggage_value(tool_name))
-            ctx_baggage = baggage.set_baggage(
-                BAGGAGE_KEY_MCP_SERVER_ID, bounded_baggage_value(server_id), context=ctx_baggage
-            )
-
-            try:
-                result = await _call_with_oauth_recovery(
-                    ctx,
-                    server=server,
-                    user_context=user_context,
-                    target_url=target_url,
-                    base_headers=additional_headers,
-                    ctx_baggage=ctx_baggage,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    metrics_ctx=metrics_ctx,
-                )
-            except MCPError as exc:
-                if exc.code != URL_ELICITATION_REQUIRED:
-                    raise
-                try:
-                    requests = UrlElicitationRequiredError.from_error(exc.error).elicitations
-                except (ValidationError, ValueError, TypeError, AttributeError):
-                    requests = []
-                metrics_ctx.set_error_type("downstream_input_required")
-                return _downstream_input_result(requests)
-            if isinstance(result, InputRequiredResult):
-                requests = [
-                    request.params
-                    for request in (result.input_requests or {}).values()
-                    if isinstance(request, ElicitRequest) and isinstance(request.params, ElicitRequestURLParams)
-                ]
-                metrics_ctx.set_error_type("downstream_input_required")
-                has_other = len(requests) != len(result.input_requests or {}) or not requests
-                return _downstream_input_result(requests, has_other=has_other)
-            metrics_ctx.set_success(not result.is_error)
-            return result
-        except UrlElicitationRequiredException as exc:
-            # Re-auth required: a handled failure mode, not a downstream/internal error.
-            metrics_ctx.set_error_type("url_elicitation")
-            template = (
-                f"Calling the '{exc.server_name}' MCP server requires the user to authorize (or re-authorize) it in a "
-                "browser. Show the user this {} so they can open it and authorize, then retry the same tool call once "
-                "they confirm they are done."
-            )
-            human_message = (
-                f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
-                "Please follow the URL to perform re-authorization in a browser window and come back again."
-            )
-            result = _build_url_elicitation_result(
-                ctx,
-                exc.auth_url,
-                template,
-                human_message,
-                input_key=UrlElicitationInputKey.AUTHORIZATION,
-            )
-            if isinstance(result, InputRequiredResult):
-                metrics_ctx.set_input_required()
-            return result
-        except ConsentRequiredException as exc:
-            metrics_ctx.set_error_type("consent_required")
-            template = (
-                f"Calling the '{exc.server_name}' MCP server requires the user's explicit consent in a browser. "
-                "Show the user this {} so they can open it and approve, then retry the same tool call once they "
-                "confirm they are done."
-            )
-            human_message = (
-                "Jarvis Registry needs your explicit consent before this application can call the "
-                f"'{exc.server_name}' MCP server on your behalf. Please follow the URL to review and approve."
-            )
-            result = _build_url_elicitation_result(
-                ctx,
-                exc.auth_url,
-                template,
-                human_message,
-                input_key=UrlElicitationInputKey.CONSENT,
-                elicitation_id=exc.elicitation_id,
-            )
-            if isinstance(result, InputRequiredResult):
-                metrics_ctx.set_input_required()
-            return result
-        except DownstreamAuthRejectedException as exc:
-            # Loop guard: a freshly issued token was rejected. Tell the LLM instead of starting another login.
-            metrics_ctx.set_error_type("downstream_auth_rejected")
-            return CallToolResult(content=[TextContent(type="text", text=str(exc))], isError=True)
-        except (McpGatewayException, MCPError):
-            # These exceptions have been logged and should just bubble up to the caller as a way of communication.
-            # __aexit__ records status=failure with error_type = exception class name.
-            raise
-        except Exception as exc:
-            # These are unclassified runtime exceptions. Log them and wrap them as InternalServerException
-            # to avoid leaking implementation details to our clients.
-            msg = "unexpected exception during execute_tool_impl"
-            logger.exception(msg)  # Want stack trace here.
-
-            raise InternalServerException(msg) from exc
+        return await _execute_server_operation(
+            ctx,
+            ToolCall(tool_name, arguments),
+            server_id,
+            metrics_ctx=metrics_ctx,
+        )
 
 
 async def read_resource_impl(

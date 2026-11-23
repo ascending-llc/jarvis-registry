@@ -12,6 +12,7 @@ import pytest
 from registry.core.mcp_client import MCPServerData
 from registry.core.telemetry_decorators import (
     AuthMetricsContext,
+    ExecutionMetricsContext,
     PromptExecutionMetricsContext,
     ResourceAccessMetricsContext,
     ToolExecutionMetricsContext,
@@ -344,3 +345,33 @@ async def test_track_tool_discovery_reads_mcp_server_data(result, success, tools
     assert kwargs["transport_type"] == "sse"
     assert kwargs["success"] is success
     assert kwargs["tools_count"] == tools_count
+
+
+@pytest.mark.parametrize(
+    "context_type,record_name",
+    [
+        (ResourceAccessMetricsContext, "_record_resource_access"),
+        (PromptExecutionMetricsContext, "_record_prompt_execution"),
+    ],
+)
+@pytest.mark.parametrize("raises", [False, True])
+async def test_non_tool_input_required_and_exception_override(
+    context_type: type[ExecutionMetricsContext], record_name: str, raises: bool
+) -> None:
+    with patch(f"{DOMAIN_FUNCS_PATH}.{record_name}") as record:
+        ctx = context_type()
+        if raises:
+            with pytest.raises(ValueError):
+                async with ctx:
+                    ctx.set_input_required()
+                    ctx.set_error_type("consent_required")
+                    raise ValueError("failed after pending input")
+        else:
+            async with ctx:
+                ctx.set_input_required()
+                ctx.set_error_type("consent_required")
+        assert record.call_args.kwargs["success"] is False
+        assert record.call_args.kwargs["error_type"] == "consent_required"
+        assert "input_required" not in record.call_args.kwargs
+        assert "resource_uri" not in record.call_args.kwargs
+        assert ctx._outcome.value == ("failure" if raises else "input_required")

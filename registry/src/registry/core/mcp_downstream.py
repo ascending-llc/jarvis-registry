@@ -437,33 +437,3 @@ async def call_downstream(
                 raise
             raise mapped from exc
     raise AssertionError("unreachable")
-
-
-async def call_downstream_tool(
-    *,
-    url: str,
-    transport_type: MCPTransport,
-    server_id: str,
-    user_id: str,
-    headers: dict[str, str],
-    tool_name: str,
-    arguments: dict[str, Any] | None,
-    downstream_transport: httpx2.AsyncBaseTransport,
-    response_cache: InMemoryResponseCacheStore,
-    era_cache: DownstreamEraCache,
-    on_progress: ProgressFnT | None = None,
-    on_log: LoggingFnT | None = None,
-) -> CallToolResult | InputRequiredResult:
-    return await call_downstream(
-        url=url,
-        transport_type=transport_type,
-        server_id=server_id,
-        user_id=user_id,
-        headers=headers,
-        operation=ToolCall(tool_name, arguments),
-        downstream_transport=downstream_transport,
-        response_cache=response_cache,
-        era_cache=era_cache,
-        on_progress=on_progress,
-        on_log=on_log,
-    )

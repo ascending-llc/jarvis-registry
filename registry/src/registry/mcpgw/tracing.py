@@ -7,7 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from functools import wraps
-from typing import Any, Literal
+from typing import Any, Concatenate, Literal
 
 from a2a.types import DataPart, FilePart, FileWithBytes, FileWithUri, TextPart
 from mcp.server.mcpserver import Context
@@ -30,6 +30,7 @@ from pydantic import AnyUrl, BaseModel
 from registry_pkgs.telemetry.span_attributes import TRACE_APP, clean_span_attributes, set_span_attributes
 
 from ..constants import ExecutionOutcome
+from ..core.mcp_downstream import DownstreamOperation, PromptGet, ResourceRead, ToolCall
 from .core.types import McpAppContext
 from .tools.utils import get_client_params
 
@@ -44,6 +45,11 @@ _AGENT_TRACE_NAME = "AgentRun"
 _DISCOVERY_OPERATIONS = {
     "mcp": ("mcp.discovery", "McpDiscovery", "discover_servers", "mcp"),
     "a2a": ("a2a.discovery", "AgentDiscovery", "discover_agents", "agent"),
+}
+_SERVER_OPERATIONS = {
+    ToolCall: (_TOOL_SPAN_NAME, _TOOL_TRACE_NAME, "mcp_tool"),
+    ResourceRead: ("mcp.resource.read", "McpResourceRead", "mcp_resource"),
+    PromptGet: ("mcp.prompt.get", "McpPromptGet", "mcp_prompt"),
 }
 _TRACER = trace.get_tracer("registry.mcpgw")
 _RAW_PYTHON_BYTES_OMITTED = "[RAW PYTHON BYTES OMITTED]"
@@ -89,7 +95,7 @@ def _build_agent_trace_input(agent_id: str, message: Any) -> dict[str, Any]:
     }
 
 
-def _build_tool_trace_input(tool_name: str, server_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _build_tool_trace_input(tool_name: str, server_id: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "arguments": arguments,
         "server_id": server_id,
@@ -300,47 +306,69 @@ def trace_discovery(
     return wrapper
 
 
-def trace_tool_execution(
+def _build_server_trace_input(operation: DownstreamOperation, server_id: str) -> dict[str, Any]:
+    if isinstance(operation, ToolCall):
+        return _build_tool_trace_input(operation.tool_name, server_id, operation.arguments)
+    if isinstance(operation, ResourceRead):
+        return {"server_id": server_id, "resource_uri": operation.uri}
+    return {"server_id": server_id, "prompt_name": operation.name, "arguments": operation.arguments}
+
+
+def trace_server_operation[**P](
     func: Callable[
-        [Context[McpAppContext], str, dict[str, Any], str],
+        Concatenate[Context[McpAppContext], DownstreamOperation, str, P],
         Awaitable[CallToolResult | InputRequiredResult],
     ],
 ) -> Callable[
-    [Context[McpAppContext], str, dict[str, Any], str],
+    Concatenate[Context[McpAppContext], DownstreamOperation, str, P],
     Awaitable[CallToolResult | InputRequiredResult],
 ]:
-    """Trace one downstream MCP tool execution with trace-relevant input and output."""
+    """Trace the shared pipeline without changing its arguments, return values or exceptions.
+
+    Rendering happens inside the decorated function, so _record_result sees only gateway
+    CallToolResult / InputRequiredResult objects, never native resource or prompt results.
+    """
 
     @wraps(func)
     async def wrapper(
         ctx: Context[McpAppContext],
-        tool_name: str,
-        arguments: dict[str, Any],
+        operation: DownstreamOperation,
         server_id: str,
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> CallToolResult | InputRequiredResult:
+        # 1. Select stable span settings from the operation type, preserving the tool contract.
+        span_name, trace_name, operation_type = _SERVER_OPERATIONS[type(operation)]
         attributes = {
             **_build_trace_attributes(
                 ctx,
                 observation_type="tool",
-                trace_name=_TOOL_TRACE_NAME,
+                trace_name=trace_name,
                 tags=_trace_tags("mcp"),
-                operation_type="mcp_tool",
+                operation_type=operation_type,
             ),
-            "mcp.tool.name": tool_name,
             "mcp.server.id": server_id,
         }
-        with _TRACER.start_as_current_span(_TOOL_SPAN_NAME, attributes=clean_span_attributes(attributes)) as span:
+        # 2. Add operation identifiers; keep resource URIs and prompt arguments in serialized input.
+        if isinstance(operation, ToolCall):
+            attributes["mcp.tool.name"] = operation.tool_name
+        elif isinstance(operation, PromptGet):
+            attributes["mcp.prompt.name"] = operation.name
+        with _TRACER.start_as_current_span(span_name, attributes=clean_span_attributes(attributes)) as span:
+            # 3. Project input lazily through the existing safe serialization boundary.
             _set_serialized_attribute(
                 span,
                 "langfuse.observation.input",
-                projection=lambda: _build_tool_trace_input(tool_name, server_id, arguments),
+                projection=lambda: _build_server_trace_input(operation, server_id),
             )
             outcome = ExecutionOutcome.FAILURE
             try:
-                result = await func(ctx, tool_name, arguments, server_id)
+                # 4. Forward metrics/render kwargs unchanged and record the final gateway result.
+                result = await func(ctx, operation, server_id, *args, **kwargs)
                 outcome = _record_result(span, result)
                 return result
             finally:
+                # 5. Record failure on exceptions/cancellation without intercepting their propagation.
                 set_span_attributes(
                     span,
                     {
