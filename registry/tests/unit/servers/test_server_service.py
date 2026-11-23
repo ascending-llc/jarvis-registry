@@ -44,6 +44,18 @@ def _captured(
     )
 
 
+async def test_get_names_by_paths_batches_only_display_fields() -> None:
+    service = ServerServiceV1(Mock(), Mock(), Mock(), Mock())
+    paths = {"/live", "/deleted"}
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection") as collection:
+        find = collection.return_value.find
+        find.return_value.__aiter__.return_value = [{"path": "/live", "serverName": "Live server"}]
+        assert await service.get_names_by_paths(set()) == {}
+        assert await service.get_names_by_paths(paths) == {"/live": "Live server"}
+
+    find.assert_called_once_with({"path": {"$in": list(paths)}}, {"_id": 0, "path": 1, "serverName": 1})
+
+
 def _record_config_at_save(server: Mock) -> list[dict[str, object]]:
     saved: list[dict[str, object]] = []
 

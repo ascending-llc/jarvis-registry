@@ -22,6 +22,11 @@ exclude-entropy-patterns = [
 ]
 
 exclude-signatures = [
+    {signature = 'e3725add20aae308af7e85c3176b72edefab08f16767d44e8077a13fbbdf3496', reason = 'synthetic MongoDB user ID in consent store tests is not a credential'},
+    {signature = '60db9c49d670b0fbb4b6d104960a0fad9064231f6db0b3de7a60e63abbbbe06d', reason = 'synthetic second-user MongoDB ID in consent isolation test is not a credential'},
+    {signature = '955fd820884038cdcf0c5aa0e1733d6b7998b4a4ebee7326f50fa993bba6ef2c', reason = 'synthetic MongoDB user A ID in consent route tests is not a credential'},
+    {signature = '58288b9040447d29282a3d9d6eb27e744e50ac9764ce6009292a95c0c3be84d6', reason = 'synthetic MongoDB user B ID in consent route tests is not a credential'},
+    {signature = '066996ab68f8ca8aae43dc1a84bb859ba770182861fe44ca86b55667abe50b24', reason = 'synthetic MongoDB user ID in consent management service tests is not a credential'},
     {signature = 'd558f0aebd23f70b4545f76483518eb4bd3994655b7a6fdc4389af0e738e1d09', reason = 'public ASCENDING YouTube channel URL in generated documentation is not a credential'},
     {signature = '7ac6503b2d8dd872044373480e3ba62063d0e459d32dfb9423fb8116cf4ef9d2', reason = 'OTEL_SEMCONV_STABILITY_OPT_IN documented setting in generated documentation is not a credential'},
     {signature = 'b34480379b07e457f27df9dfa0b8179d1630f01335b65449afcf9c923938e7cf', reason = 'public GitHub commit permalink in generated documentation is not a credential'},

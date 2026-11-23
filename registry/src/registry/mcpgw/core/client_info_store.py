@@ -35,6 +35,10 @@ _CLIENT_INFO_TTL_SECONDS = 2592000
 _PERSISTED_FIELDS = {"client_info", "capabilities", "protocol_version"}
 
 
+def _client_key(prefix: str, user_id: str, client_id: str) -> str:
+    return f"{prefix}:mcpgw:client:{user_id}:{client_id}"
+
+
 def client_info_key(prefix: str, user_context: UserContextDict, jwt_config: JwtTokenConfig) -> str | None:
     """Build the Redis key for a user's client-info, or ``None`` when it must not be cached.
 
@@ -51,13 +55,14 @@ def client_info_key(prefix: str, user_context: UserContextDict, jwt_config: JwtT
     if not user_id or not client_id:
         return None
 
+    base_key = _client_key(prefix, user_id, client_id)
     if resolve_client_category(client_id, jwt_config) is ClientCategory.MCP_DCR:
-        return f"{prefix}:mcpgw:client:{user_id}:{client_id}"
+        return base_key
 
     jti = user_context.get("jti")
     if not jti:
         return None
-    return f"{prefix}:mcpgw:client:{user_id}:{client_id}:{jti}"
+    return f"{base_key}:{jti}"
 
 
 class ClientInfoStore:
@@ -89,6 +94,18 @@ class ClientInfoStore:
         except RedisError:
             logger.warning("Failed to read cached client-info at key %s; treating as a miss.", key, exc_info=True)
             return None
+        return self._parse(key, raw)
+
+    def load_many_for_dcr(self, user_id: str, client_ids: list[str]) -> dict[str, InitializeRequestParams | None]:
+        """Read the user's MCP DCR cache entries in one round trip."""
+        if not client_ids:
+            return {}
+        keys = [_client_key(self._key_prefix, user_id, client_id) for client_id in client_ids]
+        values = self._redis.mget(keys)
+        return {client_id: self._parse(key, raw) for client_id, key, raw in zip(client_ids, keys, values, strict=True)}
+
+    @staticmethod
+    def _parse(key: str, raw: str | bytes | None) -> InitializeRequestParams | None:
         if raw is None:
             return None
         try:

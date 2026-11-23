@@ -3,6 +3,7 @@
 import fnmatch
 import json
 from typing import Any
+from unittest.mock import patch
 
 import fakeredis
 import pytest
@@ -500,6 +501,22 @@ def test_oauth_client_store_is_explicit_client_facade(fake_redis: _FakeRedis) ->
 
     assert client_store.get_client("client-1") == {"client_id": "client-1", "token_endpoint_auth_method": "none"}
     assert "jarvis-auth-server:oauth:client:client-1" in fake_redis.values
+
+
+def test_batch_client_lookup_reads_metadata_without_renewing_registration() -> None:
+    redis_client = fakeredis.FakeRedis(decode_responses=True)
+    store = OAuthClientStore(redis_client, key_prefix="test", client_secret_hash_key="hash-key")
+    key = "test:oauth:client:dcr-1"
+    metadata = {"client_name": "Demo"}
+    store.save_client("dcr-1", metadata)
+    redis_client.pexpire(key, 100_250)
+    expires_at = redis_client.pexpiretime(key)
+
+    with patch.object(redis_client, "mget", wraps=redis_client.mget) as mget:
+        assert store.get_clients_without_ttl_slide([]) == {}
+        assert store.get_clients_without_ttl_slide(["missing", "dcr-1"]) == {"missing": None, "dcr-1": metadata}
+    mget.assert_called_once_with(["test:oauth:client:missing", key])
+    assert redis_client.pexpiretime(key) == expires_at
 
 
 def test_downstream_oauth_state_store_composes_client_and_refresh_stores(fake_redis: _FakeRedis) -> None:
