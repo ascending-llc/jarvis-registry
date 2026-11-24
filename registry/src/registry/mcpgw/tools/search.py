@@ -128,6 +128,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         - tool_name (entity_type='tool') → execute_tool(tool_name, server_id, arguments)
         - input_schema (entity_type='tool'): use it to construct arguments; may be None if omitted
         - resource_uri (entity_type='resource') → read_resource(server_id, resource_uri)
+        - resource_uri_template (entity_type='resource', instead of resource_uri) → fill every {variable}, then read_resource(server_id, resource_uri=<filled URI>)
         - prompt_name (entity_type='prompt') → execute_prompt(server_id, prompt_name, arguments)
 
         Evaluating results: read each result's description to confirm it matches the

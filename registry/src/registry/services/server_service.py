@@ -1136,8 +1136,8 @@ class ServerServiceV1:
 
         Returns:
             MCPServerData. On failure only ``error_message`` is set. On success ``error_message`` is None;
-            ``capabilities`` is None when ``include_capabilities=False``. A listing that failed on its own is
-            None (keep the stored value); one that was not requested is [].
+            ``capabilities`` is None when ``include_capabilities=False``. A listing that failed on its own or was
+            not requested is None (keep the stored value); ``include_resources`` gates resource templates too.
 
             For OAuth servers, ``resources/list`` is never called and ``resources`` is always []: the token
             belongs to one user, so the concrete resources would be that user's data shown to every viewer.
@@ -1396,7 +1396,10 @@ class ServerServiceV1:
         return {
             "server": server,
             "status": "success",
-            "status_message": f"Successfully refreshed capabilities (retrieved {len(tool_list)} tools, {_count(captured.resources)} resources, {_count(captured.prompts)} prompts)",
+            "status_message": (
+                f"Successfully refreshed capabilities (retrieved {len(tool_list)} tools, {_count(captured.resources)} "
+                f"resources, {_count(captured.resource_templates)} resource templates, {_count(captured.prompts)} prompts)"
+            ),
             "last_checked": now,
             "response_time_ms": None,  # We don't track response time for MCP connections
         }
