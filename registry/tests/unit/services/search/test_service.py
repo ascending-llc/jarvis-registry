@@ -7,13 +7,19 @@ These cover the search logic extracted out of api/v1/search_routes.py:
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bson import ObjectId
+from pymongo import ReadPreference
+from pymongo.errors import PyMongoError
 
+from registry.services.search.private_resources import drop_private_mcp_resources
 from registry.services.search.service import SearchRequest, SearchService
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.vector.enum.enums import SearchType
 
 
@@ -42,6 +48,91 @@ def _make_service(
 # ---------------------------------------------------------------------------
 # search_entities (flat, repo-based — used by mcpgw discover_* tools)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["", "documents"])
+async def test_discovery_filters_stale_oauth_resources_using_current_auth(query: str) -> None:
+    oauth_id, legacy_oauth_id, api_key_id, agentcore_id, deleted_id = [ObjectId() for _ in range(5)]
+    servers = [
+        {"_id": oauth_id, "config": {"requiresOAuth": True}},
+        {"_id": legacy_oauth_id, "config": {"oauth": {}}},
+        {"_id": api_key_id, "config": {"apiKey": {"key": "shared"}}},
+        {"_id": agentcore_id, "config": {"runtimeAccess": {"mode": "jwt"}, "oauth": {}}},
+    ]
+    private = [
+        {
+            "server_id": str(server_id),
+            "entity_type": "resource",
+            "resource_uri": "private://another-user/financial-report",
+            "description": "Another user's private financial report",
+        }
+        for server_id in (oauth_id, legacy_oauth_id, deleted_id)
+    ]
+    private.extend(
+        [
+            {"entity_type": "resource", "server_id": "invalid", "resource_uri": "private://x"},
+            {"entity_type": "resource", "description": "Legacy resource without URI metadata"},
+        ]
+    )
+    public = [
+        {"server_id": str(api_key_id), "entity_type": "resource", "resource_uri": "shared://document"},
+        {"server_id": str(agentcore_id), "entity_type": "resource", "resource_uri": "shared://runtime"},
+        {"server_id": str(oauth_id), "entity_type": "resource", "resource_uri_template": "files://{id}"},
+        {"server_id": str(oauth_id), "entity_type": "tool", "tool_name": "search"},
+        {"server_id": str(oauth_id), "entity_type": "prompt", "prompt_name": "summarize"},
+    ]
+    repo = MagicMock(
+        afilter=AsyncMock(return_value=private + public),
+        asearch_with_rerank=AsyncMock(return_value=private + public),
+    )
+    service = _make_service(mcp_server_repo=repo)
+
+    async def cursor() -> AsyncIterator[dict]:
+        for server in servers:
+            yield server
+
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+    collection.find.return_value = cursor()
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
+        response = await service.search_entities(
+            SearchRequest(query=query, top_n=20, type_list=list(MCPEntityType)), {"username": "viewer"}
+        )
+
+    assert response["results"] == public
+    assert response["total"] == len(public)
+    collection.with_options.assert_called_once_with(read_preference=ReadPreference.PRIMARY)
+    collection.find.assert_called_once()
+    match, projection = collection.find.call_args.args
+    assert set(match["_id"]["$in"]) == {oauth_id, legacy_oauth_id, api_key_id, agentcore_id, deleted_id}
+    assert projection == {"config.requiresOAuth": 1, "config.oauth": 1, "config.runtimeAccess": 1}
+
+
+@pytest.mark.asyncio
+async def test_discovery_skips_auth_lookup_for_tools_prompts_and_resource_templates() -> None:
+    results = [
+        {"entity_type": "tool", "tool_name": "search"},
+        {"entity_type": "prompt", "prompt_name": "summarize"},
+        {"entity_type": "resource", "resource_uri_template": "files://{id}"},
+    ]
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection") as get_collection:
+        assert await drop_private_mcp_resources(results) == results
+    get_collection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discovery_does_not_return_resources_when_auth_lookup_fails() -> None:
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+    collection.find.side_effect = PyMongoError("Mongo unavailable")
+    with (
+        patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection),
+        pytest.raises(PyMongoError, match="Mongo unavailable"),
+    ):
+        await drop_private_mcp_resources(
+            [{"server_id": str(ObjectId()), "entity_type": "resource", "resource_uri": "private://x"}]
+        )
 
 
 @pytest.mark.asyncio

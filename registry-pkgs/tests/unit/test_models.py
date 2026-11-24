@@ -994,3 +994,116 @@ class TestLeaderLease:
         assert dict(ttl[0]["key"]) == {"expireAt": 1}
         assert ttl[0]["expireAfterSeconds"] == 0
         assert LeaderLease.model_fields["expireAt"].default is None
+
+
+def _resource_server(**config: object) -> ExtendedMCPServer:
+    return ExtendedMCPServer.model_construct(
+        id=PydanticObjectId(),
+        serverName="github",
+        config={
+            "title": "GitHub MCP Server",
+            "description": "GitHub integration",
+            "type": "streamable-http",
+            "url": "https://example.com/mcp",
+            "toolFunctions": {},
+            "prompts": [],
+            **config,
+        },
+        author=PydanticObjectId(),
+        path="/mcp/github",
+    )
+
+
+def _resource_docs(server: ExtendedMCPServer) -> list[LangChainDocument]:
+    return [doc for doc in server.to_documents() if doc.metadata.get("entity_type") == "resource"]
+
+
+_CONCRETE = {"uri": "file:///README.md", "name": "readme", "mimeType": "text/markdown"}
+_TEMPLATE = {"uriTemplate": "github://repo/{owner}/{repo}", "name": "repository", "mimeType": "application/json"}
+
+
+class TestResourceDocuments:
+    """Indexing of concrete resources, resource templates and MCP App UI resources."""
+
+    def test_concrete_resource_is_labelled_uri(self) -> None:
+        (doc,) = _resource_docs(_resource_server(resources=[_CONCRETE]))
+
+        assert "URI: file:///README.md" in doc.page_content
+        assert "URI template:" not in doc.page_content
+        assert doc.metadata["resource_uri"] == "file:///README.md"
+        assert "resource_uri_template" not in doc.metadata
+
+    def test_template_document(self) -> None:
+        (doc,) = _resource_docs(_resource_server(resourceTemplates=[_TEMPLATE]))
+
+        assert doc.metadata["entity_type"] == "resource"
+        assert doc.metadata["resource_name"] == "repository"
+        assert doc.metadata["resource_uri_template"] == "github://repo/{owner}/{repo}"
+        assert "resource_uri" not in doc.metadata
+        assert "URI template: github://repo/{owner}/{repo}" in doc.page_content
+        assert "github" in doc.page_content and "/mcp/github" in doc.page_content
+
+    @pytest.mark.parametrize(
+        "ui_item",
+        [
+            {"uri": "ui://widget/app.html", "name": "w"},
+            {"uri": "https://x/app", "name": "w", "mimeType": "text/html;profile=mcp-app"},
+            {"uri": "https://x/app", "name": "w", "mimeType": "Text/HTML; profile=mcp-app"},
+            {"uri": "https://x/app", "name": "w", "mimeType": 'text/html; profile="mcp-app"'},
+            {"uri": "https://x/app", "name": "w", "mimeType": "text/html; charset=utf-8; profile=mcp-app"},
+            {"uri": "UI://widget/app.html", "name": "w"},
+        ],
+    )
+    def test_mcp_app_ui_resources_are_not_indexed(self, ui_item: dict) -> None:
+        server = _resource_server(resources=[_CONCRETE, ui_item])
+
+        assert [doc.metadata["resource_uri"] for doc in _resource_docs(server)] == ["file:///README.md"]
+        assert server.config["resources"][1] == ui_item  # kept in config
+
+    def test_mcp_app_ui_templates_are_not_indexed(self) -> None:
+        ui_template = {"uriTemplate": "ui://widget/{id}", "name": "w"}
+
+        docs = _resource_docs(_resource_server(resourceTemplates=[_TEMPLATE, ui_template]))
+
+        assert [doc.metadata["resource_uri_template"] for doc in docs] == ["github://repo/{owner}/{repo}"]
+
+    def test_oauth_server_concrete_resources_are_not_indexed(self) -> None:
+        server = _resource_server(requiresOAuth=True, resources=[_CONCRETE], resourceTemplates=[_TEMPLATE])
+
+        docs = _resource_docs(server)
+
+        assert [doc.metadata.get("resource_uri_template") for doc in docs] == ["github://repo/{owner}/{repo}"]
+
+    def test_from_document_returns_exactly_one_uri_field(self) -> None:
+        server = _resource_server(resources=[_CONCRETE], resourceTemplates=[_TEMPLATE])
+
+        results = [ExtendedMCPServer.from_document(doc) for doc in _resource_docs(server)]
+
+        concrete, template = sorted(results, key=lambda r: "resource_uri_template" in r)
+        assert concrete["resource_uri"] == "file:///README.md" and "resource_uri_template" not in concrete
+        assert template["resource_uri_template"] == _TEMPLATE["uriTemplate"] and "resource_uri" not in template
+
+    def test_content_hash_changes_for_templates_but_not_ui_resources(self) -> None:
+        server = _resource_server(resources=[_CONCRETE])
+        server.refresh_content_hash()
+        base = server.vectorContentHash
+
+        server.config["resources"] = [_CONCRETE, {"uri": "ui://widget/app.html", "name": "w"}]
+        server.refresh_content_hash()
+        assert server.vectorContentHash == base
+
+        server.config["resourceTemplates"] = [_TEMPLATE]
+        server.refresh_content_hash()
+        assert server.vectorContentHash != base
+
+
+@pytest.mark.parametrize(
+    "mime_type",
+    ["text/html", "text/plain; profile=mcp-app", "text/html; profile=other", "application/json", ""],
+)
+def test_ordinary_html_and_other_types_are_indexed(mime_type: str) -> None:
+    item = {"uri": "https://x/page", "name": "page", "mimeType": mime_type}
+
+    docs = _resource_docs(_resource_server(resources=[item]))
+
+    assert [doc.metadata["resource_uri"] for doc in docs] == ["https://x/page"]

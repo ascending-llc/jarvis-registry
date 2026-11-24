@@ -1213,3 +1213,36 @@ class TestFederationReindexGate:
                 federation=self._federation(), job=MagicMock(), author_id=_DEFAULT_USER_OBJECT_ID, lease=_TEST_LEASE
             )
         assert not isinstance(exc_info.value, EmbeddingReindexInProgressException)
+
+
+def test_copy_mcp_update_fields_keeps_listings_enrichment_left_out() -> None:
+    existing = SimpleNamespace(
+        config={"resources": [{"uri": "a://old"}], "resourceTemplates": [{"uriTemplate": "a://{x}"}], "prompts": []},
+    )
+    discovered = SimpleNamespace(
+        serverName="srv",
+        path="/srv",
+        tags=["t"],
+        # resourceTemplates failed this time; resources succeeded with a new value; prompts definitely empty.
+        config={"url": "u", "resources": [{"uri": "a://new"}], "prompts": []},
+        numTools=1,
+        federationMetadata=None,
+    )
+
+    FederationSyncService._copy_mcp_update_fields(existing, discovered)
+
+    assert existing.config["resources"] == [{"uri": "a://new"}]
+    assert existing.config["resourceTemplates"] == [{"uriTemplate": "a://{x}"}]
+    assert existing.config["prompts"] == []
+    assert existing.config["url"] == "u"
+
+
+def test_copy_mcp_update_fields_with_no_previous_config() -> None:
+    existing = SimpleNamespace(config=None)
+    discovered = SimpleNamespace(
+        serverName="srv", path="/srv", tags=None, config={"url": "u"}, numTools=0, federationMetadata=None
+    )
+
+    FederationSyncService._copy_mcp_update_fields(existing, discovered)
+
+    assert existing.config == {"url": "u"}
