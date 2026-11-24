@@ -16,6 +16,10 @@ from registry_pkgs.models.enums import McpAuthMode, MCPEntityType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer, mcp_auth_mode_from_config
 
 _AUTH_PROJECTION = {"config.requiresOAuth": 1, "config.oauth": 1, "config.runtimeAccess": 1}
+# Refill bounds: at most this many search rounds, and a window no larger than this (or the
+# requested limit, if larger). Stays well under Weaviate's QUERY_MAXIMUM_RESULTS.
+_MAX_REFILL_FETCHES = 4
+_MAX_CANDIDATE_WINDOW = 200
 
 
 def _is_concrete_resource(doc: dict[str, Any]) -> bool:
@@ -57,13 +61,18 @@ async def fetch_eligible_mcp_candidates(
     """Refill a ranked candidate window when stale private resources consume its slots.
 
     Each enlarged window is checked against current primary Mongo auth state. Only return
-    eligible documents, preserving their order; stop when the budget is filled or the source
-    is exhausted. No extra vector request is needed when the first window is already eligible.
+    eligible documents, preserving their order; stop when the budget is filled, the source
+    is exhausted, or the window / round cap is reached. Each round re-runs the whole search,
+    so the caps bound vector, rerank and Mongo work: a server with thousands of stale resource
+    vectors yields a short result instead of an ever-growing query. No extra vector request is
+    needed when the first window is already eligible.
     """
+    max_window = max(limit, _MAX_CANDIDATE_WINDOW)
     requested = limit
-    while True:
+    for _ in range(_MAX_REFILL_FETCHES):
         docs = await fetch(requested)
         eligible = await drop_private_mcp_resources(docs)
-        if len(eligible) >= limit or len(docs) < requested:
-            return eligible[:limit]
-        requested *= 2
+        if len(eligible) >= limit or len(docs) < requested or requested >= max_window:
+            break
+        requested = min(requested * 2, max_window)
+    return eligible[:limit]

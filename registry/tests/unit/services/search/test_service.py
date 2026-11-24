@@ -904,3 +904,32 @@ async def test_candidate_refill_stops_when_only_private_documents_remain() -> No
     fetch = AsyncMock(side_effect=lambda limit: private[:limit])
     assert await fetch_eligible_mcp_candidates(fetch, 1) == []
     assert [c.args[0] for c in fetch.await_args_list] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected_windows"),
+    [(1, [1, 2, 4, 8]), (60, [60, 120, 200]), (300, [300])],
+    ids=["round-cap", "window-cap", "limit-above-window-cap"],
+)
+async def test_candidate_refill_is_bounded_when_private_documents_dominate(
+    limit: int, expected_windows: list[int]
+) -> None:
+    from registry.services.search.private_resources import fetch_eligible_mcp_candidates
+
+    oauth_id = ObjectId()
+    private = [
+        {"entity_type": "resource", "server_id": str(oauth_id), "resource_uri": f"private://{i}"} for i in range(5000)
+    ]
+    eligible = {"entity_type": "tool", "server_id": "shared", "tool_name": "echo"}
+    ranked = [*private, eligible]
+    fetch = AsyncMock(side_effect=lambda window: ranked[:window])
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+
+    async def servers():
+        yield {"_id": oauth_id, "config": {"requiresOAuth": True}}
+
+    collection.find.side_effect = lambda *_: servers()
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
+        assert await fetch_eligible_mcp_candidates(fetch, limit) == []
+    assert [c.args[0] for c in fetch.await_args_list] == expected_windows
