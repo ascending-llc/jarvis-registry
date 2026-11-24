@@ -264,7 +264,8 @@ def test_protected_clients_are_rejected_without_deleting_consent(
         ]
     }
     for client_id in protected:
-        assert client.delete(f"{URL}/{client_id}", headers=headers).status_code == 400
+        delete_response = client.delete(f"{URL}/{client_id}", headers=headers)
+        assert delete_response.status_code == 400
         response = client.post(f"{URL}/{client_id}/resources/revoke", headers=headers, json={"resources": [SERVER]})
         assert response.status_code == 400
         assert container.consent_store.get_client_grant_id(USER_A, client_id)
