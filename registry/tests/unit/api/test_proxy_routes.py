@@ -54,7 +54,11 @@ _AUTH_CONTEXT = {
 
 
 def _make_server(
-    *, enabled: bool = True, auth_mode: McpAuthMode = McpAuthMode.NONE, transport: str = "streamable-http"
+    *,
+    enabled: bool = True,
+    auth_mode: McpAuthMode = McpAuthMode.NONE,
+    transport: str = "streamable-http",
+    disabled_tools: list[str] | None = None,
 ):
     return SimpleNamespace(
         id=PydanticObjectId(),
@@ -62,6 +66,8 @@ def _make_server(
         path="/github",
         serverName="github",
         config={"enabled": enabled, "type": transport, "url": "https://example.com/mcp"},
+        registryDisabledTools=disabled_tools or [],
+        is_tool_disabled=lambda tool_name: tool_name in (disabled_tools or []),
     )
 
 
@@ -528,6 +534,157 @@ async def test_post_proxy_wrong_transport_returns_iserror_result_for_tools_call(
     assert "error" not in body
     assert body["result"]["isError"] is True
     assert "sse" in body["result"]["content"][0]["text"]
+
+
+async def test_post_proxy_disabled_tool_refuses_tools_call_before_forwarding(monkeypatch):
+    """A tool the server owner disabled in the registry must not execute through the direct
+    proxy either — the same policy the gateway's execute_tool already enforces."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(
+            return_value={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "id": 1,
+                "params": {"name": "delete_repo", "arguments": {"owner": "org"}},
+            }
+        ),
+    )
+    forward = AsyncMock(return_value=Response(status_code=500))
+    monkeypatch.setattr("registry.api.proxy_routes.proxy_to_mcp_server", forward)
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+        pending_store=_PendingConsentStore(),
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "delete_repo" in body["result"]["content"][0]["text"]
+    assert "disabled" in body["result"]["content"][0]["text"].lower()
+    forward.assert_not_called()
+
+
+async def test_post_proxy_enabled_tool_still_forwards(monkeypatch):
+    """tools/call for a tool that is not disabled still reaches the forwarding path."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(
+            return_value={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "id": 1,
+                "params": {"name": "list_repos", "arguments": {}},
+            }
+        ),
+    )
+    forward = AsyncMock(return_value=Response(status_code=200))
+    monkeypatch.setattr("registry.api.proxy_routes.proxy_to_mcp_server", forward)
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+        pending_store=_PendingConsentStore(),
+    )
+
+    assert resp.status_code == 200
+    forward.assert_awaited_once()
+
+
+async def test_post_proxy_disabled_tools_do_not_gate_handshake_methods(monkeypatch):
+    """initialize / tools/list carry no tool_name, so a disabled tool never blocks them;
+    whether the proxy should also filter tools/list responses is out of scope for this gate."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": "tools/list", "id": 1}),
+    )
+    forward = AsyncMock(return_value=Response(status_code=200))
+    monkeypatch.setattr("registry.api.proxy_routes.proxy_to_mcp_server", forward)
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=_consent_store(),
+        pending_store=_PendingConsentStore(),
+    )
+
+    assert resp.status_code == 200
+    forward.assert_awaited_once()
+
+
+async def test_post_proxy_disabled_tool_refused_before_consent_gate(monkeypatch):
+    """The tool gate runs before the consent check, as it does on the gateway: a client that has
+    not consented yet is refused outright instead of being sent through consent for a call that
+    cannot succeed."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(
+            return_value={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "id": 1,
+                "params": {"name": "delete_repo", "arguments": {"owner": "org"}},
+            }
+        ),
+    )
+    forward = AsyncMock(return_value=Response(status_code=500))
+    monkeypatch.setattr("registry.api.proxy_routes.proxy_to_mcp_server", forward)
+    pending_store = _PendingConsentStore()
+    consent_store = _consent_store(has_server_consent=False)
+    auth_context = {**_AUTH_CONTEXT, "client_id": INTERACTIVE_CLIENT_ID}
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=auth_context,
+        server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=consent_store,
+        pending_store=pending_store,
+    )
+
+    body = json.loads(resp.body)
+    # The refusal is the isError "disabled" result...
+    assert resp.status_code == 200
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "delete_repo" in body["result"]["content"][0]["text"]
+    assert "disabled" in body["result"]["content"][0]["text"].lower()
+    # ...not a consent / URL elicitation response...
+    consent_store.has_server_consent.assert_not_called()
+    assert pending_store.pending == {}
+    # ...and nothing reaches the downstream server.
+    forward.assert_not_called()
 
 
 async def test_post_proxy_headless_agent_bypasses_server_consent(monkeypatch):
