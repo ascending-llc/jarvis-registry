@@ -309,9 +309,12 @@ async def _authorize_server_call(
         )
 
     user_id = user_context["user_id"]
+    # Tool names are bounded and safe to log; resource URIs and prompt arguments never are.
+    tool_field = f" tool_name={operation.tool_name}" if isinstance(operation, ToolCall) else ""
     logger.info(
-        "%s: server call server_id=%s request_id=%s",
+        "%s: server call%s server_id=%s request_id=%s",
         label,
+        tool_field,
         server_id,
         getattr(ctx.request_context, "request_id", None),
     )
@@ -602,7 +605,12 @@ async def _execute_server_operation(
     except Exception as exc:
         # 7e. Wrap unexpected failures without exposing implementation details; retain the cause.
         msg = f"unexpected exception during {_operation_label(operation)}_impl"
-        logger.exception(msg)
+        if isinstance(operation, ToolCall):
+            logger.exception(msg)
+        else:
+            # 7f. Exception text and tracebacks can carry the resource URI or prompt arguments
+            #     (e.g. a pydantic ValidationError echoes its input), so log only the type.
+            logger.error("%s: %s", msg, type(exc).__name__)
 
         raise InternalServerException(msg) from exc
 
