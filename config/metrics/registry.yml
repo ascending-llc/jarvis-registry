@@ -7,7 +7,7 @@ counters:
     unit: "1"
     capture: true
 
-  # MCP server requests
+  # MCP server requests (labels: server_name, mode = gateway | proxy)
   - name: mcp_server_requests_total
     description: Total requests to MCP servers
     unit: "1"
@@ -37,15 +37,17 @@ counters:
     unit: "1"
     capture: true
 
-  # Direct MCP proxy: forwarded POST requests (labels: server_name, method, status)
+  # Direct MCP proxy: requests sent to the server, by outcome
+  # (labels: server_name, http_method, mcp_method, status = success | failure | input_required | cancelled)
   - name: mcp_proxy_requests_total
-    description: Total requests forwarded through the direct MCP proxy
+    description: Requests the direct MCP proxy sent to a server, by outcome
     unit: "1"
     capture: true
 
-  # Direct MCP proxy: tool-level calls (labels: tool_name, server_name, status)
+  # Direct MCP proxy: tools/call requests sent to the server
+  # (labels: tool_name = a tool registered on the server, or "other", server_name, status)
   - name: mcp_proxy_tool_calls_total
-    description: Total tools/call requests forwarded through the direct MCP proxy
+    description: tools/call requests the direct MCP proxy sent to a server, by outcome
     unit: "1"
     capture: true
 
@@ -122,9 +124,13 @@ histograms:
     unit: "s"
     capture: true
 
-  # Direct proxy: forwarded request latency (labels: server_name, method, status)
+  # Direct MCP proxy: time until the request's outcome was known
+  # (labels: server_name, http_method, mcp_method, status)
   - name: mcp_proxy_request_duration_seconds
-    description: Direct MCP proxy request duration in seconds
+    description: >-
+      Direct MCP proxy request duration in seconds. POST: until the response is complete, which
+      for an SSE response is when its body has been read to the end. GET: until the server sends
+      its response headers.
     unit: "s"
     capture: true
 

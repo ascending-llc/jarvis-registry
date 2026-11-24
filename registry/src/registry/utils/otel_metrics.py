@@ -24,10 +24,14 @@ Usage:
 """
 
 import logging
+from typing import Literal
 
 from registry_pkgs.telemetry.metrics_client import create_metrics_client, load_metrics_config
 
-from ..constants import ExecutionOutcome
+from ..constants import ExecutionOutcome, ProxyOutcome
+
+# Which side of Registry handled the request counted by mcp_server_requests_total.
+ServerRequestMode = Literal["gateway", "proxy"]
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -191,7 +195,7 @@ def record_prompt_get(
         metrics.record_histogram("mcp_prompt_get_duration_seconds", duration_seconds, attributes)
 
 
-def record_server_request(server_name: str) -> None:
+def record_server_request(server_name: str, mode: ServerRequestMode) -> None:
     """
     Record a request to a specific MCP server.
 
@@ -200,22 +204,29 @@ def record_server_request(server_name: str) -> None:
 
     Args:
         server_name: Name of the MCP server
+        mode: "gateway" when Registry ran the operation itself (a tool call, a resource read or
+            a prompt get); "proxy" when the direct proxy forwarded it to the server
     """
-    attributes = {"server_name": server_name}
+    attributes = {"server_name": server_name, "mode": mode}
     metrics.record_counter("mcp_server_requests_total", 1, attributes)
 
 
-_PROXY_TOOL_NAME_LABEL_LIMIT = 100
-
-
-def record_proxy_request(server_name: str, method: str, success: bool, duration_seconds: float) -> None:
+def record_proxy_request(
+    server_name: str,
+    http_method: str,
+    mcp_method: str,
+    outcome: ProxyOutcome,
+    duration_seconds: float,
+) -> None:
     """
-    Record a POST forwarded through the direct MCP proxy (``/proxy/server/...``).
+    Record a request the direct MCP proxy (``/proxy/server/...``) sent to a server.
 
-    The direct proxy relays bytes verbatim and never parses the tool result, so unlike the
-    gateway's ``record_tool_execution`` the status reflects the forwarded HTTP outcome, not a
-    classified CallToolResult. Gateway-side refusals (ACL, consent, disabled tool/server,
-    transport) return before forwarding and are not counted here.
+    ``outcome`` says how it ended: the server's response was relayed (``success`` if its status is
+    below 400, else ``failure``), the proxy itself failed (timeout, internal error, rejected
+    downstream authorization), Registry is waiting on the user (``input_required``), or the client
+    went away (``cancelled``). Requests the proxy refuses before sending anything are not recorded.
+    The proxy relays bytes verbatim and never parses tool results, so this is the HTTP outcome of
+    the exchange, unlike the gateway's ``record_tool_execution``.
 
     Requires these metrics in config:
     - counter: mcp_proxy_requests_total
@@ -223,29 +234,30 @@ def record_proxy_request(server_name: str, method: str, success: bool, duration_
     """
     attributes = {
         "server_name": server_name,
-        "method": method,
-        "status": "success" if success else "failure",
+        "http_method": http_method,
+        "mcp_method": mcp_method,
+        "status": outcome.value,
     }
 
     metrics.record_counter("mcp_proxy_requests_total", 1, attributes)
     metrics.record_histogram("mcp_proxy_request_duration_seconds", duration_seconds, attributes)
 
 
-def record_proxy_tool_call(tool_name: str, server_name: str, success: bool) -> None:
+def record_proxy_tool_call(tool_name: str, server_name: str, outcome: ProxyOutcome) -> None:
     """
-    Record a ``tools/call`` forwarded through the direct MCP proxy.
+    Record a ``tools/call`` the direct MCP proxy sent to a server.
 
-    ``tool_name`` is client-supplied (JSON-RPC params) and unvalidated at this layer, so it is
-    truncated as a cardinality guard — the same reasoning as the ``resource_uri`` note on
-    ``record_resource_access``.
+    ``tool_name`` must already be bounded by the caller: the raw name comes from the client's
+    JSON-RPC params, which the direct proxy does not validate, so only a name the server has
+    registered is used as-is and anything else is recorded as "other".
 
     Requires this metric in config:
     - counter: mcp_proxy_tool_calls_total
     """
     attributes = {
-        "tool_name": tool_name[:_PROXY_TOOL_NAME_LABEL_LIMIT],
+        "tool_name": tool_name,
         "server_name": server_name,
-        "status": "success" if success else "failure",
+        "status": outcome.value,
     }
 
     metrics.record_counter("mcp_proxy_tool_calls_total", 1, attributes)

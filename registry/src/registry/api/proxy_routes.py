@@ -2,11 +2,12 @@
 Dynamic MCP server proxy routes.
 """
 
+import asyncio
 import json
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from httpx2._decoders import SUPPORTED_DECODERS
+from mcp_types.methods import SPEC_CLIENT_METHODS
 from opentelemetry import baggage, trace
 from redis.exceptions import RedisError
 
@@ -23,6 +25,7 @@ from registry.constants import (
     JSONRPC_INTERNAL_ERROR,
     JSONRPC_INVALID_PARAMS,
     JSONRPC_INVALID_REQUEST,
+    ProxyOutcome,
     UrlElicitationInputKey,
 )
 from registry.core.mcp_config import MCPClientConfig
@@ -91,6 +94,16 @@ _MANAGED_AGENT_CARD_NOT_FOUND_DETAIL = "A2A agent not found"
 # implementation-defined server-error range (-32000 to -32099), chosen to avoid colliding
 # with any A2A-reserved type.
 _A2A_ACCESS_DENIED_ERROR_CODE = -32007
+
+# JSON-RPC methods the direct proxy counts on mcp_server_requests_total. It mirrors where the
+# gateway counts an operation on a server (execute_tool, read_resource, execute_prompt), which is
+# deliberately not INPUT_REQUIRED_METHODS: the two sets happen to match today but answer
+# different questions.
+_SERVER_REQUEST_METHODS = frozenset({"tools/call", "resources/read", "prompts/get"})
+
+# Metric label placeholders for client-controlled values that are not one of a known set.
+_UNRECOGNIZED_LABEL = "other"
+_NO_MCP_METHOD_LABEL = "none"
 
 
 async def _parse_json_rpc_body(request: Request) -> dict[str, Any] | None:
@@ -316,6 +329,62 @@ def _handle_url_elicitation_required(
     )
 
 
+def _relayed_outcome(status_code: int) -> ProxyOutcome:
+    """Outcome of a response relayed from the server as-is."""
+    return ProxyOutcome.SUCCESS if status_code < HTTPStatus.BAD_REQUEST else ProxyOutcome.FAILURE
+
+
+def _bounded_mcp_method(mcp_method: str) -> str:
+    """The JSON-RPC method as a label, kept to the request methods the MCP spec defines."""
+    return mcp_method if mcp_method in SPEC_CLIENT_METHODS else _UNRECOGNIZED_LABEL
+
+
+def _registered_tool_name(call: ProxyCall, server: ExtendedMCPServer) -> str | None:
+    """The called tool as a label: its name if the server has it registered, else "other".
+
+    The direct proxy forwards params.name without checking it against the server's tools, so the
+    raw value is whatever the client sent.
+    """
+    if call.tool_name is None:
+        return None
+    tool_functions = (server.config or {}).get("toolFunctions")
+    if isinstance(tool_functions, dict):
+        for key, tool in tool_functions.items():
+            if isinstance(tool, dict) and call.tool_name == tool.get("mcpToolName", key):
+                return call.tool_name
+    return _UNRECOGNIZED_LABEL
+
+
+class _ProxyRequestMetrics:
+    """Metrics for one request the direct proxy sends to a server.
+
+    The handler creates it and passes it down to the code that talks to the server, because only
+    there can a relayed response be told from an error the proxy itself produced: both come back
+    as HTTP 200. An SSE response is not finished when the handler returns; ``stream_sse`` finishes
+    it once the body has been read.
+    """
+
+    def __init__(self, *, server_name: str, http_method: str, mcp_method: str, tool_name: str | None = None) -> None:
+        self._server_name = server_name
+        self._http_method = http_method
+        self._mcp_method = mcp_method
+        self._tool_name = tool_name
+        self._started = perf_counter()
+        self._finished = False
+
+    def finish(self, outcome: ProxyOutcome | None) -> None:
+        """Record the request under ``outcome``; ``None`` leaves it uncounted. Only the first call records."""
+        if self._finished:
+            return
+        self._finished = True
+        if outcome is None:
+            return
+        duration = perf_counter() - self._started
+        record_proxy_request(self._server_name, self._http_method, self._mcp_method, outcome, duration)
+        if self._tool_name is not None:
+            record_proxy_tool_call(self._tool_name, self._server_name, outcome)
+
+
 async def _prepare_proxy_headers(
     *,
     call: ProxyCall,
@@ -323,6 +392,7 @@ async def _prepare_proxy_headers(
     auth_context: UserContextDict,
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
+    metrics: _ProxyRequestMetrics,
 ) -> dict[str, str] | Response:
     """Build authenticated outbound headers, or return an early client-facing error Response.
 
@@ -352,9 +422,13 @@ async def _prepare_proxy_headers(
             state_metadata={"client_branding": ClientBranding.UNRECOGNIZED},
         )
     except UrlElicitationRequiredException as exc:
+        # The user has to authorize before this call can go out: a URL elicitation, or Registry's
+        # own 401 challenge for handshake methods.
+        metrics.finish(ProxyOutcome.INPUT_REQUIRED)
         return _handle_url_elicitation_required(exc, call=call, request=request)
     except InternalServerException:
         logger.exception("Internal server exception")
+        metrics.finish(ProxyOutcome.FAILURE)
         return JSONResponse(
             status_code=200, content=build_jsonrpc_error(call.request_id, -32603, "Internal server error")
         )
@@ -380,6 +454,7 @@ async def _forward_to_downstream(
     target_url: str,
     proxy_client: httpx2.AsyncClient,
     headers: dict[str, str],
+    metrics: _ProxyRequestMetrics,
     server_name: str = "",
     on_unauthorized: UnauthorizedCallback | None = None,
 ) -> Response:
@@ -392,6 +467,9 @@ async def _forward_to_downstream(
     the rejected headers, the downstream ``WWW-Authenticate`` and ``is_retry``, and returns either
     headers to resend with (once) or the final response. Headers returned for the retry's 401 are
     not sent; the client gets a "changed during this call" error instead of a third send.
+
+    Records the outcome of the send on ``metrics`` at each exit, except for an SSE response, whose
+    outcome is only known once ``stream_sse`` has read the body.
     """
     body = call.body
 
@@ -400,6 +478,7 @@ async def _forward_to_downstream(
         # We only support directly reaching streamable-http downstream servers anyway.
         if "text/event-stream" not in accept_header:
             logger.error(f"Accept header: '{accept_header}' from a client of a streamable-http MCP server")
+            metrics.finish(None)  # refused before any send
             return JSONResponse(
                 status_code=200,
                 content=build_method_error(
@@ -425,8 +504,9 @@ async def _forward_to_downstream(
             await stream_context.__aexit__(None, None, None)
             outcome = await on_unauthorized(headers, www_authenticate, is_retry)
             if isinstance(outcome, Response):
-                return outcome
+                return outcome  # already recorded by the callback
             if is_retry:
+                metrics.finish(ProxyOutcome.FAILURE)
                 return JSONResponse(
                     status_code=200,
                     content=build_method_error(
@@ -467,6 +547,7 @@ async def _forward_to_downstream(
                 _pop_content_encoding_if_fully_decoded(
                     response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
                 )
+                metrics.finish(_relayed_outcome(backend_response.status_code))
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -494,14 +575,22 @@ async def _forward_to_downstream(
             )
 
             async def stream_sse():
+                # Reading the body failed unless the loop below runs to the end. A client
+                # disconnect is told apart from a read error because it is not an Exception.
+                outcome = ProxyOutcome.FAILURE
                 try:
                     async for chunk in backend_response.aiter_bytes():
                         yield chunk
+                    outcome = _relayed_outcome(backend_response.status_code)
+                except (asyncio.CancelledError, GeneratorExit):
+                    outcome = ProxyOutcome.CANCELLED
+                    raise
                 except Exception:
                     logger.exception("SSE streaming error")
 
                     raise
                 finally:
+                    metrics.finish(outcome)
                     await stream_context.__aexit__(None, None, None)
 
             return StreamingResponse(
@@ -517,9 +606,11 @@ async def _forward_to_downstream(
 
     except httpx2.TimeoutException:
         logger.error(f"Timeout proxying to {target_url}")
+        metrics.finish(ProxyOutcome.FAILURE)
         return JSONResponse(status_code=200, content=build_jsonrpc_error(call.request_id, -32603, "gateway timeout"))
     except Exception:
         logger.exception(f"Error proxying to {target_url}")
+        metrics.finish(ProxyOutcome.FAILURE)
         return JSONResponse(
             status_code=200, content=build_jsonrpc_error(call.request_id, -32603, "gateway internal error")
         )
@@ -533,6 +624,7 @@ async def proxy_to_mcp_server(
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
     proxy_client: httpx2.AsyncClient,
+    metrics: _ProxyRequestMetrics,
 ) -> Response:
     """
     Proxy request to MCP server with auth headers.
@@ -554,9 +646,10 @@ async def proxy_to_mcp_server(
             auth_context=auth_context,
             server=server,
             oauth_service=oauth_service,
+            metrics=metrics,
         )
         if isinstance(headers, Response):
-            return headers  # early auth / elicitation error
+            return headers  # early auth / elicitation error, already recorded
 
         on_unauthorized: UnauthorizedCallback | None = None
         if server.mcp_auth_mode is McpAuthMode.OAUTH:
@@ -574,6 +667,7 @@ async def proxy_to_mcp_server(
                     )
                 except DownstreamAuthRejectedException as exc:
                     # Even for handshake methods: a 401 challenge here would restart the login loop.
+                    metrics.finish(ProxyOutcome.FAILURE)
                     return JSONResponse(
                         status_code=200,
                         content=build_method_error(call.request_id, str(exc), method=call.method),
@@ -586,6 +680,7 @@ async def proxy_to_mcp_server(
                     auth_context=auth_context,
                     server=server,
                     oauth_service=oauth_service,
+                    metrics=metrics,
                 )
 
         return await _forward_to_downstream(
@@ -594,6 +689,7 @@ async def proxy_to_mcp_server(
             target_url=target_url,
             proxy_client=proxy_client,
             headers=headers,
+            metrics=metrics,
             server_name=server.serverName,
             on_unauthorized=on_unauthorized,
         )
@@ -1101,8 +1197,20 @@ async def dynamic_mcp_post_proxy(
     # would have responded with protected resource metadata doc according to RFC 9728.
     logger.info(f"Proxying {request.method} /{server_path} → {target_url}")
 
-    started = time.perf_counter()
-    response = await proxy_to_mcp_server(
+    # Counted where the gateway counts an operation on a server: after every check, right before
+    # the downstream call, whatever its outcome.
+    if call.method in _SERVER_REQUEST_METHODS:
+        record_server_request(server.serverName, "proxy")
+
+    # Both method and tool name come from the client, so they are narrowed here to values that
+    # cannot grow the number of series.
+    metrics = _ProxyRequestMetrics(
+        server_name=server.serverName,
+        http_method=request.method,
+        mcp_method=_bounded_mcp_method(call.method),
+        tool_name=_registered_tool_name(call, server),
+    )
+    return await proxy_to_mcp_server(
         call,
         request=request,
         target_url=target_url,
@@ -1110,14 +1218,8 @@ async def dynamic_mcp_post_proxy(
         server=server,
         oauth_service=oauth_service,
         proxy_client=proxy_client,
+        metrics=metrics,
     )
-    # The proxy relays bytes verbatim, so the forwarded HTTP status is the only outcome signal
-    # available here; gateway-side refusals return before this point and are not counted.
-    forwarded_ok = 200 <= getattr(response, "status_code", 0) < 400
-    record_proxy_request(server.serverName, request.method, forwarded_ok, time.perf_counter() - started)
-    if call.method == "tools/call" and call.tool_name:
-        record_proxy_tool_call(call.tool_name, server.serverName, forwarded_ok)
-    return response
 
 
 @router.get("/server/{user_id}/{server_path:path}")
@@ -1224,8 +1326,11 @@ async def dynamic_mcp_get_proxy(
     # would have responded with protected resource metadata doc according to RFC 9728.
     logger.info(f"Proxying {request.method} /{server_path} → {target_url}")
 
-    # Counted when the downstream stream is initiated; refusals above return before this.
-    record_server_request(server.serverName)
+    # A GET stream carries no JSON-RPC method. Everything above refused the request before any
+    # send and is not recorded; from here on the stream opens, fails to open, or waits on the user.
+    metrics = _ProxyRequestMetrics(
+        server_name=server.serverName, http_method=request.method, mcp_method=_NO_MCP_METHOD_LABEL
+    )
 
     # ponytail: span ends on return; the SSE body drains afterward (same trade-off as the POST
     # proxy). It still covers auth, trace injection and the downstream connect/first-response.
@@ -1258,12 +1363,14 @@ async def dynamic_mcp_get_proxy(
                 state_metadata={"client_branding": ClientBranding.UNRECOGNIZED},
             )
         except UrlElicitationRequiredException as exc:
+            metrics.finish(ProxyOutcome.INPUT_REQUIRED)
             # If token expired for a GET request, follow RFC 9457 and RFC 7807.
             return _downstream_token_problem_response(
                 f"Tokens of downstream MCP server have expired. Please re-authenticate at {exc.auth_url}."
             )
         except InternalServerException:
             logger.exception("Internal server exception")
+            metrics.finish(ProxyOutcome.FAILURE)
 
             return JSONResponse(
                 status_code=500,
@@ -1310,11 +1417,21 @@ async def dynamic_mcp_get_proxy(
                 await oauth_service.token_service.delete_access_token_if_matches(
                     auth_context["user_id"], server.serverName, _bearer_token(headers)
                 )
+                metrics.finish(ProxyOutcome.INPUT_REQUIRED)
                 return _downstream_token_problem_response(
                     "The downstream MCP server rejected its access token. Reconnect to obtain a new one."
                 )
 
             logger.info("Streaming SSE from backend")
+            # Recorded now, when the stream opens: it can then stay open for minutes. The
+            # Streamable HTTP transport has servers that offer no GET stream answer 405, and the
+            # proxy relays it, so that status means the open worked.
+            opened = backend_response.status_code
+            metrics.finish(
+                ProxyOutcome.SUCCESS
+                if opened < HTTPStatus.BAD_REQUEST or opened == HTTPStatus.METHOD_NOT_ALLOWED
+                else ProxyOutcome.FAILURE
+            )
 
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
@@ -1356,6 +1473,7 @@ async def dynamic_mcp_get_proxy(
             )
         except Exception:
             logger.exception(f"Error proxying to {target_url}")
+            metrics.finish(ProxyOutcome.FAILURE)
 
             return JSONResponse(
                 status_code=500,
