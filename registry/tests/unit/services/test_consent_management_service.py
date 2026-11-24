@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from mcp.types import ClientCapabilities, Implementation, InitializeRequestParams
+from redis.exceptions import RedisError
 
 from registry.core.config import settings
 from registry.mcpgw.core.client_info_store import ClientInfoStore
@@ -199,3 +200,81 @@ async def test_client_uri_is_returned_only_for_http_urls(
     (client,) = (await service.list_clients(USER_ID)).clients
 
     assert client.clientUri == expected
+
+
+@pytest.mark.parametrize("revoke_all", [True, False])
+async def test_batch_revocation_uses_one_worker_and_one_cache_pass(
+    service: ConsentManagementService, stores: tuple[Mock, Mock, Mock], revoke_all: bool
+) -> None:
+    consents, registrations, info = stores
+    headless = settings.jwt_token_config.headless_agent_client_id
+    ids = ["mcp-client-a", headless, "legacy", "mcp-client-a"]
+    consents.list_client_ids.return_value = sorted(set(ids))
+    consents.delete_clients.return_value = {"mcp-client-a": True, "legacy": False}
+    info.delete_for_clients.return_value = 3
+
+    with patch("asyncio.to_thread", new=AsyncMock(wraps=asyncio.to_thread)) as worker:
+        results = await service.revoke_clients(USER_ID, None if revoke_all else ids, revoke_all)
+
+    worker.assert_awaited_once()
+    info.delete_for_clients.assert_called_once_with(USER_ID, {"legacy", "mcp-client-a"})
+    if revoke_all:
+        consents.list_client_ids.assert_called_once_with(USER_ID)
+        consents.delete_clients.assert_called_once_with(USER_ID, ["legacy", "mcp-client-a"])
+        assert [(r.clientId, r.status) for r in results] == [("legacy", "not_found"), ("mcp-client-a", "revoked")]
+    else:
+        consents.list_client_ids.assert_not_called()
+        consents.delete_clients.assert_called_once_with(USER_ID, ["mcp-client-a", "legacy"])
+        assert [r.clientId for r in results] == ids
+        assert [r.status for r in results] == ["revoked", "rejected", "not_found", "revoked"]
+    assert not registrations.mock_calls
+
+
+async def test_revoke_all_can_retry_after_cache_failure(
+    service: ConsentManagementService, stores: tuple[Mock, Mock, Mock]
+) -> None:
+    consents, _, info = stores
+    consents.list_client_ids.return_value = ["mcp-client-a"]
+    info.delete_for_clients.side_effect = RedisError("cache unavailable")
+    with pytest.raises(RedisError):
+        await service.revoke_clients(USER_ID, None, True)
+    consents.delete_clients.assert_not_called()
+
+    info.delete_for_clients.side_effect = None
+    info.delete_for_clients.return_value = 0
+    consents.delete_clients.return_value = {"mcp-client-a": True}
+    (result,) = await service.revoke_clients(USER_ID, None, True)
+    assert result.status == "revoked"
+
+
+async def test_explicit_revoke_cleans_orphaned_cache(
+    service: ConsentManagementService, stores: tuple[Mock, Mock, Mock]
+) -> None:
+    consents, _, info = stores
+    consents.delete_clients.return_value = {"old": False}
+    info.delete_for_clients.return_value = 1
+    with patch("asyncio.to_thread", new=AsyncMock(wraps=asyncio.to_thread)) as worker:
+        await service.revoke_client(USER_ID, "old")
+    worker.assert_awaited_once()
+    info.delete_for_clients.assert_called_once_with(USER_ID, {"old"})
+    consents.delete_clients.assert_called_once_with(USER_ID, ["old"])
+
+
+async def test_resource_revoke_preserves_order_and_duplicates(
+    service: ConsentManagementService, stores: tuple[Mock, Mock, Mock]
+) -> None:
+    consents, _, info = stores
+    server = ConsentEntry(ConsentEntryKind.MCP_SERVER, "/shared")
+    agent = ConsentEntry(ConsentEntryKind.A2A_AGENT, "/shared")
+    entries = [server, agent, server]
+    consents.delete_entries.return_value = {server: True, agent: False}
+    with patch("asyncio.to_thread", new=AsyncMock(wraps=asyncio.to_thread)) as worker:
+        results = await service.revoke_resources(USER_ID, "old", entries)
+    worker.assert_awaited_once()
+    consents.delete_entries.assert_called_once_with(USER_ID, "old", entries)
+    info.delete_for_clients.assert_not_called()
+    assert [(r.type, r.path, r.status) for r in results] == [
+        ("mcp_server", "/shared", "revoked"),
+        ("a2a_agent", "/shared", "not_found"),
+        ("mcp_server", "/shared", "revoked"),
+    ]

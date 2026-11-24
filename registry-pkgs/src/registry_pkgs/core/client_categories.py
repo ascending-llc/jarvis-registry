@@ -125,6 +125,15 @@ def resolve_client_category(client_id: str, config: JwtTokenConfig) -> ClientCat
     return ClientCategory.UNKNOWN
 
 
+def is_consent_revocable(category: ClientCategory) -> bool:
+    return category not in (ClientCategory.REGISTRY_APP, ClientCategory.HEADLESS_AGENT)
+
+
+def requires_app_consent(category: ClientCategory) -> bool:
+    """Resource approvals require an app grant except for Registry and token-page clients."""
+    return category not in (ClientCategory.REGISTRY_APP, ClientCategory.HEADLESS_AGENT, ClientCategory.USER_GENERATED)
+
+
 def get_client_policy(category: ClientCategory) -> ClientPolicy | None:
     """Return the explicit protocol policy for a client category, if it has one."""
     return _CLIENT_POLICIES.get(category)

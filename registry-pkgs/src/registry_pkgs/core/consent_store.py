@@ -35,6 +35,13 @@ if exists == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
 return exists
 """
 
+_GRANT_CONSENT_FIELD_SCRIPT = """
+if ARGV[1] == '1' and redis.call('HEXISTS', KEYS[1], ARGV[2]) == 0 then return 0 end
+redis.call('HSET', KEYS[1], ARGV[3], '1')
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+return 1
+"""
+
 
 def effective_consent_grant_id(presented_grant_id: str | None) -> str:
     """Unstamped credentials belong to the legacy grant."""
@@ -131,6 +138,27 @@ class ConsentStore:
             if fields
         }
 
+    def delete_clients(self, user_id: str, client_ids: list[str]) -> dict[str, bool]:
+        """Delete the user's consent hashes and report which clients had stored consent."""
+        if not ObjectId.is_valid(user_id):
+            raise ValueError("Invalid user ID")
+        unique_ids = dict.fromkeys(client_ids)
+        with self._redis.pipeline(transaction=False) as pipe:
+            for client_id in unique_ids:
+                pipe.delete(self._key(user_id, client_id))
+            return dict(zip(unique_ids, map(bool, pipe.execute()), strict=True))
+
+    def delete_entries(self, user_id: str, client_id: str, entries: list[ConsentEntry]) -> dict[ConsentEntry, bool]:
+        """Delete individual resource approvals without renewing the remaining consent."""
+        if any(entry.kind == ConsentEntryKind.APP for entry in entries):
+            raise ValueError("Use whole-app revocation to remove app consent")
+        fields = {entry: entry.to_field() for entry in entries}
+        key = self._key(user_id, client_id)
+        with self._redis.pipeline(transaction=False) as pipe:
+            for field in fields.values():
+                pipe.hdel(key, field)
+            return dict(zip(fields, map(bool, pipe.execute()), strict=True))
+
     def get_client_grant_id(
         self,
         user_id: str,
@@ -180,11 +208,14 @@ class ConsentStore:
         user_id: str,
         client_id: str,
         server_path: str,
-    ) -> None:
+        *,
+        require_app_consent: bool,
+    ) -> bool:
         key = self._key(user_id, client_id)
-        self._grant_consent_field(
+        return self._grant_consent_field(
             key,
             ConsentEntry(ConsentEntryKind.MCP_SERVER, server_path).to_field(),
+            require_app_consent=require_app_consent,
             user_id=user_id,
             client_id=client_id,
             server_path=server_path,
@@ -210,11 +241,14 @@ class ConsentStore:
         user_id: str,
         client_id: str,
         agent_path: str,
-    ) -> None:
+        *,
+        require_app_consent: bool,
+    ) -> bool:
         key = self._key(user_id, client_id)
-        self._grant_consent_field(
+        return self._grant_consent_field(
             key,
             ConsentEntry(ConsentEntryKind.A2A_AGENT, agent_path).to_field(),
+            require_app_consent=require_app_consent,
             user_id=user_id,
             client_id=client_id,
             server_path=agent_path,
@@ -245,13 +279,23 @@ class ConsentStore:
         key: str,
         field: str,
         *,
+        require_app_consent: bool,
         user_id: str,
         client_id: str,
         server_path: str | None = None,
-    ) -> None:
+    ) -> bool:
         try:
-            self._redis.hset(key, field, "1")
-            self._redis.expire(key, CLIENT_TTL_SECONDS)
+            return bool(
+                self._redis.eval(
+                    _GRANT_CONSENT_FIELD_SCRIPT,
+                    1,
+                    key,
+                    int(require_app_consent),
+                    CLIENT_CONSENT_FIELD,
+                    field,
+                    CLIENT_TTL_SECONDS,
+                )
+            )
         except RedisError:
             logger.exception(
                 "Failed to grant consent user_id=%s client_id=%s server_path=%s",

@@ -2,11 +2,12 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from registry_pkgs.core.client_categories import requires_app_consent, resolve_client_category
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 from registry_pkgs.core.redirect_uri import build_oauth_error_redirect_url
@@ -24,6 +25,7 @@ from ....deps import (
     get_pending_consent_store,
     get_server_service,
 )
+from ....schemas.consent_api_schemas import ConsentErrorResponse
 from ....services.a2a_agent_service import A2AAgentService
 from ....services.oauth.downstream_device_service import (
     DeviceCodeNotFoundError,
@@ -44,6 +46,9 @@ from .oauth_router import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/mcp", tags=["mcp-consent"])
+
+_APP_REVOKED_DETAIL = "This app's access was revoked. Reconnect it from your AI app, then try again."
+_APPROVAL_RESPONSES = {409: {"model": ConsentErrorResponse, "description": _APP_REVOKED_DETAIL}}
 
 
 def _peek_regular_consent(
@@ -250,36 +255,49 @@ async def get_server_consent_context(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
-@router.post("/consent/server")
+def _approve_resource_consent(
+    resource: Literal["server", "agent"],
+    nonce: str,
+    user_id: str | None,
+    pending_store: PendingConsentStore,
+    consent_store: ConsentStore,
+) -> dict[str, str | None]:
+    try:
+        # Leave another user's link intact. Only the winner of consume may grant consent.
+        path_field = f"{resource}_path"
+        pending = _peek_regular_consent(pending_store, nonce)
+        if pending is None or pending["user_id"] != user_id or path_field not in pending:
+            raise HTTPException(status_code=404, detail="This consent link has expired.")
+        pending = pending_store.consume(nonce)
+        if pending is None:
+            raise HTTPException(status_code=404, detail="This consent link has expired.")
+
+        client_id = pending["client_id"]
+        category = resolve_client_category(client_id, settings.jwt_token_config)
+        grant = consent_store.grant_server_consent if resource == "server" else consent_store.grant_agent_consent
+        if not grant(
+            pending["user_id"], client_id, pending[path_field], require_app_consent=requires_app_consent(category)
+        ):
+            raise HTTPException(status_code=409, detail=_APP_REVOKED_DETAIL)
+
+        return {"status": "ok", "client_branding": _client_branding_from_meta(pending)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to approve %s consent user_id=%s", resource, user_id)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.post("/consent/server", responses=_APPROVAL_RESPONSES)
 async def approve_server_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
-    try:
-        # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
-        # that still legitimately belongs to its rightful owner.
-        pending = _peek_regular_consent(pending_store, body.nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-
-        consumed = pending_store.consume(body.nonce)
-        if consumed is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-        pending = consumed
-        consent_store.grant_server_consent(pending["user_id"], pending["client_id"], pending["server_path"])
-
-        # Mode 1 (mcpgw) pending records carry elicitation_id/client_branding so the frontend can
-        # deep-link the user back to their AI app. Mode 2 (direct-connect) records carry no
-        # elicitation_id, so branding is None for them.
-        client_branding = _client_branding_from_meta(pending)
-        return {"status": "ok", "client_branding": client_branding}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"[Server Consent] failed to approve consent: user={user_context['user_id']}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+    return await asyncio.to_thread(
+        _approve_resource_consent, "server", body.nonce, user_context["user_id"], pending_store, consent_store
+    )
 
 
 @router.get("/consent/agent")
@@ -313,31 +331,16 @@ async def get_agent_consent_context(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
-@router.post("/consent/agent")
+@router.post("/consent/agent", responses=_APPROVAL_RESPONSES)
 async def approve_agent_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
-    try:
-        pending = _peek_regular_consent(pending_store, body.nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-
-        consumed = pending_store.consume(body.nonce)
-        if consumed is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-        pending = consumed
-        consent_store.grant_agent_consent(pending["user_id"], pending["client_id"], pending["agent_path"])
-
-        client_branding = _client_branding_from_meta(pending)
-        return {"status": "ok", "client_branding": client_branding}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"[Agent Consent] failed to approve consent: user={user_context['user_id']}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+    return await asyncio.to_thread(
+        _approve_resource_consent, "agent", body.nonce, user_context["user_id"], pending_store, consent_store
+    )
 
 
 async def _deny_consent(

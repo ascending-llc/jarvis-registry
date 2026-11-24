@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
+from fakeredis import FakeRedis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx2 import Response
@@ -27,6 +28,7 @@ from registry.deps import (
     get_redis_client,
     get_server_service,
 )
+from registry_pkgs.core.consent_store import ConsentStore
 from registry_pkgs.core.downstream_oauth import DEVICE_CODE_GRANT_TYPE, downstream_mcp_code_key
 from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
 
@@ -133,9 +135,9 @@ def consent_store_mock() -> Mock:
     store.get_client_grant_id = Mock(return_value="1")
     store.grant_client_consent = Mock(return_value="1")
     store.has_server_consent = Mock(return_value=True)
-    store.grant_server_consent = Mock()
+    store.grant_server_consent = Mock(return_value=True)
     store.has_agent_consent = Mock(return_value=True)
-    store.grant_agent_consent = Mock()
+    store.grant_agent_consent = Mock(return_value=True)
     return store
 
 
@@ -785,8 +787,35 @@ def test_approve_server_consent_grants_and_consumes_nonce(
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "client_branding": None}
-    consent_store_mock.grant_server_consent.assert_called_once_with(USER_A, "claude", "/github")
+    consent_store_mock.grant_server_consent.assert_called_once_with(
+        USER_A, "claude", "/github", require_app_consent=True
+    )
     assert pending_consent_store.peek("nonce-1") is None
+
+
+@pytest.mark.parametrize("resource", ["server", "agent"])
+@pytest.mark.parametrize("client_id", ["mcp-client-revoked", "user-generated"])
+def test_resource_approval_after_app_revocation(
+    client: TestClient, pending_consent_store: _InMemoryPendingConsentStore, resource: str, client_id: str
+) -> None:
+    store = ConsentStore(FakeRedis(decode_responses=True), "test")
+    client.app.dependency_overrides[get_consent_store] = lambda: store
+    store.grant_client_consent(USER_A, client_id)
+    pending_consent_store.save("old", {"user_id": USER_A, "client_id": client_id, f"{resource}_path": "/search"})
+    store.delete_clients(USER_A, [client_id])
+    response = client.post(f"/mcp/consent/{resource}", json={"nonce": "old"})
+
+    has_approval = store.has_server_consent if resource == "server" else store.has_agent_consent
+    if client_id == "user-generated":
+        assert response.status_code == 200
+        assert has_approval(USER_A, client_id, "/search")
+    else:
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": "This app's access was revoked. Reconnect it from your AI app, then try again."
+        }
+        assert not has_approval(USER_A, client_id, "/search")
+    assert client.post(f"/mcp/consent/{resource}", json={"nonce": "old"}).status_code == 404
 
 
 def test_approve_server_consent_rejects_lost_consume_race(
@@ -985,7 +1014,9 @@ def test_approve_agent_consent_grants_and_consumes_nonce(
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "client_branding": None}
-    consent_store_mock.grant_agent_consent.assert_called_once_with(USER_A, "claude", "/research")
+    consent_store_mock.grant_agent_consent.assert_called_once_with(
+        USER_A, "claude", "/research", require_app_consent=True
+    )
     assert pending_consent_store.peek("nonce-1") is None
 
 
@@ -1009,7 +1040,9 @@ def test_approve_agent_consent_returns_mode1_branding(
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "client_branding": "cursor"}
-    consent_store_mock.grant_agent_consent.assert_called_once_with(USER_A, "claude", "/research")
+    consent_store_mock.grant_agent_consent.assert_called_once_with(
+        USER_A, "claude", "/research", require_app_consent=True
+    )
 
 
 def test_approve_agent_consent_rejects_other_user_without_consuming_nonce(

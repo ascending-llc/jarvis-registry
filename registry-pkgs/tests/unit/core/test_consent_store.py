@@ -65,7 +65,7 @@ def test_reserved_fields_are_rejected_as_server_paths(store: ConsentStore, path:
     with pytest.raises(ValueError, match="reserved"):
         store.has_server_consent(USER_ID, "client", path)
     with pytest.raises(ValueError, match="reserved"):
-        store.grant_server_consent(USER_ID, "client", path)
+        store.grant_server_consent(USER_ID, "client", path, require_app_consent=True)
 
 
 def test_list_counts_empty_and_duplicate_scan_pages(
@@ -95,8 +95,10 @@ def test_list_and_get_entries_preserve_expiry_and_skip_vanished_hashes(
     redis_client.hset(key, mapping={CLIENT_CONSENT_FIELD: "grant-id", "/github": "1", "agent:helper": "1"})
     redis_client.pexpire(key, 100_250)
     expires_at = redis_client.pexpiretime(key)
-    store.grant_server_consent(USER_ID, "vanished", "/other")
-    store.grant_server_consent("1123456789abcdef01234567", "another-users-client", "/private")
+    store.grant_server_consent(USER_ID, "vanished", "/other", require_app_consent=False)
+    store.grant_server_consent(
+        "1123456789abcdef01234567", "another-users-client", "/private", require_app_consent=False
+    )
 
     client_ids = store.list_client_ids(USER_ID)
     assert client_ids == ["client-1", "vanished"]
@@ -112,6 +114,54 @@ def test_list_and_get_entries_preserve_expiry_and_skip_vanished_hashes(
         ConsentEntry(ConsentEntryKind.A2A_AGENT, "helper"),
     }
     assert redis_client.pexpiretime(key) == expires_at
+
+
+def test_delete_clients_reports_only_the_users_stored_hashes(store: ConsentStore) -> None:
+    other_user = "1123456789abcdef01234567"
+    store.grant_client_consent(USER_ID, "app")
+    other_grant = store.grant_client_consent(other_user, "app")
+
+    assert store.delete_clients(USER_ID, ["app", "missing", "app"]) == {"app": True, "missing": False}
+    assert store.delete_clients(USER_ID, ["app"]) == {"app": False}
+    assert store.get_client_grant_id(other_user, "app") == other_grant
+    with pytest.raises(ValueError, match="Invalid user ID"):
+        store.delete_clients("*", ["app"])
+
+
+def test_delete_entries_keeps_other_fields_and_expiry(store: ConsentStore, redis_client: fakeredis.FakeRedis) -> None:
+    server = ConsentEntry(ConsentEntryKind.MCP_SERVER, "/shared")
+    agent = ConsentEntry(ConsentEntryKind.A2A_AGENT, "/shared")
+    missing = ConsentEntry(ConsentEntryKind.MCP_SERVER, "/missing")
+    key = f"{KEY_PREFIX}:mcp:consent:{USER_ID}:app"
+    redis_client.hset(key, mapping={server.to_field(): "1", agent.to_field(): "1"})
+    redis_client.expire(key, 300)
+    expires_at = redis_client.pexpiretime(key)
+
+    assert store.delete_entries(USER_ID, "app", [server, missing, server]) == {server: True, missing: False}
+    assert redis_client.hgetall(key) == {agent.to_field(): "1"}
+    assert redis_client.pexpiretime(key) == expires_at
+    assert store.delete_entries(USER_ID, "app", [agent]) == {agent: True}
+    assert not redis_client.exists(key)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        ConsentEntry(ConsentEntryKind.APP, ""),
+        ConsentEntry(ConsentEntryKind.UNKNOWN, "legacy"),
+        ConsentEntry(ConsentEntryKind.MCP_SERVER, CLIENT_CONSENT_FIELD),
+        ConsentEntry(ConsentEntryKind.MCP_SERVER, "agent:/reserved"),
+    ],
+)
+def test_delete_entries_validates_whole_request_before_deletion(store: ConsentStore, invalid: ConsentEntry) -> None:
+    server = ConsentEntry(ConsentEntryKind.MCP_SERVER, "/server")
+    app_grant = store.grant_client_consent(USER_ID, "app")
+    assert store.grant_server_consent(USER_ID, "app", server.path, require_app_consent=True)
+
+    with pytest.raises(ValueError):
+        store.delete_entries(USER_ID, "app", [server, invalid])
+    assert store.has_server_consent(USER_ID, "app", server.path)
+    assert store.get_client_grant_id(USER_ID, "app") == app_grant
 
 
 def test_client_consent_uses_shared_hash_and_slides_ttl(redis_client: fakeredis.FakeRedis, store: ConsentStore) -> None:
@@ -176,7 +226,7 @@ def test_reapproval_after_revocation_never_revives_old_credentials(
 def test_missing_app_consent_does_not_slide_resource_hash_ttl(
     redis_client: fakeredis.FakeRedis, store: ConsentStore
 ) -> None:
-    store.grant_server_consent("user-1", "client-1", "/github")
+    assert store.grant_server_consent("user-1", "client-1", "/github", require_app_consent=False)
     redis_client.expire(CONSENT_KEY, 100)
 
     assert store.get_client_grant_id("user-1", "client-1") is None
@@ -216,26 +266,34 @@ def test_resource_consent_shares_client_hash_and_only_slides_ttl_on_hit(
     field = "/github" if kind == "server" else "agent:/github"
 
     assert has_consent("user-1", "client-1", "/github") is False
+    assert grant("user-1", "client-1", "/github", require_app_consent=True) is False
     assert redis_client.exists(CONSENT_KEY) == 0
+    redis_client.hset(CONSENT_KEY, "/legacy", "1")
+    redis_client.expire(CONSENT_KEY, 100)
+    expires_at = redis_client.pexpiretime(CONSENT_KEY)
+    assert grant("user-1", "client-1", "/github", require_app_consent=True) is False
+    assert redis_client.hgetall(CONSENT_KEY) == {"/legacy": "1"}
+    assert redis_client.pexpiretime(CONSENT_KEY) == expires_at
     store.grant_client_consent("user-1", "client-1")
     redis_client.expire(CONSENT_KEY, 100)
     assert has_consent("user-1", "client-1", "/github") is False
     assert 99 <= redis_client.ttl(CONSENT_KEY) <= 100
 
-    grant("user-1", "client-1", "/github")
+    assert grant("user-1", "client-1", "/github", require_app_consent=True) is True
     assert redis_client.hget(CONSENT_KEY, field) == "1"
+    assert CLIENT_TTL_SECONDS - 1 <= redis_client.ttl(CONSENT_KEY) <= CLIENT_TTL_SECONDS
     redis_client.expire(CONSENT_KEY, 100)
     assert has_consent("user-1", "client-1", "/github") is True
     assert CLIENT_TTL_SECONDS - 1 <= redis_client.ttl(CONSENT_KEY) <= CLIENT_TTL_SECONDS
 
 
 def test_agent_and_server_consent_fields_do_not_collide(redis_client: fakeredis.FakeRedis, store: ConsentStore) -> None:
-    store.grant_server_consent("user-1", "client-1", "/shared")
+    store.grant_server_consent("user-1", "client-1", "/shared", require_app_consent=False)
 
     assert store.has_server_consent("user-1", "client-1", "/shared") is True
     assert store.has_agent_consent("user-1", "client-1", "/shared") is False
 
-    store.grant_agent_consent("user-1", "client-1", "/shared")
+    store.grant_agent_consent("user-1", "client-1", "/shared", require_app_consent=False)
 
     assert store.has_server_consent("user-1", "client-1", "/shared") is True
     assert store.has_agent_consent("user-1", "client-1", "/shared") is True
@@ -243,7 +301,7 @@ def test_agent_and_server_consent_fields_do_not_collide(redis_client: fakeredis.
 
 
 def test_agent_consent_does_not_grant_same_path_server_consent(store: ConsentStore) -> None:
-    store.grant_agent_consent("user-1", "client-1", "/shared")
+    store.grant_agent_consent("user-1", "client-1", "/shared", require_app_consent=False)
 
     assert store.has_agent_consent("user-1", "client-1", "/shared") is True
     assert store.has_server_consent("user-1", "client-1", "/shared") is False

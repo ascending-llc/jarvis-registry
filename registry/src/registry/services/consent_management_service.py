@@ -1,6 +1,7 @@
-"""List the current user's OAuth client and resource approvals."""
+"""Manage the current user's OAuth client and resource approvals."""
 
 import asyncio
+import logging
 from operator import attrgetter
 from typing import Any
 from urllib.parse import urlsplit
@@ -8,13 +9,26 @@ from urllib.parse import urlsplit
 from mcp.types import InitializeRequestParams
 
 from registry.mcpgw.core.client_info_store import ClientInfoStore
-from registry.schemas.consent_api_schemas import ConsentClientListResponse, ConsentClientOutput, ConsentResourceOutput
+from registry.schemas.consent_api_schemas import (
+    ClientRevokeResult,
+    ConsentClientListResponse,
+    ConsentClientOutput,
+    ConsentResourceOutput,
+    ResourceRevokeResult,
+)
 from registry.services.a2a_agent_service import A2AAgentService
 from registry.services.server_service import ServerServiceV1
-from registry_pkgs.core.client_categories import STATIC_CLIENT_METADATA, ClientCategory, resolve_client_category
+from registry_pkgs.core.client_categories import (
+    STATIC_CLIENT_METADATA,
+    ClientCategory,
+    is_consent_revocable,
+    resolve_client_category,
+)
 from registry_pkgs.core.config import JwtTokenConfig
 from registry_pkgs.core.consent_store import ConsentEntry, ConsentEntryKind, ConsentStore
 from registry_pkgs.core.oauth_state_store import OAuthClientStore
+
+logger = logging.getLogger(__name__)
 
 _DCR_CATEGORIES = (ClientCategory.MCP_DCR, ClientCategory.A2A_DCR)
 _WEB_URI_SCHEMES = frozenset({"http", "https"})
@@ -95,7 +109,7 @@ class ConsentManagementService:
         categories = {}
         for client_id in self._consents.list_client_ids(user_id):
             category = resolve_client_category(client_id, self._jwt_config)
-            if category not in (ClientCategory.REGISTRY_APP, ClientCategory.HEADLESS_AGENT):
+            if is_consent_revocable(category):
                 categories[client_id] = category
 
         entries = self._consents.get_entries(user_id, list(categories))
@@ -122,3 +136,63 @@ class ConsentManagementService:
 
         clients.sort(key=lambda client: (client.displayName.casefold(), client.clientId))
         return ConsentClientListResponse(clients=clients)
+
+    def _is_revocable(self, client_id: str) -> bool:
+        return is_consent_revocable(resolve_client_category(client_id, self._jwt_config))
+
+    def _require_revocable(self, client_id: str) -> None:
+        if not self._is_revocable(client_id):
+            raise ValueError("Consent cannot be revoked for this client category")
+
+    def _delete_clients(self, user_id: str, client_ids: list[str]) -> dict[str, bool]:
+        if not client_ids:
+            return {}
+        # Keep the hashes discoverable for a revoke-all retry if cache cleanup fails.
+        cache_count = self._client_info.delete_for_clients(user_id, set(client_ids))
+        deleted = self._consents.delete_clients(user_id, client_ids)
+        logger.info(
+            "Revoked app consents user_id=%s client_ids=%s hashes_deleted=%d cache_keys_deleted=%d",
+            user_id,
+            client_ids,
+            sum(deleted.values()),
+            cache_count,
+        )
+        return deleted
+
+    async def revoke_client(self, user_id: str, client_id: str) -> None:
+        self._require_revocable(client_id)
+        await asyncio.to_thread(self._delete_clients, user_id, [client_id])
+
+    async def revoke_clients(
+        self, user_id: str, client_ids: list[str] | None, revoke_all: bool
+    ) -> list[ClientRevokeResult]:
+        return await asyncio.to_thread(self._revoke_clients, user_id, client_ids, revoke_all)
+
+    def _revoke_clients(self, user_id: str, client_ids: list[str] | None, revoke_all: bool) -> list[ClientRevokeResult]:
+        requested = self._consents.list_client_ids(user_id) if revoke_all else (client_ids or [])
+        eligible = [cid for cid in dict.fromkeys(requested) if self._is_revocable(cid)]
+        deleted = self._delete_clients(user_id, eligible)
+        results = []
+        for cid in eligible if revoke_all else requested:
+            if cid not in deleted:
+                status = "rejected"
+            else:
+                status = "revoked" if deleted[cid] else "not_found"
+            results.append(ClientRevokeResult(clientId=cid, status=status))
+        return results
+
+    async def revoke_resources(
+        self, user_id: str, client_id: str, entries: list[ConsentEntry]
+    ) -> list[ResourceRevokeResult]:
+        self._require_revocable(client_id)
+        deleted = await asyncio.to_thread(self._consents.delete_entries, user_id, client_id, entries)
+        logger.info(
+            "Revoked resource consents user_id=%s client_id=%s fields_deleted=%d",
+            user_id,
+            client_id,
+            sum(deleted.values()),
+        )
+        return [
+            ResourceRevokeResult(type=entry.kind, path=entry.path, status="revoked" if deleted[entry] else "not_found")
+            for entry in entries
+        ]

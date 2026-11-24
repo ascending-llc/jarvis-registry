@@ -12,6 +12,7 @@ class ExecutionOutcome(StrEnum):
 MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 OPENAPI_SESSION_COOKIE_SCHEME = "SessionCookie"
+MAX_CONSENT_REVOKE_BATCH = 100
 
 # Inline skill supporting-file limits, shared by Registry's skill API and GitHub skill sync. Each SkillFile is
 # its own MongoDB document, so the single-file cap keeps one file inside the 16 MB document limit. The total cap
