@@ -12,7 +12,7 @@ Usage:
         record_tool_discovery,
         record_server_request,
         record_resource_access,
-        record_prompt_execution,
+        record_prompt_get,
     )
 
     # Using domain functions (recommended)
@@ -156,7 +156,7 @@ def record_resource_access(
         metrics.record_histogram("mcp_resource_access_duration_seconds", duration_seconds, attributes)
 
 
-def record_prompt_execution(
+def record_prompt_get(
     prompt_name: str,
     server_name: str,
     success: bool,
@@ -164,17 +164,17 @@ def record_prompt_execution(
     error_type: str = "none",
 ) -> None:
     """
-    Record prompt execution operation.
+    Record prompt retrieval operation.
 
     Requires these metrics in config:
-    - counter: mcp_prompt_execution_total
-    - histogram: mcp_prompt_execution_duration_seconds
+    - counter: mcp_prompt_get_total
+    - histogram: mcp_prompt_get_duration_seconds
 
     Args:
-        prompt_name: Name of the executed prompt
+        prompt_name: Name of the retrieved prompt
         server_name: Name of the MCP server
-        success: Whether the execution was successful
-        duration_seconds: Execution duration in seconds
+        success: Whether the retrieval was successful
+        duration_seconds: Retrieval duration in seconds
         error_type: Failure-mode label (exception class name or semantic tag);
             "none" on success. Must be a bounded, low-cardinality value.
     """
@@ -185,10 +185,10 @@ def record_prompt_execution(
         "error_type": error_type,
     }
 
-    metrics.record_counter("mcp_prompt_execution_total", 1, attributes)
+    metrics.record_counter("mcp_prompt_get_total", 1, attributes)
 
     if duration_seconds is not None:
-        metrics.record_histogram("mcp_prompt_execution_duration_seconds", duration_seconds, attributes)
+        metrics.record_histogram("mcp_prompt_get_duration_seconds", duration_seconds, attributes)
 
 
 def record_server_request(server_name: str) -> None:

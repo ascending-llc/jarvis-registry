@@ -26,7 +26,7 @@ from registry.core.config import settings
 from registry.core.mcp_config import MCPTransport
 from registry.core.mcp_downstream import DownstreamOperation, PromptGet, ResourceRead, ToolCall
 from registry.core.telemetry_decorators import (
-    PromptExecutionMetricsContext,
+    PromptGetMetricsContext,
     ResourceAccessMetricsContext,
     ToolExecutionMetricsContext,
 )
@@ -55,15 +55,27 @@ def operation(request: pytest.FixtureRequest) -> DownstreamOperation:
     return request.param
 
 
+async def _invoke_operation(
+    ctx: Any, operation: DownstreamOperation, server_id: str
+) -> CallToolResult | InputRequiredResult:
+    if isinstance(operation, ToolCall):
+        return await server.execute_tool_impl(ctx, operation.tool_name, operation.arguments, server_id)
+    if isinstance(operation, ResourceRead):
+        return await server.read_resource_impl(ctx, server_id, operation.uri)
+    return await server.get_prompt_impl(ctx, server_id, operation.name, operation.arguments)
+
+
 async def _run_operation(
     ctx: Any, operation: DownstreamOperation, server_id: str, *, render: Callable | None = None
 ) -> CallToolResult | InputRequiredResult:
+    if render is None:
+        return await _invoke_operation(ctx, operation, server_id)
     if isinstance(operation, ToolCall):
         metrics = ToolExecutionMetricsContext(tool_name=operation.tool_name, method="POST")
     elif isinstance(operation, ResourceRead):
         metrics = ResourceAccessMetricsContext()
     else:
-        metrics = PromptExecutionMetricsContext(prompt_name=operation.name)
+        metrics = PromptGetMetricsContext(prompt_name=operation.name)
     async with metrics:
         if isinstance(operation, ToolCall):
             return await server._execute_server_operation(ctx, operation, server_id, metrics_ctx=metrics)
@@ -72,7 +84,7 @@ async def _run_operation(
             operation,
             server_id,
             metrics_ctx=metrics,
-            render=render if render is not None else lambda result, srv: _OK,
+            render=render,
         )
 
 
@@ -245,158 +257,78 @@ async def test_execute_tool_wrapper_uses_tool_name_as_downstream_name(monkeypatc
     execute_mock.assert_awaited_once_with(ctx, "tavily_search", arguments, "server-123")
 
 
-@pytest.mark.unit
-@pytest.mark.metrics
-class TestExecutionMetricsWiring:
-    """The metrics context managers are wired into the FastMCP execution impls."""
+@pytest.mark.parametrize("failure", [None, "missing", "database"])
+async def test_public_impl_metrics_and_private_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    mock_telemetry_metrics: Mock,
+    operation: DownstreamOperation,
+    failure: str | None,
+) -> None:
+    from mcp.types import GetPromptResult, PromptMessage, ReadResourceResult, TextResourceContents
 
-    def _tool_ctx(self):
-        # execute_tool_impl reads ctx.request_context.request.state.user up front
-        # and now validates user_id as an ObjectId, so use a valid one.
-        state = SimpleNamespace(user={"username": "alice", "user_id": "507f1f77bcf86cd799439011"})
-        request = SimpleNamespace(state=state)
-        request_context = SimpleNamespace(request=request)
-        return SimpleNamespace(request_context=request_context)
+    from registry.utils.otel_metrics import record_prompt_get, record_resource_access, record_tool_execution
 
-    @pytest.mark.asyncio
-    async def test_execute_tool_impl_records_server_not_found(self, monkeypatch):
-        _patch_server_service(monkeypatch, None)
-        with patch(f"{DECORATORS_PATH}._record_tool_execution") as mock_record:
-            result = await server.execute_tool_impl(
-                ctx=self._tool_ctx(),
-                tool_name="tavily_search",
-                arguments={},
-                server_id="missing",
-            )
-
-        assert result.is_error is True
-        mock_record.assert_called_once()
-        call_kwargs = mock_record.call_args[1]
-        assert call_kwargs["tool_name"] == "tavily_search"
-        assert call_kwargs["success"] is False
-        assert call_kwargs["error_type"] == "server_not_found"
-
-    @pytest.mark.asyncio
-    async def test_read_resource_impl_records_success(self, monkeypatch):
-        server_obj = SimpleNamespace(serverName="docs-server", path="/docs")
-        _patch_server_service(monkeypatch, server_obj)
-        with patch(f"{DECORATORS_PATH}._record_resource_access") as mock_record:
-            await server.read_resource_impl(
-                user_context={"username": "alice"},
-                server_id="s1",
-                resource_uri="tavily://search-results/AI",
-                ctx=SimpleNamespace(),
-            )
-
-        mock_record.assert_called_once()
-        call_kwargs = mock_record.call_args[1]
-        assert call_kwargs["server_name"] == "docs-server"
-        assert call_kwargs["success"] is True
-        assert call_kwargs["error_type"] == "none"
-        # Unbounded resource_uri must never become a metric label.
-        assert "resource_uri" not in call_kwargs
-
-    @pytest.mark.asyncio
-    async def test_read_resource_impl_never_logs_the_resource_uri(self, monkeypatch, caplog):
-        _patch_server_service(monkeypatch, SimpleNamespace(serverName="docs-server", path="/docs"))
-        caplog.set_level("DEBUG", logger="registry.mcpgw.tools.server")
-        with patch(f"{DECORATORS_PATH}._record_resource_access"):
-            await server.read_resource_impl(
-                user_context={"username": "alice"},
-                server_id="s1",
-                resource_uri="gdrive:///alice/salary.xlsx",
-                ctx=SimpleNamespace(),
-            )
-
-        assert "salary" not in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_read_resource_impl_records_server_not_found(self, monkeypatch):
-        _patch_server_service(monkeypatch, None)
-        with patch(f"{DECORATORS_PATH}._record_resource_access") as mock_record:
-            result = await server.read_resource_impl(
-                user_context={"username": "alice"},
-                server_id="missing",
-                resource_uri="tavily://x",
-                ctx=SimpleNamespace(),
-            )
-
-        _assert_stale_server_id_hint(result)
-        call_kwargs = mock_record.call_args[1]
-        assert call_kwargs["success"] is False
-        assert call_kwargs["error_type"] == "server_not_found"
-
-    @pytest.mark.asyncio
-    async def test_read_resource_impl_get_server_by_id_raises_returns_internal_error(self, monkeypatch):
-        """Regression test for [m1]: `server` must be bound before get_server_by_id can raise,
-        otherwise the except block's `if server is not None` crashes with UnboundLocalError."""
-        _patch_server_service_raises(monkeypatch, RuntimeError("db unavailable"))
-        with patch(f"{DECORATORS_PATH}._record_resource_access"), pytest.raises(InternalServerException):
-            await server.read_resource_impl(
-                user_context={"username": "alice"},
-                server_id="s1",
-                resource_uri="tavily://x",
-                ctx=SimpleNamespace(),
-            )
-
-    @pytest.mark.asyncio
-    async def test_execute_prompt_impl_records_success(self, monkeypatch):
-        server_obj = SimpleNamespace(serverName="prompt-server", path="/prompts")
-        _patch_server_service(monkeypatch, server_obj)
-        with patch(f"{DECORATORS_PATH}._record_prompt_execution") as mock_record:
-            await server.execute_prompt_impl(
-                user_context={"username": "alice"},
-                server_id="s1",
-                prompt_name="research_assistant",
-                arguments={"topic": "AI"},
-                ctx=SimpleNamespace(),
-            )
-
-        mock_record.assert_called_once()
-        call_kwargs = mock_record.call_args[1]
-        assert call_kwargs["prompt_name"] == "research_assistant"
-        assert call_kwargs["server_name"] == "prompt-server"
-        assert call_kwargs["success"] is True
-        assert call_kwargs["error_type"] == "none"
-
-    @pytest.mark.asyncio
-    async def test_execute_prompt_impl_records_server_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_server_service(monkeypatch, None)
-        with patch(f"{DECORATORS_PATH}._record_prompt_execution") as mock_record:
-            result = await server.execute_prompt_impl(
-                user_context={"username": "alice"},
-                server_id="missing",
-                prompt_name="research_assistant",
-                arguments=None,
-                ctx=SimpleNamespace(),
-            )
-
-        _assert_stale_server_id_hint(result)
-        mock_record.assert_called_once()
-        call_kwargs = mock_record.call_args[1]
-        assert call_kwargs["success"] is False
-        assert call_kwargs["error_type"] == "server_not_found"
-
-    @pytest.mark.asyncio
-    async def test_execute_prompt_impl_get_server_by_id_raises_returns_internal_error(self, monkeypatch):
-        """Regression test for [m1]: `server` must be bound before get_server_by_id can raise,
-        otherwise the except block's `if server is not None` crashes with UnboundLocalError."""
-        _patch_server_service_raises(monkeypatch, RuntimeError("db unavailable"))
-        with patch(f"{DECORATORS_PATH}._record_prompt_execution"), pytest.raises(InternalServerException):
-            await server.execute_prompt_impl(
-                user_context={"username": "alice"},
-                server_id="s1",
-                prompt_name="research_assistant",
-                arguments={"topic": "AI"},
-                ctx=SimpleNamespace(),
-            )
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    srv = _make_server(server_id)
+    service = ctx.request_context.lifespan_context.server_service.get_server_by_id
+    service.return_value = None if failure == "missing" else srv
+    if failure == "database":
+        service.side_effect = RuntimeError("database unavailable")
+    if isinstance(operation, ToolCall):
+        recorder, name, native = record_tool_execution, "tool_execution", _OK
+    elif isinstance(operation, ResourceRead):
+        operation = ResourceRead("gdrive:///alice/salary.xlsx")
+        recorder, name = record_resource_access, "resource_access"
+        native = ReadResourceResult(contents=[TextResourceContents(uri=operation.uri, text="private-body")])
+    else:
+        operation = PromptGet("greet", {"name": "private-argument"})
+        recorder, name = record_prompt_get, "prompt_get"
+        native = GetPromptResult(
+            messages=[PromptMessage(role="user", content=TextContent(type="text", text="private-body"))]
+        )
+    monkeypatch.setattr(f"{DECORATORS_PATH}._record_{name}", recorder)
+    downstream = AsyncMock(return_value=native)
+    monkeypatch.setattr(server, "call_downstream", downstream)
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    caplog.set_level("DEBUG", logger="registry.mcpgw.tools.server")
+    if failure == "database":
+        with pytest.raises(InternalServerException) as exc:
+            await _invoke_operation(ctx, operation, server_id)
+        assert isinstance(exc.value.__cause__, RuntimeError)
+    else:
+        result = await _invoke_operation(ctx, operation, server_id)
+        assert result.is_error == (failure is not None)
+        if failure:
+            _assert_stale_server_id_hint(result)
+    for metric_method, metric_suffix in [("record_counter", "total"), ("record_histogram", "duration_seconds")]:
+        calls = [
+            c
+            for c in getattr(mock_telemetry_metrics, metric_method).call_args_list
+            if c.args[0] == f"mcp_{name}_{metric_suffix}"
+        ]
+        assert len(calls) == 1
+        labels = calls[0].args[2]
+        assert labels["status"] == ("failure" if failure else "success")
+        assert (
+            labels["error_type"]
+            == {None: "none", "missing": "server_not_found", "database": "InternalServerException"}[failure]
+        )
+        assert "resource_uri" not in labels and "arguments" not in labels
+        if not failure:
+            assert labels["server_name"] == srv.serverName
+            if isinstance(operation, PromptGet):
+                assert labels["prompt_name"] == operation.name
+    assert downstream.await_count == (0 if failure else 1)
+    assert not any(secret in caplog.text for secret in ("salary.xlsx", "private-argument", "private-body"))
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_missing_user_context_returns_auth_error():
+async def test_execute_tool_impl_missing_user_context_returns_auth_error(operation):
     ctx = _make_ctx(include_user_context=False)
 
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, str(PydanticObjectId()))
+    result = await _invoke_operation(ctx, operation, str(PydanticObjectId()))
 
     assert result.is_error is True
     assert "Authentication required" in result.content[0].text
@@ -404,10 +336,10 @@ async def test_execute_tool_impl_missing_user_context_returns_auth_error():
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_invalid_user_id_returns_auth_error():
+async def test_execute_tool_impl_invalid_user_id_returns_auth_error(operation):
     ctx = _make_ctx(user_id="not-an-objectid")
 
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, str(PydanticObjectId()))
+    result = await _invoke_operation(ctx, operation, str(PydanticObjectId()))
 
     assert result.is_error is True
     assert "Authentication required" in result.content[0].text
@@ -415,17 +347,17 @@ async def test_execute_tool_impl_invalid_user_id_returns_auth_error():
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_no_server_returns_error():
+async def test_execute_tool_impl_no_server_returns_error(operation):
     ctx = _make_ctx()
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = None
 
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, str(PydanticObjectId()))
+    result = await _invoke_operation(ctx, operation, str(PydanticObjectId()))
 
     _assert_stale_server_id_hint(result)
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
+async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch, operation):
     server_id = str(PydanticObjectId())
     other_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[other_id])
@@ -434,7 +366,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
     downstream_call = AsyncMock()
     monkeypatch.setattr(server, "call_downstream", downstream_call)
 
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+    result = await _invoke_operation(ctx, operation, server_id)
 
     assert result.is_error is True
     assert "Access denied" in result.content[0].text
@@ -443,7 +375,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monkeypatch):
+async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monkeypatch, operation):
     server_id = str(PydanticObjectId())
     ctx = _make_ctx()
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
@@ -453,7 +385,7 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
     downstream_call = AsyncMock()
     monkeypatch.setattr(server, "call_downstream", downstream_call)
 
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+    result = await _invoke_operation(ctx, operation, server_id)
 
     assert result.is_error is True
     assert "Service temporarily unavailable" in result.content[0].text
@@ -840,7 +772,7 @@ async def test_modern_authorization_metric_distinguishes_pending_and_terminal_re
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_without_server_consent_returns_elicitation_fallback(monkeypatch):
+async def test_execute_tool_impl_without_server_consent_returns_elicitation_fallback(monkeypatch, operation):
     server_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[server_id])
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
@@ -849,7 +781,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     downstream_call = AsyncMock()
     monkeypatch.setattr(server, "call_downstream", downstream_call)
 
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+    result = await _invoke_operation(ctx, operation, server_id)
 
     assert result.is_error is True
     assert "explicit consent" in result.content[0].text
@@ -869,7 +801,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(monkeypatch):
+async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(monkeypatch, operation):
     server_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[server_id])
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
@@ -880,7 +812,7 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     monkeypatch.setattr(utils, "_support_url_elicitation", lambda _client_params: True)
 
     with pytest.raises(utils.UrlElicitationRequiredError) as exc_info:
-        await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+        await _invoke_operation(ctx, operation, server_id)
 
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
@@ -903,7 +835,7 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
+async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch, operation):
     server_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[server_id])
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
@@ -915,7 +847,7 @@ async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
         AsyncMock(return_value=CallToolResult.model_validate({"content": [{"type": "text", "text": "ok"}]})),
     )
 
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+    result = await _invoke_operation(ctx, operation, server_id)
 
     assert not result.is_error
 
@@ -1000,7 +932,7 @@ async def test_execute_tool_impl_rejects_unsupported_transport_without_calling(m
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_impl_headless_agent_bypasses_server_consent(monkeypatch):
+async def test_execute_tool_impl_headless_agent_bypasses_server_consent(monkeypatch, operation):
     server_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[server_id])
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
@@ -1013,7 +945,7 @@ async def test_execute_tool_impl_headless_agent_bypasses_server_consent(monkeypa
     )
     monkeypatch.setattr(server, "call_downstream", downstream_call)
 
-    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+    result = await _invoke_operation(ctx, operation, server_id)
 
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
     downstream_call.assert_awaited_once()
@@ -1411,7 +1343,7 @@ async def test_downstream_interactive_input_is_terminal_text(monkeypatch, kind, 
     record_name = (
         "_record_tool_execution"
         if isinstance(operation, ToolCall)
-        else ("_record_resource_access" if isinstance(operation, ResourceRead) else "_record_prompt_execution")
+        else ("_record_resource_access" if isinstance(operation, ResourceRead) else "_record_prompt_get")
     )
     with patch(f"{DECORATORS_PATH}.{record_name}") as record:
         result = await _run_operation(ctx, operation, server_id)
@@ -1700,7 +1632,7 @@ async def test_native_rendering_and_gateway_errors(
     from mcp.types import GetPromptResult, ReadResourceResult
     from opentelemetry import baggage
 
-    from registry.utils.otel_metrics import record_prompt_execution, record_resource_access, record_tool_execution
+    from registry.utils.otel_metrics import record_prompt_get, record_resource_access, record_tool_execution
 
     if isinstance(operation, ToolCall):
         native = _OK
@@ -1719,9 +1651,9 @@ async def test_native_rendering_and_gateway_errors(
     else:
         native = GetPromptResult(messages=[])
         record_name, record_function, metric_name = (
-            "_record_prompt_execution",
-            record_prompt_execution,
-            "mcp_prompt_execution_total",
+            "_record_prompt_get",
+            record_prompt_get,
+            "mcp_prompt_get_total",
         )
     # Exercise the real domain recorder; only the external metrics client is mocked.
     monkeypatch.setattr(f"{DECORATORS_PATH}.{record_name}", record_function)
@@ -1840,3 +1772,112 @@ async def test_real_sdk_non_tool_oauth_recovery(
             if message["method"] == method
         ]
         assert [headers["authorization"] for headers in business_headers] == ["Bearer t1", "Bearer t2"]
+
+
+@pytest.mark.parametrize("meta", [None, {"downstream": "value", "com.ascendingdc.jarvis-registry/success": False}])
+def test_resource_renderer_preserves_contents_and_merges_meta(meta: dict | None) -> None:
+    from mcp.types import BlobResourceContents, EmbeddedResource, ReadResourceResult, TextResourceContents
+
+    from registry.mcpgw.tools.types import get_meta_field
+
+    srv = _make_server()
+    text = TextResourceContents(uri="test://text", mime_type="text/plain", text="document", _meta={"item": 1})
+    blob = BlobResourceContents(uri="test://blob", mime_type="application/octet-stream", blob="AAEC", _meta={"item": 2})
+    native = ReadResourceResult(contents=[text, blob], _meta=meta)
+    before = native.model_dump()
+    result = server._render_resource_result(native, srv)
+    assert result == CallToolResult(
+        content=[EmbeddedResource(type="resource", resource=text), EmbeddedResource(type="resource", resource=blob)],
+        _meta={**(meta or {}), **get_meta_field(True, str(srv.id), srv.path)},
+    )
+    assert native.model_dump() == before
+
+
+def test_empty_resource_renderer_returns_success_message() -> None:
+    from mcp.types import ReadResourceResult
+
+    from registry.mcpgw.tools.types import get_meta_field
+
+    srv = _make_server()
+    assert server._render_resource_result(ReadResourceResult(contents=[]), srv) == CallToolResult(
+        content=[TextContent(type="text", text="The resource returned no contents.")],
+        _meta=get_meta_field(True, str(srv.id), srv.path),
+    )
+
+
+def test_prompt_renderer_golden_preserves_roles_resources_and_meta() -> None:
+    from mcp.types import EmbeddedResource, GetPromptResult, PromptMessage, TextResourceContents
+
+    from registry.mcpgw.tools.types import get_meta_field
+
+    srv = _make_server()
+    user = TextContent(type="text", text="Review this", _meta={"message": 1})
+    assistant = TextContent(type="text", text="Example reply")
+    resource = EmbeddedResource(
+        type="resource", resource=TextResourceContents(uri="test://doc", text="code", _meta={"item": 3})
+    )
+    native = GetPromptResult(
+        description="Review template",
+        messages=[
+            PromptMessage(role="user", content=user),
+            PromptMessage(role="assistant", content=assistant),
+            PromptMessage(role="user", content=resource),
+        ],
+        _meta={"source": "downstream", "com.ascendingdc.jarvis-registry/server_id": "wrong"},
+    )
+    before = native.model_dump()
+    assert server._render_prompt_result(native, srv, prompt_name="review") == CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=f"Prompt 'review' from {srv.serverName}: 3 messages.\nReview template\n{server._PROMPT_ROLE_CONVENTION}",
+            ),
+            TextContent(type="text", text="[message 1: user]"),
+            user,
+            TextContent(type="text", text="[message 2: assistant]"),
+            assistant,
+            TextContent(type="text", text="[message 3: user]"),
+            resource,
+        ],
+        _meta={"source": "downstream", **get_meta_field(True, str(srv.id), srv.path)},
+    )
+    assert native.model_dump() == before
+    assert "user messages as the user's request" in server._PROMPT_ROLE_CONVENTION
+    assert "assistant messages are example replies" in server._PROMPT_ROLE_CONVENTION
+
+
+@pytest.mark.parametrize("kind", ["image", "audio", "resource_link", "empty"])
+def test_prompt_renderer_without_description_preserves_multimedia(kind: str) -> None:
+    from mcp.types import AudioContent, GetPromptResult, ImageContent, PromptMessage, ResourceLink
+
+    from registry.mcpgw.tools.types import get_meta_field
+
+    srv = _make_server()
+    blocks = {
+        "image": ImageContent(type="image", data="AAEC", mime_type="image/png", _meta={"image": True}),
+        "audio": AudioContent(type="audio", data="AAEC", mime_type="audio/wav"),
+        "resource_link": ResourceLink(type="resource_link", name="document", uri="test://doc", _meta={"link": True}),
+    }
+    block = blocks.get(kind)
+    native = GetPromptResult(messages=[] if block is None else [PromptMessage(role="user", content=block)])
+    before = native.model_dump()
+    for name in ("first", "second"):
+        header = TextContent(
+            type="text",
+            text=f"Prompt '{name}' from {srv.serverName}: {int(block is not None)} messages.\n{server._PROMPT_ROLE_CONVENTION}",
+        )
+        expected = [header] if block is None else [header, TextContent(type="text", text="[message 1: user]"), block]
+        result = server._render_prompt_result(native, srv, prompt_name=name)
+        assert result == CallToolResult(content=expected, _meta=get_meta_field(True, str(srv.id), srv.path))
+        assert result.structured_content is None
+    assert native.model_dump() == before
+
+
+def test_prompt_metric_names_are_declared_in_config() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    config = yaml.safe_load((Path(__file__).resolve().parents[4] / "config/metrics/registry.yml").read_text())
+    names = {item["name"] for section in ("counters", "histograms") for item in config[section]}
+    assert {"mcp_prompt_get_total", "mcp_prompt_get_duration_seconds"} <= names

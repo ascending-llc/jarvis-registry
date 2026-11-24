@@ -183,5 +183,5 @@ async def test_sdk_auto_client_falls_back_to_2025_11_25_against_gated_app(monkey
                         "execute_agent",
                         "execute_tool",
                         "read_resource",
-                        "execute_prompt",
+                        "get_prompt",
                     }

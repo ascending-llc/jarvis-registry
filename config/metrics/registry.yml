@@ -31,9 +31,9 @@ counters:
     unit: "1"
     capture: true
 
-  # Prompt execution
-  - name: mcp_prompt_execution_total
-    description: Total number of prompt executions
+  # Prompt retrieval
+  - name: mcp_prompt_get_total
+    description: Total number of prompt retrievals
     unit: "1"
     capture: true
 
@@ -104,9 +104,9 @@ histograms:
     unit: "s"
     capture: true
 
-  # Prompt execution latency
-  - name: mcp_prompt_execution_duration_seconds
-    description: Prompt execution duration in seconds
+  # Prompt retrieval latency
+  - name: mcp_prompt_get_duration_seconds
+    description: Prompt retrieval duration in seconds
     unit: "s"
     capture: true
 

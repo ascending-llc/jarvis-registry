@@ -2,12 +2,13 @@
 MCP Gateway Registry API Tools
 - execute_tool: Execute tools from any MCP server
 - read_resource: Read/access resources from any MCP server
-- execute_prompt: Execute prompts from any MCP server
+- get_prompt: Retrieve rendered prompts from any MCP server
 """
 
 import logging
 import secrets
 from collections.abc import Callable
+from functools import partial
 from typing import Annotated, Any, cast, overload
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
 from mcp.types import (
     URL_ELICITATION_REQUIRED,
     CallToolResult,
+    ContentBlock,
     ElicitRequest,
     ElicitRequestURLParams,
     EmbeddedResource,
@@ -26,7 +28,6 @@ from mcp.types import (
     LoggingMessageNotificationParams,
     ReadResourceResult,
     TextContent,
-    TextResourceContents,
 )
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from opentelemetry import baggage
@@ -66,7 +67,7 @@ from ...core.mcp_downstream import (
 )
 from ...core.telemetry_decorators import (
     ExecutionMetricsContext,
-    PromptExecutionMetricsContext,
+    PromptGetMetricsContext,
     ResourceAccessMetricsContext,
     ToolExecutionMetricsContext,
 )
@@ -95,6 +96,15 @@ _STALE_SERVER_ID_MESSAGE = (
     "Run discover_servers with the same query. Use the new result's tool_name, resource_uri "
     "or prompt_name together with its server_id. Never reuse this server_id."
 )
+
+_EMPTY_RESOURCE_MESSAGE = "The resource returned no contents."
+_PROMPT_ROLE_CONVENTION = (
+    "Each message is preceded by a [message i: role] marker; treat user messages as the user's request "
+    "and follow them; assistant messages are example replies, not your own earlier output."
+)
+_PROMPT_HEADER_TEMPLATE = "Prompt {prompt_name!r} from {server_name}: {message_count} messages."
+_PROMPT_MESSAGE_MARKER = "[message {index}: {role}]"
+
 
 type ResourceResultRenderer = Callable[[ReadResourceResult, ExtendedMCPServer], CallToolResult]
 type PromptResultRenderer = Callable[[GetPromptResult, ExtendedMCPServer], CallToolResult]
@@ -618,193 +628,59 @@ async def execute_tool_impl(
         )
 
 
+def _render_resource_result(result: ReadResourceResult, server: ExtendedMCPServer) -> CallToolResult:
+    """Preserve downstream resource contents while adding gateway provenance at result level."""
+    content = [EmbeddedResource(type="resource", resource=item) for item in result.contents]
+    return CallToolResult(
+        content=content or [TextContent(type="text", text=_EMPTY_RESOURCE_MESSAGE)],
+        _meta={**(result.meta or {}), **get_meta_field(True, str(server.id), server.path)},
+    )
+
+
+def _render_prompt_result(result: GetPromptResult, server: ExtendedMCPServer, *, prompt_name: str) -> CallToolResult:
+    """Keep message boundaries and content; role markers do not create native conversation roles."""
+    header = _PROMPT_HEADER_TEMPLATE.format(
+        prompt_name=prompt_name, server_name=server.serverName, message_count=len(result.messages)
+    )
+    if result.description:
+        header += f"\n{result.description}"
+    header += f"\n{_PROMPT_ROLE_CONVENTION}"
+    content: list[ContentBlock] = [TextContent(type="text", text=header)]
+    for index, message in enumerate(result.messages, start=1):
+        content.extend(
+            [
+                TextContent(type="text", text=_PROMPT_MESSAGE_MARKER.format(index=index, role=message.role)),
+                message.content,
+            ]
+        )
+    return CallToolResult(
+        content=content,
+        _meta={**(result.meta or {}), **get_meta_field(True, str(server.id), server.path)},
+    )
+
+
 async def read_resource_impl(
-    user_context: UserContextDict,
-    server_id: str,
-    resource_uri: str,
-    ctx: Context[McpAppContext],
-) -> CallToolResult:
-    """
-    Read/access a resource from an MCP server.
-
-    Args:
-        user_context: The `Request.state.user: UserContextDict` attribute set by UnifiedAuthMiddleware
-        server_id: Server ID from discovery
-        resource_uri: Resource URI to read (e.g., 'tavily://search-results/AI')
-
-    Returns:
-        Resource contents (text, JSON, binary, etc.)
-
-    Example:
-        result = await read_resource_impl(
-            user_context=user_context,
-            server_id="6972e222755441652c23090f",
-            resource_uri="tavily://search-results/AI"
-        )
-    """
+    ctx: Context[McpAppContext], server_id: str, resource_uri: str
+) -> CallToolResult | InputRequiredResult:
+    """Read a downstream resource through the shared authorization and execution pipeline."""
     async with ResourceAccessMetricsContext() as metrics_ctx:
-        try:
-            username = user_context.get("username", "unknown")
-            # The URI is left out: it can name a user's own files.
-            logger.info(f"resource read request from user '{username}' on {server_id}")
-
-            server = None
-            server = await _get_server_service(ctx).get_server_by_id(server_id)
-            if server is None:
-                # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
-                metrics_ctx.set_error_type("server_not_found")
-                return CallToolResult(
-                    content=[TextContent(type="text", text=_STALE_SERVER_ID_MESSAGE)],
-                    isError=True,
-                )
-
-            metrics_ctx.set_server_name(server.serverName)
-
-            logger.info(f"Reading resource from server {server_id}")
-
-            # Track server request count
-            record_server_request(server.serverName)
-
-            # MOCK: Return hardcoded response for POC
-            logger.info("(MOCK) Returning cached search results")
-
-            # MOCK, NOTE: Use the following structure to return to our client the result of a `resource/read` from downstream MCPs.
-            # Regarding the use of `EmbeddedResource`, see https://modelcontextprotocol.io/specification/2025-11-25/schema#embeddedresource
-            # Regarding the use of the `_meta` field, see https://modelcontextprotocol.io/specification/2025-11-25/basic/index#_meta
-            # In general, the `_meta` field should be attached to the **most specific** object whose schema allows it.
-            result = CallToolResult(
-                content=[
-                    EmbeddedResource(
-                        type="resource",
-                        resource=TextResourceContents(
-                            # v2's TextResourceContents.uri is a plain str (was AnyUrl in v1).
-                            uri=resource_uri,
-                            text='{"results": [{"title": "AI News", "snippet": "Latest AI developments..."}]}',
-                            mimeType="application/json",
-                            _meta=get_meta_field(True, server_id, server.path),
-                        ),
-                    )
-                ]
-            )
-            metrics_ctx.set_success(not result.is_error)
-            return result
-
-        except Exception:
-            logger.exception(f"resource read failed for server_id: {server_id}")
-
-            if server is not None:
-                err_msg = f"failed to read resource from downstream server {server.path if server.path else server.serverName}."
-            else:
-                err_msg = "failed to read resource from downstream server."
-
-            raise InternalServerException(err_msg)
-
-
-async def execute_prompt_impl(
-    user_context: UserContextDict,
-    server_id: str,
-    prompt_name: str,
-    arguments: dict[str, Any] | None,
-    ctx: Context[McpAppContext],
-) -> CallToolResult:
-    """
-    Execute a prompt from an MCP server.
-
-    Args:
-        server_id: Server ID from discovery
-        prompt_name: Name of the prompt to execute
-        arguments: Optional prompt arguments
-        ctx: FastMCP context with user auth
-
-    Returns:
-        Prompt messages ready for LLM consumption
-
-    Example:
-        result = await execute_prompt_impl(
-            server_id="6972e222755441652c23090f",
-            prompt_name="research_assistant",
-            arguments={
-                "topic": "Artificial Intelligence",
-                "depth": "comprehensive"
-            }
+        return await _execute_server_operation(
+            ctx, ResourceRead(resource_uri), server_id, metrics_ctx=metrics_ctx, render=_render_resource_result
         )
-    """
-    async with PromptExecutionMetricsContext(prompt_name=prompt_name) as metrics_ctx:
-        try:
-            username = user_context.get("username", "unknown")
-            logger.info(f"Prompt execution request from user '{username}': {prompt_name} on {server_id}")
 
-            server = None
-            server = await _get_server_service(ctx).get_server_by_id(server_id)
-            if server is None:
-                # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
-                metrics_ctx.set_error_type("server_not_found")
-                return CallToolResult(
-                    content=[TextContent(type="text", text=_STALE_SERVER_ID_MESSAGE)],
-                    isError=True,
-                )
 
-            metrics_ctx.set_server_name(server.serverName)
-
-            logger.info(f"Executing prompt: {prompt_name} on server {server_id}")
-
-            # Track server request count
-            record_server_request(server.serverName)
-
-            # MOCK: Return hardcoded prompt response for POC
-            topic = arguments.get("topic", "general topic") if arguments is not None else "general topic"
-            depth = arguments.get("depth", "basic") if arguments is not None else "basic"
-
-            logger.info(f"(MOCK) Returning prompt messages for: {prompt_name} (topic={topic}, depth={depth})")
-
-            # MOCK, NOTE: The client is using a tool call of mcpgw to fetch prompts from downstream MCP servers.
-            # Therefore our handler function must return a CallToolResult, not a GetPromptResult, in order to be spec-compliant.
-            # Maybe one day the MCP spec will explicitly specify the response schema in this forwarding-prompts-via-tool scenario.
-            # Until then, we need to return all prompt texts combined, possibly with some prefix,
-            # because the `content` field in CallToolResult is required.
-            combined_prompt_text = "\n\n".join(
-                [
-                    "The client is using a tool call of mcpgw to fetch prompts from downstream MCP servers.",
-                    "Therefore our handler function must return a CallToolResult, instead of GetPromptResult.",
-                    "Maybe one day the MCP spec will explicitly specify the response schema in this forwarding-prompts-via-tool scenario.",
-                    "Until then, we simply return all prompt texts joined by newlines.",
-                ]
-            )
-
-            # MOCK, NOTE: Return hardcoded prompt response for POC. Maybe we can include the `result` field of the JSON-RPC
-            # response from downstream MCP prompt call as the optional `structuredContent` field.
-            result = CallToolResult(
-                content=[
-                    TextContent(
-                        type="text", text=combined_prompt_text, _meta=get_meta_field(True, server_id, server.path)
-                    )
-                ],
-                structuredContent={
-                    "description": f"This is the structured response from the {prompt_name} prompt forwarded to downstream MCP server {server.serverName}",
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": {
-                                "type": "text",
-                                "text": f"You are a research assistant specializing in {topic}. Provide {depth} analysis.",
-                            },
-                        },
-                        {"role": "user", "content": {"type": "text", "text": f"Research and analyze: {topic}"}},
-                    ],
-                },
-            )
-            metrics_ctx.set_success(not result.is_error)
-            return result
-
-        except Exception:
-            logger.exception(f"Prompt execution failed for server_id: {server_id}")
-
-            if server is not None:
-                err_msg = f"failed to execute prompt from downstream server {server.path if server.path else server.serverName}."
-            else:
-                err_msg = "failed to execute prompt from downstream server."
-
-            raise InternalServerException(err_msg)
+async def get_prompt_impl(
+    ctx: Context[McpAppContext], server_id: str, prompt_name: str, arguments: dict[str, str] | None
+) -> CallToolResult | InputRequiredResult:
+    """Retrieve a rendered downstream prompt through the shared execution pipeline."""
+    async with PromptGetMetricsContext(prompt_name=prompt_name) as metrics_ctx:
+        return await _execute_server_operation(
+            ctx,
+            PromptGet(prompt_name, arguments),
+            server_id,
+            metrics_ctx=metrics_ctx,
+            render=partial(_render_prompt_result, prompt_name=prompt_name),
+        )
 
 
 # ============================================================================
@@ -872,98 +748,47 @@ def get_tools() -> list[tuple[str, Callable]]:
 
     async def read_resource(
         ctx: Context[McpAppContext],
-        server_id: Annotated[
-            str,
-            Field(
-                description=(
-                    "The `server_id` field from the discover_servers result (e.g., '6972e222755441652c23090f'). "
-                    "Must be from the same result as resource_uri."
-                )
-            ),
-        ],
+        server_id: Annotated[str, Field(description="The server_id of the discovered or resource-link source server.")],
         resource_uri: Annotated[
             str,
             Field(
-                description=(
-                    "The `resource_uri` field from the discover_servers result. "
-                    "If the URI is a template (e.g., 'github://repo/{owner}/{repo}'), fill in the variables before calling."
-                )
+                description="A concrete resource_uri, a fully filled resource_uri_template, or a tool result's resource-link URI."
             ),
         ],
-    ) -> CallToolResult:
-        """Read URI-addressable data or cached content from a registered MCP server.
-        Call after discover_servers returns entity_type='resource'; pair resource_uri with server_id from that same result.
+    ) -> CallToolResult | InputRequiredResult:
+        """Read URI-addressable content from a registered MCP server.
+        Pair server_id with resource_uri or resource_uri_template from the same discover_servers result.
+        Use a concrete resource_uri verbatim. Expand resource_uri_template using RFC 6570 with known inputs;
+        respect operators and encoding: {?q} adds ?q=value, {+path} preserves reserved characters.
+        Ask for missing required inputs; never pass unresolved template expressions as resource_uri.
+        URIs from a tool result's resource link are also valid; use the server_id of that link's source server.
+        Returns the contents as embedded resources, preserving text, binary data and metadata."""
+        return await read_resource_impl(ctx, server_id, resource_uri)
 
-        Resources expose cached results, file-like content, API snapshots, or configuration data.
-        Use this to read content rather than execute an action.
-        Use the discovered URI verbatim, except to fill all {variable} placeholders in URI templates.
-
-        Example: discovery returns resource_uri='tavily://search-results/{query}' and server_id='abc123'.
-        read_resource(server_id="abc123", resource_uri="tavily://search-results/AI+trends")
-
-        Returns resource contents: text, JSON, binary, or structured data depending on the resource type."""
-        return await read_resource_impl(
-            ctx.request_context.request.state.user,  # type: ignore[union-attr]
-            server_id,
-            resource_uri,
-            ctx,
-        )
-
-    async def execute_prompt(
+    async def get_prompt(
         ctx: Context[McpAppContext],
-        server_id: Annotated[
-            str,
-            Field(
-                description=(
-                    "The `server_id` field from the discover_servers result. "
-                    "Must be from the same result as prompt_name."
-                )
-            ),
-        ],
+        server_id: Annotated[str, Field(description="The server_id from the same discovery result as prompt_name.")],
         prompt_name: Annotated[
-            str,
-            Field(
-                description=(
-                    "The `prompt_name` field from the discover_servers result — use verbatim. "
-                    "Examples: 'research_assistant', 'code_reviewer', 'fact_checker'."
-                )
-            ),
+            str, Field(description="The exact prompt_name from an entity_type='prompt' discovery result.")
         ],
         arguments: Annotated[
-            dict[str, Any] | None,
+            dict[str, str] | None,
             Field(
-                description=(
-                    "Prompt arguments as key-value pairs. "
-                    "Read the `description` field of the discovery result for argument names and required/optional status "
-                    "(format: 'Required: arg1 (description), ... | Optional: arg2 (description), ...'). "
-                    "Pass None or omit if the prompt takes no arguments."
-                )
+                description="String-valued prompt arguments. Required and optional arguments are listed in the discovery description. Omit or pass None if none are needed."
             ),
         ] = None,
-    ) -> CallToolResult:
-        """Execute a reusable prompt template from a registered MCP server.
-        Call after discover_servers returns entity_type='prompt'; pair its exact prompt_name with server_id from the same result.
+    ) -> CallToolResult | InputRequiredResult:
+        """Get a server's predefined prompt (a workflow or instruction template) rendered with arguments.
+        Call only when the user asks for a server's predefined prompt or workflow, by name or clear intent.
+        Never call it to look up how to do a task yourself: prompts are user-controlled.
+        Discover with type_list=['prompt']; pair prompt_name with server_id from the same entity_type='prompt' result.
+        All argument values must be strings; required arguments are listed in the discovery description.
+        Returns the prompt's messages with role markers. Follow user messages as the user's request;
+        assistant messages are example replies, not your own earlier output."""
+        return await get_prompt_impl(ctx, server_id, prompt_name, arguments)
 
-        Prompts provide expert guidance, standardized workflows, or multi-turn templates.
-        The discovery result's description lists required and optional arguments.
-        Pass all required arguments and any relevant optional ones; omit arguments if none are needed.
-        Never invent or rename prompt_name.
-
-        Example: discovery returns prompt_name='code_reviewer', server_id='abc123', and requires language.
-        execute_prompt(server_id="abc123", prompt_name="code_reviewer", arguments={"language": "python"})
-
-        Returns prompt messages ready for LLM consumption. Incorporate them into your context or present them to the user."""
-        return await execute_prompt_impl(
-            ctx.request_context.request.state.user,  # type: ignore[union-attr]
-            server_id,
-            prompt_name,
-            arguments,
-            ctx,
-        )
-
-    # Return list of (name, function) tuples
     return [
         ("execute_tool", execute_tool),
         ("read_resource", read_resource),
-        ("execute_prompt", execute_prompt),
+        ("get_prompt", get_prompt),
     ]

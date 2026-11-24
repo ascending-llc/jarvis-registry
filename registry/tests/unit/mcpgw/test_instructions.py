@@ -20,7 +20,7 @@ _TOOL_NAMES = (
     "execute_agent",
     "execute_tool",
     "read_resource",
-    "execute_prompt",
+    "get_prompt",
 )
 _MAX_DESCRIPTION_CHARACTERS = 2048
 
@@ -140,3 +140,70 @@ async def test_tool_descriptions_fit_client_budget_without_indentation(tool_name
         assert all(line == line.lstrip() for line in description.splitlines())
         if tool_name in ("discover_servers", "discover_agents"):
             assert "Before claiming" in description[:250]
+
+
+async def test_resource_and_prompt_tool_contracts() -> None:
+    async with _gateway_session() as client:
+        listed = await client.list_tools()
+        tools = {tool.name: tool for tool in listed.tools}
+        prompt = tools["get_prompt"]
+        resource = tools["read_resource"]
+        assert set(prompt.input_schema["required"]) == {"server_id", "prompt_name"}
+        variants = prompt.input_schema["properties"]["arguments"]["anyOf"]
+        assert {"type": "null"} in variants
+        assert next(item for item in variants if item["type"] == "object")["additionalProperties"] == {"type": "string"}
+        assert prompt.output_schema is None and resource.output_schema is None
+        assert "only when the user asks" in prompt.description
+        assert "Never call it to look up how to do a task yourself" in prompt.description
+        assert "resource_uri_template" in resource.description and "resource link" in resource.description
+
+
+@pytest.mark.parametrize("value", [42, True, [], {}, None])
+async def test_prompt_invalid_argument_values_never_reach_impl(monkeypatch: pytest.MonkeyPatch, value: object) -> None:
+    from unittest.mock import AsyncMock
+
+    from registry.mcpgw.tools import server
+
+    invoke = AsyncMock()
+    monkeypatch.setattr(server, "get_prompt_impl", invoke)
+    async with _gateway_session() as client:
+        result = await client.call_tool(
+            "get_prompt", {"server_id": "server", "prompt_name": "greet", "arguments": {"name": value}}
+        )
+        assert result.is_error
+    invoke.assert_not_awaited()
+
+
+@pytest.mark.parametrize("arguments", [{"name": "Ada"}, None, "omitted"])
+async def test_prompt_optional_arguments_reach_impl(monkeypatch: pytest.MonkeyPatch, arguments: object) -> None:
+    from unittest.mock import AsyncMock
+
+    from mcp.types import CallToolResult, TextContent
+
+    from registry.mcpgw.tools import server
+
+    invoke = AsyncMock(return_value=CallToolResult(content=[TextContent(type="text", text="accepted")]))
+    monkeypatch.setattr(server, "get_prompt_impl", invoke)
+    params = {"server_id": "server", "prompt_name": "greet"}
+    if arguments != "omitted":
+        params["arguments"] = arguments
+    async with _gateway_session() as client:
+        result = await client.call_tool("get_prompt", params)
+        assert not result.is_error and result.structured_content is None
+    assert invoke.await_args.args[1:] == ("server", "greet", None if arguments == "omitted" else arguments)
+
+
+async def test_resource_link_uri_reaches_impl_without_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from mcp.types import CallToolResult, ResourceLink, TextContent
+
+    from registry.mcpgw.tools import server
+
+    link = ResourceLink(type="resource_link", name="Private document", uri="custom://private/document")
+    invoke = AsyncMock(return_value=CallToolResult(content=[TextContent(type="text", text="read")]))
+    monkeypatch.setattr(server, "read_resource_impl", invoke)
+    async with _gateway_session() as client:
+        result = await client.call_tool("read_resource", {"server_id": "source-server", "resource_uri": link.uri})
+        assert not result.is_error
+    assert invoke.await_args.args[1:] == ("source-server", link.uri)
