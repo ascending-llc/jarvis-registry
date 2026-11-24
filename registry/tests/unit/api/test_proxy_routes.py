@@ -638,6 +638,55 @@ async def test_post_proxy_disabled_tools_do_not_gate_handshake_methods(monkeypat
     forward.assert_awaited_once()
 
 
+async def test_post_proxy_disabled_tool_refused_before_consent_gate(monkeypatch):
+    """The tool gate runs before the consent check, as it does on the gateway: a client that has
+    not consented yet is refused outright instead of being sent through consent for a call that
+    cannot succeed."""
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(
+            return_value={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "id": 1,
+                "params": {"name": "delete_repo", "arguments": {"owner": "org"}},
+            }
+        ),
+    )
+    forward = AsyncMock(return_value=Response(status_code=500))
+    monkeypatch.setattr("registry.api.proxy_routes.proxy_to_mcp_server", forward)
+    pending_store = _PendingConsentStore()
+    consent_store = _consent_store(has_server_consent=False)
+    auth_context = {**_AUTH_CONTEXT, "client_id": INTERACTIVE_CLIENT_ID}
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=auth_context,
+        server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=consent_store,
+        pending_store=pending_store,
+    )
+
+    body = json.loads(resp.body)
+    # The refusal is the isError "disabled" result...
+    assert resp.status_code == 200
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "delete_repo" in body["result"]["content"][0]["text"]
+    assert "disabled" in body["result"]["content"][0]["text"].lower()
+    # ...not a consent / URL elicitation response...
+    consent_store.has_server_consent.assert_not_called()
+    assert pending_store.pending == {}
+    # ...and nothing reaches the downstream server.
+    forward.assert_not_called()
+
+
 async def test_post_proxy_headless_agent_bypasses_server_consent(monkeypatch):
     monkeypatch.setattr(
         "registry.api.proxy_routes._parse_json_rpc_body",
