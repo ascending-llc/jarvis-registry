@@ -823,10 +823,10 @@ async def _drain_listing(
 ) -> list[Any] | None:
     """Fetch every page of one ``*/list`` call under one deadline.
 
-    A server that answers JSON-RPC "Method not found" (-32601) does not offer this listing, so the result is a
-    definite []: stored entries the server no longer offers are cleared. Any other failure (timeout, repeated
-    cursor, server error) returns None, so the caller keeps the stored value and one optional listing never
-    fails a capture that already has its tools.
+    JSON-RPC "Method not found" (-32601) on the first request means the server does not offer this listing:
+    return [] so previously stored entries are cleared. On a later page it is a failed capture, just like
+    a timeout, repeated cursor or server error: return None to preserve the stored value rather than
+    publishing an empty or partial listing. Optional listing failures do not discard captured tools.
     """
     items: list[Any] = []
     seen: set[str] = set()
@@ -844,7 +844,7 @@ async def _drain_listing(
                     raise MisimplementedSpecException(f"Downstream {label} listing repeated a pagination cursor.")
                 seen.add(cursor)
     except MCPError as e:
-        if e.code == METHOD_NOT_FOUND:
+        if e.code == METHOD_NOT_FOUND and cursor is None:
             logger.info(f"{url} does not offer {label} (method not found)")
             return []
         logger.warning(f"Failed to retrieve {label} from {url}: {type(e).__name__} - {e}")

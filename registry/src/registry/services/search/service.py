@@ -17,7 +17,7 @@ from ...auth.dependencies import UserContextDict
 from ...services.access_control_service import ACLService
 from ...utils.otel_metrics import record_tool_discovery
 from .base import VectorSearchService
-from .private_resources import drop_private_mcp_resources
+from .private_resources import fetch_eligible_mcp_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -201,17 +201,19 @@ class SearchService:
         # property, so filtering on it there would error. Resource/prompt docs default to True.
         if not search.include_disabled:
             filters["tool_enabled"] = True
-        if not query:
-            results = await self.mcp_server_repo.afilter(filters=filters, limit=search.top_n)
-        else:
-            results = await self.mcp_server_repo.asearch_with_rerank(
+
+        async def fetch(limit: int) -> list[dict]:
+            if not query:
+                return await self.mcp_server_repo.afilter(filters=filters, limit=limit)
+            return await self.mcp_server_repo.asearch_with_rerank(
                 query=query,
-                k=search.top_n,
-                candidate_k=_candidate_k(search.top_n),
+                k=limit,
+                candidate_k=max(_candidate_k(search.top_n), limit),
                 search_type=search.search_type,
                 filters=filters,
             )
-        return await drop_private_mcp_resources(results)
+
+        return await fetch_eligible_mcp_candidates(fetch, search.top_n)
 
     async def _search_a2a_documents(
         self,

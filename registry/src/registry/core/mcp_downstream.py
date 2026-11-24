@@ -314,7 +314,8 @@ async def call_downstream(
     era_cache: DownstreamEraCache,
     on_progress: ProgressFnT | None = None,
     on_log: LoggingFnT | None = None,
-) -> CallToolResult | InputRequiredResult: ...
+) -> CallToolResult | InputRequiredResult:
+    pass
 
 
 @overload
@@ -331,7 +332,8 @@ async def call_downstream(
     era_cache: DownstreamEraCache,
     on_progress: ProgressFnT | None = None,
     on_log: LoggingFnT | None = None,
-) -> ReadResourceResult | InputRequiredResult: ...
+) -> ReadResourceResult | InputRequiredResult:
+    pass
 
 
 @overload
@@ -348,7 +350,8 @@ async def call_downstream(
     era_cache: DownstreamEraCache,
     on_progress: ProgressFnT | None = None,
     on_log: LoggingFnT | None = None,
-) -> GetPromptResult | InputRequiredResult: ...
+) -> GetPromptResult | InputRequiredResult:
+    pass
 
 
 async def call_downstream(
@@ -412,10 +415,11 @@ async def call_downstream(
                     # 5. Mark teardown before leaving the context, so a closing 401 cannot
                     #    be mistaken for a rejected business request eligible for OAuth retry.
                     recorder.phase = DownstreamPhase.CLOSING
-                return result
-            # 5a. SSE rejection cancellation skips the return above. Enter common error mapping
-            #     using the recorded HTTP status and WWW-Authenticate challenge.
-            raise DownstreamHttpFailureException(_DOWNSTREAM_FAILURE_MESSAGE)
+            # 5a. The SSE guard suppresses its own cancellation after a rejected POST. Check
+            #     that outcome before returning: setup or send may not have produced a result.
+            if recorder.post_rejected:
+                raise DownstreamHttpFailureException(_DOWNSTREAM_FAILURE_MESSAGE)
+            return result
         except Exception as exc:
             # 6. Unwrap SDK task-group failures without collapsing independent errors.
             error = _single_error(exc)

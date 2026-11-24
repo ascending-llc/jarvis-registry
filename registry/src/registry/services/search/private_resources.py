@@ -6,6 +6,7 @@ server's next rebuild, and a rebuild can be delayed or fail. Every search path t
 documents, or builds results from them, filters them against the server's current authentication here.
 """
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from beanie import PydanticObjectId
@@ -47,3 +48,22 @@ async def drop_private_mcp_resources(docs: list[dict[str, Any]]) -> list[dict[st
                 shared_server_ids.add(str(server["_id"]))
 
     return [doc for doc in docs if not _is_concrete_resource(doc) or doc.get("server_id") in shared_server_ids]
+
+
+async def fetch_eligible_mcp_candidates(
+    fetch: Callable[[int], Awaitable[list[dict[str, Any]]]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Refill a ranked candidate window when stale private resources consume its slots.
+
+    Each enlarged window is checked against current primary Mongo auth state. Only return
+    eligible documents, preserving their order; stop when the budget is filled or the source
+    is exhausted. No extra vector request is needed when the first window is already eligible.
+    """
+    requested = limit
+    while True:
+        docs = await fetch(requested)
+        eligible = await drop_private_mcp_resources(docs)
+        if len(eligible) >= limit or len(docs) < requested:
+            return eligible[:limit]
+        requested *= 2
