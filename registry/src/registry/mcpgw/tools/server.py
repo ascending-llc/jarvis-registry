@@ -592,7 +592,12 @@ async def _execute_server_operation(
     except Exception as exc:
         # 7e. Wrap unexpected failures without exposing implementation details; retain the cause.
         msg = f"unexpected exception during {_operation_label(operation)}_impl"
-        logger.exception(msg)
+        if isinstance(operation, ToolCall):
+            logger.exception(msg)
+        else:
+            # 7f. Exception text and tracebacks can carry the resource URI or prompt arguments
+            #     (e.g. a pydantic ValidationError echoes its input), so log only the type.
+            logger.error("%s: %s", msg, type(exc).__name__)
 
         raise InternalServerException(msg) from exc
 

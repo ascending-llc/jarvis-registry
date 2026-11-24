@@ -1840,3 +1840,58 @@ async def test_real_sdk_non_tool_oauth_recovery(
             if message["method"] == method
         ]
         assert [headers["authorization"] for headers in business_headers] == ["Bearer t1", "Bearer t2"]
+
+
+@pytest.mark.parametrize("scenario", ["oauth_recovery", "mapped_error", "unmapped_error"])
+async def test_resource_read_never_logs_the_uri(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, scenario: str
+) -> None:
+    """A ResourceRead through call_downstream and _call_with_oauth_recovery keeps its URI out of every log."""
+    from mcp.client.caching import InMemoryResponseCacheStore
+    from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
+
+    from registry.core import mcp_downstream
+    from registry.core.mcp_downstream import DownstreamEraCache
+
+    secret = "salary-2026"
+    operation = ResourceRead(f"test://doc/{secret}")
+    server_id, ctx, srv, _, oauth, tokens = _oauth_setup(monkeypatch)
+
+    async def refresh(*args, **kwargs) -> None:
+        tokens[0] = "t2"
+
+    oauth.recover_from_unauthorized.side_effect = refresh
+    if scenario == "unmapped_error":
+        # Left unmapped by _map_error, so it reaches the shared catch-all with the URI in its text.
+        monkeypatch.setattr(
+            mcp_downstream,
+            "_send_operation",
+            AsyncMock(side_effect=ValueError(f"invalid contents for {operation.uri}")),
+        )
+    # Registry loggers at DEBUG; third-party at INFO (the SDK's DEBUG logs dump raw JSON-RPC payloads).
+    caplog.set_level("INFO")
+    caplog.set_level("DEBUG", logger="registry")
+    async with sdk_endpoint(era="legacy") as transport:
+        if scenario == "oauth_recovery":
+            transport.failure_method, transport.fail_once = "resources/read", True
+        elif scenario == "mapped_error":
+            transport.failure_method, transport.failure_status = "resources/read", 500
+        lifespan = ctx.request_context.lifespan_context
+        lifespan.downstream_transport = transport
+        lifespan.downstream_response_cache = InMemoryResponseCacheStore()
+        lifespan.downstream_era_cache = DownstreamEraCache(MemoryRedis(), "test")
+        srv.config["url"] = "http://downstream/mcp"
+        renderer = Mock(return_value=_OK)
+        if scenario == "oauth_recovery":
+            assert await _run_operation(ctx, operation, server_id, render=renderer) is _OK
+            oauth.recover_from_unauthorized.assert_awaited_once()
+            assert transport.count("resources/read") == 2
+        else:
+            expected = DownstreamHttpFailureException if scenario == "mapped_error" else InternalServerException
+            with pytest.raises(expected):
+                await _run_operation(ctx, operation, server_id, render=renderer)
+            if scenario == "unmapped_error":
+                assert "unexpected exception during read_resource_impl: ValueError" in caplog.text
+
+    assert caplog.records, "expected the pipeline to log something"
+    assert secret not in caplog.text
