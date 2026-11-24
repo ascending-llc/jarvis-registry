@@ -212,7 +212,7 @@ Both explicit batch endpoints return one result per input item in request order.
 
 ### 2. Resource Approval
 
-These two existing endpoints submit a one-time approval from the browser. On success, `client_branding` identifies the AI app to return to when that information is available. It can be null for either endpoint.
+Each consent link belongs to the user and the flow that created it. Submitting it to a different consent flow returns `404` and leaves the link available on its original page. On success, `client_branding` identifies the AI app to return to when that information is available. It can be null for either endpoint.
 
 #### 2.1 Approve a server
 
@@ -293,7 +293,7 @@ Errors return a string `detail`, for example `{"detail":"Session authentication 
 | `400` | Single-app or resource revoke targets a non-revocable category, or a resource path collides with a reserved consent field. |
 | `401` | A valid Registry session cookie identifying the user is required. |
 | `403` | The session lacks `user-read`, or a write request has a missing or invalid CSRF header. |
-| `404` | The submitted consent page link has expired or was already consumed. |
+| `404` | The consent link has expired, was already consumed, or belongs to a different user or consent flow. |
 | `409` | A server or agent consent page requires the user to reconnect the app. |
 | `422` | Invalid request body, including an unsupported resource type, conflicting batch options or a list outside the 1–100 item range. |
 | `500` | The operation failed. Reload the list to check the current approvals before retrying. |

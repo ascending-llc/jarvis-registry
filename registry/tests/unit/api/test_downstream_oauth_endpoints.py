@@ -218,6 +218,19 @@ def _stored_entry(
     )
 
 
+def _downstream_consent(user_id: str = USER_A) -> dict[str, str]:
+    return {
+        "user_id": user_id,
+        "server_path": "github",
+        "client_id": "claude",
+        "response_type": "code",
+        "redirect_uri": REGISTERED_REDIRECT_URIS[0],
+        "code_challenge": "abc",
+        "code_challenge_method": "S256",
+        "state": "state-1",
+    }
+
+
 def _device_state(
     *,
     status_value: str = "pending",
@@ -551,6 +564,54 @@ def test_regular_downstream_approval_rejects_error_payload_without_consuming(
     consent_store_mock.grant_client_consent.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("owner", "record"),
+    [
+        pytest.param("downstream", _downstream_consent(), id="authorization-code"),
+        pytest.param(
+            "downstream", {"flow_type": "device", "server_path": "github", "device_code": "device-1"}, id="device"
+        ),
+        pytest.param("server", {"server_path": "/github"}, id="server"),
+        pytest.param("agent", {"agent_path": "/research"}, id="agent"),
+        pytest.param(None, {"flow_type": "unknown", "server_path": "/github"}, id="unknown"),
+        pytest.param(None, {"response_type": "code", "server_path": "github"}, id="incomplete-code"),
+    ],
+)
+def test_pending_consent_is_visible_only_to_its_own_flow(
+    client: TestClient,
+    pending_consent_store: _InMemoryPendingConsentStore,
+    consent_store_mock: Mock,
+    store_mock: Mock,
+    owner: str | None,
+    record: dict[str, str],
+) -> None:
+    record = {"user_id": USER_A, "client_id": "claude", **record}
+    pending_consent_store.save("test-link", record)
+    if record.get("flow_type") == "device":
+        store_mock.device_codes["device-1"] = _device_state()
+    nonce = {"nonce": "test-link"}
+    for flow in ("downstream", "server", "agent"):
+        if flow == owner:
+            continue
+        url = f"/mcp/consent/{flow}"
+        context = client.get(url, params=nonce)
+        assert context.status_code == 404
+        for action in (url, f"{url}/deny"):
+            decision = client.post(action, json=nonce)
+            assert decision.status_code == 404
+            assert decision.json() == {"detail": "This consent link has expired."}
+    consent_store_mock.grant_client_consent.assert_not_called()
+    consent_store_mock.grant_server_consent.assert_not_called()
+    consent_store_mock.grant_agent_consent.assert_not_called()
+    assert pending_consent_store.peek("test-link") == record
+    if owner is not None:
+        context = client.get(f"/mcp/consent/{owner}", params=nonce)
+        assert context.status_code == 200
+        denied = client.post(f"/mcp/consent/{owner}/deny", json=nonce)
+        assert denied.status_code == 200
+        assert pending_consent_store.peek("test-link") is None
+
+
 def test_authorize_session_user_mismatch_returns_403(client, mcp_service_mock):
     # AS-1545 review #3: a logged-in user (USER_B) cannot initiate a downstream flow for another
     # user's account (USER_A in the URL) — that would inject a token into the victim's account.
@@ -584,19 +645,7 @@ def test_get_downstream_consent_context_returns_client_metadata(
     pending_consent_store,
     store_mock,
 ):
-    pending_consent_store.save(
-        "nonce-1",
-        {
-            "user_id": USER_A,
-            "server_path": "github",
-            "client_id": "claude",
-            "response_type": "code",
-            "redirect_uri": "http://localhost:33418/cb",
-            "code_challenge": "abc",
-            "code_challenge_method": "S256",
-            "state": "state-1",
-        },
-    )
+    pending_consent_store.save("nonce-1", _downstream_consent())
     store_mock.get_client.return_value = {
         "client_name": "Claude",
         "client_uri": "https://claude.ai",
@@ -625,7 +674,7 @@ def test_get_downstream_consent_context_returns_client_metadata(
 
 
 def test_get_downstream_consent_context_rejects_other_user(client, pending_consent_store):
-    pending_consent_store.save("nonce-1", {"user_id": USER_B, "server_path": "github", "client_id": "claude"})
+    pending_consent_store.save("nonce-1", _downstream_consent(USER_B))
 
     resp = client.get("/mcp/consent/downstream", params={"nonce": "nonce-1"})
 
@@ -638,19 +687,7 @@ def test_approve_downstream_consent_grants_and_returns_redirect(
     consent_store_mock,
     mcp_service_mock,
 ):
-    pending_consent_store.save(
-        "nonce-1",
-        {
-            "user_id": USER_A,
-            "server_path": "github",
-            "client_id": "claude",
-            "response_type": "code",
-            "redirect_uri": "http://localhost:33418/cb",
-            "code_challenge": "abc",
-            "code_challenge_method": "S256",
-            "state": "state-1",
-        },
-    )
+    pending_consent_store.save("nonce-1", _downstream_consent())
 
     resp = client.post("/mcp/consent/downstream", json={"nonce": "nonce-1"})
 
@@ -673,19 +710,7 @@ def test_approve_downstream_consent_rejects_other_user_without_consuming_nonce(
     consent_store_mock,
 ):
     """A wrong-user approval attempt must not destroy the nonce for its rightful owner."""
-    pending_consent_store.save(
-        "nonce-1",
-        {
-            "user_id": USER_A,
-            "server_path": "github",
-            "client_id": "claude",
-            "response_type": "code",
-            "redirect_uri": "http://localhost:33418/cb",
-            "code_challenge": "abc",
-            "code_challenge_method": "S256",
-            "state": "state-1",
-        },
-    )
+    pending_consent_store.save("nonce-1", _downstream_consent())
     client.app.dependency_overrides[get_current_user] = lambda: _session_user(USER_B)
 
     resp = client.post("/mcp/consent/downstream", json={"nonce": "nonce-1"})
@@ -700,10 +725,7 @@ def test_deny_downstream_consent_removes_pending_without_granting(
     pending_consent_store,
     consent_store_mock,
 ):
-    pending_consent_store.save(
-        "nonce-1",
-        {"user_id": USER_A, "server_path": "github", "client_id": "claude"},
-    )
+    pending_consent_store.save("nonce-1", _downstream_consent())
 
     resp = client.post("/mcp/consent/downstream/deny", json={"nonce": "nonce-1"})
 
@@ -714,7 +736,7 @@ def test_deny_downstream_consent_removes_pending_without_granting(
 
 
 def test_deny_downstream_consent_rejects_other_user(client, pending_consent_store):
-    pending_consent_store.save("nonce-1", {"user_id": USER_B, "server_path": "github", "client_id": "claude"})
+    pending_consent_store.save("nonce-1", _downstream_consent(USER_B))
 
     resp = client.post("/mcp/consent/downstream/deny", json={"nonce": "nonce-1"})
 

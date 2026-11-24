@@ -152,5 +152,6 @@ def test_revoked_client_requires_consent_on_both_mcp_paths(
         }
         assert container.pending_consent_store.peek(stale_nonce) is None
         assert not container.consent_store.has_server_consent(USER_ID, CLIENT_ID, "/github")
-        assert container.consent_store.grant_client_consent(USER_ID, CLIENT_ID) != old_grant
+        new_grant = container.consent_store.grant_client_consent(USER_ID, CLIENT_ID)
+        assert new_grant != old_grant
         _assert_revoked_refresh(client, refresh_token)
