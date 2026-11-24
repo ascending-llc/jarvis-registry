@@ -890,6 +890,56 @@ class TestOptionalListings:
         assert "Failed to retrieve" in caplog.text
         assert [call.args[0] for call in fetch.await_args_list] == [None, "page2"]
 
+    @pytest.mark.parametrize(
+        "items_attr,config_key",
+        [
+            ("resources", "resources"),
+            ("resource_templates", "resourceTemplates"),
+            ("prompts", "prompts"),
+        ],
+    )
+    @pytest.mark.parametrize("later_page", [False, True], ids=["first-request", "later-page"])
+    async def test_method_not_found_preserves_stored_listings_only_after_first_page(
+        self, items_attr: str, config_key: str, later_page: bool
+    ) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        from registry.services.server_service import _captured_listings
+
+        session = _mock_mcp_session(capabilities={"resources": {}})
+        error = MCPError(-32601, "Method not found")
+        pages = [_page(items_attr, [SimpleNamespace(name="partial")], "next-page"), error] if later_page else [error]
+        fetch = AsyncMock(side_effect=pages)
+        setattr(session, f"list_{items_attr}", fetch)
+
+        resources, templates, prompts = await _list_optional_entities(
+            session, "http://srv", include_resources=True, include_resource_templates=True, include_prompts=True
+        )
+        captured = MCPServerData(
+            tools=[{"name": "echo"}],
+            resources=resources,
+            resource_templates=templates,
+            prompts=prompts,
+            capabilities=None,
+        )
+        stored = {
+            "resources": [{"uri": "test://old"}],
+            "resourceTemplates": [{"uriTemplate": "test://old/{id}"}],
+            "prompts": [{"name": "old-prompt"}],
+        }
+        previous = stored[config_key]
+        updates = _captured_listings(captured, stored)
+        stored.update(updates)
+
+        assert stored[config_key] == (previous if later_page else [])
+        assert (config_key in updates) is not later_page
+        assert captured.tools == [{"name": "echo"}]
+        assert captured.error_message is None
+        assert set(updates) == set(stored) - ({config_key} if later_page else set())
+        assert [call.kwargs for call in fetch.await_args_list] == (
+            [{"cursor": None}, {"cursor": "next-page"}] if later_page else [{"cursor": None}]
+        )
+
     async def test_drain_listing_other_jsonrpc_error_returns_none(self) -> None:
         from mcp.shared.exceptions import MCPError
 

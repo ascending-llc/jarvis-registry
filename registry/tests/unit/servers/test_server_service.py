@@ -511,6 +511,7 @@ class TestRefreshServerCapabilities:
                     assert result["status"] == "success"
                     assert result["server"] == mock_server
                     assert "Successfully refreshed capabilities" in result["status_message"]
+                    assert "1 resource templates" in result["status_message"]
                     assert result["last_checked"] is not None
                     assert result["response_time_ms"] is None
 
