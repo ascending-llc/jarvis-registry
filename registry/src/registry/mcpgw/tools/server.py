@@ -299,9 +299,12 @@ async def _authorize_server_call(
         )
 
     user_id = user_context["user_id"]
+    # Tool names are bounded and safe to log; resource URIs and prompt arguments never are.
+    tool_field = f" tool_name={operation.tool_name}" if isinstance(operation, ToolCall) else ""
     logger.info(
-        "%s: server call server_id=%s request_id=%s",
+        "%s: server call%s server_id=%s request_id=%s",
         label,
+        tool_field,
         server_id,
         getattr(ctx.request_context, "request_id", None),
     )

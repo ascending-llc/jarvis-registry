@@ -93,6 +93,10 @@ async def test_shared_authorization_logs_correlation_without_username(
     assert ctx.request_context.request.state.user["user_id"] not in caplog.text
     assert f"server_id={server_id}" in caplog.text
     assert "request_id=req-1" in caplog.text
+    if isinstance(operation, ToolCall):
+        assert f"execute_tool: server call tool_name={operation.tool_name} server_id={server_id}" in caplog.text
+    else:
+        assert "tool_name=" not in caplog.text
 
 
 class _PermissiveAccessibleSet:
