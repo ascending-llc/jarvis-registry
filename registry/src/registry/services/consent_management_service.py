@@ -187,7 +187,7 @@ class ConsentManagementService:
         self._require_revocable(client_id)
         deleted = await asyncio.to_thread(self._consents.delete_entries, user_id, client_id, entries)
         logger.info(
-            "Revoked resource consents user_id=%s client_id=%s fields_deleted=%d",
+            "Revoked resource consents user_id=%s client_id=%r fields_deleted=%d",
             user_id,
             client_id,
             sum(deleted.values()),

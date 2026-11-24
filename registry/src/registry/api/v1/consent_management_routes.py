@@ -8,7 +8,6 @@ from registry_pkgs.core.consent_store import ConsentEntry
 
 from ...auth.dependencies import CurrentUser, UserContextDict
 from ...constants import OPENAPI_SESSION_COOKIE_SCHEME
-from ...core.config import settings
 from ...deps import get_consent_management_service
 from ...schemas.consent_api_schemas import (
     ClientRevokeResponse,
@@ -20,28 +19,15 @@ from ...schemas.consent_api_schemas import (
     RevokeSelectedClients,
 )
 from ...services.consent_management_service import ConsentManagementService
+from .consent_openapi import CONSENT_WRITE_ERRORS, CONSENT_WRITE_OPENAPI
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/consents", tags=["consent-management"])
 
 _REVOKE_RESPONSES = {
+    **CONSENT_WRITE_ERRORS,
     400: {"model": ConsentErrorResponse, "description": "The requested revocation is invalid."},
-    401: {"model": ConsentErrorResponse, "description": "A valid Registry session cookie is required."},
-    403: {"model": ConsentErrorResponse, "description": "A valid CSRF header and the user-read scope are required."},
-    422: {"model": ConsentErrorResponse, "description": "Request validation failed."},
     500: {"model": ConsentErrorResponse, "description": "Revocation could not be completed."},
-}
-_REVOKE_OPENAPI = {
-    "security": [{OPENAPI_SESSION_COOKIE_SCHEME: []}],
-    "parameters": [
-        {
-            "in": "header",
-            "name": settings.csrf_header_name,
-            "required": True,
-            "schema": {"type": "string"},
-            "description": "CSRF token for the current Registry session.",
-        }
-    ],
 }
 
 
@@ -93,7 +79,7 @@ async def list_consent_clients(
     "/clients/{client_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     responses=_REVOKE_RESPONSES,
-    openapi_extra=_REVOKE_OPENAPI,
+    openapi_extra=CONSENT_WRITE_OPENAPI,
 )
 async def revoke_consent_client(
     client_id: str,
@@ -106,7 +92,7 @@ async def revoke_consent_client(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/clients/revoke", responses=_REVOKE_RESPONSES, openapi_extra=_REVOKE_OPENAPI)
+@router.post("/clients/revoke", responses=_REVOKE_RESPONSES, openapi_extra=CONSENT_WRITE_OPENAPI)
 async def revoke_consent_clients(
     body: RevokeSelectedClients | RevokeAllClients,
     user_context: CurrentUser,
@@ -121,7 +107,7 @@ async def revoke_consent_clients(
     return ClientRevokeResponse(results=results)
 
 
-@router.post("/clients/{client_id}/resources/revoke", responses=_REVOKE_RESPONSES, openapi_extra=_REVOKE_OPENAPI)
+@router.post("/clients/{client_id}/resources/revoke", responses=_REVOKE_RESPONSES, openapi_extra=CONSENT_WRITE_OPENAPI)
 async def revoke_consent_resources(
     client_id: str,
     body: RevokeResourcesRequest,

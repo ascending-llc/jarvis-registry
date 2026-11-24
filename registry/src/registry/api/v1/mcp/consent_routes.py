@@ -37,6 +37,7 @@ from ....services.oauth.downstream_device_service import (
 )
 from ....services.oauth.mcp_service import MCPService
 from ....services.server_service import ServerServiceV1
+from ..consent_openapi import CONSENT_WRITE_ERRORS, CONSENT_WRITE_OPENAPI
 from .oauth_router import (
     _DOWNSTREAM_ERROR_FLOW_TYPE,
     _build_downstream_authorize_redirect,
@@ -48,7 +49,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mcp", tags=["mcp-consent"])
 
 _APP_REVOKED_DETAIL = "This app's access was revoked. Reconnect it from your AI app, then try again."
-_APPROVAL_RESPONSES = {409: {"model": ConsentErrorResponse, "description": _APP_REVOKED_DETAIL}}
+_APPROVAL_RESPONSES = {
+    **CONSENT_WRITE_ERRORS,
+    404: {"model": ConsentErrorResponse, "description": "This consent link has expired."},
+    409: {"model": ConsentErrorResponse, "description": _APP_REVOKED_DETAIL},
+    500: {"model": ConsentErrorResponse, "description": "Approval could not be completed."},
+}
 
 
 def _peek_regular_consent(
@@ -288,7 +294,7 @@ def _approve_resource_consent(
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
-@router.post("/consent/server", responses=_APPROVAL_RESPONSES)
+@router.post("/consent/server", responses=_APPROVAL_RESPONSES, openapi_extra=CONSENT_WRITE_OPENAPI)
 async def approve_server_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,
@@ -331,7 +337,7 @@ async def get_agent_consent_context(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
-@router.post("/consent/agent", responses=_APPROVAL_RESPONSES)
+@router.post("/consent/agent", responses=_APPROVAL_RESPONSES, openapi_extra=CONSENT_WRITE_OPENAPI)
 async def approve_agent_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -278,3 +279,16 @@ async def test_resource_revoke_preserves_order_and_duplicates(
         ("a2a_agent", "/shared", "not_found"),
         ("mcp_server", "/shared", "revoked"),
     ]
+
+
+async def test_resource_revoke_logs_client_id_on_one_line(
+    service: ConsentManagementService, stores: tuple[Mock, Mock, Mock], caplog: pytest.LogCaptureFixture
+) -> None:
+    consents, _, _ = stores
+    entry = ConsentEntry(ConsentEntryKind.MCP_SERVER, "/time")
+    consents.delete_entries.return_value = {entry: True}
+    client_id = "old\r\nclient"
+    with caplog.at_level(logging.INFO, logger=ConsentManagementService.__module__):
+        await service.revoke_resources(USER_ID, client_id, [entry])
+
+    assert caplog.messages == [f"Revoked resource consents user_id={USER_ID} client_id={client_id!r} fields_deleted=1"]

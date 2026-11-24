@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from redis.exceptions import RedisError
 
 from registry.api.v1.consent_management_routes import router as consent_router
+from registry.api.v1.mcp.consent_routes import router as approval_router
 from registry.app_factory import _configure_middleware, _customize_openapi
 from registry.container import RegistryContainer
 from registry.core.config import settings
@@ -330,19 +331,38 @@ def test_redis_errors_are_not_reported_as_success(
         assert response.json() == {"detail": "Internal server error"}
 
 
-def test_openapi_describes_write_auth_and_actual_error_shape() -> None:
+@pytest.mark.parametrize(
+    ("method", "path", "operation_errors"),
+    [
+        ("delete", f"{URL}/{{client_id}}", ("400",)),
+        ("post", BATCH_URL, ("400",)),
+        ("post", f"{URL}/{{client_id}}/resources/revoke", ("400",)),
+        ("post", "/api/v1/mcp/consent/server", ("404", "409")),
+        ("post", "/api/v1/mcp/consent/agent", ("404", "409")),
+    ],
+)
+def test_openapi_describes_write_auth_and_actual_error_shape(
+    method: str, path: str, operation_errors: tuple[str, ...]
+) -> None:
     app = FastAPI()
     app.include_router(consent_router, prefix="/api/v1")
-    paths = _customize_openapi(app)()["paths"]
-    for method, suffix in (("delete", "/{client_id}"), ("post", "/revoke"), ("post", "/{client_id}/resources/revoke")):
-        operation = paths[URL + suffix][method]
-        assert operation["security"] == [{"SessionCookie": []}]
-        assert any(
-            p["name"] == settings.csrf_header_name and p["in"] == "header" and p["required"]
-            for p in operation["parameters"]
+    app.include_router(approval_router, prefix="/api/v1")
+    schema = _customize_openapi(app)()
+    operation = schema["paths"][path][method]
+    assert operation["security"] == [{"SessionCookie": []}]
+    assert any(
+        p["name"] == settings.csrf_header_name and p["in"] == "header" and p["required"]
+        for p in operation["parameters"]
+    )
+    responses = operation["responses"]
+    for code in ("401", "403", "422", "500", *operation_errors):
+        assert responses[code]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ConsentErrorResponse"
+        }
+    assert schema["components"]["schemas"]["ConsentErrorResponse"]["properties"]["detail"]["type"] == "string"
+    if "409" in operation_errors:
+        assert responses["409"]["description"] == (
+            "This app's access was revoked. Reconnect it from your AI app, then try again."
         )
-        for status in ("400", "401", "403", "422", "500"):
-            assert operation["responses"][status]["content"]["application/json"]["schema"]["$ref"].endswith(
-                "/ConsentErrorResponse"
-            )
-    assert "content" not in paths[URL + "/{client_id}"]["delete"]["responses"]["204"]
+    if method == "delete":
+        assert "content" not in responses["204"]
