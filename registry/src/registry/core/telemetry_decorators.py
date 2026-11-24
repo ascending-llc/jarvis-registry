@@ -243,7 +243,7 @@ class AuthMetricsContext:
             logger.warning(f"Failed to record auth metric: {e}")
 
 
-class _ExecutionMetricsContext:
+class ExecutionMetricsContext:
     """
     Base async context manager for MCP execution metrics (tool/resource/prompt).
 
@@ -259,8 +259,9 @@ class _ExecutionMetricsContext:
       set_success(False) and may set_error_type("server_not_found") for the failure mode.
     - Raised exception: __aexit__ forces success=False and sets error_type to the
       exception class name unless the caller already set one.
-    - Pending client input: ToolExecutionMetricsContext.set_input_required() records
-      status=input_required; a subsequent exception always overrides it with failure.
+    - Pending client input: set_input_required() marks a pending outcome. Tools record
+      status=input_required; resource/prompt metrics retain success=False. A subsequent
+      exception always overrides the pending outcome with failure.
     """
 
     def __init__(self, server_name: str = "unknown") -> None:
@@ -277,6 +278,10 @@ class _ExecutionMetricsContext:
     def set_success(self, success: bool) -> None:
         """Set the success status."""
         self._outcome = ExecutionOutcome.SUCCESS if success else ExecutionOutcome.FAILURE
+
+    def set_input_required(self) -> None:
+        """Mark a pending client-input round; subclasses choose its metric representation."""
+        self._outcome = ExecutionOutcome.INPUT_REQUIRED
 
     def set_error_type(self, error_type: str) -> None:
         """Set a bounded, low-cardinality failure-mode label."""
@@ -310,7 +315,7 @@ class _ExecutionMetricsContext:
         raise NotImplementedError
 
 
-class ToolExecutionMetricsContext(_ExecutionMetricsContext):
+class ToolExecutionMetricsContext(ExecutionMetricsContext):
     """
     Context manager for tracking tool execution with dynamic info.
 
@@ -343,10 +348,6 @@ class ToolExecutionMetricsContext(_ExecutionMetricsContext):
         """Set the HTTP method."""
         self._method = method
 
-    def set_input_required(self) -> None:
-        """Record a pending client-input round without counting it as an execution failure."""
-        self._outcome = ExecutionOutcome.INPUT_REQUIRED
-
     def _record(self, duration: float) -> None:
         _record_tool_execution(
             tool_name=self._tool_name,
@@ -359,7 +360,7 @@ class ToolExecutionMetricsContext(_ExecutionMetricsContext):
         )
 
 
-class ResourceAccessMetricsContext(_ExecutionMetricsContext):
+class ResourceAccessMetricsContext(ExecutionMetricsContext):
     """
     Context manager for tracking resource access with dynamic info.
 
@@ -383,7 +384,7 @@ class ResourceAccessMetricsContext(_ExecutionMetricsContext):
         )
 
 
-class PromptExecutionMetricsContext(_ExecutionMetricsContext):
+class PromptExecutionMetricsContext(ExecutionMetricsContext):
     """
     Context manager for tracking prompt execution with dynamic info.
 

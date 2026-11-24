@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -340,3 +341,30 @@ async def test_search_mixed_never_builds_results_from_stale_oauth_resources():
     assert set(servers) == {"Drive", "Docs"}
     assert servers["Docs"]["match_context"] == "Docs | URI: file:///manual.md"
     assert [t["tool_name"] for t in result["tools"]] == ["search"]
+
+
+@pytest.mark.parametrize("rerank", [False, True])
+async def test_search_mixed_refills_private_candidates_before_grouping(rerank: bool) -> None:
+    oauth_id = ObjectId()
+    private = [
+        _resource_doc(
+            server_id=str(oauth_id), server_name="Private", path="/private", resource_name=f"secret-{i}", score=1
+        )
+        for i in range(8)
+    ]
+    eligible = _tool_doc(server_id="shared", server_name="Public", path="/public", tool_name="echo", score=0.5)
+    ranked = private + [eligible]
+
+    async def fetch(**kwargs: Any) -> list[dict[str, Any]]:
+        return ranked[: kwargs["k"]]
+
+    repo = MagicMock(asearch=AsyncMock(side_effect=fetch), asearch_with_rerank=AsyncMock(side_effect=fetch))
+    service = ExternalVectorSearchService(mcp_server_repo=repo, enable_rerank=rerank)
+    with _current_auth([{"_id": oauth_id, "config": {"requiresOAuth": True}}]):
+        result = await service.search_mixed("documents", max_results=1)
+    assert [s["server_name"] for s in result["servers"]] == ["Public"]
+    assert [t["tool_name"] for t in result["tools"]] == ["echo"]
+    calls = repo.asearch_with_rerank.await_args_list if rerank else repo.asearch.await_args_list
+    assert [c.kwargs["k"] for c in calls] == [2, 4, 8, 16]
+    if rerank:
+        assert all(c.kwargs["candidate_k"] >= c.kwargs["k"] for c in calls)
