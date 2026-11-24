@@ -66,6 +66,7 @@ from ..core.config import ChunkingConfig
 from ..models.enums import McpAuthMode, MCPEntityType
 from ._generated import MCPServer
 from .federation_metadata import AgentCoreMcpFederationMetadata, extract_runtime_arn, extract_runtime_version
+from .mcp_resource_capture import RESOURCE_CAPTURE_REVISION, RESOURCE_KIND, resource_capture_revision
 from .mcp_server_oauth import RegistryOAuthState
 from .vector_doc_ids import assign_deterministic_doc_ids
 
@@ -379,10 +380,11 @@ class ExtendedMCPServer(MCPServer):
 
         # Resources. An OAuth server's concrete resources were listed with one user's token, so they are that
         # user's data and are never indexed, even if an older writer stored them.
-        resources = [] if self.mcp_auth_mode is McpAuthMode.OAUTH else self.config.get("resources", [])
+        capture_revision = resource_capture_revision(self.config)
+        resources = self.config.get("resources", []) if capture_revision else []
         resources = [resource for resource in resources if not _is_mcp_app_ui_resource(resource)]
         for resource in resources:
-            resource_docs = self._create_resource_docs(resource, chunking_config)
+            resource_docs = self._create_resource_docs(resource, chunking_config, capture_revision=capture_revision)
             docs.extend(resource_docs)
 
         # Resource templates
@@ -430,12 +432,21 @@ class ExtendedMCPServer(MCPServer):
 
         return self._split_if_needed(content, metadata, chunking_config)
 
-    def _create_resource_docs(self, resource: dict, chunking_config: ChunkingConfig) -> list[LangChainDocument]:
+    def _create_resource_docs(
+        self, resource: dict, chunking_config: ChunkingConfig, *, capture_revision: str
+    ) -> list[LangChainDocument]:
         """Create Resource document(s) with text splitting if needed."""
         content = self.generate_resource_content(resource)
 
         metadata = self._get_base_metadata(MCPEntityType.RESOURCE)
-        metadata.update({"resource_name": resource.get("name", ""), "resource_uri": resource.get("uri", "")})
+        metadata.update(
+            {
+                "resource_name": resource.get("name", ""),
+                "resource_uri": resource.get("uri", ""),
+                RESOURCE_KIND: "concrete",
+                RESOURCE_CAPTURE_REVISION: capture_revision,
+            }
+        )
 
         return self._split_if_needed(content, metadata, chunking_config)
 
@@ -447,7 +458,11 @@ class ExtendedMCPServer(MCPServer):
 
         metadata = self._get_base_metadata(MCPEntityType.RESOURCE)
         metadata.update(
-            {"resource_name": template.get("name", ""), "resource_uri_template": template.get("uriTemplate", "")}
+            {
+                "resource_name": template.get("name", ""),
+                "resource_uri_template": template.get("uriTemplate", ""),
+                RESOURCE_KIND: "template",
+            }
         )
 
         return self._split_if_needed(content, metadata, chunking_config)
@@ -499,6 +514,9 @@ class ExtendedMCPServer(MCPServer):
             "enabled": self._config_enabled,
             "tags": list(self.tags) if self.tags else [],
         }
+        revision = resource_capture_revision(self.config)
+        if revision:
+            meta[RESOURCE_CAPTURE_REVISION] = revision
         runtime_version = extract_runtime_version(self.federationMetadata)
         if runtime_version is not None:
             meta["runtimeVersion"] = runtime_version
@@ -716,6 +734,9 @@ class ExtendedMCPServer(MCPServer):
             result["input_schema"] = _parse_input_schema(metadata.get("input_schema"))
         elif entity_type == MCPEntityType.RESOURCE:
             result["resource_name"] = metadata.get("resource_name")
+            for key in (RESOURCE_CAPTURE_REVISION, RESOURCE_KIND):
+                if key in metadata:
+                    result[key] = metadata[key]
             # A result carries exactly one: a concrete URI to read verbatim, or a template to fill first.
             if metadata.get("resource_uri"):
                 result["resource_uri"] = metadata.get("resource_uri")

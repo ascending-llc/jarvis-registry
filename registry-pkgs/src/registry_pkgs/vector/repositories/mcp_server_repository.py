@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
@@ -36,11 +37,37 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         "input_schema": "text",
         # Declared explicitly so resource template documents don't depend on Weaviate auto-schema.
         "resource_uri_template": "text",
+        "resource_kind": "text",
+        "resource_capture_revision": "text",
     }
 
     def __init__(self, db_client: DatabaseClient):
         super().__init__(db_client, ExtendedMCPServer)
+        self._resource_visibility_target: tuple[Any, str] | None = None
+        self._resource_visibility_lock = asyncio.Lock()
         logger.info("MCPServerRepository initialized")
+
+    async def prepare_resource_visibility(self) -> None:
+        """Add visibility columns before the first filtered read of each active generation.
+
+        Recheck the target after waiting for the lock. Schema additions respect the write gate;
+        already prepared generations remain readable during reindex. Never cache failed additions.
+        """
+        async with self._resource_visibility_lock:
+            adapter, collection = self._search_target()
+            if self._resource_visibility_target == (adapter, collection):
+                return
+            writer = self._write_adapter
+
+            def prepare() -> None:
+                fields = {"resource_kind": "text", "resource_capture_revision": "text"}
+                writer.ensure_filterable_properties(collection, fields)
+                # The backend logs schema-addition failures, so verify before caching success.
+                if not all(writer.has_property(collection, name) for name in fields):
+                    raise RuntimeError("Resource visibility schema is unavailable")
+
+            await asyncio.to_thread(prepare)
+            self._resource_visibility_target = (adapter, collection)
 
     async def sync_to_vector_db(
         self,

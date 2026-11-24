@@ -1229,6 +1229,9 @@ def test_copy_mcp_update_fields_keeps_listings_enrichment_left_out() -> None:
         federationMetadata=None,
     )
 
+    from registry_pkgs.models.mcp_resource_capture import create_resource_capture
+
+    discovered.config["resourceCapture"] = create_resource_capture(discovered.config, discovered.config["resources"])
     FederationSyncService._copy_mcp_update_fields(existing, discovered)
 
     assert existing.config["resources"] == [{"uri": "a://new"}]
@@ -1246,3 +1249,22 @@ def test_copy_mcp_update_fields_with_no_previous_config() -> None:
     FederationSyncService._copy_mcp_update_fields(existing, discovered)
 
     assert existing.config == {"url": "u"}
+
+
+@pytest.mark.parametrize("url", ["https://old.test/mcp", "https://new.test/mcp"])
+def test_failed_resource_listing_keeps_proof_only_for_unchanged_source(url: str) -> None:
+    from registry_pkgs.models.mcp_resource_capture import create_resource_capture, resource_capture_revision
+
+    config = {"url": "https://old.test/mcp", "resources": [{"uri": "shared://old"}]}
+    config["resourceCapture"] = create_resource_capture(config, config["resources"])
+    existing = SimpleNamespace(config=config)
+    discovered = SimpleNamespace(
+        serverName="srv", path="/srv", tags=[], config={"url": url}, numTools=0, federationMetadata=None
+    )
+    FederationSyncService._copy_mcp_update_fields(existing, discovered)
+    if url == "https://old.test/mcp":
+        assert existing.config["resources"] == [{"uri": "shared://old"}]
+        assert resource_capture_revision(existing.config)
+    else:
+        assert existing.config["resources"] == []
+        assert resource_capture_revision(existing.config) is None

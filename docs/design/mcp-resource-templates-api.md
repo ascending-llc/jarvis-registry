@@ -81,14 +81,23 @@ Unchanged shape (`uri`, `name`, `description`, `mimeType`, `annotations`).
 1. **OAuth servers: `resources` is always `[]`.** The capture runs with the token of the user who
    registered, enabled or refreshed the server, so the concrete resources it lists (file names,
    document URIs) are that user's data. Showing them to every viewer would reveal which files that
-   user has. Resource templates and prompts describe the server rather than a user's data, so they
-   are still returned. The UI should not present an empty `resources` list on an OAuth server as
+   user has. Resource templates and prompts are still returned on the assumption that they describe
+   shared server capabilities. MCP does not guarantee that their lists are identical for every user;
+   only connect servers whose shared metadata contains no personal data. The UI should not present an empty `resources` list on an OAuth server as
    "this server has no resources".
 2. **A failed listing keeps the previous value.** If one listing (resources, resource templates or
    prompts) fails during a refresh, for example on a timeout, the stored list for it is kept rather
-   than cleared. The refresh itself still succeeds when the tools were fetched.
+   than cleared. Only a first-page JSON-RPC `-32601` (method not found) establishes that a listing is
+   unsupported and clears it; the same error on a later page preserves the old list. Partial pages
+   are never stored. The refresh itself still succeeds when the tools were fetched.
 3. **Listings are complete.** Resources, resource templates and prompts are fetched across all
    pages, not only the first page.
 4. **MCP App UI resources stay in the API.** `ui://` resources (MIME type
    `text/html;profile=mcp-app`) are still returned in `resources` / `resourceTemplates`. They are
    excluded only from semantic discovery (`discover_servers`).
+
+5. **Concrete resources require a current shared-credential capture.** Changing the endpoint or
+   authentication invalidates the previous list. Legacy lists without capture provenance are hidden
+   until a successful refresh with the current shared credentials. A failed refresh preserves a
+   previously valid capture, but cannot make an old or invalid list visible again. An empty list
+   during this transition does not imply that the downstream server has no resources.

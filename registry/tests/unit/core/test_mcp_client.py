@@ -852,12 +852,43 @@ class TestOptionalListings:
         assert await _drain_listing(fetch, "prompts", "prompts", "http://srv") is None
         assert "repeated a pagination cursor" in caplog.text
 
-    async def test_drain_listing_method_not_found_is_a_definite_empty_listing(self) -> None:
+    @pytest.mark.parametrize("items_attr", ["resources", "resource_templates", "prompts"])
+    async def test_drain_listing_method_not_found_is_a_definite_empty_listing(self, items_attr: str) -> None:
         from mcp.shared.exceptions import MCPError
 
         fetch = AsyncMock(side_effect=MCPError(-32601, "Method not found"))
 
-        assert await _drain_listing(fetch, "prompts", "prompts", "http://srv") == []
+        assert await _drain_listing(fetch, items_attr, items_attr, "http://srv") == []
+        fetch.assert_awaited_once_with(None)
+
+    @pytest.mark.parametrize("items_attr", ["resources", "resource_templates", "prompts"])
+    @pytest.mark.parametrize("first_page_items", [[], ["first-page-item"]])
+    async def test_drain_listing_later_method_not_found_keeps_stored_listing(
+        self, items_attr: str, first_page_items: list[str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        from registry.services.server_service import _captured_listings
+
+        fetch = AsyncMock(
+            side_effect=[
+                _page(items_attr, first_page_items, "page2"),
+                MCPError(-32601, "Method not found"),
+            ]
+        )
+        config_key = "resourceTemplates" if items_attr == "resource_templates" else items_attr
+        stored = {config_key: ["stored-item"], "resourceCapture": {"revision": "stored-proof"}}
+
+        result = await _drain_listing(fetch, items_attr, items_attr, "http://srv")
+        assert result is None
+        # Exercise the real capture write builder: neither a failed list nor its proof may be replaced.
+        captured = MCPServerData(tools=[], resources=None, prompts=None, capabilities=None, resource_templates=None)
+        setattr(captured, items_attr, result)
+        fields = _captured_listings(captured, stored)
+        assert config_key not in fields
+        assert "resourceCapture" not in fields
+        assert "Failed to retrieve" in caplog.text
+        assert [call.args[0] for call in fetch.await_args_list] == [None, "page2"]
 
     async def test_drain_listing_other_jsonrpc_error_returns_none(self) -> None:
         from mcp.shared.exceptions import MCPError

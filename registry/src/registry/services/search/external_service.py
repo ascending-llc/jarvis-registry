@@ -7,7 +7,7 @@ from registry_pkgs.vector.enum.enums import RerankerProvider, SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from .base import VectorSearchService
-from .private_resources import drop_private_mcp_resources
+from .private_resources import drop_private_mcp_resources, with_resource_visibility
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +403,9 @@ class ExternalVectorSearchService(VectorSearchService):
             filters["server_id"] = {"$in": allowed_server_ids}
 
         try:
+            if MCPEntityType.RESOURCE in filters["entity_type"]:
+                await self.mcp_server_repo.prepare_resource_visibility()
+                filters = await with_resource_visibility(filters, allowed_server_ids)
             if self.enable_rerank:
                 candidate_k = min(search_k * 3, 100)
                 docs = await self.mcp_server_repo.asearch_with_rerank(
