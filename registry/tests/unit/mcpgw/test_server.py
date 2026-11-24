@@ -28,7 +28,6 @@ from registry.core.mcp_downstream import DownstreamOperation, PromptGet, Resourc
 from registry.core.telemetry_decorators import (
     PromptExecutionMetricsContext,
     ResourceAccessMetricsContext,
-    ToolExecutionMetricsContext,
 )
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
@@ -58,15 +57,14 @@ def operation(request: pytest.FixtureRequest) -> DownstreamOperation:
 async def _run_operation(
     ctx: Any, operation: DownstreamOperation, server_id: str, *, render: Callable | None = None
 ) -> CallToolResult | InputRequiredResult:
+    # Tools go through the public entry point, so these tests also guard execute_tool_impl's delegation.
     if isinstance(operation, ToolCall):
-        metrics = ToolExecutionMetricsContext(tool_name=operation.tool_name, method="POST")
-    elif isinstance(operation, ResourceRead):
+        return await execute_tool_impl(ctx, operation.tool_name, operation.arguments, server_id)
+    if isinstance(operation, ResourceRead):
         metrics = ResourceAccessMetricsContext()
     else:
         metrics = PromptExecutionMetricsContext(prompt_name=operation.name)
     async with metrics:
-        if isinstance(operation, ToolCall):
-            return await server._execute_server_operation(ctx, operation, server_id, metrics_ctx=metrics)
         return await server._execute_server_operation(
             ctx,
             operation,
