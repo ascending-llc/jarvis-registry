@@ -34,7 +34,7 @@ These snippets illustrate tool calls, not a standalone Python client. The select
 ```python
 # A registered prompt template, when the user requests one.
 discover_servers(query="meeting notes summary template", type_list=["prompt"])
-execute_prompt(
+get_prompt(
     server_id=selected["server_id"],
     prompt_name=selected["prompt_name"],
     arguments=prompt_arguments,
@@ -44,6 +44,14 @@ execute_prompt(
 discover_servers(query="release notes feed", type_list=["resource"])
 read_resource(server_id=selected["server_id"], resource_uri=selected["resource_uri"])
 ```
+
+If discovery returns `resource_uri_template`, expand it using RFC 6570 before calling `read_resource`.
+Expansion is performed by the caller, with known input values and the template's encoding rules; the
+gateway forwards the resulting URI to the registered server. For example, `test://search{?q}` with
+`q="release notes"` becomes `test://search?q=release%20notes`, while `test://files/{+path}` with
+`path="docs/guide.md"` becomes `test://files/docs/guide.md`. Ask for missing required inputs rather than
+guessing, and never send unresolved template expressions. Use concrete URIs and resource-link URIs
+verbatim, paired with their source server's `server_id`.
 
 For an ambiguous request such as “Do something with Slack,” inspect discovery results and ask which operation the user intends before executing one.
 

@@ -64,6 +64,7 @@ async def test_startup_warms_services_and_starts_background_runners(
             "embedding_maintenance_watcher",
             "embedding_reindex_job_runner",
             "vector_sync_reconciler",
+            "resource_recapture_reconciler",
             "vector_orphan_sweeper",
             "lease_reaper",
         )
@@ -93,6 +94,7 @@ def _stub_shutdown_dependencies(container: RegistryContainer, monkeypatch) -> No
     container.__dict__["lease_reaper"] = MagicMock(shutdown=AsyncMock())
     container.__dict__["background_task_tracker"] = MagicMock(shutdown=AsyncMock(return_value=0))
     container.__dict__["embedding_reindex_job_runner"] = MagicMock(shutdown=AsyncMock())
+    container.__dict__["resource_recapture_reconciler"] = MagicMock(shutdown=AsyncMock())
     container.__dict__["embedding_maintenance_watcher"] = MagicMock(shutdown=AsyncMock(), start=AsyncMock())
     container.__dict__["mcp_proxy_client"] = MagicMock(aclose=AsyncMock())
     container.__dict__["a2a_httpx_client"] = MagicMock(aclose=AsyncMock())
@@ -208,6 +210,7 @@ async def test_shutdown_delegates_to_idempotent_skill_sync_runner(monkeypatch):
     # The lease reaper is stopped and the background task tracker finalizes in-flight runs,
     # replacing the old cluster-wide cancel_in_flight_runs sweep.
     container.__dict__["lease_reaper"].shutdown.assert_awaited_once()
+    container.__dict__["resource_recapture_reconciler"].shutdown.assert_awaited_once()
     container.__dict__["background_task_tracker"].shutdown.assert_awaited_once()
 
 

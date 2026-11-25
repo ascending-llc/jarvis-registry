@@ -1,78 +1,87 @@
-"""Read-time guard that keeps stale vectors from exposing OAuth servers' concrete resources.
+"""Filter concrete resources by their current, shared-credential capture before ranking."""
 
-A concrete resource listed with one user's OAuth token is that user's data. Capture no longer lists them and
-indexing skips them, but vectors written before that (or by an old pod during a rollout) survive until the
-server's next rebuild, and a rebuild can be delayed or fail. Every search path that returns MCP resource
-documents, or builds results from them, filters them against the server's current authentication here.
-"""
-
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from beanie import PydanticObjectId
 from pymongo import ReadPreference
 
-from registry_pkgs.models.enums import McpAuthMode, MCPEntityType
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer, mcp_auth_mode_from_config
+from registry_pkgs.models.enums import MCPEntityType
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.mcp_resource_capture import (
+    RESOURCE_CAPTURE_CONTEXT_FIELDS,
+    RESOURCE_CAPTURE_KEY,
+    RESOURCE_CAPTURE_REVISION,
+    RESOURCE_KIND,
+    resource_capture_revision,
+)
 
-_AUTH_PROJECTION = {"config.requiresOAuth": 1, "config.oauth": 1, "config.runtimeAccess": 1}
-# Refill bounds: at most this many search rounds, and a window no larger than this (or the
-# requested limit, if larger). Stays well under Weaviate's QUERY_MAXIMUM_RESULTS.
-_MAX_REFILL_FETCHES = 4
-_MAX_CANDIDATE_WINDOW = 200
+_CAPTURE_PROJECTION = {
+    **{f"config.{key}": 1 for key in RESOURCE_CAPTURE_CONTEXT_FIELDS},
+    f"config.{RESOURCE_CAPTURE_KEY}": 1,
+    "config.resources": 1,
+}
 
 
 def _is_concrete_resource(doc: dict[str, Any]) -> bool:
-    # A resource without template metadata is treated as concrete, including legacy documents without a URI.
     return doc.get("entity_type") == MCPEntityType.RESOURCE and (
         bool(doc.get("resource_uri")) or not doc.get("resource_uri_template")
     )
 
 
+async def _current_captures(server_ids: list[str] | None) -> dict[str, str]:
+    match: dict[str, Any] = {}
+    if server_ids is not None:
+        ids = [PydanticObjectId(value) for value in server_ids if PydanticObjectId.is_valid(value)]
+        if not ids:
+            return {}
+        match["_id"] = {"$in": ids}
+    collection = ExtendedMCPServer.get_pymongo_collection().with_options(read_preference=ReadPreference.PRIMARY)
+    captures = {}
+    async for server in collection.find(match, _CAPTURE_PROJECTION):
+        revision = resource_capture_revision(server.get("config") or {})
+        if revision:
+            captures[str(server["_id"])] = revision
+    return captures
+
+
+async def with_resource_visibility(filters: dict[str, Any], allowed_server_ids: list[str] | None) -> dict[str, Any]:
+    """Exclude private/unsigned/stale concrete documents before vector top-k and reranking.
+
+    Keep the caller's ACL and type filters in an explicit AND: the backend's boolean-filter parser
+    treats $or as a complete expression rather than combining it with sibling fields.
+    """
+    captures = await _current_captures(allowed_server_ids)
+    visible: list[dict[str, Any]] = [
+        {"entity_type": {"$ne": MCPEntityType.RESOURCE.value}},
+        {"entity_type": MCPEntityType.RESOURCE.value, RESOURCE_KIND: "template"},
+    ]
+    visible.extend(
+        {
+            "entity_type": MCPEntityType.RESOURCE.value,
+            "server_id": server_id,
+            RESOURCE_KIND: "concrete",
+            RESOURCE_CAPTURE_REVISION: revision,
+        }
+        for server_id, revision in captures.items()
+    )
+    return {"$and": [filters, {"$or": visible}]}
+
+
+def without_resources(filters: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on every resource document when the visibility columns cannot be filtered on."""
+    return {"$and": [filters, {"entity_type": {"$ne": MCPEntityType.RESOURCE.value}}]}
+
+
 async def drop_private_mcp_resources(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop concrete resource documents unless their server currently uses shared credentials.
-
-    Whole documents are dropped, since their description also names the resource. Missing or deleted servers
-    and invalid IDs fail closed; database errors propagate. Tools, prompts and resource templates are kept
-    without a database lookup.
-    """
+    """Recheck current proofs after search to catch configuration changes during retrieval."""
     concrete = [doc for doc in docs if _is_concrete_resource(doc)]
-    if not concrete:
-        return docs
-
-    server_ids = {
-        PydanticObjectId(doc["server_id"]) for doc in concrete if PydanticObjectId.is_valid(doc.get("server_id"))
-    }
-    shared_server_ids: set[str] = set()
-    if server_ids:
-        # Primary reads: a just-committed switch to OAuth must apply at once.
-        collection = ExtendedMCPServer.get_pymongo_collection().with_options(read_preference=ReadPreference.PRIMARY)
-        async for server in collection.find({"_id": {"$in": list(server_ids)}}, _AUTH_PROJECTION):
-            if mcp_auth_mode_from_config(server.get("config")) is not McpAuthMode.OAUTH:
-                shared_server_ids.add(str(server["_id"]))
-
-    return [doc for doc in docs if not _is_concrete_resource(doc) or doc.get("server_id") in shared_server_ids]
-
-
-async def fetch_eligible_mcp_candidates(
-    fetch: Callable[[int], Awaitable[list[dict[str, Any]]]],
-    limit: int,
-) -> list[dict[str, Any]]:
-    """Refill a ranked candidate window when stale private resources consume its slots.
-
-    Each enlarged window is checked against current primary Mongo auth state. Only return
-    eligible documents, preserving their order; stop when the budget is filled, the source
-    is exhausted, or the window / round cap is reached. Each round re-runs the whole search,
-    so the caps bound vector, rerank and Mongo work: a server with thousands of stale resource
-    vectors yields a short result instead of an ever-growing query. No extra vector request is
-    needed when the first window is already eligible.
-    """
-    max_window = max(limit, _MAX_CANDIDATE_WINDOW)
-    requested = limit
-    for _ in range(_MAX_REFILL_FETCHES):
-        docs = await fetch(requested)
-        eligible = await drop_private_mcp_resources(docs)
-        if len(eligible) >= limit or len(docs) < requested or requested >= max_window:
-            break
-        requested = min(requested * 2, max_window)
-    return eligible[:limit]
+    captures = await _current_captures([doc.get("server_id") for doc in concrete]) if concrete else {}
+    return [
+        {key: value for key, value in doc.items() if key not in (RESOURCE_CAPTURE_REVISION, RESOURCE_KIND)}
+        for doc in docs
+        if not _is_concrete_resource(doc)
+        or (
+            doc.get(RESOURCE_CAPTURE_REVISION) is not None
+            and doc.get(RESOURCE_CAPTURE_REVISION) == captures.get(doc.get("server_id"))
+        )
+    ]

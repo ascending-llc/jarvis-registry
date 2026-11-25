@@ -17,6 +17,7 @@ from registry_pkgs.models.federation_metadata import (
     AgentCoreMcpFederationMetadata,
     AzureFoundryFederationMetadata,
 )
+from registry_pkgs.models.mcp_resource_capture import RESOURCE_CAPTURE_KEY, create_resource_capture
 from registry_pkgs.testing.federation_metadata import (
     make_agentcore_a2a_metadata,
     make_agentcore_mcp_metadata,
@@ -420,6 +421,7 @@ class TestExtendedMCPServerStructure:
             path="/mcp/github",
         )
 
+        server.config[RESOURCE_CAPTURE_KEY] = create_resource_capture(server.config, server.config["resources"])
         docs = server.to_documents()
         resource_doc = next(doc for doc in docs if doc.metadata.get("entity_type") == "resource")
 
@@ -966,6 +968,11 @@ class TestVectorSyncMarkerFields:
         assert _has_sparse_index(model, "vectorSyncPendingAt")
 
 
+def test_resource_recapture_marker_has_sparse_index():
+    """The resource-recapture reconciler scans and sorts by this Registry-owned marker on every pass."""
+    assert _has_sparse_index(ExtendedMCPServer, "resourceRecapturePendingAt")
+
+
 class TestLeaderLease:
     """the singleton leader-lease document used by leader-leased loops."""
 
@@ -997,7 +1004,7 @@ class TestLeaderLease:
 
 
 def _resource_server(**config: object) -> ExtendedMCPServer:
-    return ExtendedMCPServer.model_construct(
+    server = ExtendedMCPServer.model_construct(
         id=PydanticObjectId(),
         serverName="github",
         config={
@@ -1012,6 +1019,9 @@ def _resource_server(**config: object) -> ExtendedMCPServer:
         author=PydanticObjectId(),
         path="/mcp/github",
     )
+
+    server.config[RESOURCE_CAPTURE_KEY] = create_resource_capture(server.config, server.config.get("resources", []))
+    return server
 
 
 def _resource_docs(server: ExtendedMCPServer) -> list[LangChainDocument]:
@@ -1089,6 +1099,7 @@ class TestResourceDocuments:
         base = server.vectorContentHash
 
         server.config["resources"] = [_CONCRETE, {"uri": "ui://widget/app.html", "name": "w"}]
+        server.config[RESOURCE_CAPTURE_KEY] = create_resource_capture(server.config, server.config["resources"])
         server.refresh_content_hash()
         assert server.vectorContentHash == base
 
@@ -1107,3 +1118,13 @@ def test_ordinary_html_and_other_types_are_indexed(mime_type: str) -> None:
     docs = _resource_docs(_resource_server(resources=[item]))
 
     assert [doc.metadata["resource_uri"] for doc in docs] == ["https://x/page"]
+
+
+def test_old_writer_replacement_cannot_reuse_resource_capture_revision() -> None:
+    server = _resource_server(resources=[_CONCRETE])
+    old_doc = _resource_docs(server)[0]
+    server.config["resources"] = [{"uri": "private://alice/salary", "name": "salary"}]
+    assert not _resource_docs(server)
+    server.config[RESOURCE_CAPTURE_KEY] = create_resource_capture(server.config, server.config["resources"])
+    new_doc = _resource_docs(server)[0]
+    assert old_doc.metadata["resource_capture_revision"] != new_doc.metadata["resource_capture_revision"]

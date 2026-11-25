@@ -157,6 +157,11 @@ class TestFetchRegistrationCapabilities:
         update.find_one.assert_called_once_with({"_id": server.id, "updatedAt": server.updatedAt})
         update.assert_awaited_once()
         fields = self._set_fields(update)
+        if resources is not None:
+            from registry_pkgs.models.mcp_resource_capture import resource_capture_revision
+
+            proof = fields.pop("config.resourceCapture")
+            assert resource_capture_revision({**server.config, "resources": resources, "resourceCapture": proof})
         assert fields == {
             "config.capabilities": json.dumps(capabilities),
             # A listing that failed (None) is omitted so the stored value is kept.

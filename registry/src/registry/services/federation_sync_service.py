@@ -46,6 +46,7 @@ from registry_pkgs.models.federation_sync_job import (
     FederationDiscoverySummary,
     FederationSyncJob,
 )
+from registry_pkgs.models.mcp_resource_capture import RESOURCE_CAPTURE_KEY, resource_capture_revision
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
@@ -1830,6 +1831,11 @@ class FederationSyncService:
         for key in _MCP_CAPTURED_LISTING_KEYS:
             if key not in config and key in previous:
                 config[key] = previous[key]
+        if "resources" not in (discovered.config or {}) and RESOURCE_CAPTURE_KEY in previous:
+            config[RESOURCE_CAPTURE_KEY] = previous[RESOURCE_CAPTURE_KEY]
+        if "resources" in config and not resource_capture_revision(config):
+            config["resources"] = []
+            config.pop(RESOURCE_CAPTURE_KEY, None)
         existing.config = config
         existing.numTools = discovered.numTools
         existing.federationMetadata = discovered.federationMetadata

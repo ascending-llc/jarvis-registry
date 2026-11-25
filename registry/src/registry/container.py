@@ -62,6 +62,7 @@ from .services.model_gateway_selection_service import ModelGatewaySelectionServi
 from .services.model_source_crud_service import ModelSourceCrudService
 from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
+from .services.resource_recapture_reconciler import ResourceRecaptureReconciler
 from .services.search.base import VectorSearchService
 from .services.search.service import SearchService
 from .services.server_service import ServerServiceV1
@@ -588,6 +589,14 @@ class RegistryContainer:
         )
 
     @cached_property
+    def resource_recapture_reconciler(self) -> ResourceRecaptureReconciler:
+        return ResourceRecaptureReconciler(
+            server_service=self.server_service,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            lease_owner=self.lease_owner,
+        )
+
+    @cached_property
     def vector_orphan_sweeper(self) -> VectorOrphanSweeper:
         return VectorOrphanSweeper(
             mcp_server_repo=self.mcp_server_repo,
@@ -675,6 +684,9 @@ class RegistryContainer:
         logger.info("Starting vector sync reconciler...")
         await self.vector_sync_reconciler.start()
 
+        logger.info("Starting resource recapture reconciler...")
+        await self.resource_recapture_reconciler.start()
+
         logger.info("Starting vector orphan sweeper...")
         await self.vector_orphan_sweeper.start()
 
@@ -688,6 +700,7 @@ class RegistryContainer:
         await self.skill_sync_job_runner.shutdown()
         await self.embedding_reindex_job_runner.shutdown()
         await self.vector_sync_reconciler.shutdown()
+        await self.resource_recapture_reconciler.shutdown()
         await self.vector_orphan_sweeper.shutdown()
         await self.embedding_maintenance_watcher.shutdown()
         # Cancel and finalize all tracked background runs (replaces the cluster-wide shutdown sweep).

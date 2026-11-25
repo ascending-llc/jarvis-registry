@@ -7,7 +7,7 @@ from registry_pkgs.vector.enum.enums import RerankerProvider, SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from .base import VectorSearchService
-from .private_resources import fetch_eligible_mcp_candidates
+from .private_resources import drop_private_mcp_resources, with_resource_visibility, without_resources
 
 logger = logging.getLogger(__name__)
 
@@ -402,27 +402,33 @@ class ExternalVectorSearchService(VectorSearchService):
         if allowed_server_ids is not None:
             filters["server_id"] = {"$in": allowed_server_ids}
 
-        async def fetch(limit: int) -> list[dict[str, Any]]:
+        try:
+            if MCPEntityType.RESOURCE in filters["entity_type"]:
+                if await self.mcp_server_repo.prepare_resource_visibility():
+                    filters = await with_resource_visibility(filters, allowed_server_ids)
+                else:
+                    filters = without_resources(filters)
             if self.enable_rerank:
-                return await self.mcp_server_repo.asearch_with_rerank(
+                candidate_k = min(search_k * 3, 100)
+                docs = await self.mcp_server_repo.asearch_with_rerank(
                     query=query,
-                    k=limit,
-                    candidate_k=max(min(search_k * 3, 100), limit),
+                    k=search_k,
+                    candidate_k=candidate_k,
                     search_type=use_search_type,
                     filters=filters,
                     reranker_type=RerankerProvider.BEDROCK_COHERE,
                 )
-            return await self.mcp_server_repo.asearch(
-                query=query,
-                search_type=use_search_type,
-                k=limit,
-                filters=filters,
-            )
+            else:
+                docs = await self.mcp_server_repo.asearch(
+                    query=query,
+                    search_type=use_search_type,
+                    k=search_k,
+                    filters=filters,
+                )
 
-        try:
-            # Fill the candidate budget with eligible docs before grouping and final limits.
-            # The helper retains the primary-read privacy check on every fetched window.
-            docs = await fetch_eligible_mcp_candidates(fetch, search_k)
+            # Resource documents feed server results (their text can become a server's description), so stale
+            # OAuth resources are dropped before grouping.
+            docs = await drop_private_mcp_resources(docs)
 
             tools: list[dict[str, Any]] = []
             servers_by_key: dict[str, dict[str, Any]] = {}

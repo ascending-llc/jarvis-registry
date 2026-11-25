@@ -8,6 +8,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.schemas.server_api_schemas import convert_to_detail, convert_to_list_item
+from registry_pkgs.models.mcp_resource_capture import RESOURCE_CAPTURE_KEY, create_resource_capture
 from registry_pkgs.models.mcp_server_oauth import RegistryOAuthClient, RegistryOAuthState
 
 AS_METADATA = {
@@ -160,6 +161,7 @@ def test_detail_returns_templates_and_hides_oauth_resources(oauth, expected_reso
     server.config["requiresOAuth"] = oauth
     server.config["resources"] = [{"uri": "file:///a"}]
     server.config["resourceTemplates"] = _TEMPLATES
+    server.config[RESOURCE_CAPTURE_KEY] = create_resource_capture(server.config, server.config["resources"])
 
     detail = convert_to_detail(server).model_dump(by_alias=True)
 
@@ -169,3 +171,46 @@ def test_detail_returns_templates_and_hides_oauth_resources(oauth, expected_reso
 
 def test_detail_resource_templates_default_to_empty() -> None:
     assert convert_to_detail(_server(None)).resourceTemplates == []
+
+
+def test_legacy_oauth_resources_stay_hidden_after_switch_to_shared_credentials() -> None:
+    from registry.schemas.server_api_schemas import ServerUpdateRequest
+    from registry.services.server_service import _update_config_from_request
+
+    server = _server(None)
+    server.config["resources"] = [{"uri": "private://alice/salary"}]
+    assert convert_to_detail(server).resources == []
+    server.config = _update_config_from_request(server.config, ServerUpdateRequest(oauth=None, requiresOauth=False))
+    assert server.config["resources"] == []
+    assert convert_to_detail(server).resources == []
+    server.config["resources"] = [{"uri": "shared://public"}]
+    # An unsigned list (including one written by an old pod) is still hidden.
+    assert convert_to_detail(server).resources == []
+    server.config[RESOURCE_CAPTURE_KEY] = create_resource_capture(server.config, server.config["resources"])
+    assert convert_to_detail(server).resources == [{"uri": "shared://public"}]
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"url": "https://other.test/mcp"},
+        {"type": "sse"},
+        {"apiKey": {"key": "new"}},
+        {"headers": {"X-Auth": "new"}},
+        {"requiresOauth": True},
+    ],
+)
+def test_auth_or_endpoint_edit_clears_capture_before_new_credentials_are_used(update: dict) -> None:
+    from registry.schemas.server_api_schemas import ServerUpdateRequest
+    from registry.services.server_service import _update_config_from_request
+
+    config = {
+        "url": "https://example.test/mcp",
+        "type": "streamable-http",
+        "apiKey": {"key": "old"},
+        "resources": [{"uri": "files://old"}],
+    }
+    config[RESOURCE_CAPTURE_KEY] = create_resource_capture(config, config["resources"])
+    updated = _update_config_from_request(config, ServerUpdateRequest(**update))
+    assert updated["resources"] == []
+    assert RESOURCE_CAPTURE_KEY not in updated

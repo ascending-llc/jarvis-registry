@@ -18,7 +18,7 @@ from registry_pkgs.core.exceptions import InternalServerException
 
 
 def _entry(monkeypatch: pytest.MonkeyPatch, kind: str) -> SimpleNamespace:
-    if kind == "tool":
+    if kind != "agent":
         ctx = _modern_ctx(url_capability=True)
         target = _make_server()
         ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = target
@@ -26,6 +26,10 @@ def _entry(monkeypatch: pytest.MonkeyPatch, kind: str) -> SimpleNamespace:
         monkeypatch.setattr(server, "_call_with_oauth_recovery", execute)
 
         async def invoke() -> CallToolResult | InputRequiredResult:
+            if kind == "resource":
+                return await server.read_resource_impl(ctx, str(target.id), "test://doc")
+            if kind == "prompt":
+                return await server.get_prompt_impl(ctx, str(target.id), "greet", {"name": "Ada"})
             return await server.execute_tool_impl(ctx, "test", {}, str(target.id))
 
         store = ctx.request_context.lifespan_context.consent_store.has_server_consent
@@ -53,7 +57,7 @@ def _entry(monkeypatch: pytest.MonkeyPatch, kind: str) -> SimpleNamespace:
     )
 
 
-@pytest.mark.parametrize("kind", ["tool", "agent"])
+@pytest.mark.parametrize("kind", ["tool", "resource", "prompt", "agent"])
 @pytest.mark.parametrize("consent", [False, True])
 @pytest.mark.parametrize("action", ["decline", "cancel"])
 @pytest.mark.parametrize("key", list(UrlElicitationInputKey))
@@ -72,7 +76,7 @@ async def test_cancel_stops_before_consent_and_execution(
     entry.execute.assert_not_awaited()
 
 
-@pytest.mark.parametrize("kind", ["tool", "agent"])
+@pytest.mark.parametrize("kind", ["tool", "resource", "prompt", "agent"])
 @pytest.mark.parametrize("key,action", [(UrlElicitationInputKey.CONSENT, "accept"), ("downstream", "decline")])
 async def test_accept_or_other_input_rechecks_consent(
     monkeypatch: pytest.MonkeyPatch, kind: str, key: str, action: str
@@ -86,7 +90,7 @@ async def test_accept_or_other_input_rechecks_consent(
     entry.execute.assert_awaited_once()
 
 
-@pytest.mark.parametrize("kind", ["tool", "agent"])
+@pytest.mark.parametrize("kind", ["tool", "resource", "prompt", "agent"])
 @pytest.mark.parametrize("operation", ["check", "save"])
 async def test_consent_io_keeps_event_loop_responsive(
     monkeypatch: pytest.MonkeyPatch, kind: str, operation: str
@@ -113,7 +117,7 @@ async def test_consent_io_keeps_event_loop_responsive(
     entry.execute.assert_not_awaited()
 
 
-@pytest.mark.parametrize("kind", ["tool", "agent"])
+@pytest.mark.parametrize("kind", ["tool", "resource", "prompt", "agent"])
 @pytest.mark.parametrize("operation", ["check", "save"])
 async def test_consent_storage_error_never_executes(monkeypatch: pytest.MonkeyPatch, kind: str, operation: str) -> None:
     entry = _entry(monkeypatch, kind)
@@ -124,7 +128,7 @@ async def test_consent_storage_error_never_executes(monkeypatch: pytest.MonkeyPa
     entry.execute.assert_not_awaited()
 
 
-@pytest.mark.parametrize("kind", ["tool", "agent"])
+@pytest.mark.parametrize("kind", ["tool", "resource", "prompt", "agent"])
 async def test_cancel_still_checks_acl(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
     entry = _entry(monkeypatch, kind)
     entry.ctx.request_context.lifespan_context.acl_service.get_accessible_resource_ids.return_value = set()
@@ -136,7 +140,7 @@ async def test_cancel_still_checks_acl(monkeypatch: pytest.MonkeyPatch, kind: st
     entry.execute.assert_not_awaited()
 
 
-@pytest.mark.parametrize("kind", ["tool", "agent"])
+@pytest.mark.parametrize("kind", ["tool", "resource", "prompt", "agent"])
 async def test_legacy_does_not_interpret_modern_input_answers(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
     entry = _entry(monkeypatch, kind)
     entry.ctx.protocol_version = "2025-11-25"

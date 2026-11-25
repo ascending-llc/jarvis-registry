@@ -22,7 +22,7 @@ from ..utils.otel_metrics import (
     record_auth_request as _record_auth_request,
 )
 from ..utils.otel_metrics import (
-    record_prompt_execution as _record_prompt_execution,
+    record_prompt_get as _record_prompt_get,
 )
 from ..utils.otel_metrics import (
     record_registry_operation as _record_registry_operation,
@@ -384,15 +384,15 @@ class ResourceAccessMetricsContext(ExecutionMetricsContext):
         )
 
 
-class PromptExecutionMetricsContext(ExecutionMetricsContext):
+class PromptGetMetricsContext(ExecutionMetricsContext):
     """
-    Context manager for tracking prompt execution with dynamic info.
+    Context manager for tracking prompt retrieval with dynamic info.
 
     Example:
-        async with PromptExecutionMetricsContext(prompt_name=prompt_name) as ctx:
+        async with PromptGetMetricsContext(prompt_name=prompt_name) as ctx:
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
-            result = await execute_prompt(...)
+            result = await get_prompt(...)
             ctx.set_success(not result.is_error)
             return result
     """
@@ -410,7 +410,7 @@ class PromptExecutionMetricsContext(ExecutionMetricsContext):
         self._prompt_name = prompt_name
 
     def _record(self, duration: float) -> None:
-        _record_prompt_execution(
+        _record_prompt_get(
             prompt_name=self._prompt_name,
             server_name=self._server_name,
             success=self._outcome is ExecutionOutcome.SUCCESS,

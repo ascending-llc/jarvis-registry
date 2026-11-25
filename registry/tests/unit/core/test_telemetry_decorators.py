@@ -13,7 +13,7 @@ from registry.core.mcp_client import MCPServerData
 from registry.core.telemetry_decorators import (
     AuthMetricsContext,
     ExecutionMetricsContext,
-    PromptExecutionMetricsContext,
+    PromptGetMetricsContext,
     ResourceAccessMetricsContext,
     ToolExecutionMetricsContext,
     track_registry_operation,
@@ -291,14 +291,14 @@ class TestResourceAccessMetricsContext:
 
 @pytest.mark.unit
 @pytest.mark.metrics
-class TestPromptExecutionMetricsContext:
-    """Test suite for PromptExecutionMetricsContext context manager."""
+class TestPromptGetMetricsContext:
+    """Test suite for PromptGetMetricsContext context manager."""
 
     @pytest.mark.asyncio
     async def test_records_success(self):
         """Success path records prompt_name/server_name/status/error_type."""
-        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_execution") as mock_record:
-            async with PromptExecutionMetricsContext(prompt_name="summarize") as ctx:
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_get") as mock_record:
+            async with PromptGetMetricsContext(prompt_name="summarize") as ctx:
                 ctx.set_server_name("prompt-server")
                 ctx.set_success(True)
 
@@ -312,8 +312,8 @@ class TestPromptExecutionMetricsContext:
     @pytest.mark.asyncio
     async def test_handled_failure_sets_error_type(self):
         """A handled failure (no exception) records the explicit error_type."""
-        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_execution") as mock_record:
-            async with PromptExecutionMetricsContext(prompt_name="p") as ctx:
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_get") as mock_record:
+            async with PromptGetMetricsContext(prompt_name="p") as ctx:
                 ctx.set_error_type("server_not_found")
                 ctx.set_success(False)
 
@@ -351,7 +351,7 @@ async def test_track_tool_discovery_reads_mcp_server_data(result, success, tools
     "context_type,record_name",
     [
         (ResourceAccessMetricsContext, "_record_resource_access"),
-        (PromptExecutionMetricsContext, "_record_prompt_execution"),
+        (PromptGetMetricsContext, "_record_prompt_get"),
     ],
 )
 @pytest.mark.parametrize("raises", [False, True])

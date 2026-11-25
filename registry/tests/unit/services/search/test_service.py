@@ -8,7 +8,6 @@ These cover the search logic extracted out of api/v1/search_routes.py:
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,7 +20,24 @@ from registry.services.search.service import SearchRequest, SearchService
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.mcp_resource_capture import (
+    RESOURCE_CAPTURE_KEY,
+    RESOURCE_CAPTURE_REVISION,
+    create_resource_capture,
+)
 from registry_pkgs.vector.enum.enums import SearchType
+
+
+@pytest.fixture(autouse=True)
+def _empty_resource_capture_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def cursor():
+        for item in ():
+            yield item
+
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+    collection.find.side_effect = lambda *args, **kwargs: cursor()
+    monkeypatch.setattr(ExtendedMCPServer, "get_pymongo_collection", lambda: collection)
 
 
 def _make_permissive_acl_service() -> MagicMock:
@@ -38,6 +54,8 @@ def _make_service(
     a2a_agent_repo=None,
     acl_service=None,
 ) -> SearchService:
+    mcp_server_repo = mcp_server_repo or MagicMock()
+    mcp_server_repo.prepare_resource_visibility = AsyncMock()
     return SearchService(
         vector_service=vector_service or MagicMock(),
         mcp_server_repo=mcp_server_repo or MagicMock(),
@@ -76,6 +94,11 @@ async def test_discovery_filters_stale_oauth_resources_using_current_auth(query:
             {"entity_type": "resource", "description": "Legacy resource without URI metadata"},
         ]
     )
+    for entry in servers:
+        config = entry["config"]
+        config["resources"] = [{"uri": "shared://fixture"}]
+        config[RESOURCE_CAPTURE_KEY] = create_resource_capture(config, config["resources"])
+    revisions = {str(entry["_id"]): (entry["config"][RESOURCE_CAPTURE_KEY] or {}).get("revision") for entry in servers}
     public = [
         {"server_id": str(api_key_id), "entity_type": "resource", "resource_uri": "shared://document"},
         {"server_id": str(agentcore_id), "entity_type": "resource", "resource_uri": "shared://runtime"},
@@ -83,9 +106,13 @@ async def test_discovery_filters_stale_oauth_resources_using_current_auth(query:
         {"server_id": str(oauth_id), "entity_type": "tool", "tool_name": "search"},
         {"server_id": str(oauth_id), "entity_type": "prompt", "prompt_name": "summarize"},
     ]
+    candidates = private + [
+        dict(doc, **{RESOURCE_CAPTURE_REVISION: revisions[doc["server_id"]]}) if doc.get("resource_uri") else doc
+        for doc in public
+    ]
     repo = MagicMock(
-        afilter=AsyncMock(return_value=private + public),
-        asearch_with_rerank=AsyncMock(return_value=private + public),
+        afilter=AsyncMock(return_value=candidates),
+        asearch_with_rerank=AsyncMock(return_value=candidates),
     )
     service = _make_service(mcp_server_repo=repo)
 
@@ -95,7 +122,7 @@ async def test_discovery_filters_stale_oauth_resources_using_current_auth(query:
 
     collection = MagicMock()
     collection.with_options.return_value = collection
-    collection.find.return_value = cursor()
+    collection.find.side_effect = lambda *args: cursor()
     with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
         response = await service.search_entities(
             SearchRequest(query=query, top_n=20, type_list=list(MCPEntityType)), {"username": "viewer"}
@@ -107,7 +134,7 @@ async def test_discovery_filters_stale_oauth_resources_using_current_auth(query:
     collection.find.assert_called_once()
     match, projection = collection.find.call_args.args
     assert set(match["_id"]["$in"]) == {oauth_id, legacy_oauth_id, api_key_id, agentcore_id, deleted_id}
-    assert projection == {"config.requiresOAuth": 1, "config.oauth": 1, "config.runtimeAccess": 1}
+    assert {"config.resourceCapture", "config.resources", "config.url", "config.oauth"} <= set(projection)
 
 
 @pytest.mark.asyncio
@@ -853,83 +880,110 @@ async def test_search_entities_include_disabled_drops_tool_enabled_filter():
     assert "tool_enabled" not in call_kwargs["filters"]
 
 
-@pytest.mark.parametrize("query", ["", "documents"])
-async def test_discovery_refills_after_private_resources_consume_top_n(query: str) -> None:
-    oauth_id, shared_id = ObjectId(), ObjectId()
-    private = [
-        {
-            "server_id": str(oauth_id),
-            "entity_type": "resource",
-            "resource_uri": f"private://{i}",
-            "relevance_score": 1.0,
-        }
-        for i in range(4)
-    ]
-    eligible = {
-        "server_id": str(shared_id),
+def _matches_visibility(doc: dict, filters: dict) -> bool:
+    """Apply the supported equality/boolean subset before the fake backend takes top-k."""
+    if "$and" in filters:
+        return all(_matches_visibility(doc, child) for child in filters["$and"])
+    if "$or" in filters:
+        return any(_matches_visibility(doc, child) for child in filters["$or"])
+    for key, value in filters.items():
+        actual = doc.get(key)
+        if isinstance(value, dict):
+            if "$ne" in value and actual == value["$ne"]:
+                return False
+            if "$in" in value and actual not in value["$in"]:
+                return False
+        elif isinstance(value, list):
+            if actual not in value:
+                return False
+        elif actual != value:
+            return False
+    return True
+
+
+@pytest.mark.parametrize("query", ["", "files"])
+async def test_visibility_precedes_top_k_and_reranking(query: str) -> None:
+    server_id = str(ObjectId())
+    stale = {
+        "server_id": server_id,
         "entity_type": "resource",
-        "resource_uri": "shared://doc",
-        "relevance_score": 0.5,
+        "resource_uri": "private://salary",
+        "resource_kind": "concrete",
+        "resource_capture_revision": "old",
+        "enabled": True,
+        "tool_enabled": True,
     }
-    ranked = private + [eligible]
+    template = {
+        "server_id": server_id,
+        "entity_type": "resource",
+        "resource_uri_template": "files://{id}",
+        "resource_kind": "template",
+        "enabled": True,
+        "tool_enabled": True,
+    }
+    seen = []
 
-    async def fetch(**kwargs: Any) -> list[dict[str, Any]]:
-        return ranked[: kwargs.get("limit", kwargs.get("k"))]
+    async def search(**kwargs):
+        candidates = [doc for doc in [stale, template] if _matches_visibility(doc, kwargs["filters"])]
+        seen.extend(candidates)  # These are the only documents the reranker is allowed to see.
+        return candidates[: kwargs.get("k", kwargs.get("limit"))]
 
-    repo = MagicMock(afilter=AsyncMock(side_effect=fetch), asearch_with_rerank=AsyncMock(side_effect=fetch))
+    repo = MagicMock(afilter=AsyncMock(side_effect=search), asearch_with_rerank=AsyncMock(side_effect=search))
+    result = await _make_service(mcp_server_repo=repo)._search_mcp_documents(
+        SearchRequest(query=query, top_n=1, type_list=[MCPEntityType.RESOURCE]),
+        query,
+        [MCPEntityType.RESOURCE],
+        [server_id],
+    )
+    assert len(result) == 1 and result[0]["resource_uri_template"] == "files://{id}"
+    assert seen == [template]
+
+
+async def test_capture_revision_rechecked_after_auth_change_and_recapture() -> None:
+    server_id = ObjectId()
+    config = {"url": "https://example.test/mcp", "resources": [{"uri": "files://public"}]}
+    config[RESOURCE_CAPTURE_KEY] = create_resource_capture(config, config["resources"])
+    old_revision = config[RESOURCE_CAPTURE_KEY]["revision"]
+    old_vector = {
+        "server_id": str(server_id),
+        "entity_type": "resource",
+        "resource_uri": "files://public",
+        RESOURCE_CAPTURE_REVISION: old_revision,
+    }
+
+    async def cursor():
+        yield {"_id": server_id, "config": config}
+
     collection = MagicMock()
     collection.with_options.return_value = collection
-
-    async def servers():
-        yield {"_id": oauth_id, "config": {"requiresOAuth": True}}
-        yield {"_id": shared_id, "config": {}}
-
-    collection.find.side_effect = lambda *_: servers()
+    collection.find.side_effect = lambda *args: cursor()
     with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
-        result = await _make_service(mcp_server_repo=repo).search_entities(
-            SearchRequest(query=query, top_n=1, type_list=[MCPEntityType.RESOURCE]), {}
-        )
-    assert result["results"] == [eligible]
-    assert result["total"] == 1
-    calls = repo.asearch_with_rerank.await_args_list if query else repo.afilter.await_args_list
-    assert [c.kwargs["k" if query else "limit"] for c in calls] == [1, 2, 4, 8]
-    if query:
-        assert all(c.kwargs["candidate_k"] >= c.kwargs["k"] for c in calls)
+        assert len(await drop_private_mcp_resources([old_vector])) == 1
+        config["url"] = "https://new.example.test/mcp"
+        assert await drop_private_mcp_resources([old_vector]) == []
+        config[RESOURCE_CAPTURE_KEY] = create_resource_capture(config, config["resources"])
+        assert await drop_private_mcp_resources([old_vector]) == []
+        current = dict(old_vector, **{RESOURCE_CAPTURE_REVISION: config[RESOURCE_CAPTURE_KEY]["revision"]})
+        assert len(await drop_private_mcp_resources([current])) == 1
 
 
-async def test_candidate_refill_stops_when_only_private_documents_remain() -> None:
-    from registry.services.search.private_resources import fetch_eligible_mcp_candidates
+@pytest.mark.parametrize("query", ["", "files"])
+async def test_unprepared_visibility_hides_resources_but_keeps_other_results(query: str) -> None:
+    """During a reindex a pod that cannot add the visibility columns still returns tools, never resources."""
+    server_id = str(ObjectId())
+    visible = {"server_id": server_id, "enabled": True, "tool_enabled": True}
+    tool = {**visible, "entity_type": "tool", "tool_name": "search"}
+    template = {**visible, "entity_type": "resource", "resource_uri_template": "files://{id}"}
+    legacy = {**visible, "entity_type": "resource", "resource_uri": "private://salary"}
 
-    private = [{"entity_type": "resource", "server_id": "invalid", "resource_uri": "private://doc"}]
-    fetch = AsyncMock(side_effect=lambda limit: private[:limit])
-    assert await fetch_eligible_mcp_candidates(fetch, 1) == []
-    assert [c.args[0] for c in fetch.await_args_list] == [1, 2]
+    async def search(**kwargs):
+        return [doc for doc in [tool, template, legacy] if _matches_visibility(doc, kwargs["filters"])]
 
-
-@pytest.mark.parametrize(
-    ("limit", "expected_windows"),
-    [(1, [1, 2, 4, 8]), (60, [60, 120, 200]), (300, [300])],
-    ids=["round-cap", "window-cap", "limit-above-window-cap"],
-)
-async def test_candidate_refill_is_bounded_when_private_documents_dominate(
-    limit: int, expected_windows: list[int]
-) -> None:
-    from registry.services.search.private_resources import fetch_eligible_mcp_candidates
-
-    oauth_id = ObjectId()
-    private = [
-        {"entity_type": "resource", "server_id": str(oauth_id), "resource_uri": f"private://{i}"} for i in range(5000)
-    ]
-    eligible = {"entity_type": "tool", "server_id": "shared", "tool_name": "echo"}
-    ranked = [*private, eligible]
-    fetch = AsyncMock(side_effect=lambda window: ranked[:window])
-    collection = MagicMock()
-    collection.with_options.return_value = collection
-
-    async def servers():
-        yield {"_id": oauth_id, "config": {"requiresOAuth": True}}
-
-    collection.find.side_effect = lambda *_: servers()
-    with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
-        assert await fetch_eligible_mcp_candidates(fetch, limit) == []
-    assert [c.args[0] for c in fetch.await_args_list] == expected_windows
+    repo = MagicMock(afilter=AsyncMock(side_effect=search), asearch_with_rerank=AsyncMock(side_effect=search))
+    service = _make_service(mcp_server_repo=repo)
+    repo.prepare_resource_visibility = AsyncMock(return_value=False)
+    types = [MCPEntityType.TOOL, MCPEntityType.RESOURCE]
+    result = await service._search_mcp_documents(
+        SearchRequest(query=query, top_n=5, type_list=types), query, types, [server_id]
+    )
+    assert result == [tool]

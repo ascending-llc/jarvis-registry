@@ -22,6 +22,7 @@ from registry_pkgs.models.a2a_agent import (
 )
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, Federation
 from registry_pkgs.models.federation_metadata import FederationMetadataBase
+from registry_pkgs.models.mcp_resource_capture import RESOURCE_CAPTURE_KEY, create_resource_capture
 from registry_pkgs.workflows.a2a_client import is_agentcore_runtime
 
 from .agentcore_clients import AgentCoreClientProvider
@@ -143,6 +144,8 @@ class AgentCoreRuntimeInvoker:
         ):
             if value is not None:
                 config[key] = value
+        if result.resources is not None:
+            config[RESOURCE_CAPTURE_KEY] = create_resource_capture(config, result.resources)
         config["capabilities"] = (
             json.dumps(result.capabilities or {}, ensure_ascii=False) if result.capabilities else "{}"
         )

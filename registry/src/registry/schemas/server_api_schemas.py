@@ -12,8 +12,7 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer
 
-from registry_pkgs.models.enums import McpAuthMode
-from registry_pkgs.models.extended_mcp_server import mcp_auth_mode_from_config
+from registry_pkgs.models.mcp_resource_capture import resource_capture_revision
 
 from ..core.mcp_config import MCPTransport
 from ..schemas.acl_schema import ResourcePermissions
@@ -459,7 +458,7 @@ def convert_to_detail(
     tools_str = config.get("tools", "")
     tool_functions = config.get("toolFunctions")
     # An OAuth server's concrete resources would be one user's data, so they are never shown.
-    resources = [] if mcp_auth_mode_from_config(config) is McpAuthMode.OAUTH else config.get("resources", [])
+    resources = config.get("resources", []) if resource_capture_revision(server.config or {}) else []
     resource_templates = config.get("resourceTemplates", [])
     prompts = config.get("prompts", [])
     capabilities_str = config.get("capabilities", "{}")

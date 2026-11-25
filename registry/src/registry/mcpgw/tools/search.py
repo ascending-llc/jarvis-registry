@@ -127,9 +127,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         - server_id: required for all execution calls; server_name: display and search context
         - tool_name (entity_type='tool') → execute_tool(tool_name, server_id, arguments)
         - input_schema (entity_type='tool'): use it to construct arguments; may be None if omitted
-        - resource_uri (entity_type='resource') → read_resource(server_id, resource_uri)
-        - resource_uri_template (entity_type='resource', instead of resource_uri) → fill every {variable}, then read_resource(server_id, resource_uri=<filled URI>)
-        - prompt_name (entity_type='prompt') → execute_prompt(server_id, prompt_name, arguments)
+        - resource_uri or resource_uri_template (entity_type='resource') → read_resource(server_id, resource_uri); expand templates using RFC 6570 first
+        - prompt_name (entity_type='prompt') → get_prompt(server_id, prompt_name, arguments)
 
         Evaluating results: read each result's description to confirm it matches the
         user's intent. If the top result fits, execute it. If multiple results plausibly

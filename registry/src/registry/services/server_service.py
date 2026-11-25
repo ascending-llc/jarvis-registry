@@ -26,6 +26,11 @@ from registry_pkgs.models import (
 )
 from registry_pkgs.models.enums import McpAuthMode
 from registry_pkgs.models.extended_mcp_server import normalize_server_name
+from registry_pkgs.models.mcp_resource_capture import (
+    RESOURCE_CAPTURE_KEY,
+    create_resource_capture,
+    resource_capture_context,
+)
 from registry_pkgs.oauth.errors import (
     AuthenticationError,
     MissingUserIdError,
@@ -76,14 +81,17 @@ def _count(items: list[Any] | None) -> int:
     return len(items or [])
 
 
-def _captured_listings(captured: MCPServerData) -> dict[str, list[dict[str, Any]]]:
+def _captured_listings(captured: MCPServerData, config: dict[str, Any]) -> dict[str, Any]:
     """Config fields to write from a capture. A listing that failed (None) is omitted, keeping the stored value."""
     listings = {
         "resources": captured.resources,
         "resourceTemplates": captured.resource_templates,
         "prompts": captured.prompts,
     }
-    return {key: value for key, value in listings.items() if value is not None}
+    fields = {key: value for key, value in listings.items() if value is not None}
+    if captured.resources is not None:
+        fields[RESOURCE_CAPTURE_KEY] = create_resource_capture(config, captured.resources)
+    return fields
 
 
 def _get_current_utc_time() -> datetime:
@@ -218,6 +226,7 @@ def _update_config_from_request(
     Note: enabled field is stored in config.
     """
     # Use to_db_dict() to get DB-compatible field names
+    previous_resource_context = resource_capture_context(config)
     update_dict = data.to_db_dict(exclude_unset=True)
 
     # Save enabled field separately before removing it (we'll update config with it)
@@ -313,6 +322,9 @@ def _update_config_from_request(
         else:
             config["tools"] = ""
 
+    if resource_capture_context(config) != previous_resource_context:
+        config["resources"] = []
+        config.pop(RESOURCE_CAPTURE_KEY, None)
     return config
 
 
@@ -663,7 +675,7 @@ class ServerServiceV1:
             # The fetch can outlast the create route's reindex check, so check again before writing.
             raise_if_reindex_active(self._embedding_maintenance_watcher)
 
-            listings = _captured_listings(captured)
+            listings = _captured_listings(captured, server.config)
             fields: dict[str, Any] = {
                 "config.capabilities": json.dumps(captured.capabilities),
                 # A query update skips the model's save hooks, and the reindex watermark reads updatedAt.
@@ -946,7 +958,7 @@ class ServerServiceV1:
             server.numTools = len(tool_functions)
 
             # Store resources, resource templates and prompts; a failed listing keeps the stored value.
-            server.config.update(_captured_listings(captured))
+            server.config.update(_captured_listings(captured, server.config))
 
             logger.info(
                 f"Successfully fetched and updated {len(tool_functions)} tools, {_count(captured.resources)} resources, "
@@ -1376,7 +1388,7 @@ class ServerServiceV1:
             logger.info(f"Updated {len(tool_functions)} tools for {server.serverName} during capabilities refresh")
 
         # Store resources, resource templates and prompts; a failed listing keeps the stored value.
-        config.update(_captured_listings(captured))
+        config.update(_captured_listings(captured, server.config))
         logger.info(
             f"Updated {_count(captured.resources)} resources, {_count(captured.resource_templates)} resource templates "
             f"and {_count(captured.prompts)} prompts for {server.serverName} during capabilities refresh"

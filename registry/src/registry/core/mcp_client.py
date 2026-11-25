@@ -823,10 +823,10 @@ async def _drain_listing(
 ) -> list[Any] | None:
     """Fetch every page of one ``*/list`` call under one deadline.
 
-    JSON-RPC "Method not found" (-32601) on the first request means the server does not offer this listing:
-    return [] so previously stored entries are cleared. On a later page it is a failed capture, just like
-    a timeout, repeated cursor or server error: return None to preserve the stored value rather than
-    publishing an empty or partial listing. Optional listing failures do not discard captured tools.
+    A first-page JSON-RPC "Method not found" (-32601) means the server does not offer this listing: a
+    definite [] clears entries it no longer offers. Any later-page failure, timeout, repeated cursor or
+    other server error returns None, so the caller keeps the stored value instead of storing a partial
+    listing. One optional listing never fails a capture that already has its tools.
     """
     items: list[Any] = []
     seen: set[str] = set()

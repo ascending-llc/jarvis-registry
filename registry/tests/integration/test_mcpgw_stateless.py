@@ -35,6 +35,7 @@ from mcp.types import (
     ElicitationCapability,
     ElicitRequestParams,
     ElicitResult,
+    EmbeddedResource,
     Implementation,
     TextContent,
     UrlElicitationCapability,
@@ -401,6 +402,15 @@ def test_modern_first_round_returns_input_required_golden_shape(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("tool_name", "arguments", "downstream_method"),
+    [
+        ("execute_tool", {"tool_name": "tavily_search", "server_id": SERVER_ID, "arguments": {}}, "tools/call"),
+        ("read_resource", {"server_id": SERVER_ID, "resource_uri": "test://doc"}, "resources/read"),
+        ("get_prompt", {"server_id": SERVER_ID, "prompt_name": "greet", "arguments": {"name": "Ada"}}, "prompts/get"),
+    ],
+    ids=["tool", "resource", "prompt"],
+)
+@pytest.mark.parametrize(
     ("action", "grant_consent"),
     [
         ("accept", False),
@@ -417,6 +427,9 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
     _modern_gate_on: None,
     action: Literal["accept", "decline", "cancel"] | None,
     grant_consent: bool,
+    tool_name: str,
+    arguments: dict[str, Any],
+    downstream_method: str,
 ) -> None:
     """The real SDK dispatches one URL prompt and retries once; incapable clients do neither."""
     outgoing: list[dict[str, Any]] = []
@@ -454,13 +467,13 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
                 ) as client:
                     assert client.protocol_version == _MODERN_VERSION
                     await client.list_tools()
-                    result = await client.call_tool(
-                        "execute_tool", {"tool_name": "tavily_search", "server_id": SERVER_ID, "arguments": {}}
-                    )
+                    result = await client.call_tool(tool_name, arguments)
 
     calls = [body for body in outgoing if body["method"] == "tools/call"]
     assert all(body["method"] != "initialize" for body in outgoing)
     assert len(calls) == (2 if action is not None else 1)
+    assert all(body["params"]["name"] == tool_name for body in calls)
+    assert calls[0]["params"]["arguments"] == arguments
     assert container.server_service.get_server_by_id.await_count == len(calls)
     assert len(prompts) == (1 if action is not None else 0)
     assert "inputResponses" not in calls[0]["params"]
@@ -469,12 +482,27 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
         assert calls[1]["params"]["inputResponses"][UrlElicitationInputKey.CONSENT]["action"] == action
         assert calls[0]["params"]["arguments"] == calls[1]["params"]["arguments"]
     executes = grant_consent and action == "accept"
-    assert downstream.count("tools/call") == int(executes)
+    for method in ("tools/call", "resources/read", "prompts/get"):
+        assert downstream.count(method) == int(executes and method == downstream_method)
     assert isinstance(result, CallToolResult)
     assert result.is_error is not executes
-    assert isinstance(result.content[0], TextContent)
     if executes:
-        assert result.content[0].text == "done"
+        if tool_name == "read_resource":
+            assert isinstance(result.content[0], EmbeddedResource)
+            assert result.content[0].resource.uri == arguments["resource_uri"]
+            assert result.content[0].resource.text == "done"
+        elif tool_name == "get_prompt":
+            assert [block.text for block in result.content] == [
+                f"Prompt 'greet' from github: 1 messages.\n{server_tools._PROMPT_ROLE_CONVENTION}",
+                "[message 1: user]",
+                "done",
+            ]
+            native_call = next(message for message in downstream.messages if message["method"] == "prompts/get")
+            assert native_call["params"]["name"] == "greet"
+            assert native_call["params"]["arguments"] == {"name": "Ada"}
+        else:
+            assert isinstance(result.content[0], TextContent)
+            assert result.content[0].text == "done"
     elif action in {"decline", "cancel"}:
         assert "declined or cancelled" in result.content[0].text
     else:
@@ -814,3 +842,83 @@ async def test_sdk_auto_with_gate_off_negotiates_legacy_and_elicits(
         assert error.value.code == -32042
     assert [call["method"] for call in outgoing][:2] == ["server/discover", "initialize"]
     container.consent_store.has_server_consent.assert_called_once()
+
+
+@pytest.mark.parametrize("version", ["2025-11-25", _MODERN_VERSION])
+@pytest.mark.parametrize("kind", ["resource", "template", "prompt"])
+async def test_resource_and_prompt_public_tools_reach_sdk_downstream(
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    version: str,
+    kind: str,
+) -> None:
+    """Drive registered wrappers, real renderers and native downstream requests over the mounted app."""
+    from registry.mcpgw.tools.types import get_meta_field
+
+    monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", version == _MODERN_VERSION)
+    resource_action = AsyncMock(side_effect=["first document", "second document"])
+    prompt_action = AsyncMock(side_effect=["Hello Ada", "Hello again Ada"])
+    tool = "get_prompt" if kind == "prompt" else "read_resource"
+    arguments = {"server_id": SERVER_ID}
+    if kind == "prompt":
+        arguments.update(prompt_name="greet", arguments={"name": "Ada"})
+        method = "prompts/get"
+    else:
+        arguments["resource_uri"] = "test://doc/42" if kind == "template" else "test://doc"
+        method = "resources/read"
+    async with sdk_endpoint(resource_action=resource_action, prompt_action=prompt_action) as downstream:
+        container = _container_stub(_FakeRedis(), has_consent=True, downstream_transport=downstream)
+        app = _make_pod(container)
+        async with app.router.lifespan_context(app):
+            async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://localhost") as pod:
+                for index in range(2):
+                    params = {"name": tool, "arguments": arguments}
+                    headers = dict(auth_headers)
+                    if version == _MODERN_VERSION:
+                        params["_meta"] = _modern_meta(url_elicitation=False)
+                        headers = {**_modern_headers(auth_headers), "MCP-Name": tool}
+                    response = await pod.post(
+                        _MCP_PATH,
+                        headers=headers,
+                        json={"jsonrpc": "2.0", "id": index + 1, "method": "tools/call", "params": params},
+                    )
+                    assert response.status_code == 200, response.text
+                    message = (
+                        response.json()
+                        if response.headers.get("content-type", "").startswith("application/json")
+                        else _sse_messages(response.text)[-1]
+                    )
+                    result = message["result"]
+                    assert not result.get("isError", False)
+                    assert result.get("structuredContent") is None
+                    # The downstream's serverInfo stamp is never forwarded: only a modern-era gateway response
+                    # carries one, and it is the gateway's own.
+                    meta = dict(result["_meta"])
+                    stamp = meta.pop("io.modelcontextprotocol/serverInfo", None)
+                    assert meta == get_meta_field(True, SERVER_ID, "/github")
+                    assert (stamp is not None) == (version == _MODERN_VERSION)
+                    assert stamp is None or stamp["name"] != "test-downstream"
+                    if kind == "prompt":
+                        assert result["content"] == [
+                            {
+                                "type": "text",
+                                "text": f"Prompt 'greet' from github: 1 messages.\n{server_tools._PROMPT_ROLE_CONVENTION}",
+                            },
+                            {"type": "text", "text": "[message 1: user]"},
+                            {"type": "text", "text": ["Hello Ada", "Hello again Ada"][index]},
+                        ]
+                    else:
+                        assert len(result["content"]) == 1
+                        content = result["content"][0]
+                        assert content["type"] == "resource"
+                        assert content["resource"]["uri"] == arguments["resource_uri"]
+                        assert content["resource"]["text"] == ["first document", "second document"][index]
+                        assert content["resource"]["mimeType"] == "text/plain"
+                    assert downstream.count(method) == index + 1
+        assert downstream.count("tools/list") == 0
+        sent = [m["params"] for m in downstream.messages if m["method"] == method]
+        if kind == "prompt":
+            assert all(m["name"] == "greet" and m["arguments"] == {"name": "Ada"} for m in sent)
+        else:
+            assert all(m["uri"] == arguments["resource_uri"] for m in sent)
+        container.server_service.get_server_by_id.assert_awaited_with(SERVER_ID)
