@@ -27,6 +27,7 @@ from mcp.types import (
     TextResourceContents,
 )
 
+from registry.core.mcp_downstream import ToolCall
 from registry.mcpgw.tools.agent import AgentMessageInput
 from registry.mcpgw.tracing import (
     _TRACE_MODEL_FIELDS,
@@ -38,7 +39,7 @@ from registry.mcpgw.tracing import (
     set_span_attributes,
     trace_agent_execution,
     trace_discovery,
-    trace_tool_execution,
+    trace_server_operation,
 )
 
 
@@ -320,8 +321,8 @@ async def test_tool_trace_records_caller_target_and_complete_io() -> None:
         structured_content={"ok": True},
     )
 
-    @trace_tool_execution
-    async def execute(ctx, tool_name, arguments, server_id):
+    @trace_server_operation
+    async def execute(ctx, operation, server_id):
         return result
 
     span = MagicMock()
@@ -330,14 +331,16 @@ async def test_tool_trace_records_caller_target_and_complete_io() -> None:
         tracer.start_as_current_span.return_value = nullcontext(span)
         returned = await execute(
             _make_ctx(),
-            "search",
-            {
-                "access_token": "do-not-export",
-                "max_tokens": 100,
-                "query": "otel",
-                "secretary": "public-role",
-                "token_count": 20,
-            },
+            ToolCall(
+                "search",
+                {
+                    "access_token": "do-not-export",
+                    "max_tokens": 100,
+                    "query": "otel",
+                    "secretary": "public-role",
+                    "token_count": 20,
+                },
+            ),
             "server-123",
         )
 
@@ -399,15 +402,15 @@ async def test_tool_trace_omits_unavailable_caller_attributes() -> None:
         protocol_version="2025-11-25",
     )
 
-    @trace_tool_execution
-    async def execute(ctx, tool_name, arguments, server_id):
+    @trace_server_operation
+    async def execute(ctx, operation, server_id):
         return CallToolResult(content=[])
 
     span = MagicMock()
     span.is_recording.return_value = True
     with patch("registry.mcpgw.tracing._TRACER") as tracer:
         tracer.start_as_current_span.return_value = nullcontext(span)
-        await execute(ctx, "search", {}, "server-123")
+        await execute(ctx, ToolCall("search", {}), "server-123")
 
     attributes = tracer.start_as_current_span.call_args.kwargs["attributes"]
     assert attributes["langfuse.trace.metadata.authProvider"] == "keycloak"
@@ -589,13 +592,11 @@ async def test_execution_trace_records_input_required_without_error_status(kind:
         tracer.start_as_current_span.return_value = nullcontext(span)
         if kind == "tool":
 
-            @trace_tool_execution
-            async def execute_tool(
-                ctx: Any, tool_name: str, arguments: dict[str, Any], server_id: str
-            ) -> InputRequiredResult:
+            @trace_server_operation
+            async def execute_tool(ctx: Any, operation, server_id: str) -> InputRequiredResult:
                 return result
 
-            returned = await execute_tool(_make_ctx(), "search", {}, "server-123")
+            returned = await execute_tool(_make_ctx(), ToolCall("search", {}), "server-123")
         else:
 
             @trace_agent_execution
@@ -620,8 +621,8 @@ async def test_execution_trace_records_input_required_without_error_status(kind:
 @pytest.mark.telemetry
 @pytest.mark.asyncio
 async def test_tool_trace_marks_cancellation_and_reraises() -> None:
-    @trace_tool_execution
-    async def execute(ctx, tool_name, arguments, server_id):
+    @trace_server_operation
+    async def execute(ctx, operation, server_id):
         raise asyncio.CancelledError
 
     span = MagicMock()
@@ -629,7 +630,7 @@ async def test_tool_trace_marks_cancellation_and_reraises() -> None:
     with patch("registry.mcpgw.tracing._TRACER") as tracer:
         tracer.start_as_current_span.return_value = nullcontext(span)
         with pytest.raises(asyncio.CancelledError):
-            await execute(_make_ctx(), "search", {}, "server-123")
+            await execute(_make_ctx(), ToolCall("search", {}), "server-123")
 
     input_call = next(
         call for call in span.set_attribute.call_args_list if call.args[0] == "langfuse.observation.input"
@@ -677,8 +678,8 @@ async def test_tool_trace_serialization_failure_is_logged_and_does_not_change_re
 ) -> None:
     result = CallToolResult(content=[TextContent(type="text", text="completed")])
 
-    @trace_tool_execution
-    async def execute(ctx, tool_name, arguments, server_id):
+    @trace_server_operation
+    async def execute(ctx, operation, server_id):
         return result
 
     span = MagicMock()
@@ -689,7 +690,7 @@ async def test_tool_trace_serialization_failure_is_logged_and_does_not_change_re
             patch("registry.mcpgw.tracing._serialize_trace_value", side_effect=TypeError("unsupported")),
         ):
             tracer.start_as_current_span.return_value = nullcontext(span)
-            returned = await execute(_make_ctx(), "search", {}, "server-123")
+            returned = await execute(_make_ctx(), ToolCall("search", {}), "server-123")
 
     assert returned is result
     span.set_attribute.assert_any_call("registry.operation.success", True)
@@ -713,8 +714,8 @@ async def test_tool_trace_projection_failure_is_logged_and_does_not_change_resul
 ) -> None:
     result = CallToolResult(content=[TextContent(type="text", text="completed")])
 
-    @trace_tool_execution
-    async def execute(ctx, tool_name, arguments, server_id):
+    @trace_server_operation
+    async def execute(ctx, operation, server_id):
         return result
 
     span = MagicMock()
@@ -722,7 +723,7 @@ async def test_tool_trace_projection_failure_is_logged_and_does_not_change_resul
     with caplog.at_level("WARNING", logger="registry.mcpgw.tracing"):
         with patch("registry.mcpgw.tracing._TRACER") as tracer:
             tracer.start_as_current_span.return_value = nullcontext(span)
-            returned = await execute(_make_ctx(), "search", {"unsupported": object()}, "server-123")
+            returned = await execute(_make_ctx(), ToolCall("search", {"unsupported": object()}), "server-123")
 
     assert returned is result
     span.set_attribute.assert_any_call("registry.operation.success", True)
@@ -736,3 +737,60 @@ async def test_tool_trace_projection_failure_is_logged_and_does_not_change_resul
             "registry.tracing.attribute": "langfuse.observation.input",
         },
     )
+
+
+@pytest.mark.parametrize("kind", ["resource", "prompt"])
+@pytest.mark.parametrize("outcome", ["success", "error", "input_required", "cancelled"])
+async def test_shared_trace_settings_and_keyword_forwarding(kind: str, outcome: str) -> None:
+    from registry.core.mcp_downstream import PromptGet, ResourceRead
+
+    uri = "test://private/document"
+    operation = ResourceRead(uri) if kind == "resource" else PromptGet("greet", {"name": "Ada"})
+    result = (
+        InputRequiredResult(request_state="pending")
+        if outcome == "input_required"
+        else CallToolResult(content=[], is_error=outcome == "error")
+    )
+    metrics, renderer = object(), object()
+
+    @trace_server_operation
+    async def execute(ctx, operation, server_id, *, metrics_ctx, render):
+        assert metrics_ctx is metrics
+        assert render is renderer
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        return result
+
+    span = MagicMock()
+    span.is_recording.return_value = True
+    with patch("registry.mcpgw.tracing._TRACER") as tracer:
+        tracer.start_as_current_span.return_value = nullcontext(span)
+        if outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await execute(_make_ctx(), operation, "server-123", metrics_ctx=metrics, render=renderer)
+        else:
+            assert await execute(_make_ctx(), operation, "server-123", metrics_ctx=metrics, render=renderer) is result
+    attributes = tracer.start_as_current_span.call_args.kwargs["attributes"]
+    assert tracer.start_as_current_span.call_args.args == (
+        ("mcp.resource.read" if kind == "resource" else "mcp.prompt.get"),
+    )
+    assert attributes["langfuse.trace.name"] == ("McpResourceRead" if kind == "resource" else "McpPromptGet")
+    assert attributes["registry.operation.type"] == f"mcp_{kind}"
+    assert attributes["mcp.server.id"] == "server-123"
+    assert "mcp.tool.name" not in attributes
+    assert uri not in json.dumps(attributes)
+    assert "Ada" not in json.dumps(attributes)
+    if kind == "prompt":
+        assert attributes["mcp.prompt.name"] == "greet"
+    inputs = next(c.args[1] for c in span.set_attribute.call_args_list if c.args[0] == "langfuse.observation.input")
+    assert json.loads(inputs) == (
+        {"server_id": "server-123", "resource_uri": uri}
+        if kind == "resource"
+        else {"server_id": "server-123", "prompt_name": "greet", "arguments": {"name": "Ada"}}
+    )
+    span.set_attribute.assert_any_call("registry.operation.success", outcome == "success")
+    span.set_attribute.assert_any_call(
+        "registry.operation.outcome", "failure" if outcome in ("error", "cancelled") else outcome
+    )
+    if outcome in ("success", "input_required"):
+        span.set_status.assert_not_called()

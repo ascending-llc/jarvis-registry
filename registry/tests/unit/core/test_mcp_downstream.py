@@ -6,23 +6,46 @@ import httpx2
 import pytest
 from mcp.client.caching import InMemoryResponseCacheStore
 from mcp.shared.exceptions import MCPError
-from mcp.types import CallToolResult, ElicitRequest, ElicitRequestURLParams, InputRequiredResult
+from mcp.types import (
+    CallToolResult,
+    ElicitRequest,
+    ElicitRequestURLParams,
+    GetPromptResult,
+    InputRequiredResult,
+    ReadResourceResult,
+)
 from redis.exceptions import RedisError
 from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
 
-from registry.core.mcp_downstream import DownstreamEraCache, call_downstream_tool
+from registry.core.mcp_downstream import (
+    DownstreamEraCache,
+    DownstreamOperation,
+    PromptGet,
+    ResourceRead,
+    ToolCall,
+    call_downstream,
+)
 from registry_pkgs.core.exceptions import DownstreamHttpFailureException, DownstreamUnauthorizedException
 
 
-async def call(transport, *, redis=None, store=None, user="u", server="s", url="http://downstream/mcp", **kwargs):
-    return await call_downstream_tool(
+async def call(
+    transport,
+    *,
+    redis=None,
+    store=None,
+    user="u",
+    server="s",
+    url="http://downstream/mcp",
+    operation=ToolCall("search", {}),
+    **kwargs,
+):
+    return await call_downstream(
         url=url,
         transport_type="streamable-http",
         server_id=server,
         user_id=user,
         headers={"Authorization": f"Bearer {user}"},
-        tool_name="search",
-        arguments={},
+        operation=operation,
         downstream_transport=transport,
         response_cache=store if store is not None else InMemoryResponseCacheStore(),
         era_cache=DownstreamEraCache(redis if redis is not None else MemoryRedis(), "test"),
@@ -30,56 +53,100 @@ async def call(transport, *, redis=None, store=None, user="u", server="s", url="
     )
 
 
+@pytest.fixture(
+    params=[ToolCall("search", {}), ResourceRead("test://doc"), PromptGet("greet", {"name": "Ada"})],
+    ids=["tool", "resource", "prompt"],
+)
+def operation(request) -> DownstreamOperation:
+    return request.param
+
+
+def operation_method(operation: DownstreamOperation) -> str:
+    return {ToolCall: "tools/call", ResourceRead: "resources/read", PromptGet: "prompts/get"}[type(operation)]
+
+
+def result_text(result: CallToolResult | ReadResourceResult | GetPromptResult) -> str:
+    if isinstance(result, ReadResourceResult):
+        return result.contents[0].text
+    if isinstance(result, GetPromptResult):
+        return result.messages[0].content.text
+    return result.content[0].text
+
+
+def operation_server(handler):
+    """Low-level handlers preserve native results and exceptions for all three operations."""
+    from mcp.server import Server
+    from mcp.types import ListToolsResult, Tool
+
+    async def listing(ctx, params):
+        return ListToolsResult(tools=[Tool(name="search", input_schema={"type": "object"})])
+
+    return Server(
+        "operations", on_list_tools=listing, on_call_tool=handler, on_read_resource=handler, on_get_prompt=handler
+    )
+
+
 @pytest.mark.parametrize("era", ["legacy", "2026-07-28"])
-async def test_real_sdk_call_caches_era_and_tools_and_keeps_pool(era):
+async def test_real_sdk_call_caches_era_and_tools_and_keeps_pool(operation, era):
     redis, store = MemoryRedis(), InMemoryResponseCacheStore()
     async with sdk_endpoint(era=era) as transport:
-        first = await call(transport, redis=redis, store=store)
-        assert first.content[0].text == "done"
+        first = await call(transport, operation=operation, redis=redis, store=store)
+        assert result_text(first) == "done"
         probes = transport.count("server/discover")
         assert redis.values["test:mcp_era:s"] == era
         assert redis.ttls["test:mcp_era:s"] == 3600
-        await call(transport, redis=redis, store=store)
+        await call(transport, operation=operation, redis=redis, store=store)
         assert transport.count("server/discover") == probes
-        assert transport.count("tools/list") == 1
+        assert transport.count("tools/list") == (1 if isinstance(operation, ToolCall) else 0)
         assert transport.closed == 0
-        await call(transport, redis=redis, store=store, user="other")
-        await call(transport, redis=redis, store=store, server="other")
-        assert transport.count("tools/list") == 3
+        await call(transport, operation=operation, redis=redis, store=store, user="other")
+        await call(transport, operation=operation, redis=redis, store=store, server="other")
+        assert transport.count("tools/list") == (3 if isinstance(operation, ToolCall) else 0)
         assert transport.headers[-1]["authorization"] == "Bearer u"
 
 
 @pytest.mark.parametrize(("cached", "actual"), [("legacy", "2026-07-28"), ("2026-07-28", "legacy")])
-async def test_stale_era_retries_only_before_tool_send(cached, actual):
+async def test_stale_era_retries_only_before_tool_send(operation, cached, actual):
     redis = MemoryRedis()
     redis.values["test:mcp_era:s"] = cached
     async with sdk_endpoint(era=actual) as transport:
-        assert (await call(transport, redis=redis)).content[0].text == "done"
-        assert transport.count("tools/call") == 1
+        if cached == "2026-07-28" and not isinstance(operation, ToolCall):
+            # Modern cached mode sends the operation without a handshake/listing. Once sent,
+            # even a version rejection must not replay it. The next caller negotiates afresh.
+            with pytest.raises(DownstreamHttpFailureException):
+                await call(transport, operation=operation, redis=redis)
+            assert transport.count(operation_method(operation)) == 1
+            assert "test:mcp_era:s" not in redis.values
+            assert result_text(await call(transport, operation=operation, redis=redis)) == "done"
+            assert transport.count(operation_method(operation)) == 2
+        else:
+            assert result_text(await call(transport, operation=operation, redis=redis)) == "done"
+            assert transport.count(operation_method(operation)) == 1
         assert redis.values["test:mcp_era:s"] == actual
 
 
-@pytest.mark.parametrize("method", ["initialize", "tools/list", "tools/call"])
-async def test_401_after_successful_handshake_preserves_challenge(method):
+@pytest.mark.parametrize("method", ["initialize", "operation"])
+async def test_401_after_successful_handshake_preserves_challenge(operation, method):
+    method = operation_method(operation) if method == "operation" else method
     async with sdk_endpoint(era="legacy") as transport:
         transport.failure_method = method
         with pytest.raises(DownstreamUnauthorizedException) as error:
-            await call(transport)
+            await call(transport, operation=operation)
         assert error.value.www_authenticate == "Bearer test-challenge"
         assert error.value.method == method
         assert error.value.oauth_retry_safe
-        assert transport.count("tools/call") == (1 if method == "tools/call" else 0)
+        assert transport.count(operation_method(operation)) == (1 if method == operation_method(operation) else 0)
 
 
-async def test_http_500_maps_to_downstream_failure():
+async def test_http_500_maps_to_downstream_failure(operation):
     async with sdk_endpoint() as transport:
-        transport.failure_method, transport.failure_status = "tools/call", 500
+        transport.failure_method, transport.failure_status = operation_method(operation), 500
         with pytest.raises(DownstreamHttpFailureException):
-            await call(transport)
-        assert transport.count("tools/call") == 1
+            await call(transport, operation=operation)
+        assert transport.count(operation_method(operation)) == 1
 
 
-async def test_input_required_is_returned_without_automatic_replay():
+async def test_input_required_is_returned_without_automatic_replay(operation):
     expected = InputRequiredResult(
         input_requests={
             "login": ElicitRequest(
@@ -90,11 +157,15 @@ async def test_input_required_is_returned_without_automatic_replay():
             )
         }
     )
-    async with sdk_endpoint(result=expected) as transport:
-        result = await call(transport)
+
+    async def execute(ctx, params):
+        return expected
+
+    async with sdk_endpoint(server_override=operation_server(execute)) as transport:
+        result = await call(transport, operation=operation)
         assert isinstance(result, InputRequiredResult)
         assert result.input_requests["login"].params.url == "https://login.example"
-        assert transport.count("tools/call") == 1
+        assert transport.count(operation_method(operation)) == 1
 
 
 async def test_progress_callback_uses_sdk_token():
@@ -115,22 +186,25 @@ async def test_modern_log_opt_in_is_warning_only_when_relaying(on_log):
         assert level == ("warning" if on_log else None)
 
 
-async def test_redis_errors_degrade_without_failing_executed_tool():
+async def test_redis_errors_degrade_without_failing_executed_tool(operation):
     redis = MemoryRedis()
     with patch.object(redis, "get", side_effect=RedisError), patch.object(redis, "set", side_effect=RedisError):
         async with sdk_endpoint() as transport:
-            assert isinstance(await call(transport, redis=redis), CallToolResult)
+            assert isinstance(
+                await call(transport, operation=operation, redis=redis),
+                (CallToolResult, ReadResourceResult, GetPromptResult),
+            )
 
 
-async def test_transport_failure_maps_without_replay():
+async def test_transport_failure_maps_without_replay(operation):
     async def fail(request):
         raise httpx2.ConnectError("connection unavailable")
 
     with pytest.raises(DownstreamHttpFailureException):
-        await call(httpx2.MockTransport(fail))
+        await call(httpx2.MockTransport(fail), operation=operation)
 
 
-async def test_jsonrpc_version_error_after_tool_is_not_replayed():
+async def test_jsonrpc_version_error_after_tool_is_not_replayed(operation):
     redis = MemoryRedis()
     redis.values["test:mcp_era:s"] = "2026-07-28"
     # Fault injection at the HTTP boundary, after a real SDK listing succeeded.
@@ -141,7 +215,7 @@ async def test_jsonrpc_version_error_after_tool_is_not_replayed():
             import json
 
             message = json.loads(await request.aread()) if request.method == "POST" else {}
-            if message.get("method") == "tools/call":
+            if message.get("method") == operation_method(operation):
                 transport.messages.append(message)
                 return httpx2.Response(
                     200,
@@ -159,9 +233,9 @@ async def test_jsonrpc_version_error_after_tool_is_not_replayed():
 
         transport.handle_async_request = reject
         with pytest.raises(MCPError) as error:
-            await call(transport, redis=redis)
+            await call(transport, operation=operation, redis=redis)
         assert error.value.code == -32022
-        assert transport.count("tools/call") == 1
+        assert transport.count(operation_method(operation)) == 1
         assert "test:mcp_era:s" not in redis.values
 
 
@@ -280,39 +354,27 @@ async def test_paginated_target_schema_loaded_before_call():
         assert transport.count("tools/list") == 2
 
 
-async def test_jsonrpc_error_preserves_code_and_data():
-    from mcp.server import Server
-    from mcp.types import ListToolsResult, Tool
-
-    async def listing(ctx, params):
-        return ListToolsResult(tools=[Tool(name="search", input_schema={"type": "object"})])
+async def test_jsonrpc_error_preserves_code_and_data(operation):
 
     async def execute(ctx, params):
         raise MCPError(-32099, "test error", {"reason": "test"})
 
-    async with sdk_endpoint(server_override=Server("error", on_list_tools=listing, on_call_tool=execute)) as transport:
+    async with sdk_endpoint(server_override=operation_server(execute)) as transport:
         with pytest.raises(MCPError) as error:
-            await call(transport)
+            await call(transport, operation=operation)
         assert error.value.code == -32099
         assert error.value.error.data == {"reason": "test"}
 
 
-async def test_mcp_timeout_is_mapped_without_replay():
-    from mcp.server import Server
-    from mcp.types import ListToolsResult, Tool
-
-    async def listing(ctx, params):
-        return ListToolsResult(tools=[Tool(name="search", input_schema={"type": "object"})])
+async def test_mcp_timeout_is_mapped_without_replay(operation):
 
     async def execute(ctx, params):
         raise MCPError(-32001, "timeout")
 
-    async with sdk_endpoint(
-        server_override=Server("timeout", on_list_tools=listing, on_call_tool=execute)
-    ) as transport:
+    async with sdk_endpoint(server_override=operation_server(execute)) as transport:
         with pytest.raises(DownstreamHttpFailureException, match="Timed out"):
-            await call(transport)
-        assert transport.count("tools/call") == 1
+            await call(transport, operation=operation)
+        assert transport.count(operation_method(operation)) == 1
 
 
 async def test_legacy_sse_real_sdk_stream_closes_and_pool_survives():
@@ -334,14 +396,13 @@ async def test_legacy_sse_real_sdk_stream_closes_and_pool_survives():
     redis.values["test:mcp_era:s"] = "legacy"
     async with asyncio.timeout(5):
         for _ in range(2):
-            result = await call_downstream_tool(
+            result = await call_downstream(
                 url="http://downstream/sse",
                 transport_type="sse",
                 server_id="s",
                 user_id="u",
                 headers={},
-                tool_name="search",
-                arguments={},
+                operation=ToolCall("search", {}),
                 downstream_transport=transport,
                 response_cache=InMemoryResponseCacheStore(),
                 era_cache=DownstreamEraCache(redis, "test"),
@@ -353,23 +414,23 @@ async def test_legacy_sse_real_sdk_stream_closes_and_pool_survives():
     await transport.aclose()
 
 
-async def test_cancellation_during_tool_is_propagated_without_retry():
+async def test_cancellation_during_tool_is_propagated_without_retry(operation):
     import asyncio
 
     entered = asyncio.Event()
 
-    async def blocking(ctx):
+    async def blocking(ctx=None):
         entered.set()
         await asyncio.Event().wait()
 
-    async with sdk_endpoint(action=blocking) as transport:
-        task = asyncio.create_task(call(transport))
+    async with sdk_endpoint(action=blocking, resource_action=blocking, prompt_action=blocking) as transport:
+        task = asyncio.create_task(call(transport, operation=operation))
         async with asyncio.timeout(5):
             await entered.wait()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-        assert transport.count("tools/call") == 1
+        assert transport.count(operation_method(operation)) == 1
         assert transport.closed == 0
 
 
@@ -538,14 +599,13 @@ async def test_unknown_transport_is_rejected_before_network_io() -> None:
         raise AssertionError("invalid transport must not initiate network I/O")
 
     with pytest.raises(ValueError, match="MCPTransport"):
-        await call_downstream_tool(
+        await call_downstream(
             url="http://downstream/mcp",
             transport_type="invalid",
             server_id="s",
             user_id="u",
             headers={},
-            tool_name="search",
-            arguments={},
+            operation=ToolCall("search", {}),
             downstream_transport=httpx2.MockTransport(reject),
             response_cache=InMemoryResponseCacheStore(),
             era_cache=DownstreamEraCache(MemoryRedis(), "test"),
@@ -680,14 +740,13 @@ async def test_legacy_sse_post_401_fails_fast_with_challenge():
         # Well inside the 60 s read timeout the SDK would otherwise wait out.
         async with asyncio.timeout(5):
             with pytest.raises(DownstreamUnauthorizedException) as error:
-                await call_downstream_tool(
+                await call_downstream(
                     url="http://downstream/sse",
                     transport_type="sse",
                     server_id="s",
                     user_id="u",
                     headers={},
-                    tool_name="search",
-                    arguments={},
+                    operation=ToolCall("search", {}),
                     downstream_transport=transport,
                     response_cache=InMemoryResponseCacheStore(),
                     era_cache=DownstreamEraCache(MemoryRedis(), "test"),
@@ -778,3 +837,47 @@ async def test_legacy_sse_discovery_still_succeeds_with_fail_fast(monkeypatch):
         assert [tool["name"] for tool in result.tools] == ["search"]
     finally:
         await transport.aclose()
+
+
+async def test_listing_401_still_preserves_challenge() -> None:
+    await test_401_after_successful_handshake_preserves_challenge(ToolCall("search", {}), "tools/list")
+
+
+async def test_native_results_and_arguments_skip_tool_listing() -> None:
+    async with sdk_endpoint(resource_result="document", prompt_result="Hello {name}") as transport:
+        resource = await call(transport, operation=ResourceRead("test://doc"))
+        assert isinstance(resource, ReadResourceResult)
+        assert resource.contents[0].text == "document"
+        assert str(resource.contents[0].uri) == "test://doc"
+        template = await call(transport, operation=ResourceRead("test://doc/42"))
+        assert template.contents[0].text == "42"
+        prompt = await call(transport, operation=PromptGet("greet", {"name": "Ada"}))
+        assert isinstance(prompt, GetPromptResult)
+        assert prompt.messages[0].content.text == "Hello Ada"
+        assert transport.count("tools/list") == 0
+        message = next(m for m in transport.messages if m["method"] == "prompts/get")
+        assert message["params"]["arguments"] == {"name": "Ada"}
+        await call(transport)
+        assert transport.count("tools/list") == 1
+
+
+async def test_resource_reads_do_not_cache_contents() -> None:
+    action = AsyncMock(side_effect=["first", "second"])
+    store = InMemoryResponseCacheStore()
+    async with sdk_endpoint(resource_action=action) as transport:
+        first = await call(transport, operation=ResourceRead("test://doc"), store=store)
+        second = await call(transport, operation=ResourceRead("test://doc"), store=store)
+        assert first.contents[0].text == "first"
+        assert second.contents[0].text == "second"
+        assert transport.count("resources/read") == 2
+        assert transport.count("tools/list") == 0
+
+
+@pytest.mark.parametrize("operation", [ResourceRead("test://doc"), PromptGet("greet", {"name": "Ada"})])
+async def test_non_tool_operations_ignore_progress_callback(operation: DownstreamOperation) -> None:
+    callback = AsyncMock()
+    async with sdk_endpoint() as transport:
+        await call(transport, operation=operation, on_progress=callback)
+        callback.assert_not_awaited()
+        message = next(m for m in transport.messages if m["method"] == operation_method(operation))
+        assert "progressToken" not in message["params"].get("_meta", {})

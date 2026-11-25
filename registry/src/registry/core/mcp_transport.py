@@ -1,4 +1,4 @@
-"""HTTP transport primitives shared by MCP discovery and tool execution."""
+"""HTTP transport primitives shared by MCP discovery and downstream operations."""
 
 import json
 import logging
@@ -14,6 +14,7 @@ from mcp.shared._httpx_utils import McpHttpClientFactory, create_mcp_http_client
 from .mcp_config import MCPClientConfig
 
 logger = logging.getLogger(__name__)
+_DOWNSTREAM_OPERATION_METHODS = frozenset({"tools/call", "resources/read", "prompts/get"})
 
 
 class DownstreamPhase(StrEnum):
@@ -91,7 +92,7 @@ class ResponseRecorder:
                 return
             if isinstance(message, dict) and "id" in message:
                 self.method = message.get("method")
-                if self.phase == DownstreamPhase.CALLING and self.method != "tools/call":
+                if self.phase == DownstreamPhase.CALLING and self.method not in _DOWNSTREAM_OPERATION_METHODS:
                     self.phase = DownstreamPhase.RESULT_VALIDATION
                 self._rpc_started = True
                 self.status_code = None

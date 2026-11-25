@@ -8,6 +8,7 @@ These cover the search logic extracted out of api/v1/search_routes.py:
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -850,3 +851,85 @@ async def test_search_entities_include_disabled_drops_tool_enabled_filter():
 
     call_kwargs = mcp_server_repo.asearch_with_rerank.call_args.kwargs
     assert "tool_enabled" not in call_kwargs["filters"]
+
+
+@pytest.mark.parametrize("query", ["", "documents"])
+async def test_discovery_refills_after_private_resources_consume_top_n(query: str) -> None:
+    oauth_id, shared_id = ObjectId(), ObjectId()
+    private = [
+        {
+            "server_id": str(oauth_id),
+            "entity_type": "resource",
+            "resource_uri": f"private://{i}",
+            "relevance_score": 1.0,
+        }
+        for i in range(4)
+    ]
+    eligible = {
+        "server_id": str(shared_id),
+        "entity_type": "resource",
+        "resource_uri": "shared://doc",
+        "relevance_score": 0.5,
+    }
+    ranked = private + [eligible]
+
+    async def fetch(**kwargs: Any) -> list[dict[str, Any]]:
+        return ranked[: kwargs.get("limit", kwargs.get("k"))]
+
+    repo = MagicMock(afilter=AsyncMock(side_effect=fetch), asearch_with_rerank=AsyncMock(side_effect=fetch))
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+
+    async def servers():
+        yield {"_id": oauth_id, "config": {"requiresOAuth": True}}
+        yield {"_id": shared_id, "config": {}}
+
+    collection.find.side_effect = lambda *_: servers()
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
+        result = await _make_service(mcp_server_repo=repo).search_entities(
+            SearchRequest(query=query, top_n=1, type_list=[MCPEntityType.RESOURCE]), {}
+        )
+    assert result["results"] == [eligible]
+    assert result["total"] == 1
+    calls = repo.asearch_with_rerank.await_args_list if query else repo.afilter.await_args_list
+    assert [c.kwargs["k" if query else "limit"] for c in calls] == [1, 2, 4, 8]
+    if query:
+        assert all(c.kwargs["candidate_k"] >= c.kwargs["k"] for c in calls)
+
+
+async def test_candidate_refill_stops_when_only_private_documents_remain() -> None:
+    from registry.services.search.private_resources import fetch_eligible_mcp_candidates
+
+    private = [{"entity_type": "resource", "server_id": "invalid", "resource_uri": "private://doc"}]
+    fetch = AsyncMock(side_effect=lambda limit: private[:limit])
+    assert await fetch_eligible_mcp_candidates(fetch, 1) == []
+    assert [c.args[0] for c in fetch.await_args_list] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected_windows"),
+    [(1, [1, 2, 4, 8]), (60, [60, 120, 200]), (300, [300])],
+    ids=["round-cap", "window-cap", "limit-above-window-cap"],
+)
+async def test_candidate_refill_is_bounded_when_private_documents_dominate(
+    limit: int, expected_windows: list[int]
+) -> None:
+    from registry.services.search.private_resources import fetch_eligible_mcp_candidates
+
+    oauth_id = ObjectId()
+    private = [
+        {"entity_type": "resource", "server_id": str(oauth_id), "resource_uri": f"private://{i}"} for i in range(5000)
+    ]
+    eligible = {"entity_type": "tool", "server_id": "shared", "tool_name": "echo"}
+    ranked = [*private, eligible]
+    fetch = AsyncMock(side_effect=lambda window: ranked[:window])
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+
+    async def servers():
+        yield {"_id": oauth_id, "config": {"requiresOAuth": True}}
+
+    collection.find.side_effect = lambda *_: servers()
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
+        assert await fetch_eligible_mcp_candidates(fetch, limit) == []
+    assert [c.args[0] for c in fetch.await_args_list] == expected_windows
