@@ -968,6 +968,11 @@ class TestVectorSyncMarkerFields:
         assert _has_sparse_index(model, "vectorSyncPendingAt")
 
 
+def test_resource_recapture_marker_has_sparse_index():
+    """The resource-recapture reconciler scans and sorts by this Registry-owned marker on every pass."""
+    assert _has_sparse_index(ExtendedMCPServer, "resourceRecapturePendingAt")
+
+
 class TestLeaderLease:
     """the singleton leader-lease document used by leader-leased loops."""
 

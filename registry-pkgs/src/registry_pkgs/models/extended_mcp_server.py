@@ -306,6 +306,8 @@ class ExtendedMCPServer(MCPServer):
             ),
             # Registry-owned field (see the note above); the reconciler scans by it.
             IndexModel([("vectorSyncPendingAt", 1)], sparse=True),
+            # Registry-owned; the resource-recapture reconciler scans and sorts by it.
+            IndexModel([("resourceRecapturePendingAt", 1)], sparse=True),
         ]
 
     @property
