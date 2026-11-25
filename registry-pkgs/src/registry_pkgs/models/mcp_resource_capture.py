@@ -39,13 +39,14 @@ def resource_capture_context(config: dict[str, Any]) -> str:
     return _digest({key: config[key] for key in RESOURCE_CAPTURE_CONTEXT_FIELDS if key in config})
 
 
-def _is_shared(config: dict[str, Any]) -> bool:
+def uses_shared_credentials(config: dict[str, Any]) -> bool:
+    """Whether captures use credentials shared by every viewer (not one user's OAuth token)."""
     return bool(config.get("runtimeAccess")) or not (config.get("requiresOAuth") or "oauth" in config)
 
 
 def create_resource_capture(config: dict[str, Any], resources: list[dict[str, Any]]) -> ResourceCaptureProof | None:
     """Create a proof only after a successful listing; a failed listing must not call this function."""
-    if not resources or not _is_shared(config):
+    if not resources or not uses_shared_credentials(config):
         return None
     context_hash, contents_hash = resource_capture_context(config), _digest(resources)
     previous = config.get(RESOURCE_CAPTURE_KEY)
@@ -63,7 +64,7 @@ def create_resource_capture(config: dict[str, Any], resources: list[dict[str, An
 def resource_capture_revision(config: dict[str, Any]) -> str | None:
     """Return a trusted list's opaque revision, or None for stale, OAuth or unsigned contents."""
     proof = config.get(RESOURCE_CAPTURE_KEY)
-    if not _is_shared(config) or not isinstance(proof, dict):
+    if not uses_shared_credentials(config) or not isinstance(proof, dict):
         return None
     revision = proof.get("revision")
     if (

@@ -98,6 +98,8 @@ Unchanged shape (`uri`, `name`, `description`, `mimeType`, `annotations`).
 
 5. **Concrete resources require a current shared-credential capture.** Changing the endpoint or
    authentication invalidates the previous list. Legacy lists without capture provenance are hidden
-   until a successful refresh with the current shared credentials. A failed refresh preserves a
+   until a successful refresh with the current shared credentials. Migration `m0006` queues those servers,
+   and a background reconciler refreshes each one automatically (retrying with backoff; after repeated
+   failures the server waits for a manual capabilities refresh). A failed refresh preserves a
    previously valid capture, but cannot make an old or invalid list visible again. An empty list
    during this transition does not imply that the downstream server has no resources.
