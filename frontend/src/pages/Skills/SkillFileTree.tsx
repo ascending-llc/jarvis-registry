@@ -9,9 +9,9 @@ import {
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { SkillFileMetadata } from '@/services/skill/type';
-import type { SkillScanResponse } from '@/services/skill/scanTypes';
 import SERVICES from '@/services';
+import type { SkillScanResponse } from '@/services/skill/scanTypes';
+import type { SkillFileMetadata } from '@/services/skill/type';
 
 import { SKILL_MARKDOWN_PATH } from './constants';
 import type { IndexedScanFinding } from './skillScan';
@@ -369,11 +369,7 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({
               <EyeSlashIcon aria-hidden='true' className='h-[14px] w-[14px]' />
             </span>
           )}
-          <RiskBadge
-            findings={findings}
-            locationLabel='in this file'
-            findingsTruncated={findingsTruncated}
-          />
+          <RiskBadge findings={findings} locationLabel='in this file' findingsTruncated={findingsTruncated} />
         </button>
       );
     }
@@ -457,9 +453,7 @@ const SkillFileTree: React.FC<SkillFileTreeProps> = ({
         <div className='px-2 pt-2 text-xs text-[var(--jarvis-muted)]'>
           <p>
             {invalidPathFindings}{' '}
-            {invalidPathFindings === 1
-              ? 'finding has an invalid file path.'
-              : 'findings have invalid file paths.'}
+            {invalidPathFindings === 1 ? 'finding has an invalid file path.' : 'findings have invalid file paths.'}
           </p>
           {onOpenSecurity && (
             <button
