@@ -83,7 +83,6 @@ def _make_runner(**kwargs) -> runner.WorkflowRunner:
     from registry_pkgs.core.config import JwtSigningConfig
 
     defaults = {
-        "fallback_model": object(),
         "encryption_key": b"test-key",
         "azure_ad_token_provider": None,
         "db_client": object(),
@@ -110,9 +109,8 @@ class TestWorkflowRunnerInit:
         with pytest.raises(ValueError, match="db_name"):
             _make_runner(db_name="")
 
-    def test_stores_fallback_model_and_encryption_key(self):
+    def test_stores_encryption_key(self):
         r = _make_runner()
-        assert r._fallback_model is not None
         assert r._encryption_key == b"test-key"
 
 
@@ -1166,3 +1164,53 @@ class TestRunnerWritesAgainstPersistedState:
 
         assert collection.doc["status"] == WorkflowRunStatus.COMPLETED.value
         assert collection.doc["pending_requirements"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True])
+async def test_registry_configuration_error_persists_failed_before_execution(
+    monkeypatch: pytest.MonkeyPatch, resume: bool
+) -> None:
+    from registry_pkgs.workflows.types import WorkflowConfigError
+
+    definition = _definition()
+    pending = [{"step_id": "s1"}] if resume else []
+    run_doc = SimpleNamespace(
+        id=PydanticObjectId(),
+        status=WorkflowRunStatus.RUNNING if resume else WorkflowRunStatus.PENDING,
+        definition_snapshot=definition.model_dump(mode="json"),
+        pending_requirements=pending,
+        error_summary=None,
+        finished_at=None,
+    )
+    error = WorkflowConfigError("Step 'fetch' needs a model. Select one on the Models page.")
+    queue = Mock()
+    workflow_runner = _make_runner(directive_queue=queue)
+    writer = _patch_writer(monkeypatch)
+    monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+    monkeypatch.setattr(runner, "hydrate_requirement", lambda value: value)
+    monkeypatch.setattr(workflow_runner, "_build_registry", AsyncMock(side_effect=error))
+    execute = AsyncMock()
+    compile_mock = Mock()
+    monkeypatch.setattr(workflow_runner, "_execute", execute)
+    monkeypatch.setattr(runner, "compile_workflow", compile_mock)
+    monkeypatch.setattr(workflow_runner, "_finalize_dangling_node_runs", AsyncMock())
+    with pytest.raises(WorkflowConfigError) as caught:
+        if resume:
+            await workflow_runner.continue_run(existing_run_id=str(run_doc.id), auth_context=None, run_writer=writer)
+        else:
+            await workflow_runner.run(
+                str(definition.id), "hello", existing_run_id=str(run_doc.id), auth_context=None, run_writer=writer
+            )
+    assert caught.value is error
+    assert run_doc.status == WorkflowRunStatus.FAILED
+    assert run_doc.error_summary == str(error)
+    assert any(
+        call.args[0].get("status") == WorkflowRunStatus.FAILED and call.args[0].get("error_summary") == str(error)
+        for call in writer.write.await_args_list
+    )
+    execute.assert_not_awaited()
+    compile_mock.assert_not_called()
+    queue.unregister.assert_called_once_with(str(run_doc.id))
+    if resume:
+        assert run_doc.pending_requirements == pending

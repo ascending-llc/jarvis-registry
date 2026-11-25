@@ -187,7 +187,6 @@ async def test_main_shuts_down_telemetry_after_scheduler_drains(monkeypatch: pyt
 @pytest.mark.asyncio
 async def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_settings = SimpleNamespace(
-        workflow_llm_model_id="model",
         aws_region="us-east-1",
         aws_access_key_id=None,
         aws_secret_access_key=None,
@@ -198,12 +197,9 @@ async def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.Mo
     )
     headers_provider = object()
     mcp_headers_provider = object()
-    fallback_model = object()
-    model_factory = MagicMock(return_value=fallback_model)
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(main, "settings", mock_settings)
-    monkeypatch.setattr(main, "build_legacy_bedrock_model", model_factory)
     monkeypatch.setattr(main.MongoDB, "get_client", lambda: object())
     monkeypatch.setattr(main.MongoDB, "database_name", "jarvis", raising=False)
     monkeypatch.setattr(main, "make_a2a_headers_provider", lambda **kwargs: headers_provider)
@@ -214,9 +210,9 @@ async def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.Mo
     azure_model_credential = SimpleNamespace(token_provider=object())
     await main._build_runner(object(), object(), object(), azure_client_cache, azure_model_credential)
 
-    model_factory.assert_called_once_with("model", "us-east-1")
     assert captured["headers_provider"] is headers_provider
-    assert captured["fallback_model"] is fallback_model
+    assert "fallback_model" not in captured
+    assert captured["encryption_key"] == b"test-key"
     assert captured["mcp_headers_provider"] is mcp_headers_provider
     assert captured["azure_ad_token_provider"] is azure_model_credential.token_provider
 

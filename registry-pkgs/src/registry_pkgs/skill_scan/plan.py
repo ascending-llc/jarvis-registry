@@ -43,7 +43,7 @@ async def resolve_skill_scan_model_source() -> ModelSource | None:
     """skillScanModelSourceId, else defaultWorkflowModelSourceId.
 
     None when unset, missing, soft-deleted, not mode CHAT, or not a SKILL_SCAN_PROVIDER_TYPES provider (scans then
-    run without an LLM). Mirrors resolve_model's fallback/checks, plus the provider restriction: a first-party
+    run without an LLM). Mirrors the workflow usable-chat-source check, plus the provider restriction: a first-party
     workflow default is valid for workflows but never used for scanning.
     """
     selection = await get_model_gateway_selection(create_if_missing=False)

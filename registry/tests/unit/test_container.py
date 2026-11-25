@@ -9,15 +9,9 @@ from registry.container import RegistryContainer
 from registry.services.group_directory_client import EntraIdGroupDirectoryClient
 from registry_pkgs.models import ExtendedGroupSource
 
-_AIP_ARN = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/bedrock-governance-sonnet"
-_FALLBACK_MODEL = "amazon.nova-2-lite-v1:0"
 
-
-def _make_settings(*, aip_arn: str | None = None) -> MagicMock:
+def _make_settings() -> MagicMock:
     settings = MagicMock()
-    settings.aws_bedrock_sonnet_aip_arn = aip_arn
-    settings.aws_workflow_llm_model = _FALLBACK_MODEL
-    settings.workflow_llm_model_id = aip_arn or _FALLBACK_MODEL
     settings.aws_region = "us-east-1"
     settings.aws_access_key_id = None
     settings.aws_secret_access_key = None
@@ -73,7 +67,6 @@ async def test_startup_warms_services_and_starts_background_runners(
     with (
         patch("registry.container.WorkflowRunner") as workflow_runner,
         patch("registry.container.MongoDB"),
-        patch("registry.container.build_legacy_bedrock_model"),
     ):
         await container.startup()
         workflow_runner.assert_called_once()
@@ -102,42 +95,19 @@ def _stub_shutdown_dependencies(container: RegistryContainer, monkeypatch) -> No
 
 
 @pytest.mark.unit
-class TestWorkflowRunnerModelSelection:
-    @patch("registry.container.WorkflowRunner")
-    @patch("registry.container.MongoDB")
-    @patch("registry.container.build_legacy_bedrock_model")
-    def test_uses_aip_arn_when_set(self, mock_model_factory, mock_mongodb, mock_runner):
-        container = _make_container(_make_settings(aip_arn=_AIP_ARN))
+@patch("registry.container.WorkflowRunner")
+@patch("registry.container.MongoDB")
+def test_workflow_runner_uses_gateway_without_fallback(mock_mongodb: MagicMock, mock_runner: MagicMock) -> None:
+    container = _make_container(_make_settings())
 
-        _ = container.workflow_runner
+    assert container.workflow_runner is mock_runner.return_value
 
-        mock_model_factory.assert_called_once_with(_AIP_ARN, "us-east-1")
-        assert mock_runner.call_args.kwargs["fallback_model"] is mock_model_factory.return_value
-
-    @patch("registry.container.WorkflowRunner")
-    @patch("registry.container.MongoDB")
-    @patch("registry.container.build_legacy_bedrock_model")
-    def test_falls_back_to_workflow_llm_model_when_arn_not_set(self, mock_model_factory, mock_mongodb, mock_runner):
-        container = _make_container(_make_settings(aip_arn=None))
-
-        _ = container.workflow_runner
-
-        mock_model_factory.assert_called_once_with(_FALLBACK_MODEL, "us-east-1")
-
-    @patch("registry.container.WorkflowRunner")
-    @patch("registry.container.MongoDB")
-    @patch("registry.container.build_legacy_bedrock_model")
-    def test_falls_back_to_workflow_llm_model_when_arn_empty_string(
-        self,
-        mock_model_factory,
-        mock_mongodb,
-        mock_runner,
-    ):
-        container = _make_container(_make_settings(aip_arn=""))
-
-        _ = container.workflow_runner
-
-        mock_model_factory.assert_called_once_with(_FALLBACK_MODEL, "us-east-1")
+    captured = mock_runner.call_args.kwargs
+    assert "fallback_model" not in captured
+    assert captured["encryption_key"] is container.settings.encryption_key
+    assert captured["azure_ad_token_provider"] is container.azure_model_credential.token_provider
+    assert captured["db_client"] is mock_mongodb.get_client.return_value
+    assert captured["jwt_config"] is container.settings.jwt_signing_config
 
 
 @pytest.mark.unit

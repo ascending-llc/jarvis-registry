@@ -15,12 +15,6 @@ Tests:
 
 Usage:
     uv run python scripts/test_control_e2e.py
-
-Environment variables:
-    AWS_BEDROCK_SONNET_AIP_ARN
-        AIP ARN used before BEDROCK_MODEL when set.
-    BEDROCK_MODEL
-        Bedrock model ID fallback (default: us.amazon.nova-lite-v1:0).
 """
 
 from __future__ import annotations
@@ -40,12 +34,10 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
-from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 
 from registry.services.background_task_tracker import BackgroundTaskTracker
 from registry.services.workflow_run_launcher import WorkflowRunLauncher
-from registry_pkgs.workflows.model_resolution import build_legacy_bedrock_model
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -109,12 +101,7 @@ class MockWorkflowRunner(WorkflowRunner):
 
 def _make_runner(queue: DirectiveQueue) -> MockWorkflowRunner:
     """Build a MockWorkflowRunner wired to *queue*."""
-    fallback_model = build_legacy_bedrock_model(
-        resolve_bedrock_model_id(model_env_var="BEDROCK_MODEL", fallback_model_id="us.amazon.nova-lite-v1:0"),
-        settings.aws_region,
-    )
     return MockWorkflowRunner(
-        fallback_model=fallback_model,
         encryption_key=settings.encryption_key,
         azure_ad_token_provider=None,
         db_client=MongoDB.get_client(),

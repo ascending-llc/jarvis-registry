@@ -142,8 +142,7 @@ class WorkflowPromptSettings(BaseSettings):
     `JwtSigningConfig` and friends below): it has no required fields, so `registry_pkgs.workflows.helpers`
     can read it directly without the owning app (registry/auth-server) having to construct and pass it down.
 
-    Default sizes to the workflow LLM's context window (currently Claude Sonnet 5 on AWS Bedrock via an
-    Application Inference Profile — see `Settings.workflow_llm_model_id` in the registry app's config),
+    Default sizes to the default workflow model's context window (currently Claude Sonnet 5, 1M tokens),
     leaving headroom for the rest of the request and the model's own response.
     """
 

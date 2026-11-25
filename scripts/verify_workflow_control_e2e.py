@@ -24,14 +24,8 @@ Usage:
     uv run python scripts/verify_workflow_control_e2e.py --modules A,C,D    # subset
     uv run python scripts/verify_workflow_control_e2e.py --keep-data        # keep test data on exit
 
-Environment variables:
-    AWS_BEDROCK_SONNET_AIP_ARN
-        AIP ARN used before BEDROCK_MODEL when set.
-    BEDROCK_MODEL
-        Bedrock model ID fallback (default: us.amazon.nova-lite-v1:0).
-
 Pattern follows ``scripts/test_control_e2e.py``: direct service+runner calls
-against real MongoDB; ACL/route layers covered by their unit tests.  Mock step
+against real MongoDB; ACL/route layers covered by their unit tests. Mock step
 executor returns instantly so e2e total runtime stays under ~2 min.
 """
 
@@ -50,11 +44,8 @@ from pathlib import Path
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
-from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 from fastapi import HTTPException
-
-from registry_pkgs.workflows.model_resolution import build_legacy_bedrock_model
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -260,12 +251,7 @@ class MockRunner(WorkflowRunner):
 
 
 def _build_runner(queue: DirectiveQueue) -> MockRunner:
-    fallback_model = build_legacy_bedrock_model(
-        resolve_bedrock_model_id(model_env_var="BEDROCK_MODEL", fallback_model_id="us.amazon.nova-lite-v1:0"),
-        settings.aws_region,
-    )
     return MockRunner(
-        fallback_model=fallback_model,
         encryption_key=settings.encryption_key,
         azure_ad_token_provider=None,
         db_client=MongoDB.get_client(),
@@ -307,12 +293,7 @@ class FailingMockRunner(WorkflowRunner):
 
 
 def _build_failing_runner(queue: DirectiveQueue, fail_counts: dict[str, int]) -> FailingMockRunner:
-    fallback_model = build_legacy_bedrock_model(
-        resolve_bedrock_model_id(model_env_var="BEDROCK_MODEL", fallback_model_id="us.amazon.nova-lite-v1:0"),
-        settings.aws_region,
-    )
     return FailingMockRunner(
-        fallback_model=fallback_model,
         encryption_key=settings.encryption_key,
         azure_ad_token_provider=None,
         db_client=MongoDB.get_client(),
@@ -1564,10 +1545,6 @@ class GatedMockRunner(WorkflowRunner):
 
 def _build_gated_runner(queue: DirectiveQueue, gate: asyncio.Event) -> GatedMockRunner:
     return GatedMockRunner(
-        fallback_model=build_legacy_bedrock_model(
-            resolve_bedrock_model_id(model_env_var="BEDROCK_MODEL", fallback_model_id="us.amazon.nova-lite-v1:0"),
-            settings.aws_region,
-        ),
         encryption_key=settings.encryption_key,
         azure_ad_token_provider=None,
         db_client=MongoDB.get_client(),

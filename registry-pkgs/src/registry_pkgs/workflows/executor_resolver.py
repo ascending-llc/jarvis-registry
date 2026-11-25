@@ -35,6 +35,7 @@ from registry_pkgs.workflows.types import (
     BUILTIN_ECHO_EXECUTOR_KEY,
     BUILTIN_SET_VALUE_EXECUTOR_KEY,
     POOL_KEY_PREFIX,
+    WorkflowConfigError,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,7 +133,7 @@ def _builtin_executor(key: str) -> StepExecutor | None:
 async def build_executor_registry(
     nodes: list[WorkflowNode],
     *,
-    default_model: Model,
+    default_model: Model | None,
     auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
     encryption_key: bytes,
@@ -153,7 +154,7 @@ async def build_executor_registry(
 
     Args:
         nodes:            Non-pool STEP nodes with ``executor_key`` set.
-        default_model:    Model used when a node has no ``model_source_id`` override.
+        default_model:    Optional model used when an LLM node has no override.
         auth_context:     Triggering user's auth context for manually-registered MCP servers.
         jwt_config:       JWT signing config used by A2A executors and AgentCore MCP servers.
         encryption_key:   Key used to decrypt a ModelSource's stored Azure credential.
@@ -170,6 +171,7 @@ async def build_executor_registry(
 
     Raises:
         KeyError:        If an executor_key cannot be resolved to any active server or agent.
+        WorkflowConfigError: If an MCP or pool node has no usable model.
     """
     registry: dict[str, StepExecutor] = {}
     built_by_combo: dict[tuple[str, str | None], StepExecutor] = {}
@@ -177,15 +179,13 @@ async def build_executor_registry(
     for node in nodes:
         combo = (node.executor_key, node.model_source_id)
         if combo not in built_by_combo:
-            node_model = await resolve_model(
-                node.model_source_id,
-                fallback_model=default_model,
-                encryption_key=encryption_key,
-                azure_ad_token_provider=azure_ad_token_provider,
-            )
             raw = await _resolve_executor(
                 node.executor_key,
-                llm=node_model,
+                node_name=node.name,
+                model_source_id=node.model_source_id,
+                default_model=default_model,
+                encryption_key=encryption_key,
+                azure_ad_token_provider=azure_ad_token_provider,
                 auth_context=auth_context,
                 jwt_config=jwt_config,
                 a2a_httpx_client=a2a_httpx_client,
@@ -199,9 +199,10 @@ async def build_executor_registry(
 
     for node in pool_nodes or []:
         synthetic_key = f"{POOL_KEY_PREFIX}{node.id}"
-        node_model = await resolve_model(
+        node_model = await _resolve_node_model(
+            node.name,
             node.model_source_id,
-            fallback_model=default_model,
+            default_model=default_model,
             encryption_key=encryption_key,
             azure_ad_token_provider=azure_ad_token_provider,
         )
@@ -219,10 +220,40 @@ async def build_executor_registry(
     return registry
 
 
+async def _resolve_node_model(
+    node_name: str,
+    model_source_id: str | None,
+    *,
+    default_model: Model | None,
+    encryption_key: bytes,
+    azure_ad_token_provider: AzureAdTokenProvider | None,
+) -> Model:
+    """Resolve a model only for executors that use a registry-side LLM."""
+    if model_source_id is not None:
+        try:
+            return await resolve_model(
+                model_source_id,
+                encryption_key=encryption_key,
+                azure_ad_token_provider=azure_ad_token_provider,
+            )
+        except WorkflowConfigError as exc:
+            raise WorkflowConfigError(f"Step '{node_name}': {exc}") from exc
+    if default_model is None:
+        raise WorkflowConfigError(
+            f"Step '{node_name}' needs a model, but no usable default workflow model is selected. "
+            "Select one on the Models page."
+        )
+    return default_model
+
+
 async def _resolve_executor(
     key: str,
     *,
-    llm: Model,
+    node_name: str,
+    model_source_id: str | None,
+    default_model: Model | None,
+    encryption_key: bytes,
+    azure_ad_token_provider: AzureAdTokenProvider | None,
     auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
     a2a_httpx_client: a2a_http.AsyncClient | None = None,
@@ -235,6 +266,7 @@ async def _resolve_executor(
 
     Raises:
         KeyError: When neither an active MCP server nor A2A agent matches ``key``.
+        WorkflowConfigError: When an MCP node has no usable model.
     """
     builtin = _builtin_executor(key)
     if builtin is not None:
@@ -249,7 +281,13 @@ async def _resolve_executor(
         logger.debug("executor_key %r → MCP server %r", key, mcp_server.serverName)
         return make_mcp_executor(
             mcp_server,
-            llm=llm,
+            llm=await _resolve_node_model(
+                node_name,
+                model_source_id,
+                default_model=default_model,
+                encryption_key=encryption_key,
+                azure_ad_token_provider=azure_ad_token_provider,
+            ),
             auth_context=auth_context,
             jwt_config=jwt_config,
             redis_client=redis_client,
