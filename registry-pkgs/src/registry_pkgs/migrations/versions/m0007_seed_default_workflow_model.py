@@ -53,7 +53,7 @@ async def up(db: AsyncDatabase) -> None:
             }
         )
         logger.info("Seeded workflow model: inserted=1 reused=0")
-    except DuplicateKeyError as exc:
+    except DuplicateKeyError:
         existing = await sources.find_one({"_id": MIGRATED_MODEL_SOURCE_ID})
         config = existing.get("providerConfig") if existing else None
         if (
@@ -65,19 +65,14 @@ async def up(db: AsyncDatabase) -> None:
             or not isinstance(config.get("baseModelId"), str)
             or not config["baseModelId"].strip()
         ):
-            raise ValueError(
-                "Cannot reuse migrated workflow model: fixed id is missing, unavailable or changed"
-            ) from exc
+            logger.error(
+                "Skipped workflow model selection: fixed id %s already exists in an unusable or modified state. "
+                "Select a default workflow model manually on the Models page.",
+                MIGRATED_MODEL_SOURCE_ID,
+            )
+            return
         logger.info("Seeded workflow model: inserted=0 reused=1")
         stored_base_model_id = config["baseModelId"]
-
-    if stored_base_model_id.startswith("arn:"):
-        logger.warning(
-            "Migrated workflow model needs its canonical baseModelId configured on the Models page. "
-            "Until corrected, metadata may be unavailable and SkillSpector may scan without an LLM "
-            "when it inherits this model. Set the real foundation model ID, or select a correctly "
-            "configured dedicated scan model, and verify an LLM-enabled scan before rollout completes."
-        )
 
     try:
         result = await selections.update_one(
@@ -97,3 +92,10 @@ async def up(db: AsyncDatabase) -> None:
         result.modified_count,
         result.upserted_id,
     )
+    if stored_base_model_id.startswith("arn:"):
+        logger.warning(
+            "Migrated workflow model needs its canonical baseModelId configured on the Models page. "
+            "Until corrected, metadata may be unavailable and SkillSpector may scan without an LLM "
+            "when it inherits this model. Set the real foundation model ID, or select a correctly "
+            "configured dedicated scan model, and verify an LLM-enabled scan before rollout completes."
+        )

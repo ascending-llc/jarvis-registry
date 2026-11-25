@@ -97,8 +97,13 @@ async def test_existing_selection_is_never_repaired(
     "change", [None, "metadata", "deleted", "mode", "identity", "region", "missing", "bad-config", "empty-base"]
 )
 async def test_duplicate_model_requires_matching_available_source(
-    store: dict[str, SimpleNamespace], monkeypatch: pytest.MonkeyPatch, change: str | None
+    store: dict[str, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    change: str | None,
 ) -> None:
+    import logging
+
     monkeypatch.setenv("AWS_WORKFLOW_LLM_MODEL", "model")
     await migration.up(store)
     doc = deepcopy(store["model_sources"].insert_one.await_args.args[0])
@@ -119,13 +124,17 @@ async def test_duplicate_model_requires_matching_available_source(
     store["model_sources"].insert_one.side_effect = DuplicateKeyError("duplicate")
     store["model_sources"].find_one.return_value = None if change == "missing" else doc
     store["model_gateway_selection"].update_one.reset_mock()
-    if change in [None, "metadata"]:
+    with caplog.at_level(logging.ERROR, logger=migration.__name__):
         await migration.up(store)
+    if change in [None, "metadata"]:
         store["model_gateway_selection"].update_one.assert_awaited_once()
+        assert not caplog.records
     else:
-        with pytest.raises(ValueError, match="Cannot reuse"):
-            await migration.up(store)
         store["model_gateway_selection"].update_one.assert_not_awaited()
+        assert any(
+            record.levelno == logging.ERROR and "unusable or modified state" in record.message
+            for record in caplog.records
+        )
 
 
 @pytest.mark.asyncio
@@ -188,3 +197,21 @@ async def test_aip_placeholder_warns_until_canonical_base_model_is_configured(
         assert "SkillSpector may scan without an LLM" in caplog.text
         assert "dedicated scan model" in caplog.text
     store["model_gateway_selection"].update_one.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_aip_placeholder_does_not_warn_when_concurrent_selection_wins(
+    store: dict[str, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test"
+    monkeypatch.setenv("AWS_BEDROCK_SONNET_AIP_ARN", arn)
+    store["model_gateway_selection"].find_one.side_effect = [None, {"defaultWorkflowModelSourceId": ObjectId()}]
+    store["model_gateway_selection"].update_one.side_effect = DuplicateKeyError("duplicate")
+    with caplog.at_level(logging.WARNING, logger=migration.__name__):
+        await migration.up(store)
+    assert "canonical baseModelId" not in caplog.text
+    assert "SkillSpector" not in caplog.text
