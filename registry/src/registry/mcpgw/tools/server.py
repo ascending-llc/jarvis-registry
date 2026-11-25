@@ -77,7 +77,7 @@ from ...utils.mcp_headers import build_authenticated_headers
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
 from ..tracing import trace_server_operation
-from .types import get_meta_field
+from .types import forwardable_meta, get_meta_field
 from .utils import (
     _build_url_elicitation_result,
     _extract_authenticated_user_context,
@@ -539,7 +539,11 @@ async def _execute_server_operation(
         # 6. Render native resource/prompt results inside the span. Already-built tool or gateway
         #    error results bypass renderers, which expect operation-specific native result fields.
         if isinstance(result, CallToolResult):
+            # Downstream tool results keep their content and non-reserved _meta; reserved keys describe the
+            # downstream connection, not this gateway response.
             rendered = result
+            if result.meta and len(meta := forwardable_meta(result.meta)) != len(result.meta):
+                rendered = result.model_copy(update={"meta": meta or None})
         elif isinstance(operation, ResourceRead) and isinstance(result, ReadResourceResult) and render is not None:
             # 6a. Overloads enforce the operation/renderer pairing at the call site; the union
             #     implementation needs an explicit narrowing for the corresponding callback.
@@ -641,7 +645,7 @@ def _render_resource_result(result: ReadResourceResult, server: ExtendedMCPServe
     content = [EmbeddedResource(type="resource", resource=item) for item in result.contents]
     return CallToolResult(
         content=content or [TextContent(type="text", text=_EMPTY_RESOURCE_MESSAGE)],
-        _meta={**(result.meta or {}), **get_meta_field(True, str(server.id), server.path)},
+        _meta={**forwardable_meta(result.meta), **get_meta_field(True, str(server.id), server.path)},
     )
 
 
@@ -663,7 +667,7 @@ def _render_prompt_result(result: GetPromptResult, server: ExtendedMCPServer, *,
         )
     return CallToolResult(
         content=content,
-        _meta={**(result.meta or {}), **get_meta_field(True, str(server.id), server.path)},
+        _meta={**forwardable_meta(result.meta), **get_meta_field(True, str(server.id), server.path)},
     )
 
 

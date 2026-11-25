@@ -891,10 +891,13 @@ async def test_resource_and_prompt_public_tools_reach_sdk_downstream(
                     result = message["result"]
                     assert not result.get("isError", False)
                     assert result.get("structuredContent") is None
-                    assert result["_meta"] == {
-                        **get_meta_field(True, SERVER_ID, "/github"),
-                        "io.modelcontextprotocol/serverInfo": {"name": "test-downstream", "version": ""},
-                    }
+                    # The downstream's serverInfo stamp is never forwarded: only a modern-era gateway response
+                    # carries one, and it is the gateway's own.
+                    meta = dict(result["_meta"])
+                    stamp = meta.pop("io.modelcontextprotocol/serverInfo", None)
+                    assert meta == get_meta_field(True, SERVER_ID, "/github")
+                    assert (stamp is not None) == (version == _MODERN_VERSION)
+                    assert stamp is None or stamp["name"] != "test-downstream"
                     if kind == "prompt":
                         assert result["content"] == [
                             {

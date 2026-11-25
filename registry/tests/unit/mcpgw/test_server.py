@@ -1938,3 +1938,68 @@ def test_prompt_metric_names_are_declared_in_config() -> None:
     config = yaml.safe_load((Path(__file__).resolve().parents[4] / "config/metrics/registry.yml").read_text())
     names = {item["name"] for section in ("counters", "histograms") for item in config[section]}
     assert {"mcp_prompt_get_total", "mcp_prompt_get_duration_seconds"} <= names
+
+
+@pytest.mark.parametrize(
+    ("key", "reserved"),
+    [
+        ("io.modelcontextprotocol/serverInfo", True),
+        ("io.modelcontextprotocol/related-task", True),
+        ("dev.mcp/anything", True),
+        ("org.modelcontextprotocol.api/x", True),
+        ("com.example.mcp/x", False),
+        ("com.ascendingdc.jarvis-registry/server_id", False),
+        ("plain", False),
+    ],
+)
+def test_reserved_meta_keys_follow_the_second_label_rule(key: str, reserved: bool) -> None:
+    from registry.mcpgw.tools.types import is_reserved_meta_key
+
+    assert is_reserved_meta_key(key) is reserved
+
+
+_DOWNSTREAM_META = {
+    "io.modelcontextprotocol/serverInfo": {"name": "downstream", "version": "1"},
+    "io.modelcontextprotocol/related-task": {"taskId": "t-1"},
+    "com.example/trace": "kept",
+}
+
+
+@pytest.mark.parametrize("kind", ["resource", "prompt"])
+def test_renderers_drop_reserved_downstream_meta(kind: str) -> None:
+    from mcp.types import GetPromptResult, ReadResourceResult
+
+    from registry.mcpgw.tools.types import get_meta_field
+
+    srv = _make_server()
+    if kind == "resource":
+        result = server._render_resource_result(ReadResourceResult(contents=[], _meta=_DOWNSTREAM_META), srv)
+    else:
+        result = server._render_prompt_result(
+            GetPromptResult(messages=[], _meta=_DOWNSTREAM_META), srv, prompt_name="p"
+        )
+    assert result.meta == {"com.example/trace": "kept", **get_meta_field(True, str(srv.id), srv.path)}
+
+
+@pytest.mark.parametrize(
+    ("meta", "expected"),
+    [
+        (_DOWNSTREAM_META, {"com.example/trace": "kept"}),
+        ({"io.modelcontextprotocol/serverInfo": {}}, None),
+        (None, None),
+    ],
+    ids=["mixed", "only-reserved", "none"],
+)
+async def test_execute_tool_drops_reserved_downstream_meta(monkeypatch, meta, expected) -> None:
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = True
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    downstream = CallToolResult(content=[TextContent(type="text", text="ok")], _meta=meta)
+    monkeypatch.setattr(server, "call_downstream", AsyncMock(return_value=downstream))
+
+    result = await execute_tool_impl(ctx, "tavily_search", {}, server_id)
+
+    assert result.content == downstream.content
+    assert result.meta == expected
