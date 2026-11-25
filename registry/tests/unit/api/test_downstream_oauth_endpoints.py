@@ -278,6 +278,7 @@ def test_authorize_without_client_consent_redirects_to_frontend(
     assert resp.headers["location"].startswith(f"{settings.registry_client_url}/consent/downstream?nonce=")
     assert len(pending_consent_store.pending) == 1
     pending = next(iter(pending_consent_store.pending.values()))
+    assert pending["consent_flow"] == "downstream"
     assert pending["user_id"] == USER_A
     assert pending["client_id"] == "claude"
     assert pending["server_path"] == "github"
@@ -567,14 +568,34 @@ def test_regular_downstream_approval_rejects_error_payload_without_consuming(
 @pytest.mark.parametrize(
     ("owner", "record"),
     [
-        pytest.param("downstream", _downstream_consent(), id="authorization-code"),
         pytest.param(
-            "downstream", {"flow_type": "device", "server_path": "github", "device_code": "device-1"}, id="device"
+            "downstream", {"consent_flow": "downstream", **_downstream_consent()}, id="tagged-authorization-code"
         ),
-        pytest.param("server", {"server_path": "/github"}, id="server"),
-        pytest.param("agent", {"agent_path": "/research"}, id="agent"),
-        pytest.param(None, {"flow_type": "unknown", "server_path": "/github"}, id="unknown"),
-        pytest.param(None, {"response_type": "code", "server_path": "github"}, id="incomplete-code"),
+        pytest.param(
+            "downstream",
+            {"consent_flow": "downstream", "flow_type": "device", "server_path": "github", "device_code": "device-1"},
+            id="tagged-device",
+        ),
+        # The tag wins over a record shape that the untagged fallback would reject.
+        pytest.param("server", {"consent_flow": "server", "server_path": "/github", "state": "s"}, id="tagged-server"),
+        pytest.param("agent", {"consent_flow": "agent", "agent_path": "/research", "state": "s"}, id="tagged-agent"),
+        pytest.param(None, {"consent_flow": "unknown", "server_path": "/github"}, id="unknown-tag"),
+        pytest.param(None, {"consent_flow": None, "server_path": "/github"}, id="null-tag"),
+        pytest.param("downstream", _downstream_consent(), id="untagged-authorization-code"),
+        pytest.param(
+            "downstream",
+            {"flow_type": "device", "server_path": "github", "device_code": "device-1"},
+            id="untagged-device",
+        ),
+        pytest.param("server", {"server_path": "/github"}, id="untagged-server"),
+        pytest.param("agent", {"agent_path": "/research"}, id="untagged-agent"),
+        pytest.param(None, {"flow_type": "unknown", "server_path": "/github"}, id="untagged-unknown-flow-type"),
+        pytest.param(None, {"response_type": "code", "server_path": "github"}, id="untagged-incomplete-code"),
+        pytest.param(
+            None,
+            {"flow_type": "device", "device_code": "device-1", "session_data": {"client_id": "claude"}},
+            id="auth-server-device",
+        ),
     ],
 )
 def test_pending_consent_is_visible_only_to_its_own_flow(
@@ -1379,6 +1400,7 @@ def test_device_authorization_creates_device_and_pending_consent(
     assert state["status"] == "pending"
     assert state["client_id"] == "claude"
     assert pending_consent_store.peek(state["nonce"]) == {
+        "consent_flow": "downstream",
         "flow_type": "device",
         "user_id": USER_A,
         "client_id": "claude",

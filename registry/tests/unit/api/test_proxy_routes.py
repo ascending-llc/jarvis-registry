@@ -431,6 +431,7 @@ async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeyp
     assert len(pending_store.pending) == 1
     pending = next(iter(pending_store.pending.values()))
     assert pending == {
+        "consent_flow": "server",
         "user_id": VALID_OBJECT_ID,
         "client_id": INTERACTIVE_CLIENT_ID,
         "server_path": "/github",

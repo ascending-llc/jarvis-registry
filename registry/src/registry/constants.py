@@ -14,6 +14,21 @@ OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too 
 OPENAPI_SESSION_COOKIE_SCHEME = "SessionCookie"
 MAX_CONSENT_REVOKE_BATCH = 100
 
+
+class PendingConsentFlow(StrEnum):
+    """The Registry consent page that may read a pending-consent record.
+
+    Registry and auth-server share the pending-consent store, and both use ``flow_type`` for their own purposes,
+    so Registry tags its records under the separate ``PENDING_CONSENT_FLOW_FIELD`` key.
+    """
+
+    DOWNSTREAM = "downstream"
+    SERVER = "server"
+    AGENT = "agent"
+
+
+PENDING_CONSENT_FLOW_FIELD = "consent_flow"
+
 # Inline skill supporting-file limits, shared by Registry's skill API and GitHub skill sync. Each SkillFile is
 # its own MongoDB document, so the single-file cap keeps one file inside the 16 MB document limit. The total cap
 # bounds a skill's whole payload: create_skill takes every file in one base64 JSON request, which must fit the

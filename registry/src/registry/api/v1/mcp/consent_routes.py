@@ -15,7 +15,7 @@ from registry_pkgs.core.scopes import get_scope_description
 from registry_pkgs.oauth.schemas import ConsentScopeDisplay, DownstreamConsentContext
 
 from ....auth.dependencies import CurrentUser
-from ....constants import DownstreamOAuthConstants
+from ....constants import PENDING_CONSENT_FLOW_FIELD, DownstreamOAuthConstants, PendingConsentFlow
 from ....core.config import settings
 from ....deps import (
     get_a2a_agent_service,
@@ -51,7 +51,6 @@ router = APIRouter(prefix="/mcp", tags=["mcp-consent"])
 _APP_REVOKED_DETAIL = "This app's access was revoked. Reconnect it from your AI app, then try again."
 _CONSENT_NOT_FOUND = "This consent link has expired."
 _CODE_FLOW_FIELDS = frozenset({"response_type", "redirect_uri", "code_challenge", "code_challenge_method", "state"})
-type _ConsentFlow = Literal["downstream", "server", "agent"]
 
 _APPROVAL_RESPONSES = {
     **CONSENT_WRITE_ERRORS,
@@ -61,24 +60,36 @@ _APPROVAL_RESPONSES = {
 }
 
 
-def _pending_consent_flow(pending: dict[str, Any]) -> _ConsentFlow | None:
-    """Recognize records written by Registry in the shared pending-consent store."""
+def _pending_consent_flow(pending: dict[str, Any]) -> PendingConsentFlow | None:
+    """Return the Registry consent page that owns a record from the shared pending-consent store."""
     if not pending.get("client_id"):
         return None
-    if "flow_type" in pending or "device_code" in pending:
-        if pending.get("flow_type") == "device" and "server_path" in pending and "device_code" in pending:
-            return "downstream"
+    if PENDING_CONSENT_FLOW_FIELD not in pending:
+        return _untagged_pending_consent_flow(pending)
+    try:
+        return PendingConsentFlow(pending[PENDING_CONSENT_FLOW_FIELD])
+    except ValueError:
         return None
 
-    # Resource and authorization-code records predate explicit flow tags.
+
+def _untagged_pending_consent_flow(pending: dict[str, Any]) -> PendingConsentFlow | None:
+    """Infer the page for a record saved before Registry tagged its records.
+
+    Remove once every untagged record has expired: one device-code TTL after the rollout that added the tag.
+    """
+    if "flow_type" in pending or "device_code" in pending:
+        # auth-server also writes flow_type "device" records, but never with a server_path.
+        if pending.get("flow_type") == "device" and "server_path" in pending and "device_code" in pending:
+            return PendingConsentFlow.DOWNSTREAM
+        return None
     if not _CODE_FLOW_FIELDS.isdisjoint(pending):
         if _CODE_FLOW_FIELDS.issubset(pending) and "server_path" in pending and "agent_path" not in pending:
-            return "downstream"
+            return PendingConsentFlow.DOWNSTREAM
         return None
     if "server_path" in pending and "agent_path" not in pending:
-        return "server"
+        return PendingConsentFlow.SERVER
     if "agent_path" in pending and "server_path" not in pending:
-        return "agent"
+        return PendingConsentFlow.AGENT
     return None
 
 
@@ -86,7 +97,7 @@ def _load_pending_consent(
     pending_store: PendingConsentStore,
     nonce: str,
     user_id: str | None,
-    flow: _ConsentFlow,
+    flow: PendingConsentFlow,
     *,
     consume: bool = False,
 ) -> dict[str, Any]:
@@ -150,7 +161,7 @@ async def get_downstream_consent_context(
 ) -> DownstreamConsentContext:
     try:
         pending = await asyncio.to_thread(
-            _load_pending_consent, pending_store, nonce, user_context["user_id"], "downstream"
+            _load_pending_consent, pending_store, nonce, user_context["user_id"], PendingConsentFlow.DOWNSTREAM
         )
 
         client_metadata = store.get_client(pending["client_id"]) or {}
@@ -187,7 +198,12 @@ async def approve_downstream_consent(
 ) -> dict[str, str]:
     try:
         pending = await asyncio.to_thread(
-            _load_pending_consent, pending_store, body.nonce, user_context["user_id"], "downstream", consume=True
+            _load_pending_consent,
+            pending_store,
+            body.nonce,
+            user_context["user_id"],
+            PendingConsentFlow.DOWNSTREAM,
+            consume=True,
         )
 
         if pending.get("flow_type") == "device":
@@ -266,7 +282,7 @@ async def get_server_consent_context(
 ) -> dict[str, str | int | None]:
     try:
         pending = await asyncio.to_thread(
-            _load_pending_consent, pending_store, nonce, user_context["user_id"], "server"
+            _load_pending_consent, pending_store, nonce, user_context["user_id"], PendingConsentFlow.SERVER
         )
 
         client_metadata = store.get_client(pending["client_id"]) or {}
@@ -287,7 +303,7 @@ async def get_server_consent_context(
 
 
 def _approve_resource_consent(
-    resource: Literal["server", "agent"],
+    resource: Literal[PendingConsentFlow.SERVER, PendingConsentFlow.AGENT],
     nonce: str,
     user_id: str | None,
     pending_store: PendingConsentStore,
@@ -298,7 +314,11 @@ def _approve_resource_consent(
         pending = _load_pending_consent(pending_store, nonce, user_id, resource, consume=True)
         client_id = pending["client_id"]
         category = resolve_client_category(client_id, settings.jwt_token_config)
-        grant = consent_store.grant_server_consent if resource == "server" else consent_store.grant_agent_consent
+        grant = (
+            consent_store.grant_server_consent
+            if resource == PendingConsentFlow.SERVER
+            else consent_store.grant_agent_consent
+        )
         if not grant(
             pending["user_id"], client_id, pending[path_field], require_app_consent=requires_app_consent(category)
         ):
@@ -320,7 +340,12 @@ async def approve_server_consent(
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
     return await asyncio.to_thread(
-        _approve_resource_consent, "server", body.nonce, user_context["user_id"], pending_store, consent_store
+        _approve_resource_consent,
+        PendingConsentFlow.SERVER,
+        body.nonce,
+        user_context["user_id"],
+        pending_store,
+        consent_store,
     )
 
 
@@ -333,7 +358,9 @@ async def get_agent_consent_context(
     agent_service: A2AAgentService = Depends(get_a2a_agent_service),
 ) -> dict[str, str | int | None]:
     try:
-        pending = await asyncio.to_thread(_load_pending_consent, pending_store, nonce, user_context["user_id"], "agent")
+        pending = await asyncio.to_thread(
+            _load_pending_consent, pending_store, nonce, user_context["user_id"], PendingConsentFlow.AGENT
+        )
 
         client_metadata = store.get_client(pending["client_id"]) or {}
         agent = await agent_service.get_agent_by_path(pending["agent_path"])
@@ -361,7 +388,12 @@ async def approve_agent_consent(
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
     return await asyncio.to_thread(
-        _approve_resource_consent, "agent", body.nonce, user_context["user_id"], pending_store, consent_store
+        _approve_resource_consent,
+        PendingConsentFlow.AGENT,
+        body.nonce,
+        user_context["user_id"],
+        pending_store,
+        consent_store,
     )
 
 
@@ -370,7 +402,7 @@ async def _deny_consent(
     user_context: CurrentUser,
     pending_store: PendingConsentStore,
     *,
-    flow: _ConsentFlow,
+    flow: PendingConsentFlow,
     store: DownstreamOAuthStoreProtocol | None = None,
 ) -> dict[str, str | None]:
     """Deny a request belonging to the signed-in user and this consent page.
@@ -406,7 +438,7 @@ async def deny_downstream_consent(
         body.nonce,
         user_context,
         pending_store,
-        flow="downstream",
+        flow=PendingConsentFlow.DOWNSTREAM,
         store=store,
     )
 
@@ -489,7 +521,7 @@ async def deny_server_consent(
     user_context: CurrentUser,
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
-    return await _deny_consent(body.nonce, user_context, pending_store, flow="server")
+    return await _deny_consent(body.nonce, user_context, pending_store, flow=PendingConsentFlow.SERVER)
 
 
 @router.post("/consent/agent/deny")
@@ -498,4 +530,4 @@ async def deny_agent_consent(
     user_context: CurrentUser,
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
-    return await _deny_consent(body.nonce, user_context, pending_store, flow="agent")
+    return await _deny_consent(body.nonce, user_context, pending_store, flow=PendingConsentFlow.AGENT)

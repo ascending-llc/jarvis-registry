@@ -52,7 +52,7 @@ from registry_pkgs.telemetry.trace_propagation import (
 )
 
 from ...auth.dependencies import UserContextDict
-from ...constants import UrlElicitationInputKey
+from ...constants import PENDING_CONSENT_FLOW_FIELD, PendingConsentFlow, UrlElicitationInputKey
 from ...core.config import settings
 from ...core.mcp_config import NETWORK_TRANSPORTS, MCPTransport
 from ...core.mcp_downstream import (
@@ -405,6 +405,7 @@ async def _authorize_server_call(
             lifespan.pending_consent_store.save,
             nonce,
             {
+                PENDING_CONSENT_FLOW_FIELD: PendingConsentFlow.SERVER,
                 "user_id": user_id,
                 "client_id": client_id,
                 "server_path": server.path,

@@ -205,6 +205,7 @@ async def test_execute_agent_without_agent_consent_returns_elicitation():
     )
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
+    assert pending["consent_flow"] == "agent"
     assert pending["agent_path"] == "/test-agent"
     assert pending["elicitation_id"]
 
