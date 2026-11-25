@@ -4,7 +4,7 @@ import logging
 import secrets
 from typing import Any
 
-import httpx
+import httpx2
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
@@ -20,7 +20,7 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 
-def _raise_for_token_endpoint_4xx(resp: httpx.Response) -> httpx.Response:
+def _raise_for_token_endpoint_4xx(resp: httpx2.Response) -> httpx2.Response:
     """Authlib compliance hook: turn a token-endpoint 4xx into OAuthTokenEndpointError with its error code."""
     if 400 <= resp.status_code < 500:
         error_code: str | None = None
@@ -326,7 +326,7 @@ class OAuthClient:
 
         Raises:
             ValueError: If registration_endpoint is not available
-            httpx.HTTPError: If registration request fails
+            httpx2.HTTPError: If registration request fails
         """
         if not metadata.registration_endpoint:
             raise ValueError(f"Server {server_url} does not support dynamic client registration")
@@ -347,7 +347,7 @@ class OAuthClient:
         logger.debug(f"[DCR] Client metadata: {client_metadata}")
 
         # Make registration request
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx2.AsyncClient(timeout=30.0) as client:
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
@@ -362,7 +362,7 @@ class OAuthClient:
             if not response.is_success:
                 error_detail = response.text
                 logger.error(f"[DCR] Registration failed: {response.status_code} - {error_detail}")
-                raise httpx.HTTPError(f"Client registration failed: {response.status_code} - {error_detail}")
+                raise httpx2.HTTPError(f"Client registration failed: {response.status_code} - {error_detail}")
 
         # Parse response
         registration_response = response.json()

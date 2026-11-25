@@ -5,17 +5,21 @@ Tests for registry-specific telemetry decorators that provide automatic
 metrics collection for API operations.
 """
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
+from registry.core.mcp_client import MCPServerData
 from registry.core.telemetry_decorators import (
     AuthMetricsContext,
-    PromptExecutionMetricsContext,
+    ExecutionMetricsContext,
+    PromptGetMetricsContext,
     ResourceAccessMetricsContext,
     ToolExecutionMetricsContext,
     track_registry_operation,
+    track_tool_discovery,
 )
+from registry.utils.otel_metrics import record_tool_execution
 
 # Module path for mocking domain functions
 DOMAIN_FUNCS_PATH = "registry.core.telemetry_decorators"
@@ -216,6 +220,39 @@ class TestToolExecutionMetricsContext:
             assert call_kwargs["success"] is False
             assert call_kwargs["error_type"] == "server_not_found"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal_state", ["input_required", "success", "failure", "exception"])
+    async def test_input_required_metric_status(
+        self, terminal_state: str, monkeypatch: pytest.MonkeyPatch, mock_telemetry_metrics: Mock
+    ) -> None:
+        """Exercise the real recorder: only an unfinished input round gets the third status."""
+        monkeypatch.setattr(f"{DOMAIN_FUNCS_PATH}._record_tool_execution", record_tool_execution)
+
+        async def execute() -> None:
+            async with ToolExecutionMetricsContext(tool_name="t", server_name="s") as ctx:
+                ctx.set_error_type("consent_required")
+                ctx.set_input_required()
+                if terminal_state == "exception":
+                    raise TimeoutError("failed after prompting")
+                if terminal_state in {"success", "failure"}:
+                    ctx.set_success(terminal_state == "success")
+
+        if terminal_state == "exception":
+            with pytest.raises(TimeoutError, match="failed after prompting"):
+                await execute()
+        else:
+            await execute()
+
+        expected = "failure" if terminal_state == "exception" else terminal_state
+        mock_telemetry_metrics.record_counter.assert_called_once()
+        name, count, attributes = mock_telemetry_metrics.record_counter.call_args.args
+        assert name == "mcp_tool_execution_total"
+        assert count == 1
+        assert attributes["status"] == expected
+        assert attributes["error_type"] == "consent_required"
+        mock_telemetry_metrics.record_histogram.assert_called_once()
+        assert mock_telemetry_metrics.record_histogram.call_args.args[2] == attributes
+
 
 @pytest.mark.unit
 @pytest.mark.metrics
@@ -254,14 +291,14 @@ class TestResourceAccessMetricsContext:
 
 @pytest.mark.unit
 @pytest.mark.metrics
-class TestPromptExecutionMetricsContext:
-    """Test suite for PromptExecutionMetricsContext context manager."""
+class TestPromptGetMetricsContext:
+    """Test suite for PromptGetMetricsContext context manager."""
 
     @pytest.mark.asyncio
     async def test_records_success(self):
         """Success path records prompt_name/server_name/status/error_type."""
-        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_execution") as mock_record:
-            async with PromptExecutionMetricsContext(prompt_name="summarize") as ctx:
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_get") as mock_record:
+            async with PromptGetMetricsContext(prompt_name="summarize") as ctx:
                 ctx.set_server_name("prompt-server")
                 ctx.set_success(True)
 
@@ -275,11 +312,66 @@ class TestPromptExecutionMetricsContext:
     @pytest.mark.asyncio
     async def test_handled_failure_sets_error_type(self):
         """A handled failure (no exception) records the explicit error_type."""
-        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_execution") as mock_record:
-            async with PromptExecutionMetricsContext(prompt_name="p") as ctx:
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_get") as mock_record:
+            async with PromptGetMetricsContext(prompt_name="p") as ctx:
                 ctx.set_error_type("server_not_found")
                 ctx.set_success(False)
 
             call_kwargs = mock_record.call_args[1]
             assert call_kwargs["success"] is False
             assert call_kwargs["error_type"] == "server_not_found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "success", "tools_count"),
+    [
+        (MCPServerData([{"name": "a"}, {"name": "b"}], [], [], {}, None), True, 2),
+        (MCPServerData(None, None, None, None, "boom"), False, 0),
+    ],
+)
+async def test_track_tool_discovery_reads_mcp_server_data(result, success, tools_count) -> None:
+    @track_tool_discovery
+    async def retrieve_from_server(self, server):
+        return result
+
+    server = Mock(serverName="srv", config={"type": "sse"})
+    with patch("registry.core.telemetry_decorators._record_tool_discovery") as record:
+        assert await retrieve_from_server(object(), server) is result
+
+    record.assert_called_once()
+    kwargs = record.call_args.kwargs
+    assert kwargs["server_name"] == "srv"
+    assert kwargs["transport_type"] == "sse"
+    assert kwargs["success"] is success
+    assert kwargs["tools_count"] == tools_count
+
+
+@pytest.mark.parametrize(
+    "context_type,record_name",
+    [
+        (ResourceAccessMetricsContext, "_record_resource_access"),
+        (PromptGetMetricsContext, "_record_prompt_get"),
+    ],
+)
+@pytest.mark.parametrize("raises", [False, True])
+async def test_non_tool_input_required_and_exception_override(
+    context_type: type[ExecutionMetricsContext], record_name: str, raises: bool
+) -> None:
+    with patch(f"{DOMAIN_FUNCS_PATH}.{record_name}") as record:
+        ctx = context_type()
+        if raises:
+            with pytest.raises(ValueError):
+                async with ctx:
+                    ctx.set_input_required()
+                    ctx.set_error_type("consent_required")
+                    raise ValueError("failed after pending input")
+        else:
+            async with ctx:
+                ctx.set_input_required()
+                ctx.set_error_type("consent_required")
+        assert record.call_args.kwargs["success"] is False
+        assert record.call_args.kwargs["error_type"] == "consent_required"
+        assert "input_required" not in record.call_args.kwargs
+        assert "resource_uri" not in record.call_args.kwargs
+        assert ctx._outcome.value == ("failure" if raises else "input_required")

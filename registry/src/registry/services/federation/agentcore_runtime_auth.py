@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from typing import Any
 
-import httpx
+import httpx2
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
@@ -20,15 +20,17 @@ logger = logging.getLogger(__name__)
 _JWT_EXPIRES_IN_SECONDS = 300
 
 
-class _SigV4HttpxAuth(httpx.Auth):
+class _SigV4Auth(httpx2.Auth):
+    """Sign AgentCore HTTP requests with SigV4."""
+
     requires_request_body = True
 
-    def __init__(self, service: str, region: str, credentials_provider: Callable[[], Any]):
+    def __init__(self, service: str, region: str, credentials_provider: Callable[[], Any]) -> None:
         self.service = service
         self.region = region
         self.credentials_provider = credentials_provider
 
-    def auth_flow(self, request: httpx.Request):
+    def auth_flow(self, request: httpx2.Request) -> Generator[httpx2.Request, httpx2.Response, None]:
         # HTTP fallback requests must be signed the same way as SDK runtime calls.
         credentials = self.credentials_provider()
         credentials = credentials.get_frozen_credentials()
@@ -64,7 +66,7 @@ class AgentCoreRuntimeAuthService:
         region: str,
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
-    ) -> tuple[dict[str, str], httpx.Auth | None]:
+    ) -> tuple[dict[str, str], httpx2.Auth | None]:
         # Runtime enrichment uses resource-local auth settings because an AWS
         # federation can contain a mix of IAM-backed and JWT-backed runtimes.
         discovered_mode, detection_reason = self._detect_agentcore_data_plane_auth_mode_with_reason(
@@ -199,7 +201,7 @@ class AgentCoreRuntimeAuthService:
         runtime_detail: dict[str, Any] | None,
         region: str,
         assume_role_arn: str | None,
-    ) -> tuple[dict[str, str], httpx.Auth | None]:
+    ) -> tuple[dict[str, str], httpx2.Auth | None]:
         runtime_arn = self._resolve_runtime_arn(metadata=metadata, runtime_detail=runtime_detail)
         resolved_region = region.strip()
         if runtime_arn:
@@ -218,11 +220,11 @@ class AgentCoreRuntimeAuthService:
         )
         if not credentials_provider:
             raise ValueError(f"Failed to initialize runtime credentials provider for region {resolved_region}")
-        return {}, _SigV4HttpxAuth("bedrock-agentcore", resolved_region, credentials_provider)
+        return {}, _SigV4Auth("bedrock-agentcore", resolved_region, credentials_provider)
 
     def _build_jwt_auth(
         self, *, runtime_access: AgentCoreRuntimeAccessConfig
-    ) -> tuple[dict[str, str], httpx.Auth | None]:
+    ) -> tuple[dict[str, str], httpx2.Auth | None]:
         jwt_config = runtime_access.jwt
 
         if jwt_config is None:

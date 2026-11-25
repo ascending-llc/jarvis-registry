@@ -38,6 +38,23 @@ async def test_get_agent_by_path_queries_exact_slug(monkeypatch):
     find_one.assert_awaited_once_with({"path": "team-a-crm-agent"})
 
 
+async def test_get_names_by_paths_uses_title_then_card_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = A2AAgentService(azure_client_cache=MagicMock())
+    collection = MagicMock()
+    monkeypatch.setattr(A2AAgent, "get_pymongo_collection", collection)
+    find = collection.return_value.find
+    find.return_value.__aiter__.return_value = [
+        {"path": "a", "config": {"title": "Custom title"}, "card": {"name": "Card A"}},
+        {"path": "b", "config": None, "card": {"name": "Card B"}},
+    ]
+    paths = {"a", "b", "deleted"}
+    assert await service.get_names_by_paths(set()) == {}
+    assert await service.get_names_by_paths(paths) == {"a": "Custom title", "b": "Card B"}
+    find.assert_called_once_with(
+        {"path": {"$in": list(paths)}}, {"_id": 0, "path": 1, "config.title": 1, "card.name": 1}
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_agent_by_path_does_not_normalize_invalid_slug(monkeypatch):
     service = A2AAgentService(azure_client_cache=MagicMock())

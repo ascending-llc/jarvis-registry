@@ -46,6 +46,7 @@ from registry_pkgs.models.federation_sync_job import (
     FederationDiscoverySummary,
     FederationSyncJob,
 )
+from registry_pkgs.models.mcp_resource_capture import RESOURCE_CAPTURE_KEY, resource_capture_revision
 
 from ..core.config import settings
 from ..utils.concurrency import run_bounded
@@ -71,6 +72,8 @@ logger = logging.getLogger(__name__)
 
 ACL_INHERITANCE_BATCH_SIZE = 500
 _STALE_PROTECTED_SKIP_REASONS = frozenset({"agent_fetch_failed", "detail_fetch_failed", "tag_fetch_failed"})
+# MCP capability listings that enrichment can leave out when one of them fails to list.
+_MCP_CAPTURED_LISTING_KEYS = ("resources", "resourceTemplates", "prompts")
 
 # Written to a job's error (and used to repair its federation) when a running job is interrupted by a
 # registry shutdown.
@@ -1822,7 +1825,18 @@ class FederationSyncService:
         existing.normalizedServerName = normalize_server_name(discovered.serverName)
         existing.path = discovered.path
         existing.tags = list(discovered.tags or [])
-        existing.config = dict(discovered.config or {})
+        previous = existing.config or {}
+        config = dict(discovered.config or {})
+        # Enrichment leaves out a listing that failed this time; keep the stored one rather than wiping it.
+        for key in _MCP_CAPTURED_LISTING_KEYS:
+            if key not in config and key in previous:
+                config[key] = previous[key]
+        if "resources" not in (discovered.config or {}) and RESOURCE_CAPTURE_KEY in previous:
+            config[RESOURCE_CAPTURE_KEY] = previous[RESOURCE_CAPTURE_KEY]
+        if "resources" in config and not resource_capture_revision(config):
+            config["resources"] = []
+            config.pop(RESOURCE_CAPTURE_KEY, None)
+        existing.config = config
         existing.numTools = discovered.numTools
         existing.federationMetadata = discovered.federationMetadata
 

@@ -52,7 +52,7 @@ Each scope maps to one or more API endpoints. `ScopePermissionMiddleware` compil
 | `agents-share` | Manage ACL on A2A agent resources |
 | `acl-read` | Search principals, read resource permissions |
 | `acl-write` | Update resource permissions |
-| `user-read` | Auth info, tokens, search, MCP connection/OAuth management |
+| `user-read` | Auth info, tokens, search, MCP connection/OAuth management, and [listing and revoking your app consents](consent-management-api.md) |
 | `system-ops` | Admin stats, token admin, AgentCore runtime sync |
 | `mcp-proxy-ops` | MCP proxy and session endpoints |
 

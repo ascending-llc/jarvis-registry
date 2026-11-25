@@ -1,4 +1,4 @@
-import httpx
+import httpx2
 from fastapi import Depends, Request
 from redis import Redis
 
@@ -13,12 +13,12 @@ from .container import RegistryContainer
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
 from .services.background_task_tracker import BackgroundTaskTracker
+from .services.consent_management_service import ConsentManagementService
 from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher
 from .services.embedding_reindex_job_service import EmbeddingReindexJobService
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
-from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
 from .services.group_service import GroupService
 from .services.model_gateway_selection_service import ModelGatewaySelectionService
@@ -46,10 +46,6 @@ def get_container(request: Request) -> RegistryContainer:
 
 def get_search_service(container: RegistryContainer = Depends(get_container)) -> SearchService:
     return container.search_service
-
-
-def get_federation_service(container: RegistryContainer = Depends(get_container)) -> FederationService:
-    return container.federation_service
 
 
 def get_user_service(container: RegistryContainer = Depends(get_container)) -> UserService:
@@ -102,7 +98,7 @@ def get_embedding_maintenance_watcher(
     return container.embedding_maintenance_watcher
 
 
-def get_mcp_proxy_client(container: RegistryContainer = Depends(get_container)) -> httpx.AsyncClient:
+def get_mcp_proxy_client(container: RegistryContainer = Depends(get_container)) -> httpx2.AsyncClient:
     return container.mcp_proxy_client
 
 
@@ -174,6 +170,10 @@ def get_oauth_state_store(container: RegistryContainer = Depends(get_container))
 
 def get_consent_store(container: RegistryContainer = Depends(get_container)) -> ConsentStore:
     return container.consent_store
+
+
+def get_consent_management_service(container: RegistryContainer = Depends(get_container)) -> ConsentManagementService:
+    return container.consent_management_service
 
 
 def get_pending_consent_store(container: RegistryContainer = Depends(get_container)) -> PendingConsentStore:

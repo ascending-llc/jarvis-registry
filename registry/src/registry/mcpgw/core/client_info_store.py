@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import Callable
 
+from bson import ObjectId
 from mcp.types import InitializeRequestParams
 from redis import Redis
 from redis.exceptions import RedisError
@@ -21,14 +22,23 @@ from registry_pkgs.core.client_categories import ClientCategory, resolve_client_
 from registry_pkgs.core.config import JwtTokenConfig
 from registry_pkgs.types import UserContextDict
 
+from .asgi import read_http_body
+
 logger = logging.getLogger(__name__)
 
 # 30 days. Refreshed on every `initialize`, so an actively-used client's entry never expires out from
 # under it; a client that stops connecting is reaped a month later.
 _CLIENT_INFO_TTL_SECONDS = 2592000
+_SCAN_COUNT = 1000
 
 # Only these fields drive URL-elicitation support and branding; store nothing else from `initialize`.
-_PERSISTED_FIELDS = {"clientInfo", "capabilities", "protocolVersion"}
+# v2 models use snake_case field names, so `include` keys are snake_case; `by_alias=True` on dump keeps
+# the stored JSON in the v1 camelCase shape, so v1-written entries still validate on load.
+_PERSISTED_FIELDS = {"client_info", "capabilities", "protocol_version"}
+
+
+def _client_key(prefix: str, user_id: str, client_id: str) -> str:
+    return f"{prefix}:mcpgw:client:{user_id}:{client_id}"
 
 
 def client_info_key(prefix: str, user_context: UserContextDict, jwt_config: JwtTokenConfig) -> str | None:
@@ -47,13 +57,14 @@ def client_info_key(prefix: str, user_context: UserContextDict, jwt_config: JwtT
     if not user_id or not client_id:
         return None
 
+    base_key = _client_key(prefix, user_id, client_id)
     if resolve_client_category(client_id, jwt_config) is ClientCategory.MCP_DCR:
-        return f"{prefix}:mcpgw:client:{user_id}:{client_id}"
+        return base_key
 
     jti = user_context.get("jti")
     if not jti:
         return None
-    return f"{prefix}:mcpgw:client:{user_id}:{client_id}:{jti}"
+    return f"{base_key}:{jti}"
 
 
 class ClientInfoStore:
@@ -70,7 +81,7 @@ class ClientInfoStore:
     def save(self, key: str, params: InitializeRequestParams) -> None:
         self._redis.set(
             key,
-            params.model_dump_json(include=_PERSISTED_FIELDS),
+            params.model_dump_json(include=_PERSISTED_FIELDS, by_alias=True),
             ex=_CLIENT_INFO_TTL_SECONDS,
         )
 
@@ -85,6 +96,32 @@ class ClientInfoStore:
         except RedisError:
             logger.warning("Failed to read cached client-info at key %s; treating as a miss.", key, exc_info=True)
             return None
+        return self._parse(key, raw)
+
+    def load_many_for_dcr(self, user_id: str, client_ids: list[str]) -> dict[str, InitializeRequestParams | None]:
+        """Read the user's MCP DCR cache entries in one round trip."""
+        if not client_ids:
+            return {}
+        keys = [_client_key(self._key_prefix, user_id, client_id) for client_id in client_ids]
+        values = self._redis.mget(keys)
+        return {client_id: self._parse(key, raw) for client_id, key, raw in zip(client_ids, keys, values, strict=True)}
+
+    def delete_for_clients(self, user_id: str, client_ids: set[str]) -> int:
+        """Remove matching clients' cache entries across all of the user's token IDs."""
+        if not ObjectId.is_valid(user_id):
+            raise ValueError("Invalid user ID")
+        if not client_ids:
+            return 0
+        prefix = _client_key(self._key_prefix, user_id, "")
+        with self._redis.pipeline(transaction=False) as pipe:
+            for key in self._redis.scan_iter(match=f"{prefix}*", count=_SCAN_COUNT):
+                client_id = key.removeprefix(prefix).partition(":")[0]
+                if client_id in client_ids:
+                    pipe.delete(key)
+            return sum(pipe.execute())
+
+    @staticmethod
+    def _parse(key: str, raw: str | bytes | None) -> InitializeRequestParams | None:
         if raw is None:
             return None
         try:
@@ -115,7 +152,7 @@ class ClientInfoCaptureMiddleware:
             await self._app(scope, receive, send)
             return
 
-        body = await _read_body(receive)
+        body = await read_http_body(receive)
         if body is None:
             return
 
@@ -157,20 +194,6 @@ class ClientInfoCaptureMiddleware:
             store.save(key, params)
         except RedisError:
             logger.warning("Failed to persist client-info to Redis; proceeding.", exc_info=True)
-
-
-async def _read_body(receive: Receive) -> bytes | None:
-    chunks: list[bytes] = []
-    more_body = True
-    while more_body:
-        message = await receive()
-        if message["type"] != "http.request":
-            # A disconnect before the final body chunk means the request is incomplete. Do not
-            # replay a valid-looking prefix to the MCP app as a complete request.
-            return None
-        chunks.append(message.get("body", b""))
-        more_body = message.get("more_body", False)
-    return b"".join(chunks)
 
 
 def _replay(body: bytes, original_receive: Receive) -> Receive:

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
 from langchain_core.documents import Document
 
+from ...core.exceptions import EmbeddingReindexInProgressException
 from ...models import ExtendedMCPServer
 from ...models.federation_metadata import extract_runtime_version
 from ..base_sync_repository import BaseVectorSyncRepository
@@ -34,11 +36,50 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         # property was auto-inferred as `object` must be dropped + recreated
         # (`vector_sync.py --target mcp --clean`) for new inserts to succeed.
         "input_schema": "text",
+        # Declared explicitly so resource template documents don't depend on Weaviate auto-schema.
+        "resource_uri_template": "text",
+        "resource_kind": "text",
+        "resource_capture_revision": "text",
     }
 
     def __init__(self, db_client: DatabaseClient):
         super().__init__(db_client, ExtendedMCPServer)
+        self._resource_visibility_target: tuple[Any, str] | None = None
+        self._resource_visibility_lock = asyncio.Lock()
         logger.info("MCPServerRepository initialized")
+
+    async def prepare_resource_visibility(self) -> bool:
+        """Make the visibility columns filterable on the current search generation; return whether they are.
+
+        Existing columns are confirmed on the read adapter, so a prepared generation never needs the
+        reindex-gated write adapter. Only missing columns are added; while a reindex blocks that, return False
+        so callers fail closed on resources instead of failing the whole search. Only success is cached, per
+        generation, and the target is rechecked after waiting for the lock.
+        """
+        async with self._resource_visibility_lock:
+            adapter, collection = self._search_target()
+            if self._resource_visibility_target == (adapter, collection):
+                return True
+            fields = {"resource_kind": "text", "resource_capture_revision": "text"}
+
+            def prepare() -> bool:
+                if all(adapter.has_property(collection, name) for name in fields):
+                    return True
+                try:
+                    writer = self._write_adapter
+                except EmbeddingReindexInProgressException:
+                    logger.warning("Resource visibility columns missing on %s during a reindex", collection)
+                    return False
+                writer.ensure_filterable_properties(collection, fields)
+                # The backend logs schema-addition failures, so verify before caching success.
+                if not all(writer.has_property(collection, name) for name in fields):
+                    raise RuntimeError("Resource visibility schema is unavailable")
+                return True
+
+            ready = await asyncio.to_thread(prepare)
+            if ready:
+                self._resource_visibility_target = (adapter, collection)
+            return ready
 
     async def sync_to_vector_db(
         self,

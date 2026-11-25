@@ -1,14 +1,59 @@
+from collections.abc import AsyncIterator
+from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bson import ObjectId
 
 from registry.services.search.external_service import ExternalVectorSearchService
 from registry_pkgs.models.enums import MCPEntityType
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.mcp_resource_capture import (
+    RESOURCE_CAPTURE_KEY,
+    RESOURCE_CAPTURE_REVISION,
+    create_resource_capture,
+)
+from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
+
+
+@contextmanager
+def _current_auth(servers: list[dict]):
+    """Patch the read-time auth lookup that guards concrete resource documents."""
+
+    for server in servers:
+        config = server["config"]
+        config["resources"] = [{"uri": "shared://fixture"}]
+        proof = create_resource_capture(config, config["resources"])
+        if proof:
+            proof["revision"] = "fixture-capture"
+        config[RESOURCE_CAPTURE_KEY] = proof
+
+    async def cursor() -> AsyncIterator[dict]:
+        for server in servers:
+            yield server
+
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+    collection.find.side_effect = lambda *_: cursor()
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection", return_value=collection):
+        yield collection
+
+
+@pytest.fixture(autouse=True)
+def _empty_resource_capture_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def cursor():
+        for item in ():
+            yield item
+
+    collection = MagicMock()
+    collection.with_options.return_value = collection
+    collection.find.side_effect = lambda *args, **kwargs: cursor()
+    monkeypatch.setattr(ExtendedMCPServer, "get_pymongo_collection", lambda: collection)
 
 
 def _service() -> ExternalVectorSearchService:
-    return ExternalVectorSearchService(mcp_server_repo=MagicMock())
+    return ExternalVectorSearchService(mcp_server_repo=MagicMock(spec=MCPServerRepository, db_client=MagicMock()))
 
 
 def _tool_doc(*, server_id, server_name, path, tool_name, score, enabled=True, tags=None, desc="a tool"):
@@ -39,6 +84,8 @@ def _resource_doc(*, server_id, server_name, path, resource_name, score, desc="a
         "description": desc,
         "match_context": desc[:200],
         "resource_name": resource_name,
+        RESOURCE_CAPTURE_REVISION: "fixture-capture",
+        "resource_kind": "concrete",
     }
 
 
@@ -58,7 +105,7 @@ def _prompt_doc(*, server_id, server_name, path, prompt_name, score, desc="a pro
 
 
 def _service_returning(docs: list[dict]) -> ExternalVectorSearchService:
-    repo = MagicMock()
+    repo = MagicMock(spec=MCPServerRepository, db_client=MagicMock())
     repo.asearch_with_rerank = AsyncMock(return_value=docs)
     return ExternalVectorSearchService(mcp_server_repo=repo)
 
@@ -159,9 +206,10 @@ async def test_search_mixed_respects_entity_filter_server_only():
 
 
 async def test_search_mixed_server_search_includes_resource_and_prompt_docs():
+    shared_id = ObjectId()
     docs = [
         _resource_doc(
-            server_id="s1",
+            server_id=str(shared_id),
             server_name="Docs",
             path="/docs",
             resource_name="manual",
@@ -179,7 +227,8 @@ async def test_search_mixed_server_search_includes_resource_and_prompt_docs():
     ]
     service = _service_returning(docs)
 
-    result = await service.search_mixed(query="manual", entity_types=["mcp_server"], max_results=10)
+    with _current_auth([{"_id": shared_id, "config": {"apiKey": {"key": "k"}}}]):
+        result = await service.search_mixed(query="manual", entity_types=["mcp_server"], max_results=10)
 
     servers = {s["server_name"]: s for s in result["servers"]}
     assert set(servers) == {"Docs", "Writer"}
@@ -189,7 +238,7 @@ async def test_search_mixed_server_search_includes_resource_and_prompt_docs():
 
 
 async def test_search_mixed_tool_only_filters_out_resource_and_prompt_docs():
-    repo = MagicMock()
+    repo = MagicMock(spec=MCPServerRepository, db_client=MagicMock())
     repo.asearch_with_rerank = AsyncMock(return_value=[])
     service = ExternalVectorSearchService(mcp_server_repo=repo)
 
@@ -201,13 +250,15 @@ async def test_search_mixed_tool_only_filters_out_resource_and_prompt_docs():
 
 
 async def test_search_mixed_combined_search_returns_resource_backed_server_but_only_tool_results():
+    server_id = str(ObjectId())
     docs = [
-        _resource_doc(server_id="s1", server_name="Docs", path="/docs", resource_name="manual", score=0.95),
-        _tool_doc(server_id="s1", server_name="Docs", path="/docs", tool_name="search", score=0.5),
+        _resource_doc(server_id=server_id, server_name="Docs", path="/docs", resource_name="manual", score=0.95),
+        _tool_doc(server_id=server_id, server_name="Docs", path="/docs", tool_name="search", score=0.5),
     ]
     service = _service_returning(docs)
 
-    result = await service.search_mixed(query="docs", entity_types=["mcp_server", "tool"], max_results=10)
+    with _current_auth([{"_id": ObjectId(server_id), "config": {}}]):
+        result = await service.search_mixed(query="docs", entity_types=["mcp_server", "tool"], max_results=10)
 
     assert len(result["servers"]) == 1
     assert result["servers"][0]["server_name"] == "Docs"
@@ -251,7 +302,7 @@ async def test_search_mixed_limits_matching_tools_per_server():
 
 
 async def test_search_mixed_uses_regular_search_when_rerank_disabled():
-    repo = MagicMock()
+    repo = MagicMock(spec=MCPServerRepository, db_client=MagicMock())
     repo.asearch = AsyncMock(
         return_value=[_tool_doc(server_id="s1", server_name="Email", path="/email", tool_name="send", score=0.9)]
     )
@@ -266,7 +317,7 @@ async def test_search_mixed_uses_regular_search_when_rerank_disabled():
 
 
 async def test_search_mixed_swallows_runtime_repo_errors():
-    repo = MagicMock()
+    repo = MagicMock(spec=MCPServerRepository, db_client=MagicMock())
     repo.asearch_with_rerank = AsyncMock(side_effect=RuntimeError("weaviate down"))
     service = ExternalVectorSearchService(mcp_server_repo=repo)
 
@@ -280,3 +331,100 @@ async def test_search_mixed_does_not_swallow_mapping_errors():
 
     with pytest.raises(AttributeError):
         await service.search_mixed(query="x", entity_types=["mcp_server", "tool"], max_results=10)
+
+
+async def test_search_mixed_never_builds_results_from_stale_oauth_resources():
+    oauth_id, shared_id = ObjectId(), ObjectId()
+    docs = [
+        # The OAuth server's best match is a stale resource naming another user's file.
+        _resource_doc(
+            server_id=str(oauth_id),
+            server_name="Drive",
+            path="/drive",
+            resource_name="salary",
+            score=0.9,
+            desc="Drive | URI: gdrive:///alice/salary.xlsx",
+        ),
+        _tool_doc(server_id=str(oauth_id), server_name="Drive", path="/drive", tool_name="search", score=0.4),
+        _resource_doc(
+            server_id=str(shared_id),
+            server_name="Docs",
+            path="/docs",
+            resource_name="manual",
+            score=0.8,
+            desc="Docs | URI: file:///manual.md",
+        ),
+    ]
+    service = _service_returning(docs)
+
+    with _current_auth(
+        [{"_id": oauth_id, "config": {"requiresOAuth": True}}, {"_id": shared_id, "config": {"apiKey": {"key": "k"}}}]
+    ):
+        result = await service.search_mixed(query="file", entity_types=["mcp_server", "tool"], max_results=10)
+
+    assert "salary" not in str(result)
+    servers = {s["server_name"]: s for s in result["servers"]}
+    # The OAuth server is still found through its tool; its description no longer comes from the resource.
+    assert set(servers) == {"Drive", "Docs"}
+    assert servers["Docs"]["match_context"] == "Docs | URI: file:///manual.md"
+    assert [t["tool_name"] for t in result["tools"]] == ["search"]
+
+
+@pytest.mark.parametrize("rerank", [True, False])
+async def test_mixed_search_filters_private_candidates_before_ranking(rerank: bool) -> None:
+    from tests.unit.services.search.test_service import _matches_visibility
+
+    server_id = str(ObjectId())
+    private = _resource_doc(
+        server_id=server_id, server_name="Private", path="/private", resource_name="salary", score=1.0
+    )
+    template = {
+        "server_id": server_id,
+        "server_name": "Templates",
+        "path": "/templates",
+        "entity_type": MCPEntityType.RESOURCE,
+        "resource_uri_template": "files://{id}",
+        "resource_kind": "template",
+        "description": "safe template",
+        "relevance_score": 0.8,
+    }
+
+    async def search(**kwargs):
+        candidates = [doc for doc in [private, template] if _matches_visibility(doc, kwargs["filters"])]
+        assert candidates == [template]
+        return candidates[: kwargs["k"]]
+
+    repo = MagicMock(spec=MCPServerRepository, db_client=MagicMock())
+    repo.asearch = AsyncMock(side_effect=search)
+    repo.asearch_with_rerank = AsyncMock(side_effect=search)
+    service = ExternalVectorSearchService(mcp_server_repo=repo, enable_rerank=rerank)
+    result = await service.search_mixed(query="files", entity_types=["mcp_server"], max_results=1)
+    assert [server["server_name"] for server in result["servers"]] == ["Templates"]
+    repo.prepare_resource_visibility.assert_awaited_once()
+
+
+async def test_mixed_search_hides_resources_when_visibility_unprepared() -> None:
+    from tests.unit.services.search.test_service import _matches_visibility
+
+    server_id = str(ObjectId())
+    tool = {
+        "server_id": server_id,
+        "server_name": "Docs",
+        "path": "/docs",
+        "entity_type": MCPEntityType.TOOL,
+        "tool_name": "search",
+        "description": "search docs",
+        "relevance_score": 0.5,
+    }
+    legacy = _resource_doc(server_id=server_id, server_name="Docs", path="/docs", resource_name="salary", score=1.0)
+
+    async def search(**kwargs):
+        return [doc for doc in [legacy, tool] if _matches_visibility(doc, kwargs["filters"])]
+
+    repo = MagicMock(spec=MCPServerRepository, db_client=MagicMock())
+    repo.prepare_resource_visibility = AsyncMock(return_value=False)
+    repo.asearch = AsyncMock(side_effect=search)
+    service = ExternalVectorSearchService(mcp_server_repo=repo, enable_rerank=False)
+    result = await service.search_mixed(query="docs", entity_types=["mcp_server", "tool"], max_results=5)
+    assert "salary" not in str(result)
+    assert [t["tool_name"] for t in result["tools"]] == ["search"]

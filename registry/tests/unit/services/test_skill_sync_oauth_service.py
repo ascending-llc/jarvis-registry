@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from beanie import PydanticObjectId
-from httpx import Response
+from httpx2 import Response
 from redis import Redis
 from redis.exceptions import RedisError
 

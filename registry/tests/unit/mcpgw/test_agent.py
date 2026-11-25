@@ -17,8 +17,19 @@ from a2a.types import (
     TextPart,
 )
 from beanie import PydanticObjectId
-from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent, TextResourceContents
+from mcp.types import (
+    BlobResourceContents,
+    ClientCapabilities,
+    ElicitationCapability,
+    EmbeddedResource,
+    ImageContent,
+    InputRequiredResult,
+    TextContent,
+    TextResourceContents,
+    UrlElicitationCapability,
+)
 
+from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.mcpgw.tools import agent, utils
 from registry.mcpgw.tools.agent import AgentMessageInput, _convert_response, execute_agent_impl
@@ -123,7 +134,7 @@ async def test_execute_agent_invalid_id_returns_error():
     ctx = _make_ctx()
     result = await execute_agent_impl("not-a-valid-objectid", _msg("hello"), ctx)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert len(result.content) == 1
     assert "Invalid agent_id" in result.content[0].text
 
@@ -141,7 +152,7 @@ async def test_execute_agent_not_found_returns_error():
 
         result = await execute_agent_impl(valid_id, _msg("hello"), ctx)
 
-    assert result.isError is True
+    assert result.is_error is True
     text = result.content[0].text
     assert "not found" in text
     assert "not enabled" in text
@@ -163,7 +174,7 @@ async def test_execute_agent_happy_path_returns_text():
 
         result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
-    assert result.isError is not True
+    assert result.is_error is not True
     assert any(isinstance(c, TextContent) and "Agent response text" in c.text for c in result.content)
 
 
@@ -183,7 +194,7 @@ async def test_execute_agent_without_agent_consent_returns_elicitation():
 
         result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "explicit consent" in result.content[0].text
     assert "/consent/agent?nonce=" in result.content[0].text
     mock_call.assert_not_awaited()
@@ -194,8 +205,39 @@ async def test_execute_agent_without_agent_consent_returns_elicitation():
     )
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
+    assert pending["consent_flow"] == "agent"
     assert pending["agent_path"] == "/test-agent"
     assert pending["elicitation_id"]
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_without_consent_modern_returns_input_required():
+    """On 2026-07-28 a consent-gated agent call delivers the URL elicitation as an input_required result,
+    not a -32042 error. The pending-consent nonce is still saved so the browser flow can complete."""
+    valid_id = str(PydanticObjectId())
+    ctx = _make_ctx(client_id=INTERACTIVE_CLIENT_ID, accessible_agent_ids=[valid_id])
+    ctx.request_context.lifespan_context.consent_store.has_agent_consent.return_value = False
+    ctx.protocol_version = "2026-07-28"
+    ctx.client_capabilities = ClientCapabilities(elicitation=ElicitationCapability(url=UrlElicitationCapability()))
+    ctx.input_responses = None
+    target_agent = _make_agent(valid_id)
+
+    with (
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
+    ):
+        mock_model.id = MagicMock()
+        mock_model.find_one = AsyncMock(return_value=target_agent)
+
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
+
+    assert isinstance(result, InputRequiredResult)
+    params = result.input_requests[UrlElicitationInputKey.CONSENT].params
+    assert params.mode == "url"
+    assert "/consent/agent?nonce=" in params.url
+    assert result.request_state is None
+    mock_call.assert_not_awaited()
+    ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -217,7 +259,7 @@ async def test_execute_agent_without_consent_raises_url_elicitation_for_capable_
             await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
     mock_call.assert_not_awaited()
-    raised_elicitation_id = exc_info.value.elicitations[0].elicitationId
+    raised_elicitation_id = exc_info.value.elicitations[0].elicitation_id
     assert raised_elicitation_id
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["elicitation_id"] == raised_elicitation_id
@@ -289,7 +331,7 @@ async def test_execute_agent_denied_when_agent_not_in_user_acl():
         mock_model.find_one = AsyncMock(return_value=agent)
         result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Access denied" in result.content[0].text
     mock_call.assert_not_awaited()  # call_a2a must NOT be invoked when ACL denies
 
@@ -309,7 +351,7 @@ async def test_execute_agent_rejects_missing_user_context():
         mock_model.find_one = AsyncMock(return_value=agent)
         result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "Authentication required" in result.content[0].text
     mock_call.assert_not_awaited()
 
@@ -317,9 +359,9 @@ async def test_execute_agent_rejects_missing_user_context():
 @pytest.mark.asyncio
 async def test_execute_agent_resolves_registry_client_before_call_a2a():
     """The McpAppContext registry must provide the client passed to call_a2a."""
-    import httpx
+    from registry_pkgs.core import a2a_http
 
-    shared = httpx.AsyncClient()
+    shared = a2a_http.AsyncClient()
     try:
         a2a_client_registry = SimpleNamespace(get_client=AsyncMock(return_value=shared))
         ctx = _make_ctx(a2a_client_registry=a2a_client_registry)
@@ -361,7 +403,7 @@ async def test_execute_agent_a2a_failure_returns_error():
 
         result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "connection refused" in result.content[0].text
 
 
@@ -386,7 +428,7 @@ async def test_execute_agent_a2a_failure_surfaces_status_message_detail():
 
         result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert reason in result.content[0].text
 
 
@@ -439,7 +481,7 @@ def test_convert_response_task_file_with_bytes():
     resource = items[0].resource
     assert isinstance(resource, BlobResourceContents)
     assert resource.blob == b64_data
-    assert resource.mimeType == "application/pdf"
+    assert resource.mime_type == "application/pdf"
     assert "urn:a2a:file:" in str(resource.uri)
 
 
@@ -456,7 +498,7 @@ def test_convert_response_task_image_file_with_bytes():
     assert len(items) == 1
     assert isinstance(items[0], ImageContent)
     assert items[0].data == b64_data
-    assert items[0].mimeType == "image/png"
+    assert items[0].mime_type == "image/png"
 
 
 def test_convert_response_message_image_file_with_bytes():
@@ -473,7 +515,7 @@ def test_convert_response_message_image_file_with_bytes():
     assert len(items) == 1
     assert isinstance(items[0], ImageContent)
     assert items[0].data == b64_data
-    assert items[0].mimeType == "image/png"
+    assert items[0].mime_type == "image/png"
 
 
 def test_convert_response_image_mimetype_case_and_params_normalized():
@@ -488,7 +530,7 @@ def test_convert_response_image_mimetype_case_and_params_normalized():
     items = _convert_response(_result_with_task(artifact))
     assert len(items) == 1
     assert isinstance(items[0], ImageContent)
-    assert items[0].mimeType == declared
+    assert items[0].mime_type == declared
 
 
 def test_convert_response_task_file_with_uri():
@@ -627,7 +669,7 @@ async def test_execute_agent_iam_unsupported_returns_error():
 
         result = await execute_agent_impl(valid_id, _msg("hello"), ctx)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "IAM" in result.content[0].text
 
 

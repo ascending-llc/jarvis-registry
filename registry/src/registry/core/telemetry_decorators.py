@@ -17,11 +17,12 @@ from typing import (
     TypeVar,
 )
 
+from ..constants import ExecutionOutcome
 from ..utils.otel_metrics import (
     record_auth_request as _record_auth_request,
 )
 from ..utils.otel_metrics import (
-    record_prompt_execution as _record_prompt_execution,
+    record_prompt_get as _record_prompt_get,
 )
 from ..utils.otel_metrics import (
     record_registry_operation as _record_registry_operation,
@@ -114,17 +115,17 @@ def track_tool_discovery[F: Callable[..., Any]](func: F) -> F:
     Decorator to automatically track tool discovery metrics.
 
     Extracts server_name and transport_type from server argument,
-    and tools_count/success from result tuple.
+    and tools_count/success from the result's ``tools`` / ``error_message`` attributes.
 
     Expected function signature:
-        async def retrieve_from_server(self, server, ...) -> Tuple[tools, resources, prompts, caps, error]
+        async def retrieve_from_server(self, server, ...) -> MCPServerData
 
-    Success is determined by: error (last element) is None
-    Tools count is determined by: len(tools) if tools is not None
+    Success is determined by: result.error_message is None
+    Tools count is determined by: len(result.tools) if tools is not None
 
     Example:
         @track_tool_discovery
-        async def retrieve_from_server(self, server: ExtendedMCPServer, ...) -> Tuple[...]:
+        async def retrieve_from_server(self, server: ExtendedMCPServer, ...) -> MCPServerData:
             ...
     """
 
@@ -150,10 +151,10 @@ def track_tool_discovery[F: Callable[..., Any]](func: F) -> F:
             # Execute business logic
             result = await func(*args, **kwargs)
 
-            # Result is expected to be a tuple: (tools, resources, prompts, capabilities, error)
-            if isinstance(result, tuple) and len(result) >= 5:
-                tools, _resources, _prompts, _capabilities, error = result
-                success = error is None
+            # Read by attribute (duck-typed MCPServerData) so core doesn't import the MCP client module.
+            if hasattr(result, "error_message"):
+                success = result.error_message is None
+                tools = getattr(result, "tools", None)
                 if tools is not None:
                     tools_count = len(tools)
 
@@ -242,7 +243,7 @@ class AuthMetricsContext:
             logger.warning(f"Failed to record auth metric: {e}")
 
 
-class _ExecutionMetricsContext:
+class ExecutionMetricsContext:
     """
     Base async context manager for MCP execution metrics (tool/resource/prompt).
 
@@ -258,12 +259,15 @@ class _ExecutionMetricsContext:
       set_success(False) and may set_error_type("server_not_found") for the failure mode.
     - Raised exception: __aexit__ forces success=False and sets error_type to the
       exception class name unless the caller already set one.
+    - Pending client input: set_input_required() marks a pending outcome. Tools record
+      status=input_required; resource/prompt metrics retain success=False. A subsequent
+      exception always overrides the pending outcome with failure.
     """
 
     def __init__(self, server_name: str = "unknown") -> None:
         self._start_time: float = 0
         self._server_name: str = server_name
-        self._success: bool = False
+        self._outcome = ExecutionOutcome.FAILURE
         self._error_type: str = "none"
         self._error_type_set: bool = False
 
@@ -273,7 +277,11 @@ class _ExecutionMetricsContext:
 
     def set_success(self, success: bool) -> None:
         """Set the success status."""
-        self._success = success
+        self._outcome = ExecutionOutcome.SUCCESS if success else ExecutionOutcome.FAILURE
+
+    def set_input_required(self) -> None:
+        """Mark a pending client-input round; subclasses choose its metric representation."""
+        self._outcome = ExecutionOutcome.INPUT_REQUIRED
 
     def set_error_type(self, error_type: str) -> None:
         """Set a bounded, low-cardinality failure-mode label."""
@@ -291,7 +299,7 @@ class _ExecutionMetricsContext:
         exc_tb: Any,
     ) -> None:
         if exc_type is not None:
-            self._success = False
+            self._outcome = ExecutionOutcome.FAILURE
             if not self._error_type_set:
                 self._error_type = exc_type.__name__
 
@@ -307,7 +315,7 @@ class _ExecutionMetricsContext:
         raise NotImplementedError
 
 
-class ToolExecutionMetricsContext(_ExecutionMetricsContext):
+class ToolExecutionMetricsContext(ExecutionMetricsContext):
     """
     Context manager for tracking tool execution with dynamic info.
 
@@ -318,7 +326,7 @@ class ToolExecutionMetricsContext(_ExecutionMetricsContext):
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
             result = await proxy_tool_call(...)
-            ctx.set_success(not result.isError)
+            ctx.set_success(not result.is_error)
             return result
     """
 
@@ -344,14 +352,15 @@ class ToolExecutionMetricsContext(_ExecutionMetricsContext):
         _record_tool_execution(
             tool_name=self._tool_name,
             server_name=self._server_name,
-            success=self._success,
+            success=self._outcome is ExecutionOutcome.SUCCESS,
             duration_seconds=duration,
             method=self._method,
             error_type=self._error_type,
+            input_required=self._outcome is ExecutionOutcome.INPUT_REQUIRED,
         )
 
 
-class ResourceAccessMetricsContext(_ExecutionMetricsContext):
+class ResourceAccessMetricsContext(ExecutionMetricsContext):
     """
     Context manager for tracking resource access with dynamic info.
 
@@ -362,29 +371,29 @@ class ResourceAccessMetricsContext(_ExecutionMetricsContext):
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
             result = await read_resource(...)
-            ctx.set_success(not result.isError)
+            ctx.set_success(not result.is_error)
             return result
     """
 
     def _record(self, duration: float) -> None:
         _record_resource_access(
             server_name=self._server_name,
-            success=self._success,
+            success=self._outcome is ExecutionOutcome.SUCCESS,
             duration_seconds=duration,
             error_type=self._error_type,
         )
 
 
-class PromptExecutionMetricsContext(_ExecutionMetricsContext):
+class PromptGetMetricsContext(ExecutionMetricsContext):
     """
-    Context manager for tracking prompt execution with dynamic info.
+    Context manager for tracking prompt retrieval with dynamic info.
 
     Example:
-        async with PromptExecutionMetricsContext(prompt_name=prompt_name) as ctx:
+        async with PromptGetMetricsContext(prompt_name=prompt_name) as ctx:
             server = await get_server_by_id(server_id)
             ctx.set_server_name(server.serverName)
-            result = await execute_prompt(...)
-            ctx.set_success(not result.isError)
+            result = await get_prompt(...)
+            ctx.set_success(not result.is_error)
             return result
     """
 
@@ -401,10 +410,10 @@ class PromptExecutionMetricsContext(_ExecutionMetricsContext):
         self._prompt_name = prompt_name
 
     def _record(self, duration: float) -> None:
-        _record_prompt_execution(
+        _record_prompt_get(
             prompt_name=self._prompt_name,
             server_name=self._server_name,
-            success=self._success,
+            success=self._outcome is ExecutionOutcome.SUCCESS,
             duration_seconds=duration,
             error_type=self._error_type,
         )

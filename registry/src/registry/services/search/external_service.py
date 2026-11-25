@@ -7,6 +7,7 @@ from registry_pkgs.vector.enum.enums import RerankerProvider, SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from .base import VectorSearchService
+from .private_resources import drop_private_mcp_resources, with_resource_visibility, without_resources
 
 logger = logging.getLogger(__name__)
 
@@ -402,6 +403,11 @@ class ExternalVectorSearchService(VectorSearchService):
             filters["server_id"] = {"$in": allowed_server_ids}
 
         try:
+            if MCPEntityType.RESOURCE in filters["entity_type"]:
+                if await self.mcp_server_repo.prepare_resource_visibility():
+                    filters = await with_resource_visibility(filters, allowed_server_ids)
+                else:
+                    filters = without_resources(filters)
             if self.enable_rerank:
                 candidate_k = min(search_k * 3, 100)
                 docs = await self.mcp_server_repo.asearch_with_rerank(
@@ -419,6 +425,10 @@ class ExternalVectorSearchService(VectorSearchService):
                     k=search_k,
                     filters=filters,
                 )
+
+            # Resource documents feed server results (their text can become a server's description), so stale
+            # OAuth resources are dropped before grouping.
+            docs = await drop_private_mcp_resources(docs)
 
             tools: list[dict[str, Any]] = []
             servers_by_key: dict[str, dict[str, Any]] = {}

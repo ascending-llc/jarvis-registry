@@ -3,7 +3,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 
 from registry.utils.crypto_utils import decrypt_value, encrypt_value
@@ -39,7 +39,7 @@ def build_skill_sync_token_identifier(source_id: str | PydanticObjectId) -> str:
 
 
 class SkillSyncTokenService:
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
+    def __init__(self, http_client: httpx2.AsyncClient) -> None:
         self._http_client = http_client
 
     async def resolve_access_token(
@@ -80,7 +80,7 @@ class SkillSyncTokenService:
                 client_secret=client_secret,
                 refresh_token=decrypt_value(refresh.token),
             )
-        except (httpx.HTTPError, ValueError):
+        except (httpx2.HTTPError, ValueError):
             logger.exception("Failed to refresh GitHub token for skill sync source %s", source_id)
             return None
         await self.store_tokens(user_id=user_id, source_id=source_id, tokens=tokens)

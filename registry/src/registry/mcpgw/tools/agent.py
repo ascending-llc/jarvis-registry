@@ -12,22 +12,24 @@ from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
 from a2a.utils.parts import get_data_parts, get_file_parts
 from beanie import PydanticObjectId
-from mcp.server.fastmcp import Context
-from mcp.server.session import ServerSession
+from mcp.server.mcpserver import Context
 from mcp.types import (
     BlobResourceContents,
     CallToolResult,
     EmbeddedResource,
     ImageContent,
+    InputRequiredResult,
     TextContent,
     TextResourceContents,
 )
-from pydantic import AnyUrl, BaseModel, Field
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import A2ACallResult, call_a2a, raise_if_iam_unsupported
 
+from ...constants import PENDING_CONSENT_FLOW_FIELD, PendingConsentFlow, UrlElicitationInputKey
 from ...core.config import settings
 from ...services.access_control_service import ACLService
 from ...services.generated_token_policy import is_consent_exempt
@@ -37,6 +39,7 @@ from .utils import (
     _build_url_elicitation_result,
     _extract_authenticated_user_context,
     _get_state_metadata,
+    authorization_declined_result,
     get_client_params,
 )
 
@@ -65,7 +68,8 @@ def _file_to_resource(f: FileWithBytes | FileWithUri) -> ImageContent | Embedded
         return EmbeddedResource(
             type="resource",
             resource=BlobResourceContents(
-                uri=AnyUrl(f"urn:a2a:file:{uuid.uuid4().hex}"),
+                # v2's BlobResourceContents.uri is a plain str (was AnyUrl in v1).
+                uri=f"urn:a2a:file:{uuid.uuid4().hex}",
                 blob=f.bytes,  # already base64-encoded by the a2a SDK
                 mimeType=mime,
             ),
@@ -74,7 +78,7 @@ def _file_to_resource(f: FileWithBytes | FileWithUri) -> ImageContent | Embedded
         return EmbeddedResource(
             type="resource",
             resource=TextResourceContents(
-                uri=AnyUrl(str(f.uri)),
+                uri=str(f.uri),
                 mimeType=f.mime_type,
                 text=str(f.uri),
             ),
@@ -205,8 +209,8 @@ class AgentMessageInput(BaseModel):
 async def execute_agent_impl(
     agent_id: str,
     message: AgentMessageInput,
-    ctx: Context[ServerSession, McpAppContext],
-) -> CallToolResult:
+    ctx: Context[McpAppContext],
+) -> CallToolResult | InputRequiredResult:
     """
     Invoke an A2A agent and return its response.
     """
@@ -238,6 +242,10 @@ async def execute_agent_impl(
         )
         return _error_result(f"Access denied: agent {agent_id!r} is not in your accessible set.")
 
+    declined = authorization_declined_result(ctx)
+    if declined is not None:
+        return declined
+
     # 4. Transport capability
     try:
         raise_if_iam_unsupported(agent)
@@ -247,9 +255,8 @@ async def execute_agent_impl(
 
     # 5. Per-agent user consent
     client_id = user_context["client_id"]
-    if not is_consent_exempt(
-        client_id, settings.headless_agent_client_id
-    ) and not lifespan.consent_store.has_agent_consent(
+    if not is_consent_exempt(client_id, settings.headless_agent_client_id) and not await run_in_threadpool(
+        lifespan.consent_store.has_agent_consent,
         user_id,
         client_id,
         agent.path,
@@ -257,9 +264,11 @@ async def execute_agent_impl(
         nonce = secrets.token_urlsafe(32)
         elicitation_id = str(uuid.uuid4())
         state_metadata = _get_state_metadata(get_client_params(ctx))
-        lifespan.pending_consent_store.save(
+        await run_in_threadpool(
+            lifespan.pending_consent_store.save,
             nonce,
             {
+                PENDING_CONSENT_FLOW_FIELD: PendingConsentFlow.AGENT,
                 "user_id": user_id,
                 "client_id": client_id,
                 "agent_path": agent.path,
@@ -283,6 +292,7 @@ async def execute_agent_impl(
             auth_url,
             template,
             human_message,
+            input_key=UrlElicitationInputKey.CONSENT,
             elicitation_id=elicitation_id,
         )
 
@@ -320,7 +330,7 @@ async def execute_agent_impl(
 
 def get_tools() -> list[tuple[str, Callable]]:
     async def execute_agent(
-        ctx: Context[ServerSession, McpAppContext],
+        ctx: Context[McpAppContext],
         agent_id: Annotated[
             str,
             Field(
@@ -341,7 +351,7 @@ def get_tools() -> list[tuple[str, Callable]]:
                 ),
             ),
         ],
-    ) -> CallToolResult:
+    ) -> CallToolResult | InputRequiredResult:
         """Invoke an A2A agent selected through discover_agents, using its exact agent_id.
         The agent runs autonomously on the delegated task and returns its final result.
 

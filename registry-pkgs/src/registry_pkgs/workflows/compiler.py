@@ -15,8 +15,8 @@ from agno.workflow import (
     Steps,
     Workflow,
 )
-from agno.workflow.step import OnError, StepExecutor
-from agno.workflow.types import HumanReview
+from agno.workflow.step import StepExecutor
+from agno.workflow.types import HumanReview, OnError
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy, WorkflowNodeType
@@ -342,6 +342,10 @@ def compile_workflow(
     def _build(node: WorkflowNode) -> Any:
 
         human_review = _to_agno_human_review(node.human_review)
+        # agno 3's container validators dereference human_review unconditionally,
+        # so a None must be omitted (its own default HumanReview is applied) rather
+        # than passed through as it was under 2.7.2.
+        hr_kwarg: dict[str, Any] = {} if human_review is None else {"human_review": human_review}
         if node.node_type == WorkflowNodeType.STEP:
             lookup_key = f"{POOL_KEY_PREFIX}{node.id}" if node.a2a_pool else node.id
 
@@ -389,10 +393,16 @@ def compile_workflow(
                     directive_queue=directive_queue,
                     writer=writer,
                 )
+            # agno 3 reads a step's error policy only from its HumanReview, and
+            # every Step gets one (a default HumanReview defaults to on_error=skip).
+            # So always attach a HumanReview carrying the resolved on_error, whether
+            # or not the node configures HITL.
+            step_human_review = human_review if human_review is not None else HumanReview()
+            step_human_review.on_error = step_on_error(node.step_config)
             return Step(
                 name=node.name,
                 executor=executor,
-                human_review=human_review,
+                human_review=step_human_review,
                 **step_kwargs(node.step_config),
             )
 
@@ -408,7 +418,7 @@ def compile_workflow(
                 evaluator=node.condition_cel,
                 else_steps=false_branch,
                 name=node.name,
-                human_review=human_review,
+                **hr_kwarg,
             )
 
         if node.node_type == WorkflowNodeType.LOOP:
@@ -418,7 +428,7 @@ def compile_workflow(
                 name=node.name,
                 max_iterations=node.loop_config.max_iterations,  # type: ignore[union-attr]
                 end_condition=end_cond,
-                human_review=human_review,
+                **hr_kwarg,
             )
 
         if node.node_type == WorkflowNodeType.ROUTER:
@@ -429,7 +439,7 @@ def compile_workflow(
                 choices=compiled_choices,
                 selector=node.condition_cel,
                 name=node.name,
-                human_review=human_review,
+                **hr_kwarg,
             )
 
         raise ValueError(f"Unknown node_type: {node.node_type!r}")
@@ -445,26 +455,42 @@ def compile_workflow(
     return RegistryWorkflow(**workflow_kwargs)
 
 
+def step_on_error(cfg: StepConfig | None) -> OnError:
+    """Resolve a StepConfig into agno 3's ``HumanReview.on_error`` policy.
+
+    agno 3 moved the step error policy off ``Step`` and reads it only from the
+    step's ``HumanReview`` (whose own default is ``OnError.skip``). We map an
+    absent config to ``fail`` so a failing step fails the run by default.
+
+    ``"retry"`` maps to ``fail`` because the retry loop is fully managed by the
+    ``with_control`` wrapper; agno must treat a wrapper-level failure as a normal
+    step failure without interfering.
+    """
+    if cfg is None:
+        return OnError.fail
+    return OnError.skip if cfg.on_error == "skip" else OnError.fail
+
+
 def step_kwargs(cfg: StepConfig | None) -> dict[str, Any]:
     """Translate a StepConfig into agno Step keyword arguments.
 
     When ``cfg`` is ``None`` the step runs with safe production defaults:
-    no retries, fail-fast on error.
+    no retries. The error policy itself lives on the step's ``HumanReview`` in
+    agno 3 (see :func:`step_on_error`), not in these kwargs.
 
     When ``on_error == "retry"`` the retry loop is fully managed by the
-    ``with_control`` wrapper, so agno receives ``max_retries=0`` and
-    ``on_error=fail`` — agno must not interfere with our backoff logic.
+    ``with_control`` wrapper, so agno receives ``max_retries=0`` — agno must not
+    interfere with our backoff logic.
     """
     if cfg is None:
-        return {"max_retries": 0, "skip_on_failure": False, "on_error": OnError.fail}
+        return {"max_retries": 0, "skip_on_failure": False}
     if cfg.on_error == "retry":
         # Retries are handled by the executor wrapper; tell agno to treat a
         # (wrapper-level) failure as a normal step failure without extra retries.
-        return {"max_retries": 0, "skip_on_failure": False, "on_error": OnError.fail}
+        return {"max_retries": 0, "skip_on_failure": False}
     return {
         "max_retries": cfg.max_retries,
         "skip_on_failure": cfg.on_error == "skip",
-        "on_error": OnError.skip if cfg.on_error == "skip" else OnError.fail,
     }
 
 

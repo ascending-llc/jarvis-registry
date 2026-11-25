@@ -253,6 +253,14 @@ class OAuthClientStore:
             raise
         return self._json_store.loads_json(raw)
 
+    def get_clients_without_ttl_slide(self, client_ids: list[str]) -> dict[str, dict[str, Any] | None]:
+        if not client_ids:
+            return {}
+        values = self._redis.mget([self._client_key(client_id) for client_id in client_ids])
+        return {
+            client_id: self._json_store.loads_json(value) for client_id, value in zip(client_ids, values, strict=True)
+        }
+
     def validate_client_credentials(
         self,
         client_id: str,
@@ -436,8 +444,7 @@ class OAuthStateStore:
                     logger.warning("OAuth device code key exists without TTL: %s", key)
                 return False
 
-            self._redis.set(key, self._json_store.dumps_json(data), ex=remaining_ttl)
-            return True
+            return bool(self._redis.set(key, self._json_store.dumps_json(data), xx=True, keepttl=True))
         except RedisError:
             logger.exception("Failed to update OAuth device code")
             raise

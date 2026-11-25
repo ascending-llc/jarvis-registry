@@ -13,6 +13,7 @@ before prefix matches, and an unrecognized client_id resolves to UNKNOWN with an
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from .config import INTERACTIVE_TOKEN_CLIENT_ID, JwtTokenConfig
 from .downstream_oauth import DEVICE_CODE_GRANT_TYPE
@@ -24,6 +25,9 @@ REGISTRY_CLI_CLIENT_ID = "jarvis-registry-cli"
 CLAUDE_DESKTOP_CLIENT_ID = "jarvis-registry-claude-desktop"
 AUTHORIZATION_CODE_GRANT_TYPE = "authorization_code"
 REFRESH_TOKEN_GRANT_TYPE = "refresh_token"
+
+PUBLIC_CLIENT_CREDENTIAL = None
+CLAUDE_DESKTOP_REDIRECT_URI = "http://127.0.0.1:47280/callback"
 
 _PROXY_OPS_SCOPES_EXCLUDED_FROM_REGISTRY_APP = frozenset({"mcp-proxy-ops", "a2a-proxy-ops"})
 
@@ -41,12 +45,7 @@ class ClientCategory(StrEnum):
 
 @dataclass(frozen=True)
 class ClientPolicy:
-    """Security policy attached to a client category.
-
-    Presentation metadata and endpoint URLs intentionally remain owned by the service exposing
-    them; authorization decisions live here so discovery, registration, and token issuance can
-    project the same policy.
-    """
+    """Security policy shared by discovery, registration, and token issuance for this category."""
 
     category: ClientCategory
     allowed_grant_types: tuple[str, ...]
@@ -126,6 +125,15 @@ def resolve_client_category(client_id: str, config: JwtTokenConfig) -> ClientCat
     return ClientCategory.UNKNOWN
 
 
+def is_consent_revocable(category: ClientCategory) -> bool:
+    return category not in (ClientCategory.REGISTRY_APP, ClientCategory.HEADLESS_AGENT)
+
+
+def requires_app_consent(category: ClientCategory) -> bool:
+    """Resource approvals require an app grant except for Registry and token-page clients."""
+    return category not in (ClientCategory.REGISTRY_APP, ClientCategory.HEADLESS_AGENT, ClientCategory.USER_GENERATED)
+
+
 def get_client_policy(category: ClientCategory) -> ClientPolicy | None:
     """Return the explicit protocol policy for a client category, if it has one."""
     return _CLIENT_POLICIES.get(category)
@@ -160,3 +168,49 @@ def resolve_granted_scopes(
     scopes = requested_scopes.split() if isinstance(requested_scopes, str) else requested_scopes
     ceiling = get_client_max_scopes(client_id, config)
     return [scope for scope in scopes if scope in ceiling]
+
+
+def _static_entry(
+    *,
+    client_id: str,
+    category: ClientCategory,
+    client_name: str,
+    redirect_uris: list[str],
+    response_types: list[str],
+) -> dict[str, Any]:
+    policy = get_client_policy(category)
+    if policy is None or policy.token_endpoint_auth_method is None:
+        raise RuntimeError(f"{client_name} client policy is not configured")
+
+    return {
+        "client_id": client_id,
+        "client_name": client_name,
+        "client_secret": PUBLIC_CLIENT_CREDENTIAL,
+        "redirect_uris": redirect_uris,
+        "grant_types": list(policy.allowed_grant_types),
+        "response_types": response_types,
+        "scope": policy.default_scope,
+        "token_endpoint_auth_method": policy.token_endpoint_auth_method,
+    }
+
+
+def _build_static_client_metadata() -> dict[str, dict[str, Any]]:
+    return {
+        REGISTRY_CLI_CLIENT_ID: _static_entry(
+            client_id=REGISTRY_CLI_CLIENT_ID,
+            category=ClientCategory.REGISTRY_CLI,
+            client_name="Jarvis Registry CLI",
+            redirect_uris=[],
+            response_types=[],
+        ),
+        CLAUDE_DESKTOP_CLIENT_ID: _static_entry(
+            client_id=CLAUDE_DESKTOP_CLIENT_ID,
+            category=ClientCategory.CLAUDE_DESKTOP,
+            client_name="Claude Desktop",
+            redirect_uris=[CLAUDE_DESKTOP_REDIRECT_URI],
+            response_types=["code"],
+        ),
+    }
+
+
+STATIC_CLIENT_METADATA = _build_static_client_metadata()

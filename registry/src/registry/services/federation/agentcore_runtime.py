@@ -7,10 +7,13 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
-import httpx
+import httpx2
+from mcp.types import METHOD_NOT_FOUND, ClientCapabilities, Implementation, InitializeRequestParams
+from mcp_types.version import LATEST_HANDSHAKE_VERSION
 
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
+from registry.core.mcp_config import MCPClientConfig, MCPTransport
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.a2a_agent import (
     TRANSPORT_JSONRPC,
@@ -19,12 +22,21 @@ from registry_pkgs.models.a2a_agent import (
 )
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, Federation
 from registry_pkgs.models.federation_metadata import FederationMetadataBase
+from registry_pkgs.models.mcp_resource_capture import RESOURCE_CAPTURE_KEY, create_resource_capture
 from registry_pkgs.workflows.a2a_client import is_agentcore_runtime
 
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
 
 logger = logging.getLogger(__name__)
+
+
+class McpJsonRpcMethodError(ValueError):
+    """A JSON-RPC error response from a runtime's MCP method; ``code`` is the JSON-RPC error code, if any."""
+
+    def __init__(self, message: str, code: int | None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class AgentCoreRuntimeInvoker:
@@ -123,8 +135,17 @@ class AgentCoreRuntimeInvoker:
         tools = result.tools or []
         config["toolFunctions"] = self._convert_tools_to_tool_functions(tools, server.serverName)
         config["tools"] = ", ".join(tool.get("name", "") for tool in tools if tool.get("name"))
-        config["resources"] = result.resources or []
-        config["prompts"] = result.prompts or []
+        # A listing that failed on its own (None) is left out of the discovered config; the federation update
+        # (FederationSyncService._copy_mcp_update_fields) then keeps the stored value for that key.
+        for key, value in (
+            ("resources", result.resources),
+            ("resourceTemplates", result.resource_templates),
+            ("prompts", result.prompts),
+        ):
+            if value is not None:
+                config[key] = value
+        if result.resources is not None:
+            config[RESOURCE_CAPTURE_KEY] = create_resource_capture(config, result.resources)
         config["capabilities"] = (
             json.dumps(result.capabilities or {}, ensure_ascii=False) if result.capabilities else "{}"
         )
@@ -301,7 +322,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         runtime_url: str,
-        transport_type: str | None,
+        transport_type: MCPTransport | None,
         runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
@@ -315,6 +336,7 @@ class AgentCoreRuntimeInvoker:
         - IAM path: `InvokeAgentRuntime` with MCP JSON-RPC methods
         - JWT path: HTTP call to the runtime invocation endpoint
         """
+        transport_type = MCPTransport(transport_type) if transport_type is not None else None
         mode = self._resolve_runtime_access_mode(
             runtime_access=runtime_access,
             metadata=metadata,
@@ -433,7 +455,7 @@ class AgentCoreRuntimeInvoker:
             region=region,
             assume_role_arn=assume_role_arn,
         )
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             timeout=settings.agentcore_jwt_http_timeout_seconds,
             headers=headers,
             auth=httpx_auth,
@@ -446,7 +468,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         runtime_url: str,
-        transport_type: str | None,
+        transport_type: MCPTransport | None,
         runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
@@ -473,7 +495,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         runtime_url: str,
-        transport_type: str | None,
+        transport_type: MCPTransport | None,
         runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
@@ -550,32 +572,34 @@ class AgentCoreRuntimeInvoker:
                 mcp_session_id=mcp_session_id,
                 protocol_version=protocol_version,
             )
-            resources_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-                client=client,
-                runtime_arn=runtime_arn,
-                method="resources/list",
-                params={},
-                request_id=self._next_request_id(),
-                runtime_session_id=runtime_session_id,
-                mcp_session_id=mcp_session_id,
-                protocol_version=protocol_version,
-            )
-            prompts_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-                client=client,
-                runtime_arn=runtime_arn,
-                method="prompts/list",
-                params={},
-                request_id=self._next_request_id(),
-                runtime_session_id=runtime_session_id,
-                mcp_session_id=mcp_session_id,
-                protocol_version=protocol_version,
-            )
+            session = {
+                "client": client,
+                "runtime_arn": runtime_arn,
+                "runtime_session_id": runtime_session_id,
+                "mcp_session_id": mcp_session_id,
+                "protocol_version": protocol_version,
+            }
+            # A failure here fails the SDK invocation, so IAM discovery falls back to the HTTP transport.
+            raw_resources = await self._list_all_via_jsonrpc(method="resources/list", items_key="resources", **session)
+            raw_prompts = await self._list_all_via_jsonrpc(method="prompts/list", items_key="prompts", **session)
         except Exception as exc:
             return MCPServerData(None, None, None, None, f"SDK MCP invocation failed: {exc}")
 
+        # Optional listing: a runtime without template support must not fail enrichment. A failure on any page
+        # keeps the stored templates (None) rather than replacing them with a partial listing.
+        resource_templates: list[dict[str, Any]] | None
+        try:
+            raw_templates = await self._list_all_via_jsonrpc(
+                method="resources/templates/list", items_key="resourceTemplates", **session
+            )
+            resource_templates = self._normalize_mcp_resource_templates(raw_templates)
+        except Exception as exc:
+            logger.warning("resources/templates/list failed for runtime %s: %s", runtime_arn, exc)
+            resource_templates = None
+
         tools = self._normalize_mcp_tools(tools_result.get("tools", []))
-        resources = self._normalize_mcp_resources(resources_result.get("resources", []))
-        prompts = self._normalize_mcp_prompts(prompts_result.get("prompts", []))
+        resources = self._normalize_mcp_resources(raw_resources)
+        prompts = self._normalize_mcp_prompts(raw_prompts)
         capabilities = {"sdkInvokeMode": "invoke_agent_runtime"}
         return MCPServerData(
             tools=tools,
@@ -584,7 +608,55 @@ class AgentCoreRuntimeInvoker:
             capabilities=capabilities,
             requires_init=bool(runtime_session_id or mcp_session_id),
             error_message=None,
+            resource_templates=resource_templates,
         )
+
+    async def _list_all_via_jsonrpc(
+        self,
+        *,
+        client: Any,
+        runtime_arn: str,
+        method: str,
+        items_key: str,
+        runtime_session_id: str | None,
+        mcp_session_id: str | None,
+        protocol_version: str | None,
+    ) -> list[dict[str, Any]]:
+        """Fetch every page of one MCP ``*/list`` method, following ``nextCursor`` under a single deadline.
+
+        A first-page "Method not found" means the runtime does not offer this listing: a definite []. Any other
+        error, a later page's error, a repeated cursor or the deadline raises, so callers never store a partial
+        listing.
+        """
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        cursor: str | None = None
+        # One deadline for the entire listing, not a fresh timeout for every page.
+        async with asyncio.timeout(MCPClientConfig.TOOLS_TIMEOUT):
+            while True:
+                try:
+                    result, _, _, _ = await self._invoke_mcp_jsonrpc(
+                        client=client,
+                        runtime_arn=runtime_arn,
+                        method=method,
+                        params={"cursor": cursor} if cursor is not None else {},
+                        request_id=self._next_request_id(),
+                        runtime_session_id=runtime_session_id,
+                        mcp_session_id=mcp_session_id,
+                        protocol_version=protocol_version,
+                    )
+                except McpJsonRpcMethodError as exc:
+                    if exc.code == METHOD_NOT_FOUND and cursor is None:
+                        return []
+                    raise
+                items.extend(result.get(items_key) or [])
+                next_cursor = result.get("nextCursor")
+                if not next_cursor:
+                    return items
+                if next_cursor in seen:
+                    raise ValueError(f"Runtime {method} repeated a pagination cursor")
+                seen.add(next_cursor)
+                cursor = next_cursor
 
     async def _get_runtime_client(self, region: str, assume_role_arn: str | None = None) -> Any:
         client = await self.client_provider.get_runtime_client(region, assume_role_arn)
@@ -612,18 +684,18 @@ class AgentCoreRuntimeInvoker:
                 client=client,
                 runtime_arn=runtime_arn,
                 method="initialize",
-                params={
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "mcp-gateway-registry", "version": "1.0.0"},
-                },
+                params=InitializeRequestParams(
+                    protocol_version=LATEST_HANDSHAKE_VERSION,
+                    capabilities=ClientCapabilities(),
+                    client_info=Implementation(name="mcp-gateway-registry", version="1.0.0"),
+                ).model_dump(by_alias=True, mode="json", exclude_none=True),
                 request_id=self._next_request_id(),
                 runtime_session_id=None,
                 mcp_session_id=None,
                 protocol_version=None,
             )
         )
-        negotiated_protocol_version = init_result.get("protocolVersion") or protocol_version or "2024-11-05"
+        negotiated_protocol_version = init_result.get("protocolVersion") or protocol_version or LATEST_HANDSHAKE_VERSION
 
         await self._send_mcp_notification(
             client=client,
@@ -680,10 +752,12 @@ class AgentCoreRuntimeInvoker:
             )
 
         if response_payload.get("error"):
-            raise ValueError(
+            error = response_payload["error"]
+            raise McpJsonRpcMethodError(
                 "MCP method failed "
                 f"(method={method}, statusCode={response.get('statusCode')}, contentType={response.get('contentType')}, "
-                f"error={response_payload['error']}, body={response_text[:1000]})"
+                f"error={response_payload['error']}, body={response_text[:1000]})",
+                code=error.get("code") if isinstance(error, dict) else None,
             )
 
         return (
@@ -950,6 +1024,21 @@ class AgentCoreRuntimeInvoker:
         return normalized
 
     @staticmethod
+    def _normalize_mcp_resource_templates(templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for template in templates or []:
+            normalized.append(
+                {
+                    "uriTemplate": template.get("uriTemplate"),
+                    "name": template.get("name"),
+                    "description": template.get("description"),
+                    "mimeType": template.get("mimeType"),
+                    "annotations": template.get("annotations"),
+                }
+            )
+        return normalized
+
+    @staticmethod
     def _normalize_mcp_prompts(prompts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
         for prompt in prompts or []:
@@ -1033,12 +1122,12 @@ class AgentCoreRuntimeInvoker:
         region: str,
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
-    ) -> tuple[dict[str, str], httpx.Auth | None]:
+    ) -> tuple[dict[str, str], httpx2.Auth | None]:
         """
         Delegate runtime data-plane auth selection to the shared auth service.
 
         Keeping the branching outside the HTTP transport code makes MCP/A2A
-        runtime callers share the same IAM-vs-JWT validation rules.
+        runtime callers share the same IAM-vs-JWT validation rules and httpx2 auth implementation.
         """
         return await self.auth_service.build_runtime_http_auth(
             runtime_access=runtime_access,

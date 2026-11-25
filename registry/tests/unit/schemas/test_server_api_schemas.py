@@ -8,6 +8,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.schemas.server_api_schemas import convert_to_detail, convert_to_list_item
+from registry_pkgs.models.mcp_resource_capture import RESOURCE_CAPTURE_KEY, create_resource_capture
 from registry_pkgs.models.mcp_server_oauth import RegistryOAuthClient, RegistryOAuthState
 
 AS_METADATA = {
@@ -116,3 +117,100 @@ def test_apikey_returned_camel_case_and_masked(convert) -> None:
     assert "custom_header" not in api_key
     assert api_key["key"].startswith("************")
     assert api_key["key"].endswith("secret")
+
+
+@pytest.mark.parametrize("transport", ["streamable-http", "sse", "stdio"])
+def test_connection_transport_parses_enum_and_preserves_wire_value(transport: str) -> None:
+    from registry.core.mcp_config import MCPTransport
+    from registry.schemas.server_api_schemas import ServerConnectionTestRequest
+
+    request = ServerConnectionTestRequest(url="https://example.com/mcp", transport=transport)
+    assert isinstance(request.transport, MCPTransport)
+    assert request.model_dump(mode="json")["transport"] == transport
+
+
+def test_connection_transport_rejects_unknown_values() -> None:
+    from pydantic import ValidationError
+
+    from registry.schemas.server_api_schemas import ServerConnectionTestRequest
+
+    with pytest.raises(ValidationError, match="transport"):
+        ServerConnectionTestRequest(url="https://example.com/mcp", transport="invalid")
+
+
+@pytest.mark.parametrize("transport", ["http", ""])
+def test_connection_transport_accepts_streamable_http_aliases(transport: str) -> None:
+    from registry.core.mcp_config import MCPTransport
+    from registry.schemas.server_api_schemas import ServerConnectionTestRequest
+
+    request = ServerConnectionTestRequest(url="https://example.com/mcp", transport=transport)
+    assert request.transport is MCPTransport.STREAMABLE_HTTP
+
+
+_TEMPLATES = [
+    {"uriTemplate": "repo://{name}", "name": "repo", "description": None, "mimeType": None, "annotations": None}
+]
+
+
+@pytest.mark.parametrize(
+    ("oauth", "expected_resources"),
+    [(True, []), (False, [{"uri": "file:///a"}])],
+)
+def test_detail_returns_templates_and_hides_oauth_resources(oauth, expected_resources) -> None:
+    server = _server(None)
+    server.config["requiresOAuth"] = oauth
+    server.config["resources"] = [{"uri": "file:///a"}]
+    server.config["resourceTemplates"] = _TEMPLATES
+    server.config[RESOURCE_CAPTURE_KEY] = create_resource_capture(server.config, server.config["resources"])
+
+    detail = convert_to_detail(server).model_dump(by_alias=True)
+
+    assert detail["resourceTemplates"] == _TEMPLATES
+    assert detail["resources"] == expected_resources
+
+
+def test_detail_resource_templates_default_to_empty() -> None:
+    assert convert_to_detail(_server(None)).resourceTemplates == []
+
+
+def test_legacy_oauth_resources_stay_hidden_after_switch_to_shared_credentials() -> None:
+    from registry.schemas.server_api_schemas import ServerUpdateRequest
+    from registry.services.server_service import _update_config_from_request
+
+    server = _server(None)
+    server.config["resources"] = [{"uri": "private://alice/salary"}]
+    assert convert_to_detail(server).resources == []
+    server.config = _update_config_from_request(server.config, ServerUpdateRequest(oauth=None, requiresOauth=False))
+    assert server.config["resources"] == []
+    assert convert_to_detail(server).resources == []
+    server.config["resources"] = [{"uri": "shared://public"}]
+    # An unsigned list (including one written by an old pod) is still hidden.
+    assert convert_to_detail(server).resources == []
+    server.config[RESOURCE_CAPTURE_KEY] = create_resource_capture(server.config, server.config["resources"])
+    assert convert_to_detail(server).resources == [{"uri": "shared://public"}]
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"url": "https://other.test/mcp"},
+        {"type": "sse"},
+        {"apiKey": {"key": "new"}},
+        {"headers": {"X-Auth": "new"}},
+        {"requiresOauth": True},
+    ],
+)
+def test_auth_or_endpoint_edit_clears_capture_before_new_credentials_are_used(update: dict) -> None:
+    from registry.schemas.server_api_schemas import ServerUpdateRequest
+    from registry.services.server_service import _update_config_from_request
+
+    config = {
+        "url": "https://example.test/mcp",
+        "type": "streamable-http",
+        "apiKey": {"key": "old"},
+        "resources": [{"uri": "files://old"}],
+    }
+    config[RESOURCE_CAPTURE_KEY] = create_resource_capture(config, config["resources"])
+    updated = _update_config_from_request(config, ServerUpdateRequest(**update))
+    assert updated["resources"] == []
+    assert RESOURCE_CAPTURE_KEY not in updated

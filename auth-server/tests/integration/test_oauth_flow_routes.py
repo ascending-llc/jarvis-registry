@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
@@ -26,9 +26,12 @@ from auth_server.deps import get_auth_provider, get_identity_service, get_oauth2
 from auth_server.providers.factory import _create_entra_provider
 from auth_server.routes.consent_templates import render_device_server_error_page
 from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
-from auth_server.services.oauth_client_policy import CLAUDE_DESKTOP_REDIRECT_URI
 from auth_server.services.token_grant_service import TokenGrantService
-from registry_pkgs.core.client_categories import CLAUDE_DESKTOP_CLIENT_ID, REGISTRY_CLI_CLIENT_ID
+from registry_pkgs.core.client_categories import (
+    CLAUDE_DESKTOP_CLIENT_ID,
+    CLAUDE_DESKTOP_REDIRECT_URI,
+    REGISTRY_CLI_CLIENT_ID,
+)
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from tests.conftest import test_consent_store, test_pending_consent_store
@@ -975,7 +978,9 @@ class TestDeviceFlowRoutes:
 
         assert approval.status_code == 200
         assert device_codes_storage[device_data["device_code"]]["status"] == "approved"
-        assert test_consent_store.has_client_consent("user-123", "jarvis-registry-cli") is True
+        grant_id = test_consent_store.get_client_grant_id("user-123", "jarvis-registry-cli")
+        assert grant_id is not None
+        assert device_codes_storage[device_data["device_code"]]["consent_grant_id"] == grant_id
 
         token_response = test_client.post(
             f"{API_PREFIX}/oauth2/token",
@@ -991,6 +996,7 @@ class TestDeviceFlowRoutes:
         assert first_token["scope"] == "skills-read"
         assert decode_jwt_unverified(first_token["access_token"])["scope"] == "skills-read"
         assert first_token["refresh_token"] in refresh_tokens_storage
+        assert refresh_tokens_storage[first_token["refresh_token"]]["consent_grant_id"] == grant_id
         assert "jarvis-registry-cli" not in registered_clients
 
         refresh_response = test_client.post(
@@ -1398,14 +1404,14 @@ class TestDeviceFlowCallbackAndConsent:
             "empty": [],
             "outage": [],
         }[membership]
-        response = httpx.Response(
+        response = httpx2.Response(
             503 if membership == "outage" else 200,
             json={"value": group_ids},
-            request=httpx.Request("POST", "https://graph.microsoft.com/v1.0/me/checkMemberGroups"),
+            request=httpx2.Request("POST", "https://graph.microsoft.com/v1.0/me/checkMemberGroups"),
         )
         with (
             patch("auth_server.routes.oauth_flow.exchange_code_for_token", new_callable=AsyncMock) as exchange,
-            patch("auth_server.providers.entra.httpx.AsyncClient") as http_client,
+            patch("auth_server.providers.entra.httpx2.AsyncClient") as http_client,
             patch("auth_server.routes.oauth_flow.get_user_info", new_callable=AsyncMock) as fallback,
         ):
             exchange.return_value = {"access_token": "provider-token", "id_token": "id-token"}
@@ -1534,6 +1540,7 @@ class TestDeviceFlowCallbackAndConsent:
         }
         test_client.app.dependency_overrides[get_auth_provider] = lambda: _mock_entra_provider(user_info=user_info)
         _configure_identity_service(test_client)
+        grant_id = test_consent_store.grant_client_consent("user-123", "mcp-client-test")
         data = _start_device_flow(test_client, scope="servers-read")
         verify_response = test_client.post(
             f"{API_PREFIX}/oauth2/device/verify",
@@ -1561,6 +1568,7 @@ class TestDeviceFlowCallbackAndConsent:
         assert "Your device is connected" in response.text
         assert device_codes_storage[data["device_code"]]["status"] == "approved"
         assert device_codes_storage[data["device_code"]]["resolved_scope"] == ["servers-read"]
+        assert device_codes_storage[data["device_code"]]["consent_grant_id"] == grant_id
 
     def test_device_callback_without_prior_consent_redirects_to_consent(
         self,
@@ -1638,6 +1646,35 @@ class TestDeviceFlowCallbackAndConsent:
         assert "Your device is connected" in response.text
         assert device_codes_storage[data["device_code"]]["status"] == "approved"
         assert ("user-123", "mcp-client-test") in test_consent_store.client_consents
+        assert device_codes_storage[data["device_code"]]["consent_grant_id"] == test_consent_store.get_client_grant_id(
+            "user-123", "mcp-client-test"
+        )
+
+    @pytest.mark.usefixtures("clear_device_storage")
+    def test_approve_device_consent_when_code_expires_during_update(self, test_client: TestClient) -> None:
+        device_code = _start_device_flow(test_client)["device_code"]
+        nonce = "expiring-device-nonce"
+        test_pending_consent_store.save(
+            nonce,
+            {
+                "flow_type": "device",
+                "device_code": device_code,
+                "mapped_user": {"user_id": "user-123"},
+                "resolved_scopes": ["servers-read"],
+                "session_data": {"client_id": "mcp-client-test"},
+            },
+        )
+        test_client.cookies.set("oauth2_consent_nonce", nonce)
+
+        # The read returns the device record, but the key expires before the approval is written.
+        with patch.object(
+            test_oauth_state_store, "get_device_code", side_effect=test_oauth_state_store.consume_device_code
+        ):
+            response = test_client.post(f"{API_PREFIX}/oauth2/consent/approve", data={"nonce": nonce})
+
+        assert response.status_code == 400
+        assert "This code is invalid or has expired" in response.text
+        assert device_code not in device_codes_storage
 
     def test_deny_device_consent_marks_device_denied(self, test_client: TestClient, clear_device_storage):
         data = _start_device_flow(test_client)
@@ -1761,7 +1798,7 @@ class TestCallbackIdentityResolution:
         groups: list[str] | None = None,
         requested_scope: str | None = None,
         identity_error: Exception | None = None,
-    ) -> tuple[httpx.Response, Mock, str | None]:
+    ) -> tuple[httpx2.Response, Mock, str | None]:
         _configure_oauth2(client)
         provider = _mock_entra_provider({"groups": ["jarvis-registry-admin"] if groups is None else groups})
         client.app.dependency_overrides[get_auth_provider] = lambda: provider

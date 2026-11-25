@@ -9,12 +9,12 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-import httpx
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import ClientAuthenticationError
 from azure.identity.aio import ClientSecretCredential, DefaultAzureCredential
 from beanie import PydanticObjectId
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.crypto_utils import decrypt_value, is_encrypted
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
@@ -55,18 +55,18 @@ def _is_near_expiry(token: AccessToken) -> bool:
     return token.expires_on - time.time() < _TOKEN_EXPIRY_SKEW_SECONDS
 
 
-class AzureEntraAuth(httpx.Auth):
+class AzureEntraAuth(a2a_http.Auth):
     """Bounded authentication recovery, only for requests safe to replay."""
 
     def __init__(self, auth_service: AzureFoundryAuthService) -> None:
         self._auth_service = auth_service
 
     @staticmethod
-    def _apply_headers(request: httpx.Request, headers: dict[str, str]) -> None:
+    def _apply_headers(request: a2a_http.Request, headers: dict[str, str]) -> None:
         request.headers.pop(_PREVIEW_HEADER_NAME, None)
         request.headers.update(headers)
 
-    async def async_auth_flow(self, request: httpx.Request) -> AsyncIterator[httpx.Request]:
+    async def async_auth_flow(self, request: a2a_http.Request) -> AsyncIterator[a2a_http.Request]:
         headers = await self._auth_service.build_headers()
         self._apply_headers(request, headers)
         response = yield request
@@ -98,11 +98,11 @@ class AzureFoundryClientCache:
         self._encryption_key = encryption_key
         self._states: dict[PydanticObjectId, _CredentialState] = {}
         self._facades: dict[PydanticObjectId, AzureFoundryAuthService] = {}
-        self._clients: dict[PydanticObjectId, httpx.AsyncClient] = {}
+        self._clients: dict[PydanticObjectId, a2a_http.AsyncClient] = {}
         self._locks: dict[PydanticObjectId, asyncio.Lock] = {}
         self._lock_users: dict[PydanticObjectId, int] = {}
         self._last_auth_rebuild: dict[PydanticObjectId, float] = {}
-        self._limits = httpx.Limits(
+        self._limits = a2a_http.Limits(
             max_connections=max_connections, max_keepalive_connections=max_keepalive_connections
         )
         self._closed = False
@@ -258,7 +258,7 @@ class AzureFoundryClientCache:
                 headers[_PREVIEW_HEADER_NAME] = _PREVIEW_HEADER_VALUE
             return headers
 
-    async def get_client(self, agent: A2AAgent) -> httpx.AsyncClient:
+    async def get_client(self, agent: A2AAgent) -> a2a_http.AsyncClient:
         federation_id = agent.federationRefId
         if federation_id is None:
             raise ValueError(f"Azure Foundry A2A agent {agent.path!r} has no federationRefId")
@@ -266,9 +266,9 @@ class AzureFoundryClientCache:
             await self._get_state_locked(federation_id)
             if federation_id not in self._clients:
                 facade = self._facades.setdefault(federation_id, AzureFoundryAuthService(federation_id, self))
-                self._clients[federation_id] = httpx.AsyncClient(
+                self._clients[federation_id] = a2a_http.AsyncClient(
                     auth=AzureEntraAuth(facade),
-                    timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
+                    timeout=a2a_http.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
                     limits=self._limits,
                 )
             return self._clients[federation_id]

@@ -16,11 +16,11 @@ import logging
 import time
 from typing import Any
 
-import httpx
 from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
@@ -138,7 +138,7 @@ async def build_executor_registry(
     encryption_key: bytes,
     azure_ad_token_provider: AzureAdTokenProvider | None,
     pool_nodes: list[WorkflowNode] | None = None,
-    a2a_httpx_client: httpx.AsyncClient | None = None,
+    a2a_httpx_client: a2a_http.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
     redis_client: Any | None = None,
     redis_key_prefix: str | None = None,
@@ -225,7 +225,7 @@ async def _resolve_executor(
     llm: Model,
     auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
-    a2a_httpx_client: httpx.AsyncClient | None = None,
+    a2a_httpx_client: a2a_http.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
     redis_client: Any | None = None,
     redis_key_prefix: str | None = None,

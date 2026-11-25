@@ -62,7 +62,7 @@ import sys
 import time
 from pathlib import Path
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 from dotenv import load_dotenv
 
@@ -162,7 +162,7 @@ async def _poll_job_terminal(embed_id: str) -> str | None:
     return await _job_status(embed_id)
 
 
-async def _generation_object_count(client: httpx.AsyncClient, generation: str) -> int:
+async def _generation_object_count(client: httpx2.AsyncClient, generation: str) -> int:
     """Count objects in the generation's Weaviate collections — proves the re-embedded data landed."""
     mcp = f"{MCP_BASE}_{generation}"
     a2a = f"{A2A_BASE}_{generation}"
@@ -173,7 +173,7 @@ async def _generation_object_count(client: httpx.AsyncClient, generation: str) -
     return sum(int((agg.get(cls) or [{}])[0].get("meta", {}).get("count", 0)) for cls in (mcp, a2a))
 
 
-async def _generation_vector_dim(client: httpx.AsyncClient, generation: str) -> int:
+async def _generation_vector_dim(client: httpx2.AsyncClient, generation: str) -> int:
     """Return the real vector dimension of one object in the generation (0 if none). A model change
     that changes the vector space must show up here as a different dimension in the new generation."""
     hdr = {"Authorization": f"Bearer {WEAVIATE_API_KEY}"} if WEAVIATE_API_KEY else {}
@@ -186,12 +186,12 @@ async def _generation_vector_dim(client: httpx.AsyncClient, generation: str) -> 
     return len(objs[0].get("vector", [])) if objs else 0
 
 
-async def _search_code_at(client: httpx.AsyncClient, base_url: str, headers: dict) -> int:
+async def _search_code_at(client: httpx2.AsyncClient, base_url: str, headers: dict) -> int:
     r = await client.post(_api_at(base_url, "/search"), headers=headers, json={"query": "healthcheck"})
     return r.status_code
 
 
-async def _search_code(client: httpx.AsyncClient, headers: dict) -> int:
+async def _search_code(client: httpx2.AsyncClient, headers: dict) -> int:
     return await _search_code_at(client, REGISTRY_URL, headers)
 
 
@@ -218,7 +218,7 @@ async def _corpus_size() -> tuple[int, int]:
     )
 
 
-async def _502_part(client: httpx.AsyncClient, headers: dict) -> str | None:
+async def _502_part(client: httpx2.AsyncClient, headers: dict) -> str | None:
     """A bogus-model embedding source is rejected by the smoke test with 502, persisting nothing."""
     r = await client.post(_api("/model-sources"), headers=headers, json=_bedrock_body("bad", BAD_MODEL))
     _check("create bad embedding source → 201", r.status_code == 201, f"HTTP {r.status_code}")
@@ -244,7 +244,7 @@ async def _502_part(client: httpx.AsyncClient, headers: dict) -> str | None:
     return bad_id
 
 
-async def _peer_c1_while_running(client: httpx.AsyncClient, headers: dict, peer_url: str, embed_id: str) -> None:
+async def _peer_c1_while_running(client: httpx2.AsyncClient, headers: dict, peer_url: str, embed_id: str) -> None:
     """C1 checks against a second pod while the job is RUNNING: it sees the job and reads stay open."""
     r = await client.put(
         _api_at(peer_url, "/model-gateway/selection/embedding-model"), headers=headers, json={"modelSourceId": embed_id}
@@ -254,7 +254,7 @@ async def _peer_c1_while_running(client: httpx.AsyncClient, headers: dict, peer_
     _check("[peer] search stays available (not 503) while RUNNING", code != 503, f"search {code}")
 
 
-async def _peer_c1_after_completed(client: httpx.AsyncClient, headers: dict, peer_url: str, embed_id: str) -> None:
+async def _peer_c1_after_completed(client: httpx2.AsyncClient, headers: dict, peer_url: str, embed_id: str) -> None:
     """C1 checks against the second pod after COMPLETED: it followed the switch and serves the new gen."""
     sel = (await client.get(_api_at(peer_url, "/model-gateway/selection"), headers=headers)).json()
     _check(
@@ -267,7 +267,7 @@ async def _peer_c1_after_completed(client: httpx.AsyncClient, headers: dict, pee
     _check("[peer] search serves the new generation (200) after COMPLETED", code == 200, f"search {code}")
 
 
-async def _happy_and_409_part(client: httpx.AsyncClient, headers: dict, peer_url: str | None = None) -> str | None:
+async def _happy_and_409_part(client: httpx2.AsyncClient, headers: dict, peer_url: str | None = None) -> str | None:
     """A valid source triggers 202 → RUNNING (search stays 200, second trigger 409) → COMPLETED (generation switches)."""
     servers, agents = await _corpus_size()
     _check(
@@ -321,7 +321,7 @@ async def _happy_and_409_part(client: httpx.AsyncClient, headers: dict, peer_url
 
 
 async def _multi_switch_part(
-    client: httpx.AsyncClient, headers: dict, rounds: int, models: list[str], peer_url: str | None = None
+    client: httpx2.AsyncClient, headers: dict, rounds: int, models: list[str], peer_url: str | None = None
 ) -> list[str]:
     """Change the embedding model ``rounds`` times back to back — the real-world path.
 
@@ -442,7 +442,7 @@ async def amain(peer_url: str | None = None, switches: int = 1, models: list[str
     created_ids: list[str] = []
     try:
         headers = _headers(_token())
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx2.AsyncClient(timeout=30) as client:
             bad_id = await _502_part(client, headers)
             created_ids.append(bad_id)
             if switches > 1:

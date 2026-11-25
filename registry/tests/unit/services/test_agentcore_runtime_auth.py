@@ -160,3 +160,51 @@ async def test_build_runtime_http_auth_jwt_requires_federation_context():
             region="us-east-1",
             assume_role_arn=None,
         )
+
+
+def test_sigv4_auth_signs_httpx2_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sign the original method, URL and body, then copy the signed headers back."""
+    from typing import Any
+    from unittest.mock import Mock
+
+    import httpx2
+    from botocore.awsrequest import AWSRequest
+
+    from registry.services.federation import agentcore_runtime_auth as mod
+
+    captured: list[tuple[str, str, bytes, str]] = []
+    frozen_credentials = object()
+
+    class _FakeSigV4:
+        def __init__(self, credentials: Any, service: str, region: str) -> None:
+            assert credentials is frozen_credentials
+            self.service = service
+            self.region = region
+
+        def add_auth(self, aws_request: AWSRequest) -> None:
+            captured.append(
+                (aws_request.method, str(aws_request.url), aws_request.data, aws_request.headers["Content-Type"])
+            )
+            aws_request.headers["Authorization"] = f"SIG {self.service}/{self.region}"
+            aws_request.headers["X-Amz-Security-Token"] = "session-token"
+
+    monkeypatch.setattr(mod, "SigV4Auth", _FakeSigV4)
+    credentials = Mock()
+    credentials.get_frozen_credentials.return_value = frozen_credentials
+    provider = Mock(return_value=credentials)
+    auth = mod._SigV4Auth("bedrock-agentcore", "us-east-1", provider)
+    body = b'{"jsonrpc": "2.0"}'
+    request = httpx2.Request(
+        "POST", "https://runtime.example.com/mcp", content=body, headers={"Content-Type": "application/json"}
+    )
+
+    signed_requests = list(auth.auth_flow(request))
+
+    assert isinstance(auth, httpx2.Auth)
+    assert auth.requires_request_body is True
+    assert signed_requests == [request]
+    assert captured == [("POST", "https://runtime.example.com/mcp", body, "application/json")]
+    assert request.headers["Authorization"] == "SIG bedrock-agentcore/us-east-1"
+    assert request.headers["X-Amz-Security-Token"] == "session-token"
+    provider.assert_called_once_with()
+    credentials.get_frozen_credentials.assert_called_once_with()

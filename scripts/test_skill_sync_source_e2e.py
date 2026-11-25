@@ -22,7 +22,7 @@ import sys
 import time
 
 import dotenv
-import httpx
+import httpx2
 
 dotenv.load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -77,7 +77,7 @@ class SkillSyncE2E:
         self.github_repo = os.environ.get("GITHUB_REPO", "jarvis-skill")
 
         self.api = f"{base_url.rstrip('/')}/api/v1/skill-sync-sources"
-        self.client = httpx.Client(
+        self.client = httpx2.Client(
             headers={
                 "Content-Type": "application/json",
                 "Cookie": cookie,

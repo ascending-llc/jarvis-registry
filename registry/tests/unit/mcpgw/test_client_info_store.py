@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
+from fakeredis import FakeRedis
 from mcp.types import ClientCapabilities, Implementation, InitializeRequestParams
 from redis.exceptions import RedisError
 
@@ -36,6 +38,7 @@ class _FakeRedis:
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
         self.get_calls = 0
+        self.mget_calls: list[list[str]] = []
         self.raise_on_set = False
         self.raise_on_get = False
 
@@ -49,6 +52,12 @@ class _FakeRedis:
         if self.raise_on_get:
             raise RedisError("boom")
         return self.store.get(key)
+
+    def mget(self, keys: list[str]) -> list[str | None]:
+        self.mget_calls.append(keys)
+        if self.raise_on_get:
+            raise RedisError("boom")
+        return [self.store.get(key) for key in keys]
 
 
 def test_client_info_key_dcr_form_for_mcp_client_id():
@@ -88,9 +97,29 @@ def test_store_save_then_load_round_trips():
     loaded = store.load(key)
 
     assert loaded is not None
-    assert loaded.clientInfo.name == "vscode"
+    assert loaded.client_info.name == "vscode"
     # Only the three persisted fields are stored.
     assert set(json.loads(redis.store[key])) == {"clientInfo", "capabilities", "protocolVersion"}
+
+
+def test_store_loads_v1_shape_camelcase_entry():
+    """An entry written by v1 code (camelCase JSON) still validates and loads under v2."""
+    redis = _FakeRedis()
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    key = "k-v1"
+    redis.store[key] = json.dumps(
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "legacy-client", "version": "0.9"},
+        }
+    )
+
+    loaded = store.load(key)
+
+    assert loaded is not None
+    assert loaded.client_info.name == "legacy-client"
+    assert loaded.protocol_version == "2025-11-25"
 
 
 def test_store_load_returns_none_on_miss():
@@ -110,6 +139,65 @@ def test_store_load_returns_none_on_redis_error():
     redis.raise_on_get = True
     store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
     assert store.load("k1") is None
+
+
+def test_load_many_for_dcr_reads_user_keys_in_one_batch() -> None:
+    redis = _FakeRedis()
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    client_ids = ["mcp-client-abc", "mcp-client-missing", "mcp-client-invalid"]
+    keys = [f"{PREFIX}:mcpgw:client:{USER_ID}:{client_id}" for client_id in client_ids]
+    store.save(keys[0], _params("vscode"))
+    store.save(f"{PREFIX}:mcpgw:client:another-user:{client_ids[1]}", _params("other"))
+    redis.store[keys[2]] = "{invalid"
+
+    assert store.load_many_for_dcr(USER_ID, client_ids) == {
+        "mcp-client-abc": _params("vscode"),
+        "mcp-client-missing": None,
+        "mcp-client-invalid": None,
+    }
+    assert redis.mget_calls == [keys]
+    assert redis.get_calls == 0
+
+
+def test_load_many_for_dcr_skips_empty_input_and_propagates_read_failure() -> None:
+    redis = _FakeRedis()
+    redis.raise_on_get = True
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+
+    assert store.load_many_for_dcr(USER_ID, []) == {}
+    assert redis.mget_calls == []
+    with pytest.raises(RedisError):
+        store.load_many_for_dcr(USER_ID, ["mcp-client-abc"])
+
+
+def test_delete_for_clients_matches_exact_ids_with_or_without_jti_in_one_scan() -> None:
+    redis = FakeRedis(decode_responses=True)
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    user_prefix = f"{PREFIX}:mcpgw:client:{USER_ID}:"
+    targets = ["mcp-client-test", "user-generated"]
+    selected = [user_prefix + targets[0], user_prefix + targets[1] + ":one", user_prefix + targets[1] + ":two"]
+    preserved = [
+        user_prefix + "mcp-client-test-other",
+        user_prefix + "user-generated-other:one",
+        f"{PREFIX}:mcpgw:client:another-user:user-generated:one",
+        f"{PREFIX}:oauth:client:mcp-client-test",
+    ]
+    redis.mset(dict.fromkeys(selected + preserved, "cached"))
+
+    with patch.object(redis, "scan_iter", wraps=redis.scan_iter) as scan:
+        assert store.delete_for_clients(USER_ID, set(targets)) == len(selected)
+        scan.assert_called_once_with(match=f"{user_prefix}*", count=1000)
+
+    assert set(redis.scan_iter()) == set(preserved)
+    assert store.delete_for_clients(USER_ID, set(targets)) == 0
+
+
+def test_delete_for_clients_rejects_invalid_user_before_scan() -> None:
+    redis = FakeRedis(decode_responses=True)
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    with patch.object(redis, "scan_iter") as scan, pytest.raises(ValueError, match="Invalid user ID"):
+        store.delete_for_clients("*", {"user-generated"})
+    scan.assert_not_called()
 
 
 def _scope(method: str = "POST", user: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -287,7 +375,8 @@ def _ctx(redis: _FakeRedis, user: dict[str, Any] | None):
     request = SimpleNamespace(state=state)
     lifespan_context = SimpleNamespace(client_info_store=store)
     request_context = SimpleNamespace(request=request, lifespan_context=lifespan_context)
-    return SimpleNamespace(request_context=request_context)
+    # These exercise the legacy (2025-11-25) Redis-cache source of get_client_params.
+    return SimpleNamespace(request_context=request_context, protocol_version="2025-11-25")
 
 
 def test_get_client_params_at_most_one_get_per_request():
@@ -300,7 +389,7 @@ def test_get_client_params_at_most_one_get_per_request():
     first = get_client_params(ctx)
     second = get_client_params(ctx)
 
-    assert first is not None and first.clientInfo.name == "vscode"
+    assert first is not None and first.client_info.name == "vscode"
     assert second is first
     assert redis.get_calls == 1
 

@@ -53,7 +53,7 @@ async def test_main_initializes_and_closes_shared_resources(monkeypatch: pytest.
     monkeypatch.setattr(main, "DirectiveQueue", lambda: directive_queue)
     monkeypatch.setattr(main, "MongoBackedCancellationManager", lambda **_kwargs: cancellation_manager)
     monkeypatch.setattr(main, "set_cancellation_manager", MagicMock())
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_kwargs: http_client)
+    monkeypatch.setattr(main.a2a_http, "AsyncClient", lambda **_kwargs: http_client)
     monkeypatch.setattr(main, "AzureFoundryClientCache", lambda **_kwargs: azure_client_cache)
     monkeypatch.setattr(main, "AzureModelCredential", lambda: azure_model_credential)
     monkeypatch.setattr(main, "_build_runner", AsyncMock(return_value=runner))
@@ -166,7 +166,7 @@ async def test_main_shuts_down_telemetry_after_scheduler_drains(monkeypatch: pyt
     monkeypatch.setattr(main, "DirectiveQueue", object)
     monkeypatch.setattr(main, "MongoBackedCancellationManager", lambda **_kwargs: object())
     monkeypatch.setattr(main, "set_cancellation_manager", MagicMock())
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_kwargs: SimpleNamespace(aclose=AsyncMock()))
+    monkeypatch.setattr(main.a2a_http, "AsyncClient", lambda **_kwargs: SimpleNamespace(aclose=AsyncMock()))
     monkeypatch.setattr(main, "AzureFoundryClientCache", lambda **_kwargs: SimpleNamespace(close=AsyncMock()))
     monkeypatch.setattr(
         main,

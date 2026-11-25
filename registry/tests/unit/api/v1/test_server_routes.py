@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 from fastapi import FastAPI, HTTPException
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 
 from registry.api.v1.server import server_routes
 from registry.api.v1.server.server_routes import create_server, delete_server, update_server

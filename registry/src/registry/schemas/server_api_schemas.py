@@ -12,6 +12,9 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer
 
+from registry_pkgs.models.mcp_resource_capture import resource_capture_revision
+
+from ..core.mcp_config import MCPTransport
 from ..schemas.acl_schema import ResourcePermissions
 from ..schemas.case_conversion import APIBaseModel
 from ..utils.crypto_utils import decrypt_auth_fields
@@ -144,7 +147,9 @@ class ServerConnectionTestRequest(APIBaseModel):
     """Request schema for testing connection to an MCP server URL"""
 
     url: str = Field(..., description="MCP server URL to test connection")
-    transport: str | None = Field(default="streamable-http", description="Transport type (streamable-http, sse, stdio)")
+    transport: MCPTransport | None = Field(
+        default=MCPTransport.STREAMABLE_HTTP, description="Transport type (streamable-http, sse, stdio)"
+    )
 
 
 # ==================== Response Schemas ====================
@@ -240,6 +245,7 @@ class ServerDetailResponse(APIBaseModel):
         default_factory=list, description="Downstream tool names currently disabled on this server"
     )
     resources: list[dict[str, Any]] | None = Field(None, description="List of available resources")
+    resourceTemplates: list[dict[str, Any]] | None = Field(None, description="List of available resource templates")
     prompts: list[dict[str, Any]] | None = Field(None, description="List of available prompts")
     initDuration: int | None = Field(None, description="Initialization duration in ms")
     author: str | None = Field(None, description="Author user ID")
@@ -451,7 +457,9 @@ def convert_to_detail(
     title = config.get("title") or server.serverName
     tools_str = config.get("tools", "")
     tool_functions = config.get("toolFunctions")
-    resources = config.get("resources", [])
+    # An OAuth server's concrete resources would be one user's data, so they are never shown.
+    resources = config.get("resources", []) if resource_capture_revision(server.config or {}) else []
+    resource_templates = config.get("resourceTemplates", [])
     prompts = config.get("prompts", [])
     capabilities_str = config.get("capabilities", "{}")
     num_tools = server.numTools if hasattr(server, "numTools") else 0
@@ -479,6 +487,7 @@ def convert_to_detail(
         toolFunctions=tool_functions,
         disabledTools=list(getattr(server, "registryDisabledTools", None) or []),
         resources=resources,
+        resourceTemplates=resource_templates,
         prompts=prompts,
         initDuration=config.get("initDuration"),
         author=author_id,

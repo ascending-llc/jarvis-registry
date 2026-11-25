@@ -24,7 +24,7 @@ import sys
 import warnings
 from pathlib import Path
 
-import httpx
+from registry_pkgs.core import a2a_http
 
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
@@ -120,8 +120,8 @@ async def main(path: str, message: str, *, list_agents: bool = False, transport:
             print(f"ERROR: {exc}")
             return 1
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
+        async with a2a_http.AsyncClient(
+            timeout=a2a_http.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
             # Bypass shell HTTP(S)_PROXY env so a local fixture (127.0.0.1) is never
             # routed through a proxy — otherwise a downed local server surfaces as a

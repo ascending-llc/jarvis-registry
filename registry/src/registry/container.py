@@ -6,10 +6,12 @@ from functools import cached_property, partial
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
+from mcp.client.caching import InMemoryResponseCacheStore
 from redis import Redis
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
@@ -33,11 +35,14 @@ from registry_pkgs.workflows.schedule_repository import WorkflowScheduleReposito
 
 from .auth.dependencies import effective_scopes_from_context
 from .core.a2a_proxy import A2AProxyClientRegistry
-from .core.mcp_client import MCPClientService
+from .core.mcp_config import MCPClientConfig
+from .core.mcp_downstream import _RESPONSE_CACHE_MAX_ENTRIES, DownstreamEraCache
+from .core.mcp_transport import MethodRoutedTransport
 from .mcpgw.core.client_info_store import ClientInfoStore
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.background_task_tracker import BackgroundTaskTracker
+from .services.consent_management_service import ConsentManagementService
 from .services.embedding_maintenance_watcher import EmbeddingMaintenanceWatcher, gc_stale_embedding_generations
 from .services.embedding_reindex_execution_service import EmbeddingReindexExecutionService
 from .services.embedding_reindex_job_runner import EmbeddingReindexJobRunner
@@ -45,7 +50,6 @@ from .services.embedding_reindex_job_service import EmbeddingReindexJobService
 from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
-from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
 from .services.group_directory_client import (
     EntraIdGroupDirectoryClient,
@@ -58,6 +62,7 @@ from .services.model_gateway_selection_service import ModelGatewaySelectionServi
 from .services.model_source_crud_service import ModelSourceCrudService
 from .services.oauth.mcp_service import MCPService
 from .services.oauth.status_resolver import ConnectionStatusResolver
+from .services.resource_recapture_reconciler import ResourceRecaptureReconciler
 from .services.search.base import VectorSearchService
 from .services.search.service import SearchService
 from .services.server_service import ServerServiceV1
@@ -122,10 +127,6 @@ class RegistryContainer:
         return A2AAgentRepository(self.db_client)
 
     @cached_property
-    def mcp_client_service(self) -> MCPClientService:
-        return MCPClientService(redis_client=self.redis_client)
-
-    @cached_property
     def client_info_store(self) -> ClientInfoStore:
         """Redis cache of MCP clients' `initialize` params, for the stateless gateway."""
         return ClientInfoStore(
@@ -164,10 +165,6 @@ class RegistryContainer:
             a2a_agent_repo=self.a2a_agent_repo,
             acl_service=self.acl_service,
         )
-
-    @cached_property
-    def federation_service(self) -> FederationService:
-        return FederationService()
 
     @cached_property
     def user_service(self) -> UserService:
@@ -248,6 +245,17 @@ class RegistryContainer:
         )
 
     @cached_property
+    def consent_management_service(self) -> ConsentManagementService:
+        return ConsentManagementService(
+            consent_store=self.consent_store,
+            oauth_client_store=self.oauth_client_store,
+            client_info_store=self.client_info_store,
+            jwt_config=self.settings.jwt_token_config,
+            server_service=self.server_service,
+            a2a_agent_service=self.a2a_agent_service,
+        )
+
+    @cached_property
     def pending_consent_store(self) -> PendingConsentStore:
         return PendingConsentStore(
             redis_client=self.redis_client,
@@ -304,6 +312,7 @@ class RegistryContainer:
             token_service=self.token_service,
             oauth_service=self.oauth_service,
             mcp_server_repo=self.mcp_server_repo,
+            downstream_era_cache=self.downstream_era_cache,
             embedding_maintenance_watcher=self.embedding_maintenance_watcher,
             background_task_tracker=self.background_task_tracker,
             lease_owner=self.lease_owner,
@@ -445,37 +454,46 @@ class RegistryContainer:
         )
 
     @cached_property
-    def mcp_proxy_client(self) -> httpx.AsyncClient:
-        """Shared httpx client for the direct-proxy `/proxy/{server}` routes and skill-sync's GitHub/OAuth calls."""
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, read=60.0),
+    def mcp_proxy_client(self) -> httpx2.AsyncClient:
+        """Shared httpx2 client for the direct-proxy `/proxy/{server}` routes and skill-sync's GitHub/OAuth calls."""
+        return httpx2.AsyncClient(
+            timeout=httpx2.Timeout(30.0, read=60.0),
             follow_redirects=True,
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
         )
 
     @cached_property
-    def mcpgw_proxy_client(self) -> httpx.AsyncClient:
-        """Long-lived httpx client for the stateless MCP gateway's downstream proxy calls.
+    def mcpgw_downstream_transport(self) -> MethodRoutedTransport:
+        """Gateway-only connection pools (GET streams apart from requests), independent of direct-proxy traffic."""
 
-        In stateless mode the FastMCP lifespan is entered on every request, so this must live on the
-        container (not be opened per-lifespan-entry) to keep keep-alive pooling across requests.
+        def pool(max_connections: int) -> httpx2.AsyncHTTPTransport:
+            return httpx2.AsyncHTTPTransport(
+                limits=httpx2.Limits(
+                    max_connections=max_connections,
+                    max_keepalive_connections=MCPClientConfig.DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS,
+                )
+            )
 
-        Deliberately separate from `mcp_proxy_client` despite identical settings, so the gateway's traffic
-        and the direct-proxy/skill-sync traffic keep isolated pools and can't starve each other.
-        """
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, read=60.0),
-            follow_redirects=True,
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        return MethodRoutedTransport(
+            request_pool=pool(MCPClientConfig.DOWNSTREAM_REQUEST_MAX_CONNECTIONS),
+            stream_pool=pool(MCPClientConfig.DOWNSTREAM_STREAM_MAX_CONNECTIONS),
         )
 
     @cached_property
-    def a2a_httpx_client(self) -> httpx.AsyncClient:
-        """Shared httpx client for A2A agent invocations (workflow executors + mcpgw)."""
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
+    def mcpgw_downstream_response_cache(self) -> InMemoryResponseCacheStore:
+        return InMemoryResponseCacheStore(max_entries=_RESPONSE_CACHE_MAX_ENTRIES)
+
+    @cached_property
+    def downstream_era_cache(self) -> DownstreamEraCache:
+        return DownstreamEraCache(self.redis_client, self.settings.redis_key_prefix)
+
+    @cached_property
+    def a2a_httpx_client(self) -> a2a_http.AsyncClient:
+        """Shared classic httpx client for A2A agent invocations (workflow executors + mcpgw)."""
+        return a2a_http.AsyncClient(
+            timeout=a2a_http.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
-            limits=httpx.Limits(
+            limits=a2a_http.Limits(
                 max_connections=self.settings.a2a_max_connections,
                 max_keepalive_connections=self.settings.a2a_max_keepalive_connections,
             ),
@@ -571,6 +589,14 @@ class RegistryContainer:
         )
 
     @cached_property
+    def resource_recapture_reconciler(self) -> ResourceRecaptureReconciler:
+        return ResourceRecaptureReconciler(
+            server_service=self.server_service,
+            embedding_maintenance_watcher=self.embedding_maintenance_watcher,
+            lease_owner=self.lease_owner,
+        )
+
+    @cached_property
     def vector_orphan_sweeper(self) -> VectorOrphanSweeper:
         return VectorOrphanSweeper(
             mcp_server_repo=self.mcp_server_repo,
@@ -639,9 +665,6 @@ class RegistryContainer:
         logger.info("Initializing MCP service (OAuth flow state storage)...")
         await self.mcp_service.initialize()
 
-        logger.info("Initializing federation service...")
-        self._initialize_federation()
-
         logger.info("Initializing workflow runner...")
         workflow_runner = self.workflow_runner
         logger.info("Workflow runner initialized successfully: %s", type(workflow_runner).__name__)
@@ -661,6 +684,9 @@ class RegistryContainer:
         logger.info("Starting vector sync reconciler...")
         await self.vector_sync_reconciler.start()
 
+        logger.info("Starting resource recapture reconciler...")
+        await self.resource_recapture_reconciler.start()
+
         logger.info("Starting vector orphan sweeper...")
         await self.vector_orphan_sweeper.start()
 
@@ -674,34 +700,14 @@ class RegistryContainer:
         await self.skill_sync_job_runner.shutdown()
         await self.embedding_reindex_job_runner.shutdown()
         await self.vector_sync_reconciler.shutdown()
+        await self.resource_recapture_reconciler.shutdown()
         await self.vector_orphan_sweeper.shutdown()
         await self.embedding_maintenance_watcher.shutdown()
         # Cancel and finalize all tracked background runs (replaces the cluster-wide shutdown sweep).
         await self.background_task_tracker.shutdown()
         await self.mcp_proxy_client.aclose()
-        await self.mcpgw_proxy_client.aclose()
+        await self.mcpgw_downstream_transport.aclose()
         await self.a2a_httpx_client.aclose()
         await self.a2a_client_registry.close()
         self.azure_model_credential.close()
         await self.cloud_identity_client.aclose()
-
-    def _initialize_federation(self) -> None:
-        """Run optional federation sync on startup without failing the whole application."""
-        federation_service = self.federation_service
-        if federation_service.config.is_any_federation_enabled():
-            logger.info("Federation enabled for: %s", ", ".join(federation_service.config.get_enabled_federations()))
-
-            sync_on_startup = (
-                federation_service.config.anthropic.enabled and federation_service.config.anthropic.sync_on_startup
-            ) or (federation_service.config.asor.enabled and federation_service.config.asor.sync_on_startup)
-
-            if sync_on_startup:
-                logger.info("Syncing servers from federated registries on startup...")
-                try:
-                    sync_results = federation_service.sync_all()
-                    for source, servers in sync_results.items():
-                        logger.info("Synced %s servers from %s", len(servers), source)
-                except Exception as exc:
-                    logger.error("Federation sync failed (continuing with startup): %s", exc, exc_info=True)
-        else:
-            logger.info("Federation is disabled")

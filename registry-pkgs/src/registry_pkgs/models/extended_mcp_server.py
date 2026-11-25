@@ -66,6 +66,7 @@ from ..core.config import ChunkingConfig
 from ..models.enums import McpAuthMode, MCPEntityType
 from ._generated import MCPServer
 from .federation_metadata import AgentCoreMcpFederationMetadata, extract_runtime_arn, extract_runtime_version
+from .mcp_resource_capture import RESOURCE_CAPTURE_REVISION, RESOURCE_KIND, resource_capture_revision
 from .mcp_server_oauth import RegistryOAuthState
 from .vector_doc_ids import assign_deterministic_doc_ids
 
@@ -73,6 +74,42 @@ logger = logging.getLogger(__name__)
 
 _SAFE_SERVER_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+\Z")
 _UNSAFE_CHAR_RE = re.compile(r"[^a-zA-Z0-9_.-]")
+
+# MCP Apps extension: `ui://` resources are HTML documents a host renders next to a tool result. They are
+# useless to a model, so they are kept in config but never indexed.
+MCP_APP_URI_SCHEME = "ui://"
+_MCP_APP_MEDIA_TYPE = "text/html"
+_MCP_APP_PROFILE = "mcp-app"
+
+
+def mcp_auth_mode_from_config(config: dict[str, Any] | None) -> McpAuthMode:
+    """Classify which authentication mechanism an MCP server config declares."""
+    config = config or {}
+    if config.get("runtimeAccess"):
+        return McpAuthMode.AGENTCORE
+    if config.get("requiresOAuth", False) or "oauth" in config:
+        return McpAuthMode.OAUTH
+    if isinstance(config.get("apiKey"), dict):
+        return McpAuthMode.API_KEY
+    return McpAuthMode.NONE
+
+
+def _is_mcp_app_mime_type(mime_type: str) -> bool:
+    """Whether a MIME type is ``text/html`` with ``profile=mcp-app``, ignoring case, spacing, quoting and other parameters."""
+    media_type, *params = (part.strip() for part in mime_type.lower().split(";"))
+    if media_type != _MCP_APP_MEDIA_TYPE:
+        return False
+    for param in params:
+        name, _, value = param.partition("=")
+        if name.strip() == "profile" and value.strip().strip('"') == _MCP_APP_PROFILE:
+            return True
+    return False
+
+
+def _is_mcp_app_ui_resource(item: dict) -> bool:
+    """Whether a resource or resource template is an MCP App UI document."""
+    uri = str(item.get("uri") or item.get("uriTemplate") or "")
+    return uri.lower().startswith(MCP_APP_URI_SCHEME) or _is_mcp_app_mime_type(item.get("mimeType") or "")
 
 
 def _parse_input_schema(raw: Any) -> dict | None:
@@ -152,9 +189,18 @@ class ExtendedMCPServer(MCPServer):
             "mcpToolName": "tool1"  # Original MCP tool name
           }
         },
-        "resources": [         # MCP resources
+        "resources": [         # MCP resources (concrete URIs; always [] for OAuth servers)
           {
-            "uri": "github://repo/{owner}/{repo}",
+            "uri": "file:///project/README.md",
+            "name": "readme",
+            "description": "...",
+            "mimeType": "text/markdown",
+            "annotations": {...}
+          }
+        ],
+        "resourceTemplates": [ # MCP resource templates (RFC 6570 URI templates)
+          {
+            "uriTemplate": "github://repo/{owner}/{repo}",
             "name": "repository",
             "description": "...",
             "mimeType": "application/json",
@@ -260,6 +306,8 @@ class ExtendedMCPServer(MCPServer):
             ),
             # Registry-owned field (see the note above); the reconciler scans by it.
             IndexModel([("vectorSyncPendingAt", 1)], sparse=True),
+            # Registry-owned; the resource-recapture reconciler scans and sorts by it.
+            IndexModel([("resourceRecapturePendingAt", 1)], sparse=True),
         ]
 
     @property
@@ -276,14 +324,7 @@ class ExtendedMCPServer(MCPServer):
     @property
     def mcp_auth_mode(self) -> McpAuthMode:
         """Classify which authentication mechanism the server config declares."""
-        config = self.config or {}
-        if config.get("runtimeAccess"):
-            return McpAuthMode.AGENTCORE
-        if config.get("requiresOAuth", False) or "oauth" in config:
-            return McpAuthMode.OAUTH
-        if isinstance(config.get("apiKey"), dict):
-            return McpAuthMode.API_KEY
-        return McpAuthMode.NONE
+        return mcp_auth_mode_from_config(self.config)
 
     # Beanie's init_actions (>=2.1.0) skips any @before_event/@after_event method whose name
     # starts with "_" (https://github.com/BeanieODM/beanie/issues/1316), so this hook cannot
@@ -339,11 +380,21 @@ class ExtendedMCPServer(MCPServer):
             tool_docs = self._create_tool_docs(tool_name, tool_data, chunking_config)
             docs.extend(tool_docs)
 
-        # Resources
-        resources = self.config.get("resources", [])
+        # Resources. An OAuth server's concrete resources were listed with one user's token, so they are that
+        # user's data and are never indexed, even if an older writer stored them.
+        capture_revision = resource_capture_revision(self.config)
+        resources = self.config.get("resources", []) if capture_revision else []
+        resources = [resource for resource in resources if not _is_mcp_app_ui_resource(resource)]
         for resource in resources:
-            resource_docs = self._create_resource_docs(resource, chunking_config)
+            resource_docs = self._create_resource_docs(resource, chunking_config, capture_revision=capture_revision)
             docs.extend(resource_docs)
+
+        # Resource templates
+        resource_templates = [
+            template for template in self.config.get("resourceTemplates", []) if not _is_mcp_app_ui_resource(template)
+        ]
+        for template in resource_templates:
+            docs.extend(self._create_resource_template_docs(template, chunking_config))
 
         # Prompts
         prompts = self.config.get("prompts", [])
@@ -353,7 +404,8 @@ class ExtendedMCPServer(MCPServer):
 
         logger.info(
             f"Generated {len(docs)} documents for server {self.serverName} "
-            f"(tools:{len(tool_functions)}, resources:{len(resources)}, prompts:{len(prompts)})"
+            f"(tools:{len(tool_functions)}, resources:{len(resources)}, "
+            f"resource_templates:{len(resource_templates)}, prompts:{len(prompts)})"
         )
 
         # Deterministic ids so a re-insert of the same server upserts instead of duplicating.
@@ -382,12 +434,38 @@ class ExtendedMCPServer(MCPServer):
 
         return self._split_if_needed(content, metadata, chunking_config)
 
-    def _create_resource_docs(self, resource: dict, chunking_config: ChunkingConfig) -> list[LangChainDocument]:
+    def _create_resource_docs(
+        self, resource: dict, chunking_config: ChunkingConfig, *, capture_revision: str
+    ) -> list[LangChainDocument]:
         """Create Resource document(s) with text splitting if needed."""
         content = self.generate_resource_content(resource)
 
         metadata = self._get_base_metadata(MCPEntityType.RESOURCE)
-        metadata.update({"resource_name": resource.get("name", ""), "resource_uri": resource.get("uri", "")})
+        metadata.update(
+            {
+                "resource_name": resource.get("name", ""),
+                "resource_uri": resource.get("uri", ""),
+                RESOURCE_KIND: "concrete",
+                RESOURCE_CAPTURE_REVISION: capture_revision,
+            }
+        )
+
+        return self._split_if_needed(content, metadata, chunking_config)
+
+    def _create_resource_template_docs(
+        self, template: dict, chunking_config: ChunkingConfig
+    ) -> list[LangChainDocument]:
+        """Create Resource Template document(s). Templates share entity_type='resource' with concrete resources."""
+        content = self.generate_resource_template_content(template)
+
+        metadata = self._get_base_metadata(MCPEntityType.RESOURCE)
+        metadata.update(
+            {
+                "resource_name": template.get("name", ""),
+                "resource_uri_template": template.get("uriTemplate", ""),
+                RESOURCE_KIND: "template",
+            }
+        )
 
         return self._split_if_needed(content, metadata, chunking_config)
 
@@ -438,6 +516,9 @@ class ExtendedMCPServer(MCPServer):
             "enabled": self._config_enabled,
             "tags": list(self.tags) if self.tags else [],
         }
+        revision = resource_capture_revision(self.config)
+        if revision:
+            meta[RESOURCE_CAPTURE_REVISION] = revision
         runtime_version = extract_runtime_version(self.federationMetadata)
         if runtime_version is not None:
             meta["runtimeVersion"] = runtime_version
@@ -560,20 +641,28 @@ class ExtendedMCPServer(MCPServer):
         Generate content for Resource document.
 
         Format: serverName | path | title | description |
-                name | description | URI: uri_template | MIME type: mime_type
+                name | description | URI: uri | MIME type: mime_type
 
         The server prefix makes resource docs self-contained for vector search.
         """
-        name = resource.get("name", "")
-        description = resource.get("description", "")
-        uri = resource.get("uri", "")
-        mime_type = resource.get("mimeType", "")
+        return self._resource_content(resource, "URI", resource.get("uri", ""))
 
-        parts = [name, description]
+    def generate_resource_template_content(self, template: dict) -> str:
+        """
+        Generate content for Resource Template document.
+
+        Format: serverName | path | title | description |
+                name | description | URI template: uri_template | MIME type: mime_type
+        """
+        return self._resource_content(template, "URI template", template.get("uriTemplate", ""))
+
+    def _resource_content(self, item: dict, uri_label: str, uri: str) -> str:
+        parts = [item.get("name", ""), item.get("description", "")]
 
         if uri:
-            parts.append(f"URI template: {uri}")
+            parts.append(f"{uri_label}: {uri}")
 
+        mime_type = item.get("mimeType", "")
         if mime_type:
             parts.append(f"MIME type: {mime_type}")
 
@@ -647,7 +736,14 @@ class ExtendedMCPServer(MCPServer):
             result["input_schema"] = _parse_input_schema(metadata.get("input_schema"))
         elif entity_type == MCPEntityType.RESOURCE:
             result["resource_name"] = metadata.get("resource_name")
-            result["resource_uri"] = metadata.get("resource_uri")
+            for key in (RESOURCE_CAPTURE_REVISION, RESOURCE_KIND):
+                if key in metadata:
+                    result[key] = metadata[key]
+            # A result carries exactly one: a concrete URI to read verbatim, or a template to fill first.
+            if metadata.get("resource_uri"):
+                result["resource_uri"] = metadata.get("resource_uri")
+            elif metadata.get("resource_uri_template"):
+                result["resource_uri_template"] = metadata.get("resource_uri_template")
         elif entity_type == MCPEntityType.PROMPT:
             result["prompt_name"] = metadata.get("prompt_name")
 

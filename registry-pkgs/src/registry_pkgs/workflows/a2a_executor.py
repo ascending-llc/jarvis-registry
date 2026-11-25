@@ -8,7 +8,6 @@ import mimetypes
 import re
 from typing import Any
 
-import httpx
 from a2a.types import FileWithBytes, FileWithUri, Message, Task
 from a2a.utils.parts import get_data_parts, get_file_parts
 from agno.agent import Agent
@@ -17,6 +16,7 @@ from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import (
@@ -293,7 +293,7 @@ def make_a2a_executor(
     agent: A2AAgent,
     *,
     jwt_config: JwtSigningConfig,
-    httpx_client: httpx.AsyncClient | None = None,
+    httpx_client: a2a_http.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
 ) -> StepExecutor:
     """Wrap an A2A agent as a workflow StepExecutor via a direct A2A call.
@@ -327,7 +327,7 @@ def make_a2a_pool_executor(
     *,
     selector_llm: Model,
     jwt_config: JwtSigningConfig,
-    httpx_client: httpx.AsyncClient | None = None,
+    httpx_client: a2a_http.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
 ) -> StepExecutor:
     """Build a StepExecutor that picks the best A2A agent from a pool at runtime.

@@ -1,5 +1,6 @@
 """Unit tests for auth-server consent routes."""
 
+import secrets
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,13 +28,13 @@ from tests.support.oauth_state_store import InMemoryOAuthStateStore
 
 class _InMemoryConsentStore:
     def __init__(self) -> None:
-        self.client_consents: set[tuple[str, str]] = set()
+        self.client_consents: dict[tuple[str, str], str] = {}
 
-    def has_client_consent(self, user_id: str, client_id: str) -> bool:
-        return (user_id, client_id) in self.client_consents
+    def get_client_grant_id(self, user_id: str, client_id: str) -> str | None:
+        return self.client_consents.get((user_id, client_id))
 
-    def grant_client_consent(self, user_id: str, client_id: str) -> None:
-        self.client_consents.add((user_id, client_id))
+    def grant_client_consent(self, user_id: str, client_id: str) -> str:
+        return self.client_consents.setdefault((user_id, client_id), secrets.token_urlsafe(16))
 
 
 class _InMemoryPendingConsentStore:
@@ -245,8 +246,9 @@ def test_approve_consent_grants_and_finishes_oauth_callback() -> None:
     query = parse_qs(urlparse(location).query)
     assert query["state"] == ["client-state"]
     auth_code = query["code"][0]
-    assert oauth_store.get_authcode(auth_code) is not None
-    assert consent_store.has_client_consent("507f1f77bcf86cd799439011", "external-client") is True
+    grant_id = consent_store.get_client_grant_id("507f1f77bcf86cd799439011", "external-client")
+    assert grant_id is not None
+    assert oauth_store.get_authcode(auth_code)["consent_grant_id"] == grant_id
     assert pending_store.peek("nonce-1") is None
 
 
@@ -530,7 +532,7 @@ def test_oauth_callback_with_cached_client_consent_skips_consent(
 ) -> None:
     client, oauth_store, consent_store, pending_store = _client()
     signer = URLSafeTimedSerializer("test-secret-key")
-    consent_store.grant_client_consent("507f1f77bcf86cd799439011", "external-client")
+    grant_id = consent_store.grant_client_consent("507f1f77bcf86cd799439011", "external-client")
     mock_exchange_code_for_token.return_value = {"access_token": "provider-token", "id_token": "provider-id-token"}
     user_info = {
         "username": "alice",
@@ -567,7 +569,7 @@ def test_oauth_callback_with_cached_client_consent_skips_consent(
     location = response.headers["location"]
     assert location.startswith("https://client.example.com/callback")
     auth_code = parse_qs(urlparse(location).query)["code"][0]
-    assert oauth_store.get_authcode(auth_code) is not None
+    assert oauth_store.get_authcode(auth_code)["consent_grant_id"] == grant_id
     assert pending_store.pending == {}
 
 
@@ -613,5 +615,5 @@ def test_oauth_callback_registry_client_skips_consent(
     location = response.headers["location"]
     assert location.startswith("https://registry.example.com/callback")
     auth_code = parse_qs(urlparse(location).query)["code"][0]
-    assert oauth_store.get_authcode(auth_code) is not None
+    assert "consent_grant_id" not in oauth_store.get_authcode(auth_code)
     assert pending_store.pending == {}

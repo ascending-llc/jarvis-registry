@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from bson import ObjectId
 from fastapi import status
 
-from registry_pkgs.core.consent_store import PendingConsentStore
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import (
     DEVICE_CODE_GRANT_TYPE,
     DeviceCodeResponse,
@@ -17,7 +17,7 @@ from registry_pkgs.core.downstream_oauth import (
 )
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 
-from ...constants import DownstreamOAuthConstants
+from ...constants import PENDING_CONSENT_FLOW_FIELD, DownstreamOAuthConstants, PendingConsentFlow
 from ...core.config import settings
 from ..server_service import ServerServiceV1
 from .mcp_service import MCPService
@@ -98,6 +98,7 @@ async def create_device_authorization(
         pending_store.save(
             nonce,
             {
+                PENDING_CONSENT_FLOW_FIELD: PendingConsentFlow.DOWNSTREAM,
                 "flow_type": "device",
                 "user_id": user_id,
                 "client_id": client_id,
@@ -164,6 +165,23 @@ async def initiate_device_layer_a(
         device_code=device_code,
     )
     return None if error else auth_url
+
+
+def persist_device_consent(
+    *,
+    device_code: str,
+    user_id: str,
+    client_id: str,
+    store: DownstreamOAuthStoreProtocol,
+    consent_store: ConsentStore,
+) -> None:
+    """Bind a device authorization to the consent granted before its Layer A redirect."""
+    if client_id == settings.jwt_token_config.registry_client_id:
+        return
+    grant_id = consent_store.grant_client_consent(user_id, client_id)
+    device_data = store.get_device_code(device_code)
+    if device_data is None or not store.update_device_code(device_code, {**device_data, "consent_grant_id": grant_id}):
+        raise RuntimeError("Device authorization expired while recording consent")
 
 
 def mark_device_denied(

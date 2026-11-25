@@ -2,16 +2,12 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
-from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
-import anyio
-import httpx
+import httpx2
 import pytest
-from mcp import ClientSession, types
-from mcp.shared.memory import create_client_server_memory_streams
+from mcp import Client
 
 from registry.mcpgw import server as gateway
 
@@ -24,22 +20,23 @@ _TOOL_NAMES = (
     "execute_agent",
     "execute_tool",
     "read_resource",
-    "execute_prompt",
+    "get_prompt",
 )
 _MAX_DESCRIPTION_CHARACTERS = 2048
 
 
 @asynccontextmanager
-async def _gateway_session() -> AsyncIterator[tuple[ClientSession, types.InitializeResult]]:
+async def _gateway_session() -> AsyncIterator[Client]:
     # Metadata requests must not call any service. Plain objects fail if a service
-    # method is accidentally used, and the HTTP transport rejects external I/O.
+    # method is accidentally used, and the mock transport rejects external I/O.
     dependencies = (
         "a2a_client_registry",
         "server_service",
         "mcp_server_repo",
         "a2a_agent_repo",
         "search_service",
-        "mcp_client_service",
+        "mcpgw_downstream_response_cache",
+        "downstream_era_cache",
         "oauth_service",
         "client_info_store",
         "redis_client",
@@ -48,34 +45,18 @@ async def _gateway_session() -> AsyncIterator[tuple[ClientSession, types.Initial
         "pending_consent_store",
     )
 
-    def reject_request(request: httpx.Request) -> httpx.Response:
+    def reject_request(request: httpx2.Request) -> httpx2.Response:
         raise AssertionError(f"Unexpected outgoing request: {request.method} {request.url}")
 
-    async with (
-        httpx.AsyncClient(transport=httpx.MockTransport(reject_request)) as proxy_client,
-        create_client_server_memory_streams() as (client_streams, server_streams),
-    ):
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(reject_request)) as proxy_client:
         container = cast(
             "RegistryContainer",
-            SimpleNamespace(mcpgw_proxy_client=proxy_client, **{name: object() for name in dependencies}),
+            SimpleNamespace(mcpgw_downstream_transport=proxy_client, **{name: object() for name in dependencies}),
         )
         app = gateway.create_gateway_mcp_app(container_provider=lambda: container)
-        server = app._mcp_server
-        async with anyio.create_task_group() as tasks:
-            tasks.start_soon(
-                partial(
-                    server.run,
-                    *server_streams,
-                    server.create_initialization_options(),
-                    raise_exceptions=True,
-                )
-            )
-            try:
-                async with ClientSession(*client_streams, read_timeout_seconds=timedelta(seconds=5)) as client:
-                    initialized = await client.initialize()
-                    yield client, initialized
-            finally:
-                tasks.cancel_scope.cancel()
+        # v2: drive the in-process server through mcp.Client in legacy mode (negotiates 2025-11-25).
+        async with Client(app, mode="legacy") as client:
+            yield client
 
 
 def test_instruction_budget_preserves_the_discovery_rule_in_the_first_line() -> None:
@@ -98,9 +79,10 @@ def test_instructions_tell_the_model_to_show_consent_urls() -> None:
 
 @pytest.mark.asyncio
 async def test_initialize_delivers_instructions_without_prompts() -> None:
-    async with _gateway_session() as (client, initialized):
-        assert initialized.instructions == gateway._SYSTEM_INSTRUCTIONS
-        assert initialized.instructions
+    async with _gateway_session() as client:
+        # v2 exposes the negotiated instructions on the client (not title).
+        assert client.instructions == gateway._SYSTEM_INSTRUCTIONS
+        assert client.instructions
 
         prompts = await client.list_prompts()
         assert prompts.prompts == []
@@ -108,7 +90,7 @@ async def test_initialize_delivers_instructions_without_prompts() -> None:
 
 @pytest.mark.asyncio
 async def test_tools_keep_their_schemas_and_expose_discovery_guidance() -> None:
-    async with _gateway_session() as (client, _):
+    async with _gateway_session() as client:
         listed = await client.list_tools()
         tools = {tool.name: tool for tool in listed.tools}
         assert set(tools) == set(_TOOL_NAMES)
@@ -116,7 +98,7 @@ async def test_tools_keep_their_schemas_and_expose_discovery_guidance() -> None:
         for name in ("discover_servers", "discover_agents"):
             tool = tools[name]
             assert "Before claiming" in (tool.description or "")[:250]
-            schema = tool.inputSchema
+            schema = tool.input_schema
             assert set(schema["properties"]) == {"query", "top_n", "type_list"}
             assert not schema.get("required")
             query = schema["properties"]["query"]
@@ -127,7 +109,7 @@ async def test_tools_keep_their_schemas_and_expose_discovery_guidance() -> None:
             assert schema["properties"]["type_list"]["items"]["type"] == "string"
 
             # Protocol schema captured before adding contextual empty-result hints.
-            assert tool.outputSchema == {
+            assert tool.output_schema == {
                 "properties": {
                     "result": {
                         "items": {"additionalProperties": True, "type": "object"},
@@ -141,14 +123,14 @@ async def test_tools_keep_their_schemas_and_expose_discovery_guidance() -> None:
             }
 
         assert "different providers" in tools["discover_servers"].description
-        assert set(tools["execute_tool"].inputSchema["required"]) == {"tool_name", "arguments", "server_id"}
-        assert set(tools["execute_agent"].inputSchema["required"]) == {"agent_id", "message"}
+        assert set(tools["execute_tool"].input_schema["required"]) == {"tool_name", "arguments", "server_id"}
+        assert set(tools["execute_agent"].input_schema["required"]) == {"agent_id", "message"}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool_name", _TOOL_NAMES)
 async def test_tool_descriptions_fit_client_budget_without_indentation(tool_name: str) -> None:
-    async with _gateway_session() as (client, _):
+    async with _gateway_session() as client:
         listed = await client.list_tools()
         tool = next(tool for tool in listed.tools if tool.name == tool_name)
 
@@ -158,3 +140,70 @@ async def test_tool_descriptions_fit_client_budget_without_indentation(tool_name
         assert all(line == line.lstrip() for line in description.splitlines())
         if tool_name in ("discover_servers", "discover_agents"):
             assert "Before claiming" in description[:250]
+
+
+async def test_resource_and_prompt_tool_contracts() -> None:
+    async with _gateway_session() as client:
+        listed = await client.list_tools()
+        tools = {tool.name: tool for tool in listed.tools}
+        prompt = tools["get_prompt"]
+        resource = tools["read_resource"]
+        assert set(prompt.input_schema["required"]) == {"server_id", "prompt_name"}
+        variants = prompt.input_schema["properties"]["arguments"]["anyOf"]
+        assert {"type": "null"} in variants
+        assert next(item for item in variants if item["type"] == "object")["additionalProperties"] == {"type": "string"}
+        assert prompt.output_schema is None and resource.output_schema is None
+        assert "only when the user asks" in prompt.description
+        assert "Never call it to look up how to do a task yourself" in prompt.description
+        assert "resource_uri_template" in resource.description and "resource link" in resource.description
+
+
+@pytest.mark.parametrize("value", [42, True, [], {}, None])
+async def test_prompt_invalid_argument_values_never_reach_impl(monkeypatch: pytest.MonkeyPatch, value: object) -> None:
+    from unittest.mock import AsyncMock
+
+    from registry.mcpgw.tools import server
+
+    invoke = AsyncMock()
+    monkeypatch.setattr(server, "get_prompt_impl", invoke)
+    async with _gateway_session() as client:
+        result = await client.call_tool(
+            "get_prompt", {"server_id": "server", "prompt_name": "greet", "arguments": {"name": value}}
+        )
+        assert result.is_error
+    invoke.assert_not_awaited()
+
+
+@pytest.mark.parametrize("arguments", [{"name": "Ada"}, None, "omitted"])
+async def test_prompt_optional_arguments_reach_impl(monkeypatch: pytest.MonkeyPatch, arguments: object) -> None:
+    from unittest.mock import AsyncMock
+
+    from mcp.types import CallToolResult, TextContent
+
+    from registry.mcpgw.tools import server
+
+    invoke = AsyncMock(return_value=CallToolResult(content=[TextContent(type="text", text="accepted")]))
+    monkeypatch.setattr(server, "get_prompt_impl", invoke)
+    params = {"server_id": "server", "prompt_name": "greet"}
+    if arguments != "omitted":
+        params["arguments"] = arguments
+    async with _gateway_session() as client:
+        result = await client.call_tool("get_prompt", params)
+        assert not result.is_error and result.structured_content is None
+    assert invoke.await_args.args[1:] == ("server", "greet", None if arguments == "omitted" else arguments)
+
+
+async def test_resource_link_uri_reaches_impl_without_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from mcp.types import CallToolResult, ResourceLink, TextContent
+
+    from registry.mcpgw.tools import server
+
+    link = ResourceLink(type="resource_link", name="Private document", uri="custom://private/document")
+    invoke = AsyncMock(return_value=CallToolResult(content=[TextContent(type="text", text="read")]))
+    monkeypatch.setattr(server, "read_resource_impl", invoke)
+    async with _gateway_session() as client:
+        result = await client.call_tool("read_resource", {"server_id": "source-server", "resource_uri": link.uri})
+        assert not result.is_error
+    assert invoke.await_args.args[1:] == ("source-server", link.uri)

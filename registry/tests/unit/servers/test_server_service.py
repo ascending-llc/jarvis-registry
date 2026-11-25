@@ -23,6 +23,39 @@ from registry_pkgs.core.exceptions import EmbeddingReindexInProgressException
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 
+def _captured(
+    tools: list[dict] | None,
+    resources: list[dict] | None,
+    prompts: list[dict] | None,
+    capabilities: dict | None,
+    error_message: str | None = None,
+    resource_templates: list[dict] | None = None,
+) -> MCPServerData:
+    """A retrieve_from_server result; templates default to [] on success."""
+    if resource_templates is None and error_message is None:
+        resource_templates = []
+    return MCPServerData(
+        tools=tools,
+        resources=resources,
+        prompts=prompts,
+        capabilities=capabilities,
+        error_message=error_message,
+        resource_templates=resource_templates,
+    )
+
+
+async def test_get_names_by_paths_batches_only_display_fields() -> None:
+    service = ServerServiceV1(Mock(), Mock(), Mock(), Mock())
+    paths = {"/live", "/deleted"}
+    with patch.object(ExtendedMCPServer, "get_pymongo_collection") as collection:
+        find = collection.return_value.find
+        find.return_value.__aiter__.return_value = [{"path": "/live", "serverName": "Live server"}]
+        assert await service.get_names_by_paths(set()) == {}
+        assert await service.get_names_by_paths(paths) == {"/live": "Live server"}
+
+    find.assert_called_once_with({"path": {"$in": list(paths)}}, {"_id": 0, "path": 1, "serverName": 1})
+
+
 def _record_config_at_save(server: Mock) -> list[dict[str, object]]:
     saved: list[dict[str, object]] = []
 
@@ -58,6 +91,7 @@ class TestFetchRegistrationCapabilities:
             serverName="registration-test",
             tags=["test"],
             numTools=0,
+            updatedAt=datetime(2026, 11, 23, 8, 0, 0, 123000, tzinfo=UTC),
             config={
                 "url": "https://mcp.example.com/mcp",
                 "type": "streamable-http",
@@ -102,11 +136,14 @@ class TestFetchRegistrationCapabilities:
         resources: list[dict[str, str]] | None,
         prompts: list[dict[str, str]] | None,
     ) -> None:
-        def retrieve(current_server: ExtendedMCPServer, **_: object) -> tuple[object, ...]:
+        def retrieve(current_server: ExtendedMCPServer, **_: object) -> MCPServerData:
             current_server.config["requiresInit"] = False
-            return [{"name": "ignored-tool"}], resources, prompts, capabilities, None
+            return _captured([{"name": "ignored-tool"}], resources, prompts, capabilities)
 
-        with patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)) as fetch:
+        with (
+            patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)) as fetch,
+            patch.object(service, "schedule_vector_sync") as schedule,
+        ):
             await service.fetch_registration_capabilities(server, "user-1")
 
         fetch.assert_awaited_once_with(
@@ -116,21 +153,86 @@ class TestFetchRegistrationCapabilities:
             include_prompts=True,
             user_id="user-1",
         )
-        update.find_one.assert_called_once_with({"_id": server.id})
+        # Conditional on the snapshot's updatedAt, so a concurrent change discards this capture.
+        update.find_one.assert_called_once_with({"_id": server.id, "updatedAt": server.updatedAt})
         update.assert_awaited_once()
-        assert self._set_fields(update) == {
+        fields = self._set_fields(update)
+        if resources is not None:
+            from registry_pkgs.models.mcp_resource_capture import resource_capture_revision
+
+            proof = fields.pop("config.resourceCapture")
+            assert resource_capture_revision({**server.config, "resources": resources, "resourceCapture": proof})
+        assert fields == {
             "config.capabilities": json.dumps(capabilities),
-            "config.resources": resources or [],
-            "config.prompts": prompts or [],
+            # A listing that failed (None) is omitted so the stored value is kept.
+            **({"config.resources": resources} if resources is not None else {}),
+            **({"config.prompts": prompts} if prompts is not None else {}),
+            "config.resourceTemplates": [],
             "config.requiresInit": False,
             "updatedAt": ANY,
+            # Captured listings become vector documents: the same write marks the server pending.
+            "vectorSyncPendingAt": ANY,
+            "vectorSyncAttempts": 0,
         }
-        assert isinstance(self._set_fields(update)["updatedAt"], datetime)
+        assert isinstance(fields["updatedAt"], datetime)
+        (plan,) = schedule.call_args.args
+        assert plan.doc.id == server.id
+        assert plan.marker == fields["vectorSyncPendingAt"]
+        assert plan.full_resync is True
+
+    async def test_no_vector_sync_when_no_listing_was_captured(
+        self, service: ServerServiceV1, server: ExtendedMCPServer, update: AsyncMock
+    ) -> None:
+        captured = MCPServerData([], None, None, {"tools": {}}, resource_templates=None)
+
+        with (
+            patch.object(service, "retrieve_from_server", AsyncMock(return_value=captured)),
+            patch.object(service, "schedule_vector_sync") as schedule,
+        ):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        assert "vectorSyncPendingAt" not in self._set_fields(update)
+        schedule.assert_not_called()
+
+    async def test_capture_is_discarded_when_server_changed_meanwhile(
+        self, service: ServerServiceV1, server: ExtendedMCPServer, update: AsyncMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # An edit, enable or refresh committed during the fetch moved updatedAt on, so the conditional write misses.
+        update.return_value = Mock(matched_count=0)
+        snapshot = server.updatedAt
+
+        with (
+            patch.object(
+                service, "retrieve_from_server", AsyncMock(return_value=_captured([], [{"uri": "a://x"}], [], {}))
+            ),
+            patch.object(service, "schedule_vector_sync") as schedule,
+            caplog.at_level(_logging.INFO, logger="registry.services.server_service"),
+        ):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        assert update.find_one.call_args.args[0] == {"_id": server.id, "updatedAt": snapshot}
+        schedule.assert_not_called()
+        assert "changed or deleted before its registration capabilities were stored" in caplog.text
+
+    async def test_no_vector_sync_when_server_was_deleted(
+        self, service: ServerServiceV1, server: ExtendedMCPServer, update: AsyncMock
+    ) -> None:
+        update.return_value = Mock(matched_count=0)
+
+        with (
+            patch.object(service, "retrieve_from_server", AsyncMock(return_value=_captured([], [], [], {"tools": {}}))),
+            patch.object(service, "schedule_vector_sync") as schedule,
+        ):
+            await service.fetch_registration_capabilities(server, "user-1")
+
+        schedule.assert_not_called()
 
     async def test_omits_requires_init_when_upstream_did_not_report_it(
         self, service: ServerServiceV1, server: ExtendedMCPServer, update: AsyncMock
     ) -> None:
-        with patch.object(service, "retrieve_from_server", AsyncMock(return_value=([], [], [], {"tools": {}}, None))):
+        with patch.object(
+            service, "retrieve_from_server", AsyncMock(return_value=_captured([], [], [], {"tools": {}}))
+        ):
             await service.fetch_registration_capabilities(server, "user-1")
 
         assert "config.requiresInit" not in self._set_fields(update)
@@ -165,7 +267,10 @@ class TestFetchRegistrationCapabilities:
             headers=ANY,
             transport_type=transport_type,
             include_resources=True,
+            include_resource_templates=True,
             include_prompts=True,
+            server_id=str(server.id),
+            era_cache=service.downstream_era_cache,
         )
         headers = fetch.call_args.kwargs["headers"]
         assert headers["Authorization"] == "Bearer test-only"
@@ -213,14 +318,14 @@ class TestFetchRegistrationCapabilities:
         if failure == "update":
             update.side_effect = RuntimeError("update failed")
 
-        async def retrieve(_: ExtendedMCPServer, **__: object) -> tuple[object, ...]:
+        async def retrieve(_: ExtendedMCPServer, **__: object) -> MCPServerData:
             if failure == "error-tuple":
-                return None, None, None, None, "boom"
+                return _captured(None, None, None, None, "boom")
             if failure == "retrieve":
                 raise RuntimeError("retrieve failed")
             if failure == "timeout":
                 raise TimeoutError("upstream timed out")
-            return [], [{"uri": "test://resource"}], [{"name": "summary"}], {"tools": {}}, None
+            return _captured([], [{"uri": "test://resource"}], [{"name": "summary"}], {"tools": {}})
 
         with (
             patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)),
@@ -242,9 +347,9 @@ class TestFetchRegistrationCapabilities:
         reindex_active: list[bool],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        async def retrieve(_: ExtendedMCPServer, **__: object) -> tuple[object, ...]:
+        async def retrieve(_: ExtendedMCPServer, **__: object) -> MCPServerData:
             reindex_active[0] = True
-            return [], [], [], {"tools": {}}, None
+            return _captured([], [], [], {"tools": {}})
 
         with (
             patch.object(service, "retrieve_from_server", AsyncMock(side_effect=retrieve)),
@@ -265,14 +370,14 @@ class TestFetchRegistrationCapabilities:
         update.return_value = Mock(matched_count=0)
 
         with (
-            patch.object(service, "retrieve_from_server", AsyncMock(return_value=([], [], [], {"tools": {}}, None))),
+            patch.object(service, "retrieve_from_server", AsyncMock(return_value=_captured([], [], [], {"tools": {}}))),
             caplog.at_level(_logging.INFO, logger="registry.services.server_service"),
         ):
             await service.fetch_registration_capabilities(server, "user-1")
 
         update.assert_awaited_once()
         assert "upsert" not in update.await_args.kwargs
-        assert "was deleted before its registration capabilities were stored" in caplog.text
+        assert "was changed or deleted before its registration capabilities were stored" in caplog.text
 
 
 @pytest.mark.unit
@@ -386,16 +491,27 @@ class TestRefreshServerCapabilities:
             with patch.object(
                 server_service,
                 "retrieve_tools_and_capabilities_from_server",
-                return_value=(mock_tools, mock_resources, mock_prompts, mock_capabilities, None),
+                return_value=_captured(
+                    mock_tools,
+                    mock_resources,
+                    mock_prompts,
+                    mock_capabilities,
+                    resource_templates=[{"uriTemplate": "file://{path}"}],
+                ),
             ):
                 # Prevent the real vector sync (scheduled post-commit)
                 with patch.object(server_service, "schedule_vector_sync"):
                     result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
 
+                    assert mock_server.config["resources"] == mock_resources
+                    assert mock_server.config["resourceTemplates"] == [{"uriTemplate": "file://{path}"}]
+                    assert mock_server.config["prompts"] == mock_prompts
+
                     # 验证返回结果
                     assert result["status"] == "success"
                     assert result["server"] == mock_server
                     assert "Successfully refreshed capabilities" in result["status_message"]
+                    assert "1 resource templates" in result["status_message"]
                     assert result["last_checked"] is not None
                     assert result["response_time_ms"] is None
 
@@ -424,7 +540,7 @@ class TestRefreshServerCapabilities:
             with patch.object(
                 server_service,
                 "retrieve_tools_and_capabilities_from_server",
-                return_value=(None, None, None, None, error_message),
+                return_value=_captured(None, None, None, None, error_message),
             ):
                 # Prevent the real vector sync (scheduled post-commit)
                 with patch.object(server_service, "schedule_vector_sync"):
@@ -515,7 +631,7 @@ class TestRefreshServerCapabilities:
             with patch.object(
                 server_service,
                 "retrieve_tools_and_capabilities_from_server",
-                return_value=(mock_tools, [], [], {}, None),
+                return_value=_captured(mock_tools, [], [], {}),
             ):
                 # Mock schedule_vector_sync 并验证调用
                 with patch.object(server_service, "schedule_vector_sync") as mock_sync:
@@ -539,7 +655,7 @@ class TestRefreshServerCapabilities:
             with patch.object(
                 server_service,
                 "retrieve_tools_and_capabilities_from_server",
-                return_value=(mock_tools, [], [], {}, None),
+                return_value=_captured(mock_tools, [], [], {}),
             ):
                 # Prevent the real vector sync (scheduled post-commit)
                 with patch.object(server_service, "schedule_vector_sync"):
@@ -570,7 +686,7 @@ class TestRefreshServerCapabilities:
             with patch.object(
                 server_service,
                 "retrieve_tools_and_capabilities_from_server",
-                return_value=([], [], [], {}, None),
+                return_value=_captured([], [], [], {}),
             ):
                 with patch.object(server_service, "schedule_vector_sync"):
                     result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
@@ -811,9 +927,9 @@ class TestHealthCheckEndpointUrlConstruction:
     def mock_init_result(self):
         """Create a valid MCP InitializeResult for health check tests."""
         mock_result = Mock()
-        mock_result.protocolVersion = "2024-11-05"
-        mock_result.serverInfo = Mock()
-        mock_result.serverInfo.name = "test-server"
+        mock_result.protocol_version = "2024-11-05"
+        mock_result.server_info = Mock()
+        mock_result.server_info.name = "test-server"
         return mock_result
 
 
@@ -1169,7 +1285,7 @@ class TestUpdateDisabledTools:
             with patch.object(
                 service,
                 "retrieve_tools_and_capabilities_from_server",
-                return_value=([{"name": "read_file"}], [], [], {"sampling": {}}, None),
+                return_value=_captured([{"name": "read_file"}], [], [], {"sampling": {}}),
             ):
                 with patch.object(service, "schedule_vector_sync"):
                     result = await service.refresh_server_capabilities(server_id="srv-1", user_id="u1")
@@ -1608,7 +1724,7 @@ async def test_refresh_capabilities_persists_marker_in_same_save_and_resets_atte
         patch.object(
             service,
             "retrieve_tools_and_capabilities_from_server",
-            return_value=([{"name": "tool1"}], [], [], {}, None),
+            return_value=_captured([{"name": "tool1"}], [], [], {}),
         ),
         patch.object(service, "schedule_vector_sync") as schedule,
     ):
@@ -1616,3 +1732,123 @@ async def test_refresh_capabilities_persists_marker_in_same_save_and_resets_atte
 
     plan = schedule.call_args.args[0]
     assert saved == [(plan.marker, 0)]
+
+
+@pytest.mark.asyncio
+class TestRetrieveFromServerCapture:
+    """retrieve_from_server through the real @track_tool_discovery decorator."""
+
+    @staticmethod
+    def _service() -> ServerServiceV1:
+        return ServerServiceV1(user_service=Mock(), token_service=Mock(), oauth_service=Mock(), mcp_server_repo=Mock())
+
+    @staticmethod
+    def _server(**config: object) -> ExtendedMCPServer:
+        return ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="capture-test",
+            config={"url": "https://mcp.example.com/mcp", "type": "streamable-http", **config},
+        )
+
+    @staticmethod
+    def _downstream() -> MCPServerData:
+        return MCPServerData(
+            tools=[{"name": "t"}],
+            resources=[{"uri": "gdrive:///alice/notes"}],
+            prompts=[{"name": "p"}],
+            capabilities={"resources": {}},
+            resource_templates=[{"uriTemplate": "repo://{name}"}],
+        )
+
+    @pytest.mark.parametrize(
+        ("config", "oauth"),
+        [
+            ({"requiresOAuth": True}, True),
+            ({"oauth": {"client_id": "abc"}}, True),
+            ({"apiKey": {"key": "k"}}, False),
+            ({}, False),
+        ],
+    )
+    async def test_oauth_servers_never_list_concrete_resources(self, config: dict, oauth: bool) -> None:
+        service = self._service()
+        fetch = AsyncMock(return_value=self._downstream())
+        record = Mock()
+
+        with (
+            patch("registry.services.server_service.build_complete_headers_for_server", AsyncMock(return_value={})),
+            patch("registry.core.mcp_client.get_tools_and_capabilities_from_server", fetch),
+            patch("registry.core.telemetry_decorators._record_tool_discovery", record),
+        ):
+            captured = await service.retrieve_from_server(self._server(**config), user_id="user-1")
+
+        assert fetch.await_args.kwargs["include_resources"] is (not oauth)
+        assert fetch.await_args.kwargs["include_resource_templates"] is True
+        assert captured.resources == ([] if oauth else [{"uri": "gdrive:///alice/notes"}])
+        assert captured.resource_templates == [{"uriTemplate": "repo://{name}"}]
+        assert captured.prompts == [{"name": "p"}]
+        assert captured.error_message is None
+        assert record.call_args.kwargs["success"] is True
+        assert record.call_args.kwargs["tools_count"] == 1
+
+    @pytest.mark.parametrize("config", [{"requiresOAuth": True}, {"oauth": None}, {"oauth": {"client_id": "c"}}])
+    async def test_oauth_server_without_user_id_fails_fast(self, config: dict) -> None:
+        build = AsyncMock()
+
+        with (
+            patch("registry.services.server_service.build_complete_headers_for_server", build),
+            patch("registry.core.telemetry_decorators._record_tool_discovery", Mock()),
+        ):
+            captured = await self._service().retrieve_from_server(self._server(**config))
+
+        assert captured.error_message == "OAuth server requires user_id for token retrieval"
+        build.assert_not_awaited()
+
+    async def test_failure_is_reported_by_decorator(self) -> None:
+        service = self._service()
+        record = Mock()
+
+        with patch("registry.core.telemetry_decorators._record_tool_discovery", record):
+            captured = await service.retrieve_from_server(self._server(url=None))
+
+        assert captured.error_message == "No URL configured"
+        assert captured.tools is None
+        assert record.call_args.kwargs["success"] is False
+
+    async def test_enable_writes_templates_and_keeps_failed_listings(self) -> None:
+        service = self._service()
+        server = self._server(resources=[{"uri": "a://old"}], prompts=[{"name": "old"}])
+        captured = MCPServerData(
+            tools=[{"name": "t"}],
+            resources=None,  # this listing failed
+            prompts=[],
+            capabilities=None,
+            resource_templates=[{"uriTemplate": "repo://{name}"}],
+        )
+
+        with patch.object(service, "retrieve_from_server", AsyncMock(return_value=captured)):
+            assert await service._fetch_and_update_tools(server, "user-1") is True
+
+        assert server.config["resources"] == [{"uri": "a://old"}]
+        assert server.config["resourceTemplates"] == [{"uriTemplate": "repo://{name}"}]
+        assert server.config["prompts"] == []
+
+    async def test_enable_succeeds_for_server_without_tools(self) -> None:
+        service = self._service()
+        server = self._server(toolFunctions={"old": {}}, tools="old")
+        captured = MCPServerData(
+            tools=[],
+            resources=[{"uri": "file:///a"}],
+            prompts=[{"name": "p"}],
+            capabilities=None,
+            resource_templates=[{"uriTemplate": "repo://{name}"}],
+        )
+
+        with patch.object(service, "retrieve_from_server", AsyncMock(return_value=captured)):
+            assert await service._fetch_and_update_tools(server, "user-1") is True
+
+        assert server.config["toolFunctions"] == {}
+        assert server.config["tools"] == ""
+        assert server.numTools == 0
+        assert server.config["resources"] == [{"uri": "file:///a"}]
+        assert server.config["resourceTemplates"] == [{"uriTemplate": "repo://{name}"}]
+        assert server.config["prompts"] == [{"name": "p"}]

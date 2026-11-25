@@ -56,6 +56,7 @@ dev = [
   "pytest-asyncio>=0.23.0",
   "pytest-cov>=4.1.0",
   "pytest-mock>=3.12.0",
+  "fakeredis[lua]>=2.40.0",
   "pytest-xdist>=3.5.0",
   "coverage[toml]>=7.4.0",
   "pytest-html>=4.1.1",
@@ -96,6 +97,7 @@ select = [
   "C4",  # flake8-comprehensions
   "UP",  # pyupgrade
   "SIM", # flake8-simplify
+  "TID251", # ban classic httpx outside explicit compatibility boundaries
 ]
 ignore = [
   "E501",   # line too long (handled by formatter)
@@ -110,11 +112,15 @@ ignore = [
   "SIM117", # multiple with statements (sometimes clearer nested)
 ]
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"httpx".msg = "Use httpx2. Classic httpx is only for clients handed to a2a-sdk: import registry_pkgs.core.a2a_http (AS-2014)."
+
 [tool.ruff.lint.isort]
 # Each value must be the import name of one of our own packages in this workspace.
 known-first-party = ["registry_pkgs", "auth_utils", "registry", "auth_server", "workflow_worker"]
 
 [tool.ruff.lint.per-file-ignores]
+"registry-pkgs/src/registry_pkgs/core/a2a_http.py" = ["TID251"]
 # Import order matters some files. Exclude them from automatic import sorting.
 "registry-pkgs/src/registry_pkgs/vector/__init__.py" = ["I001"]
 

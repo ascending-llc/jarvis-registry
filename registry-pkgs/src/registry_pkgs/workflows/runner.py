@@ -48,7 +48,6 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from agno.exceptions import RunCancelledException
 from agno.models.base import Model
 from agno.run.cancel import acancel_run as agno_acancel_run
@@ -57,6 +56,7 @@ from beanie import PydanticObjectId
 from beanie.exceptions import DocumentNotFound
 from beanie.operators import In
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import (
@@ -156,7 +156,7 @@ class WorkflowRunner:
         db_name: str,
         jwt_config: JwtSigningConfig,
         directive_queue: DirectiveQueue | None = None,
-        a2a_httpx_client: httpx.AsyncClient | None = None,
+        a2a_httpx_client: a2a_http.AsyncClient | None = None,
         headers_provider: HeadersProvider | None = None,
         redis_client: Any | None = None,
         redis_key_prefix: str | None = None,

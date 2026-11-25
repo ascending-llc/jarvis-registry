@@ -12,7 +12,7 @@ Usage:
         record_tool_discovery,
         record_server_request,
         record_resource_access,
-        record_prompt_execution,
+        record_prompt_get,
     )
 
     # Using domain functions (recommended)
@@ -27,6 +27,7 @@ import logging
 
 from registry_pkgs.telemetry.metrics_client import create_metrics_client, load_metrics_config
 
+from ..constants import ExecutionOutcome
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,8 @@ def record_tool_execution(
     duration_seconds: float | None = None,
     method: str = "UNKNOWN",
     error_type: str = "none",
+    *,
+    input_required: bool = False,
 ) -> None:
     """
     Record tool execution with success rate and latency tracking.
@@ -96,11 +99,17 @@ def record_tool_execution(
         method: HTTP method (e.g., "POST", "GET") - defaults to "UNKNOWN"
         error_type: Failure-mode label (e.g., exception class name or a semantic tag like
             "server_not_found"); "none" on success. Must be a bounded, low-cardinality value.
+        input_required: The call is awaiting client input, rather than succeeding or failing.
     """
+    outcome = (
+        ExecutionOutcome.INPUT_REQUIRED
+        if input_required
+        else (ExecutionOutcome.SUCCESS if success else ExecutionOutcome.FAILURE)
+    )
     attributes = {
         "tool_name": tool_name,
         "server_name": server_name,
-        "status": "success" if success else "failure",
+        "status": outcome.value,
         "method": method,
         "error_type": error_type,
     }
@@ -147,7 +156,7 @@ def record_resource_access(
         metrics.record_histogram("mcp_resource_access_duration_seconds", duration_seconds, attributes)
 
 
-def record_prompt_execution(
+def record_prompt_get(
     prompt_name: str,
     server_name: str,
     success: bool,
@@ -155,17 +164,17 @@ def record_prompt_execution(
     error_type: str = "none",
 ) -> None:
     """
-    Record prompt execution operation.
+    Record prompt retrieval operation.
 
     Requires these metrics in config:
-    - counter: mcp_prompt_execution_total
-    - histogram: mcp_prompt_execution_duration_seconds
+    - counter: mcp_prompt_get_total
+    - histogram: mcp_prompt_get_duration_seconds
 
     Args:
-        prompt_name: Name of the executed prompt
+        prompt_name: Name of the retrieved prompt
         server_name: Name of the MCP server
-        success: Whether the execution was successful
-        duration_seconds: Execution duration in seconds
+        success: Whether the retrieval was successful
+        duration_seconds: Retrieval duration in seconds
         error_type: Failure-mode label (exception class name or semantic tag);
             "none" on success. Must be a bounded, low-cardinality value.
     """
@@ -176,10 +185,10 @@ def record_prompt_execution(
         "error_type": error_type,
     }
 
-    metrics.record_counter("mcp_prompt_execution_total", 1, attributes)
+    metrics.record_counter("mcp_prompt_get_total", 1, attributes)
 
     if duration_seconds is not None:
-        metrics.record_histogram("mcp_prompt_execution_duration_seconds", duration_seconds, attributes)
+        metrics.record_histogram("mcp_prompt_get_duration_seconds", duration_seconds, attributes)
 
 
 def record_server_request(server_name: str) -> None:

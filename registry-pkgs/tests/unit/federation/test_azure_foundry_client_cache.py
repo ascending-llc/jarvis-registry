@@ -6,12 +6,12 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import ClientAuthenticationError
 from beanie import PydanticObjectId
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.federation.azure_foundry_client_cache import AzureEntraAuth, AzureFoundryClientCache
 from registry_pkgs.models.enums import FederationProviderType
@@ -516,7 +516,7 @@ async def test_azure_entra_auth_injects_headers():
     auth_service = MagicMock()
     auth_service.build_headers = AsyncMock(return_value={"Authorization": "Bearer entra-token"})
     auth = AzureEntraAuth(auth_service)
-    request = httpx.Request("POST", "https://agent.example.com")
+    request = a2a_http.Request("POST", "https://agent.example.com")
 
     authed = await anext(auth.async_auth_flow(request))
 
@@ -570,9 +570,9 @@ async def test_auth_replay_is_bounded_and_safe(method, status, expected, rebuild
 
     async def send(request):
         requests.append(dict(request.headers))
-        return httpx.Response(status)
+        return a2a_http.Response(status)
 
-    async with httpx.AsyncClient(auth=AzureEntraAuth(facade), transport=httpx.MockTransport(send)) as client:
+    async with a2a_http.AsyncClient(auth=AzureEntraAuth(facade), transport=a2a_http.MockTransport(send)) as client:
         response = await client.request(method, "https://example.test")
     assert response.status_code == status
     assert len(requests) == expected

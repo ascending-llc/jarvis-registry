@@ -22,6 +22,11 @@ exclude-entropy-patterns = [
 ]
 
 exclude-signatures = [
+    {signature = 'e3725add20aae308af7e85c3176b72edefab08f16767d44e8077a13fbbdf3496', reason = 'synthetic MongoDB user ID in consent store tests is not a credential'},
+    {signature = '60db9c49d670b0fbb4b6d104960a0fad9064231f6db0b3de7a60e63abbbbe06d', reason = 'synthetic second-user MongoDB ID in consent isolation test is not a credential'},
+    {signature = '955fd820884038cdcf0c5aa0e1733d6b7998b4a4ebee7326f50fa993bba6ef2c', reason = 'synthetic MongoDB user A ID in consent route tests is not a credential'},
+    {signature = '58288b9040447d29282a3d9d6eb27e744e50ac9764ce6009292a95c0c3be84d6', reason = 'synthetic MongoDB user B ID in consent route tests is not a credential'},
+    {signature = '066996ab68f8ca8aae43dc1a84bb859ba770182861fe44ca86b55667abe50b24', reason = 'synthetic MongoDB user ID in consent management service tests is not a credential'},
     {signature = 'd558f0aebd23f70b4545f76483518eb4bd3994655b7a6fdc4389af0e738e1d09', reason = 'public ASCENDING YouTube channel URL in generated documentation is not a credential'},
     {signature = '7ac6503b2d8dd872044373480e3ba62063d0e459d32dfb9423fb8116cf4ef9d2', reason = 'OTEL_SEMCONV_STABILITY_OPT_IN documented setting in generated documentation is not a credential'},
     {signature = 'b34480379b07e457f27df9dfa0b8179d1630f01335b65449afcf9c923938e7cf', reason = 'public GitHub commit permalink in generated documentation is not a credential'},
@@ -196,4 +201,13 @@ exclude-signatures = [
     {signature = 'ebc796d30201a1afc1c32d8bb5c4bea1b88dac290d1c5342b2290081ef3c7557', reason = 'ENTRA_CLIENT_ID placeholder in auth docs is not a credential'},
     {signature = '94a8900d1f56c1520b87644c9b56ab106c2d37c376c55d83216e717602f6479f', reason = 'ENTRA_CLIENT_ID placeholder in Entra ID setup docs is not a credential'},
     {signature = 'b2c59c694241a64b91ba066d5ef318138b22808ed3e6e58286d8e34a57f04cda', reason = 'orphan sweeper guard constants are code constants, not credentials'},
+    {signature = '2c6f8f66132f49cb66ae9fbe72cc7ac100b68b9d753a043610badab988fdc3a5', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
+    {signature = '5d89094328b97cc1e2ad6872eddc1c535e4e16ab3bbb6ca81d573e8ffc81be26', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
+    {signature = '324292d44d8ce74c7b02fbd776e1cc8f324db5b2ccf4558d0c2f1f2bf8889641', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
+    {signature = '1d71d8e57c99920849fcae18a1c83986495aa529cd8671f97a86e6cb850d79f9', reason = 'placeholder Entra group object ID in generated documentation is not a credential'},
+    {signature = '5203b1bb62ed03d64492c96e4614bc38fa0a0dc6d7f95608912c265a9e798847', reason = 'example key value pair in quick-start doc is not credential'},
+    {signature = '564ca3a8556bd2ebc50b7408a639c4810e16002b1f02a9911955ca39845eda0d', reason = 'example key value pair in quick-start doc is not credential'},
+    {signature = '8d2861040377feea34b7619cc927b649903881722d4f9dbcef2555f163e7ab50', reason = 'example key value pair in quick-start doc is not credential'},
+    {signature = '20fe648845b4bed780226bfdbecd6f0dc158baed78afb1fb281ce3dc0eaeb70b', reason = 'example key value pair in quick-start doc is not credential'},
+    {signature = 'fa64df3e9696f2cba233d209504f55287cf12020f33b3f3064888ecf855a3079', reason = 'MCP protocol version constant name is code, not a credential'},
 ]

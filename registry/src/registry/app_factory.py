@@ -10,14 +10,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 
+from .constants import OPENAPI_SESSION_COOKIE_SCHEME
 from .core.config import settings
 from .core.exception_handler import register_validation_exception_handler
 from .mcpgw.core.client_info_store import ClientInfoCaptureMiddleware, ClientInfoStore
+from .mcpgw.core.protocol_gate import ModernProtocolGate
+from .mcpgw.server import build_transport_security_settings
 from .middleware import CSRFMiddleware, ScopePermissionMiddleware, UnifiedAuthMiddleware
 from .routers import register_routers
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     from .container import RegistryContainer
     from .mcpgw.core.types import McpAppContext
@@ -52,7 +55,7 @@ OPENAPI_TAGS = [
 def create_app(
     *,
     lifespan,
-    gateway_mcp_app: FastMCP[McpAppContext],
+    gateway_mcp_app: MCPServer[McpAppContext],
     container_provider: Callable[[], RegistryContainer | None],
 ) -> FastAPI:
     """Create and configure the FastAPI application."""
@@ -78,7 +81,19 @@ def create_app(
         container = container_provider()
         return container.client_info_store if container is not None else None
 
-    mcp_asgi_app = ClientInfoCaptureMiddleware(gateway_mcp_app.streamable_http_app(), _client_info_store)
+    # Transport settings moved off the v2 server constructor onto streamable_http_app(...). Keep
+    # json_response=False so downstream progress/log/list-changed notifications ride the POST's own SSE
+    # stream (the JSON path drops them). The ModernProtocolGate is outermost so a rejected 2026-07-28
+    # request is never captured; it applies only to /proxy/mcpgw.
+    streamable_app = gateway_mcp_app.streamable_http_app(
+        stateless_http=True,
+        json_response=False,
+        transport_security=build_transport_security_settings(),
+    )
+    mcp_asgi_app = ModernProtocolGate(
+        ClientInfoCaptureMiddleware(streamable_app, _client_info_store),
+        lambda: settings.mcpgw_modern_protocol_enabled,
+    )
     app.mount("/proxy/mcpgw", mcp_asgi_app)
     register_routers(app)
     app.openapi = _customize_openapi(app)  # type: ignore[method-assign]  # FastAPI recommendation
@@ -124,13 +139,18 @@ def _customize_openapi(app: FastAPI):
         )
 
         openapi_schema["components"]["securitySchemes"] = {
+            OPENAPI_SESSION_COOKIE_SCHEME: {
+                "type": "apiKey",
+                "in": "cookie",
+                "name": settings.session_cookie_name,
+            },
             "Bearer": {
                 "type": "http",
                 "scheme": "bearer",
                 "bearerFormat": "JWT",
                 "description": "JWT Bearer token obtained from the configured OAuth2 provider. "
                 "Include in Authorization header as: `Authorization: Bearer <token>`",
-            }
+            },
         }
 
         for path, path_item in openapi_schema["paths"].items():

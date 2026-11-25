@@ -10,13 +10,13 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from a2a.client import A2ACardResolver, A2AClientHTTPError
 from a2a.types import AgentCard
 from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.exceptions import (
     A2AAgentCardNotFoundException,
@@ -194,7 +194,7 @@ class A2AAgentService:
         agent_card_path_override: str | None = None,
     ) -> AgentCard:
         """Fetch an agent card from an explicit or known path with deterministic errors."""
-        timeout = httpx.Timeout(timeout_seconds)
+        timeout = a2a_http.Timeout(timeout_seconds)
         last_404_error: Exception | None = None
         first_non_404_http_error: Exception | None = None
         first_transport_error: Exception | None = None
@@ -206,7 +206,7 @@ class A2AAgentService:
             else [".well-known/agent-card.json", ".well-known/agent.json", ""]
         )
 
-        async with httpx.AsyncClient(timeout=timeout, headers=auth_headers or {}) as client:
+        async with a2a_http.AsyncClient(timeout=timeout, headers=auth_headers or {}) as client:
             for path in well_known_paths:
                 try:
                     resolver = A2ACardResolver(
@@ -226,7 +226,7 @@ class A2AAgentService:
                     logger.error(f"HTTP error (non-404) fetching from {base_url}/{path}: {e}")
                     if first_non_404_http_error is None:
                         first_non_404_http_error = e
-                except (httpx.HTTPError, httpx.TimeoutException) as e:
+                except (a2a_http.HTTPError, a2a_http.TimeoutException) as e:
                     logger.error(f"Transport error fetching from {base_url}/{path}: {e}")
                     if first_transport_error is None:
                         first_transport_error = e
@@ -509,6 +509,17 @@ class A2AAgentService:
             Agent document, or None if not found
         """
         return await A2AAgent.find_one({"path": path})
+
+    async def get_names_by_paths(self, paths: set[str]) -> dict[str, str]:
+        """Resolve consent display names without fetching entire agent cards."""
+        if not paths:
+            return {}
+        cursor = A2AAgent.get_pymongo_collection().find(
+            {"path": {"$in": list(paths)}}, {"_id": 0, "path": 1, "config.title": 1, "card.name": 1}
+        )
+        return {
+            agent["path"]: (agent.get("config") or {}).get("title") or agent["card"]["name"] async for agent in cursor
+        }
 
     def build_managed_agent_card(self, agent: A2AAgent) -> dict[str, Any]:
         """Build an ephemeral Agent Card that advertises the Registry proxy and OAuth."""

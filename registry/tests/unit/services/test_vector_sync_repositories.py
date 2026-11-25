@@ -767,6 +767,9 @@ async def test_tools_enabled_counts_chunks_and_ignores_other_tools_and_servers()
             "resources": [{"name": "readme", "uri": "file:///README.md"}],
         },
     )
+    from registry_pkgs.models.mcp_resource_capture import create_resource_capture
+
+    server.config["resourceCapture"] = create_resource_capture(server.config, server.config["resources"])
     docs = server.to_documents()
     selected_docs = [doc for doc in docs if doc.metadata.get("tool_name") == "read_file"]
     assert len(selected_docs) > 1

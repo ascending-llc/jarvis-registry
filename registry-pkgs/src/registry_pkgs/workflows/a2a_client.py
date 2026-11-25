@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any
 
-import httpx
 from a2a.client import ClientConfig, ClientFactory
 from a2a.client.base_client import BaseClient
 from a2a.client.middleware import ClientCallContext
@@ -28,6 +27,7 @@ from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
 from opentelemetry import baggage, trace
 
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC, A2AAgent
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # the real ceiling, failing in that layer's terms rather than as a clean task timeout. Retune via budget.
 _A2A_TASK_BUDGET_SECONDS = 3600
 _A2A_JWT_TTL_SECONDS = _A2A_TASK_BUDGET_SECONDS + 300
-_A2A_HTTP_TIMEOUT = httpx.Timeout(30.0, read=_A2A_TASK_BUDGET_SECONDS)
+_A2A_HTTP_TIMEOUT = a2a_http.Timeout(30.0, read=_A2A_TASK_BUDGET_SECONDS)
 # Preemptive backstop: a still-streaming send never reaches the poll loop's own check.
 _A2A_HARD_TIMEOUT_SECONDS = _A2A_TASK_BUDGET_SECONDS + 60
 _LANGFUSE_ENVIRONMENT_BAGGAGE_KEY = "langfuse.environment"
@@ -53,7 +53,7 @@ _LANGFUSE_TRACE_NAME_BAGGAGE_KEY = "langfuse.trace.name"
 _LANGFUSE_TRACE_TAGS_BAGGAGE_KEY = "langfuse.trace.tags"
 
 HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
-ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
+ClientProvider = Callable[[A2AAgent], Awaitable[a2a_http.AsyncClient]]
 _IN_PROGRESS_STATES: frozenset[TaskState] = frozenset({TaskState.submitted, TaskState.working})
 
 _AGENTCORE_IAM_UNSUPPORTED_MSG = (
@@ -430,7 +430,7 @@ async def call_a2a(
     text: str | Message,
     *,
     jwt_config: JwtSigningConfig | None = None,
-    httpx_client: httpx.AsyncClient | None = None,
+    httpx_client: a2a_http.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
@@ -525,7 +525,7 @@ async def call_a2a(
             factory.register(
                 TransportProtocol.jsonrpc,
                 lambda card, url, cfg, interceptors: _AzureTolerantJsonRpcTransport(
-                    cfg.httpx_client or httpx.AsyncClient(),
+                    cfg.httpx_client or a2a_http.AsyncClient(),
                     card,
                     url,
                     interceptors,

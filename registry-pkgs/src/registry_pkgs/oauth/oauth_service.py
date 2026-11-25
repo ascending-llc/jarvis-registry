@@ -5,7 +5,7 @@ from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 from redis import Redis
 from redis.exceptions import RedisError
@@ -227,7 +227,7 @@ class MCPOAuthService:
         if not server_url:
             raise OAuthDiscoveryError("Server has no URL to discover OAuth metadata for")
         # Follow redirects like the mcp SDK's own client: providers may redirect well-known documents.
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             headers={"User-Agent": self._registry_app_name}, follow_redirects=True
         ) as http_client:
             return await discover_mcp_oauth(server_url, http_client=http_client, www_authenticate=www_authenticate)
@@ -1070,7 +1070,7 @@ class MCPOAuthService:
         logger.info(f"OAuth discovery for {server_name} changed after a downstream 401; a new login is required")
         try:
             await self.ensure_registry_oauth_state(server, force_discovery=True, discovery=discovery)
-        except (RegistryOAuthStateConflictError, httpx.HTTPError, ValueError) as e:
+        except (RegistryOAuthStateConflictError, httpx2.HTTPError, ValueError) as e:
             # The login that follows re-runs discovery and registration.
             logger.warning(f"Could not persist the changed OAuth discovery for {server_name}: {e}")
         await self.token_service.delete_oauth_tokens(user_id, server_name)

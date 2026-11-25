@@ -581,3 +581,10 @@ async def test_delete_removed_delegates_to_shared_helper(monkeypatch):
     delegate.assert_awaited_once_with(
         mcp_repo, a2a_repo, vector_mcp_ids={"s1", "s2"}, vector_a2a_ids={"a1"}, strict=True
     )
+
+
+def test_catch_up_window_covers_one_full_capability_capture() -> None:
+    """A capture runs init plus four sequential listings (tools, resources, templates, prompts)."""
+    from registry.core.mcp_config import MCPClientConfig
+
+    assert _CATCH_UP_MIN_DELAY.total_seconds() >= MCPClientConfig.INIT_TIMEOUT + 4 * MCPClientConfig.TOOLS_TIMEOUT

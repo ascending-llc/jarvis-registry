@@ -2,8 +2,7 @@ import logging
 from collections.abc import Callable
 from typing import Annotated, Any
 
-from mcp.server.fastmcp import Context
-from mcp.server.session import ServerSession
+from mcp.server.mcpserver import Context
 from mcp.types import CallToolResult, TextContent
 from pydantic import Field
 
@@ -22,7 +21,7 @@ _SURVEY_TOP_N = 20
 
 @trace_discovery
 async def _run_search(
-    ctx: Context[ServerSession, McpAppContext],
+    ctx: Context[McpAppContext],
     query: str,
     top_n: int,
     search_type: str,
@@ -85,7 +84,7 @@ def _empty_discovery_result(
 def get_tools() -> list[tuple[str, Callable]]:
 
     async def discover_servers(
-        ctx: Context[ServerSession, McpAppContext],
+        ctx: Context[McpAppContext],
         query: Annotated[
             str,
             Field(
@@ -128,8 +127,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         - server_id: required for all execution calls; server_name: display and search context
         - tool_name (entity_type='tool') → execute_tool(tool_name, server_id, arguments)
         - input_schema (entity_type='tool'): use it to construct arguments; may be None if omitted
-        - resource_uri (entity_type='resource') → read_resource(server_id, resource_uri)
-        - prompt_name (entity_type='prompt') → execute_prompt(server_id, prompt_name, arguments)
+        - resource_uri or resource_uri_template (entity_type='resource') → read_resource(server_id, resource_uri); expand templates using RFC 6570 first
+        - prompt_name (entity_type='prompt') → get_prompt(server_id, prompt_name, arguments)
 
         Evaluating results: read each result's description to confirm it matches the
         user's intent. If the top result fits, execute it. If multiple results plausibly
@@ -153,7 +152,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         )
 
     async def discover_agents(
-        ctx: Context[ServerSession, McpAppContext],
+        ctx: Context[McpAppContext],
         query: Annotated[
             str,
             Field(

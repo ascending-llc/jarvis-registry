@@ -128,7 +128,6 @@ nav:
     - A2A Agent API: design/a2a-agent-api-design.md
     - Agent Workflow: design/agent-workflow.md
     - AgentCore Integration: design/agentcore.md
-    - Federation Guide: design/federation.md
     - Federation API: design/federation-api.md
     - DB Persistence: design/mcp_db_persistence_design.md
   - FAQ: faq.md
@@ -165,6 +164,8 @@ nav:
       - Measure AI Agent ROI: explore-agentic/playbooks/ai-agent-roi.md
   - Changelog:
     - Overview: changelog/index.md
+    - asc0.5.20: changelog/asc0.5.20.md
+    - asc0.5.19: changelog/asc0.5.19.md
     - asc0.5.18: changelog/asc0.5.18.md
     - asc0.5.17: changelog/asc0.5.17.md
     - asc0.5.16: changelog/asc0.5.16.md

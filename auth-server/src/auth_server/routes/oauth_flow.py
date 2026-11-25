@@ -3,6 +3,7 @@ Combined OAuth routes: device flow, dynamic client registration,
 and Authorization Code (PKCE) login/callback endpoints.
 """
 
+import asyncio
 import base64
 import hmac
 import json
@@ -13,7 +14,7 @@ import traceback
 from typing import Any, NamedTuple, cast
 from urllib.parse import urlencode, urlparse
 
-import httpx
+import httpx2
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -319,6 +320,8 @@ def _finish_oauth2_callback(
     session_data: dict[str, Any],
     resolved_scopes: list[str],
     store: OAuthStateStoreProtocol,
+    *,
+    consent_grant_id: str | None,
 ) -> RedirectResponse:
     """Mint our own authorization code and redirect to the MCP client's redirect_uri."""
     client_redirect_uri = session_data["client_redirect_uri"]
@@ -326,21 +329,21 @@ def _finish_oauth2_callback(
     current_time = int(time.time())
     expires_at = current_time + 600
 
-    store.save_authcode(
-        authorization_code,
-        {
-            "token_data": token_data,
-            "user_info": mapped_user,
-            "client_id": session_data["client_id"],
-            "expires_at": expires_at,
-            "code_challenge": session_data["code_challenge"],
-            "code_challenge_method": session_data["code_challenge_method"],
-            "redirect_uri": client_redirect_uri,
-            "resource": session_data.get("resource"),
-            "created_at": current_time,
-            "resolved_scope": resolved_scopes,
-        },
-    )
+    auth_code_data = {
+        "token_data": token_data,
+        "user_info": mapped_user,
+        "client_id": session_data["client_id"],
+        "expires_at": expires_at,
+        "code_challenge": session_data["code_challenge"],
+        "code_challenge_method": session_data["code_challenge_method"],
+        "redirect_uri": client_redirect_uri,
+        "resource": session_data.get("resource"),
+        "created_at": current_time,
+        "resolved_scope": resolved_scopes,
+    }
+    if consent_grant_id is not None:
+        auth_code_data["consent_grant_id"] = consent_grant_id
+    store.save_authcode(authorization_code, auth_code_data)
 
     redirect_params = {"code": authorization_code}
     client_state = session_data.get("client_state")
@@ -387,6 +390,8 @@ def _finish_device_callback(
     mapped_user: dict[str, Any],
     resolved_scopes: list[str],
     store: OAuthStateStoreProtocol,
+    *,
+    consent_grant_id: str | None,
 ) -> HTMLResponse:
     """Record a verified user's approval; token minting happens when the device polls /oauth2/token."""
     device_data = store.get_device_code(device_code)
@@ -397,7 +402,10 @@ def _finish_device_callback(
     updated["status"] = "approved"
     updated["mapped_user"] = mapped_user
     updated["resolved_scope"] = resolved_scopes
-    store.update_device_code(device_code, updated)
+    if consent_grant_id is not None:
+        updated["consent_grant_id"] = consent_grant_id
+    if not store.update_device_code(device_code, updated):
+        return HTMLResponse(render_device_link_error_page(), status_code=400)
     return HTMLResponse(render_device_approved_page())
 
 
@@ -901,13 +909,13 @@ async def consent_page(
 
 
 @router.post("/oauth2/consent/approve")
-async def approve_consent(
+def approve_consent(
     nonce: str = Form(...),
     oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-):
+) -> Response:
     try:
         if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
             return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
@@ -924,7 +932,7 @@ async def approve_consent(
         user_id = mapped_user["user_id"]
         client_id = session_data["client_id"]
 
-        consent_store.grant_client_consent(user_id, client_id)
+        grant_id = consent_store.grant_client_consent(user_id, client_id)
 
         if pending.get("flow_type") == "device":
             response = _finish_device_callback(
@@ -932,6 +940,7 @@ async def approve_consent(
                 pending["mapped_user"],
                 pending["resolved_scopes"],
                 store,
+                consent_grant_id=grant_id,
             )
             response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
             return response
@@ -942,6 +951,7 @@ async def approve_consent(
             session_data,
             pending["resolved_scopes"],
             store,
+            consent_grant_id=grant_id,
         )
         response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
         return response
@@ -1284,8 +1294,15 @@ async def oauth2_callback(
                 response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                 return response
             client_id = device_data["client_id"]
-            if not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
-                return _redirect_to_pending_consent(
+            registry_client = _is_registry_client(client_id)
+            grant_id = (
+                None
+                if registry_client
+                else await asyncio.to_thread(consent_store.get_client_grant_id, user_id, client_id)
+            )
+            if not registry_client and grant_id is None:
+                return await asyncio.to_thread(
+                    _redirect_to_pending_consent,
                     {
                         "flow_type": "device",
                         "device_code": device_code,
@@ -1298,13 +1315,25 @@ async def oauth2_callback(
                     pending_store,
                 )
 
-            response = _finish_device_callback(device_code, mapped_user, resolved_scopes, store)
+            response = await asyncio.to_thread(
+                _finish_device_callback,
+                device_code,
+                mapped_user,
+                resolved_scopes,
+                store,
+                consent_grant_id=grant_id,
+            )
             response.delete_cookie(settings.oauth2_temp_session_cookie_name)
             return response
 
         client_id = session_data["client_id"]
-        if not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
-            return _redirect_to_pending_consent(
+        registry_client = _is_registry_client(client_id)
+        grant_id = (
+            None if registry_client else await asyncio.to_thread(consent_store.get_client_grant_id, user_id, client_id)
+        )
+        if not registry_client and grant_id is None:
+            return await asyncio.to_thread(
+                _redirect_to_pending_consent,
                 {
                     "token_data": token_data,
                     "mapped_user": mapped_user,
@@ -1316,7 +1345,15 @@ async def oauth2_callback(
                 pending_store,
             )
 
-        return _finish_oauth2_callback(token_data, mapped_user, session_data, resolved_scopes, store)
+        return await asyncio.to_thread(
+            _finish_oauth2_callback,
+            token_data,
+            mapped_user,
+            session_data,
+            resolved_scopes,
+            store,
+            consent_grant_id=grant_id,
+        )
 
     except (IdentityConflictError, UntrustedEmailError) as exc:
         message = IDENTITY_CONFLICT_MESSAGE if isinstance(exc, IdentityConflictError) else UNTRUSTED_EMAIL_MESSAGE
@@ -1375,7 +1412,7 @@ async def exchange_code_for_token(
     provider_config: AuthProviderConfig | EntraConfig,
     callback_uri: str,
 ) -> dict[str, Any]:
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         token_data = {
             "grant_type": provider_config["grant_type"],
             "client_id": provider_config["client_id"],
@@ -1390,7 +1427,7 @@ async def exchange_code_for_token(
 
 
 async def get_user_info(access_token: str, provider_config: AuthProviderConfig | EntraConfig) -> dict:
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {access_token}"}
         response = await client.get(provider_config["user_info_url"], headers=headers)
         response.raise_for_status()

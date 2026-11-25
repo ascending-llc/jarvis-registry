@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import secrets
@@ -11,7 +12,12 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, sta
 from fastapi.responses import JSONResponse, RedirectResponse
 from redis import Redis
 
-from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
+from registry_pkgs.core.consent_store import (
+    ConsentStore,
+    PendingConsentStore,
+    consent_grant_matches,
+    effective_consent_grant_id,
+)
 from registry_pkgs.core.downstream_oauth import (
     DEVICE_CODE_GRANT_TYPE,
     DeviceCodeResponse,
@@ -39,7 +45,7 @@ from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.types import ClientBranding
 
 from ....auth.dependencies import CurrentUser
-from ....constants import DownstreamOAuthConstants
+from ....constants import PENDING_CONSENT_FLOW_FIELD, DownstreamOAuthConstants, PendingConsentFlow
 from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
 from ....deps import (
@@ -233,19 +239,21 @@ def _build_downstream_client_redirect(
         return None
 
     b_code = secrets.token_urlsafe(32)
+    code_data = {
+        "code_challenge": ctx["code_challenge"],
+        "client_id": ctx["client_id"],
+        "redirect_uri": ctx["redirect_uri"],
+        "user_id": flow.user_id,
+        "server_path": ctx["server_path"],
+    }
+    grant_id = ctx.get("consent_grant_id")
+    if grant_id is not None:
+        code_data["consent_grant_id"] = grant_id
 
     _ = redis_client.setex(
         downstream_mcp_code_key(b_code),
         DownstreamOAuthConstants.CODE_TTL_SECONDS,
-        json.dumps(
-            {
-                "code_challenge": ctx["code_challenge"],
-                "client_id": ctx["client_id"],
-                "redirect_uri": ctx["redirect_uri"],
-                "user_id": flow.user_id,
-                "server_path": ctx["server_path"],
-            }
-        ),
+        json.dumps(code_data),
     )
     return RedirectResponse(url=_append_query_params(ctx["redirect_uri"], code=b_code, state=ctx["state"]))
 
@@ -390,7 +398,7 @@ async def oauth_callback(
         flow = await flow_manager.get_flow(flow_id)
         if flow and flow.status == OAuthFlowStatus.COMPLETED:
             logger.warning(f"[MCP OAuth] Flow already completed, preventing duplicate token exchange: {flow_id}")
-            _mark_completed_device_flow_approved(flow, store)
+            await asyncio.to_thread(_mark_completed_device_flow_approved, flow, store)
             return _redirect_to_page(request, server_path, flag="success")
 
         success, error_msg = await mcp_service.oauth_service.complete_oauth_flow(
@@ -415,10 +423,10 @@ async def oauth_callback(
         # 5. Reconnect/notification are best effort; device-state finalization is required.
         client_branding = _client_branding_from_meta(state_dict.get("meta"))
 
-        _mark_completed_device_flow_approved(flow, store)
+        await asyncio.to_thread(_mark_completed_device_flow_approved, flow, store)
 
         # 6. MCP-client-initiated flows redirect back to the client;
-        downstream_redirect = _build_downstream_client_redirect(flow, redis_client)
+        downstream_redirect = await asyncio.to_thread(_build_downstream_client_redirect, flow, redis_client)
         if downstream_redirect is not None:
             logger.info(f"[MCP OAuth] Downstream MCP-client flow complete for {server_path}; redirecting to client")
             return downstream_redirect
@@ -723,11 +731,13 @@ async def _build_downstream_authorize_redirect(
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Server not found for path '{server_path}'")
 
-    redirect_error = _validate_registered_redirect_uri(store.get_client(client_id), redirect_uri)
+    client_metadata = await asyncio.to_thread(store.get_client, client_id)
+    redirect_error = _validate_registered_redirect_uri(client_metadata, redirect_uri)
     if redirect_error is not None:
         if is_safe_unverified_redirect_target(redirect_uri, _trusted_error_redirect_uris()):
             nonce = secrets.token_urlsafe(32)
-            pending_store.save(
+            await asyncio.to_thread(
+                pending_store.save,
                 nonce,
                 {
                     "flow_type": _DOWNSTREAM_ERROR_FLOW_TYPE,
@@ -746,13 +756,16 @@ async def _build_downstream_authorize_redirect(
             detail=redirect_error.error_description,
         )
 
-    if client_id != settings.jwt_token_config.registry_client_id and not consent_store.has_client_consent(
-        user_id, client_id
-    ):
+    grant_id = None
+    if client_id != settings.jwt_token_config.registry_client_id:
+        grant_id = await asyncio.to_thread(consent_store.get_client_grant_id, user_id, client_id)
+    if client_id != settings.jwt_token_config.registry_client_id and grant_id is None:
         nonce = secrets.token_urlsafe(32)
-        pending_store.save(
+        await asyncio.to_thread(
+            pending_store.save,
             nonce,
             {
+                PENDING_CONSENT_FLOW_FIELD: PendingConsentFlow.DOWNSTREAM,
                 "user_id": user_id,
                 "server_path": server_path,
                 "response_type": response_type,
@@ -773,6 +786,8 @@ async def _build_downstream_authorize_redirect(
         "state": state,
         "server_path": server_path,
     }
+    if grant_id is not None:
+        ctx["consent_grant_id"] = grant_id
     flow_id, auth_url, error = await mcp_service.oauth_service.initiate_oauth_flow(
         user_id=user_id,
         server=server,
@@ -879,18 +894,36 @@ def _oauth_token_error(error: str, description: str, status_code: int = status.H
     return JSONResponse(status_code=status_code, content=oauth_error_payload(error, description))
 
 
-def _downstream_refresh_data(client_id: str, user_id: str, server_path: str) -> dict[str, str]:
+def _downstream_refresh_data(
+    client_id: str, user_id: str, server_path: str, consent_grant_id: str | None
+) -> dict[str, str]:
     """Build the refresh-token payload persisted for a direct-connect ``(user_id, server_path)``.
 
-    Both the ``authorization_code`` grant (initial issuance) and the ``refresh_token`` grant
-    (rotation) persist the same shape; keep it in one place so the bound fields cannot drift apart.
+    All three grants persist the same shape; keep it in one place so the bound fields cannot drift.
     """
-    return {
+    data = {
         "client_id": client_id,
         "user_id": user_id,
         "server_path": server_path,
         "scope": DownstreamOAuthConstants.PROXY_OPS_SCOPE,
     }
+    if consent_grant_id is not None:
+        data["consent_grant_id"] = consent_grant_id
+    return data
+
+
+def _resolve_downstream_consent_grant(
+    consent_store: ConsentStore,
+    user_id: str,
+    client_id: str,
+    presented: str | None,
+) -> tuple[str | None, JSONResponse | None]:
+    """Return ``(grant_id_to_carry, error)``; the registry app is consent-exempt and carries none."""
+    if client_id == settings.jwt_token_config.registry_client_id:
+        return None, None
+    if not consent_grant_matches(consent_store.get_client_grant_id(user_id, client_id), presented):
+        return None, _oauth_token_error("invalid_grant", "User consent is required. Restart the authorization flow.")
+    return effective_consent_grant_id(presented), None
 
 
 def _mint_downstream_access_token(user_id: str, client_id: str, server_path: str) -> str:
@@ -925,6 +958,7 @@ def _downstream_token_response(access_token: str, refresh_token: str) -> JSONRes
 def _downstream_authorization_code_grant(
     *,
     store: DownstreamOAuthStoreProtocol,
+    consent_store: ConsentStore,
     redis_client: Redis,
     user_id: str,
     server_path: str,
@@ -970,11 +1004,17 @@ def _downstream_authorization_code_grant(
     if user_id != bound_user_id or server_path != bound_server_path:
         return _oauth_token_error("invalid_grant", "code does not match this endpoint")
 
+    effective_grant_id, consent_error = _resolve_downstream_consent_grant(
+        consent_store, user_id, client_id, entry.get("consent_grant_id")
+    )
+    if consent_error is not None:
+        return consent_error
+
     access_token = _mint_downstream_access_token(bound_user_id, client_id, bound_server_path)
     refresh_token = secrets.token_urlsafe(32)
     store.save_refresh_token(
         refresh_token,
-        _downstream_refresh_data(client_id, bound_user_id, bound_server_path),
+        _downstream_refresh_data(client_id, bound_user_id, bound_server_path, effective_grant_id),
     )
 
     logger.info(f"[Downstream OAuth] token issued: user={user_id} server={server_path}")
@@ -984,6 +1024,7 @@ def _downstream_authorization_code_grant(
 def _downstream_refresh_token_grant(
     *,
     store: DownstreamOAuthStoreProtocol,
+    consent_store: ConsentStore,
     user_id: str,
     server_path: str,
     client_id: str,
@@ -1011,11 +1052,17 @@ def _downstream_refresh_token_grant(
     if token_data.get("user_id") != user_id or token_data.get("server_path") != server_path:
         return _oauth_token_error("invalid_grant", "refresh_token does not match this endpoint")
 
+    effective_grant_id, consent_error = _resolve_downstream_consent_grant(
+        consent_store, user_id, client_id, token_data.get("consent_grant_id")
+    )
+    if consent_error is not None:
+        return consent_error
+
     new_refresh_token = secrets.token_urlsafe(32)
     rotated = store.rotate_refresh_token(
         old_token=refresh_token,
         new_token=new_refresh_token,
-        new_data=_downstream_refresh_data(client_id, user_id, server_path),
+        new_data=_downstream_refresh_data(client_id, user_id, server_path, effective_grant_id),
     )
     if rotated is None:
         return _oauth_token_error("invalid_grant", "refresh token already used")
@@ -1028,6 +1075,7 @@ def _downstream_refresh_token_grant(
 def _downstream_device_code_grant(
     *,
     store: DownstreamOAuthStoreProtocol,
+    consent_store: ConsentStore,
     user_id: str,
     server_path: str,
     device_code: str | None,
@@ -1073,6 +1121,12 @@ def _downstream_device_code_grant(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    effective_grant_id, consent_error = _resolve_downstream_consent_grant(
+        consent_store, user_id, client_id, device_data.get("consent_grant_id")
+    )
+    if consent_error is not None:
+        return consent_error
+
     access_token = _mint_downstream_access_token(user_id, client_id, server_path)
     refresh_token = secrets.token_urlsafe(32)
 
@@ -1081,7 +1135,7 @@ def _downstream_device_code_grant(
     consumed_data = store.consume_device_code_and_save_refresh_token(
         device_code,
         refresh_token,
-        _downstream_refresh_data(client_id, user_id, server_path),
+        _downstream_refresh_data(client_id, user_id, server_path, effective_grant_id),
         expected_client_id=client_id,
         expected_user_id=user_id,
         expected_server_path=server_path,
@@ -1107,6 +1161,7 @@ async def downstream_oauth_token(
     device_code: str | None = Form(None),
     redis_client: Redis = Depends(get_redis_client),
     store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
+    consent_store: ConsentStore = Depends(get_consent_store),
 ) -> JSONResponse:
     """Per-server downstream OAuth token endpoint (Layer B: registry-as-AS).
 
@@ -1116,8 +1171,10 @@ async def downstream_oauth_token(
     """
     try:
         if grant_type == "authorization_code":
-            return _downstream_authorization_code_grant(
+            return await asyncio.to_thread(
+                _downstream_authorization_code_grant,
                 store=store,
+                consent_store=consent_store,
                 redis_client=redis_client,
                 user_id=user_id,
                 server_path=server_path,
@@ -1129,8 +1186,10 @@ async def downstream_oauth_token(
             )
 
         if grant_type == "refresh_token":
-            return _downstream_refresh_token_grant(
+            return await asyncio.to_thread(
+                _downstream_refresh_token_grant,
                 store=store,
+                consent_store=consent_store,
                 user_id=user_id,
                 server_path=server_path,
                 client_id=client_id,
@@ -1139,8 +1198,10 @@ async def downstream_oauth_token(
             )
 
         if grant_type == DEVICE_CODE_GRANT_TYPE:
-            return _downstream_device_code_grant(
+            return await asyncio.to_thread(
+                _downstream_device_code_grant,
                 store=store,
+                consent_store=consent_store,
                 user_id=user_id,
                 server_path=server_path,
                 device_code=device_code,

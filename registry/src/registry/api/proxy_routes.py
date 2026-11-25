@@ -4,22 +4,37 @@ Dynamic MCP server proxy routes.
 
 import json
 import logging
-import secrets
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any
 from uuid import uuid4
 
-import httpx
+import httpx2
 from beanie import PydanticObjectId
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from httpx._decoders import SUPPORTED_DECODERS
+from httpx2._decoders import SUPPORTED_DECODERS
 from opentelemetry import baggage, trace
 from redis import Redis
+from redis.exceptions import RedisError
 
+from registry.constants import (
+    JSONRPC_INTERNAL_ERROR,
+    JSONRPC_INVALID_PARAMS,
+    JSONRPC_INVALID_REQUEST,
+    UrlElicitationInputKey,
+)
 from registry.core.mcp_config import MCPClientConfig
+from registry.core.proxy_call import HANDSHAKE_METHODS, ProxyCall, ProxyProtocolEra
+from registry.core.proxy_responses import (
+    authorization_declined_response,
+    build_jsonrpc_error,
+    build_method_error,
+    server_consent_response,
+    url_elicitation_response,
+)
+from registry_pkgs.core import a2a_http
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.exceptions import (
     DownstreamAuthRejectedException,
@@ -56,8 +71,8 @@ from ..deps import (
 from ..mcpgw.tools.utils import get_target_url, parse_elicitation_id
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
+from ..services.direct_proxy_consent import get_proxy_consent_url
 from ..services.federation.a2a_client_registry import A2AClientRegistry
-from ..services.generated_token_policy import is_consent_exempt
 from ..services.server_service import ServerServiceV1
 from ..utils.mcp_headers import build_authenticated_headers
 
@@ -149,38 +164,48 @@ _HOP_BY_HOP_HEADERS = frozenset(
 )
 
 
-def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
+def _sanitize_hop_by_hop_headers(headers: httpx2.Headers | a2a_http.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
-# Content-codings that httpx's automatic response decoding (`Response.aread`/`aiter_bytes`) is
-# actually able to reverse *in this process*. Derived directly from httpx's own decoder registry
-# rather than a hand-maintained list, because the real answer is environment-dependent: `br`
-# (Brotli) and `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages
-# happen to be installed -- `httpx/_decoders.py` builds `SUPPORTED_DECODERS` by probing those
-# imports at module load time and popping the entry when the import fails. A hardcoded list would
-# silently drift from that reality the moment an optional codec dependency is added or removed
-# (e.g. this repo currently has `zstandard` but not `brotli`) -- exactly the class of bug this
-# check exists to prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) httpx module, so this
-# is a deliberate, narrow coupling to non-public API: if a future httpx version restructures or
-# removes it, this import fails loudly at process start-up rather than silently going stale. See
-# `test_httpx_decoders_supported_decoders_is_accessible` in the test suite for a canary that fails
-# the moment CI's httpx version breaks this assumption, before it could surface as a prod bug.
+# Content-codings the MCP proxy client's automatic response decoding (`Response.aread`/`aiter_bytes`)
+# is actually able to reverse *in this process*. A2A responses are read by a different client
+# library (classic httpx via `registry_pkgs.core.a2a_http`) and are checked against that library's
+# own set, `a2a_http.DECODABLE_CONTENT_ENCODINGS`: the two sets can diverge (e.g. `zstd` support is
+# probed independently by each library), so each response must be checked against the decoder set
+# of the client that read it. Derived directly from the library's own decoder registry rather than
+# a hand-maintained list, because the real answer is environment-dependent: `br` (Brotli) and
+# `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages happen to be
+# installed -- `httpx2/_decoders.py` builds `SUPPORTED_DECODERS` by probing those imports at module
+# load time and popping the entry when the import fails. A hardcoded list would silently drift from
+# that reality the moment an optional codec dependency is added or removed (e.g. this repo
+# currently has `zstandard` but not `brotli`) -- exactly the class of bug this check exists to
+# prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) module, so this is a deliberate, narrow
+# coupling to non-public API: if a future version restructures or removes it, this import fails
+# loudly at process start-up rather than silently going stale. See
+# `test_httpx2_decoders_supported_decoders_is_accessible` in the test suite for a canary that fails
+# the moment CI's httpx2 version breaks this assumption, before it could surface as a prod bug.
 _HTTPX_DECODABLE_CONTENT_ENCODINGS = frozenset(SUPPORTED_DECODERS.keys())
 
 
-def _pop_content_encoding_if_fully_decoded(response_headers: dict[str, str], backend_headers: httpx.Headers) -> None:
+def _pop_content_encoding_if_fully_decoded(
+    response_headers: dict[str, str],
+    backend_headers: httpx2.Headers | a2a_http.Headers,
+    decodable_encodings: frozenset[str],
+) -> None:
     """
     Strip `Content-Encoding` from the outgoing response headers, but only when every coding it
-    lists is one that httpx's `aread()`/`aiter_bytes()` actually reversed already.
+    lists is in the supplied decoder set of the client that read the response.
 
-    We read the backend response body via `aread()`/`aiter_bytes()` above, which auto-decompresses
-    it according to `Content-Encoding` -- but only for codings httpx recognizes (see
-    `_HTTPX_DECODABLE_CONTENT_ENCODINGS`). Any other content-coding token -- a legitimate one httpx
-    just doesn't support (e.g. the RFC 8188 `aes128gcm` encryption coding), or plain Brotli/Zstandard
-    in a deployment missing the optional codec package -- is silently left alone by httpx: it drops
-    the unrecognized token and decodes nothing for it, with no error raised. The bytes we're holding
-    are then still in their original encoded form even though nothing looks wrong.
+    The caller read the backend response body via `aread()`/`aiter_bytes()`, which auto-decompresses
+    it according to `Content-Encoding` -- but only for codings that client library recognizes, which
+    the caller passes as `decodable_encodings` (`_HTTPX_DECODABLE_CONTENT_ENCODINGS` for MCP
+    responses, `a2a_http.DECODABLE_CONTENT_ENCODINGS` for A2A responses). Any other content-coding
+    token -- a legitimate one the library doesn't support (e.g. the RFC 8188 `aes128gcm` encryption
+    coding), or plain Brotli/Zstandard in a deployment missing the optional codec package -- is
+    silently left alone: the library drops the unrecognized token and decodes nothing for it, with
+    no error raised. The bytes we're holding are then still in their original encoded form even
+    though nothing looks wrong.
 
     If we always stripped `Content-Encoding` regardless, we would forward those still-encoded bytes
     to our client while the header tells it no further decoding is needed -- a correctness bug, not
@@ -191,57 +216,8 @@ def _pop_content_encoding_if_fully_decoded(response_headers: dict[str, str], bac
     """
     encodings = backend_headers.get_list("content-encoding", split_commas=True)
 
-    if encodings and all(value.strip().lower() in _HTTPX_DECODABLE_CONTENT_ENCODINGS for value in encodings):
+    if encodings and all(value.strip().lower() in decodable_encodings for value in encodings):
         response_headers.pop("content-encoding", None)
-
-
-# MCP handshake methods that fire before a tool-call context exists. When the downstream MCP
-# server requires authorization, these get an HTTP 401 RFC 9728 discovery challenge instead of a
-# URL mode elicitation, which most MCP clients cannot process at this stage.
-_INIT_METHODS = frozenset({"initialize", "tools/list"})
-
-# Custom JSON-RPC error code signaling that a URL mode elicitation (out-of-band browser step) is
-# required before the request can proceed — shared by the downstream-OAuth-expired and
-# consent-required elicitation paths.
-_URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
-_JSONRPC_INVALID_REQUEST = -32600
-_JSONRPC_INTERNAL_ERROR = -32603
-# The gateway deliberately refused the request (access denied, server disabled, unsupported
-# transport, downstream authorization rejected or changed mid-call). It sits in JSON-RPC 2.0's
-# implementation-defined server-error range (-32000 to -32099), avoiding the codes the MCP spec
-# and SDKs already use (-32000 connection closed, -32001 request timeout, -32002 resource not
-# found, -32042 URL elicitation required).
-_MCP_REQUEST_REFUSED_ERROR_CODE = -32003
-
-
-def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
-    """Build JSON-RPC result response with isError=true."""
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": {"content": [{"type": "text", "text": error_text}], "isError": True},
-    }
-
-
-def _build_jsonrpc_error(request_id: str | int | None, code: int, message: str, data: Any = None) -> dict[str, Any]:
-    """Build JSON-RPC error response."""
-    error_response = {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
-    if data is not None:
-        error_response["error"]["data"] = data
-    return error_response
-
-
-def _build_method_error(
-    request_id: str | int | None,
-    message: str,
-    *,
-    method: str | None,
-    code: int = _MCP_REQUEST_REFUSED_ERROR_CODE,
-) -> dict[str, Any]:
-    """Shape a gateway-generated failure for the method that triggered it."""
-    if method == "tools/call":
-        return _build_jsonrpc_error_result(request_id, message)
-    return _build_jsonrpc_error(request_id, code, message)
 
 
 def _get_elicitation_id(auth_url: str) -> str:
@@ -285,18 +261,17 @@ def _downstream_token_problem_response(detail: str) -> JSONResponse:
 def _handle_url_elicitation_required(
     exc: UrlElicitationRequiredException,
     *,
-    request_id: str | int,
+    call: ProxyCall,
     request: Request,
-    mcp_method: str | None,
 ) -> Response:
     """Turn a downstream re-auth requirement into the right client-facing response.
 
-    Handshake methods (initialize / tools/list) fire before the client has a tool-call context,
+    Handshake methods (initialize / server/discover / tools/list) fire before the client has a tool-call context,
     so most MCP clients cannot process a URL mode elicitation and treat it as a failed handshake.
     Those get an HTTP 401 with an RFC 9728 resource_metadata challenge so the client starts standard
-    downstream OAuth discovery; every other method keeps the URL mode elicitation error.
+    downstream OAuth discovery; other methods use the request protocol to deliver URL elicitation.
     """
-    if mcp_method in _INIT_METHODS:
+    if call.method in HANDSHAKE_METHODS:
         user_id = request.path_params.get("user_id", "")
         server_path = request.path_params.get("server_path", "")
         resource_metadata_url = (
@@ -329,32 +304,26 @@ def _handle_url_elicitation_required(
         f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
         "Please follow the URL to perform re-authorization in a browser window and come back again."
     )
-    error_data = {
-        "elicitations": [
-            {
-                "mode": "url",
-                "message": user_msg,
-                "url": exc.auth_url,
-                "elicitationId": _get_elicitation_id(exc.auth_url),
-            }
-        ]
-    }
-    return JSONResponse(
-        status_code=200,
-        content=_build_jsonrpc_error(request_id, _URL_ELICITATION_REQUIRED_ERROR_CODE, llm_msg, error_data),
+    return url_elicitation_response(
+        call,
+        input_key=UrlElicitationInputKey.AUTHORIZATION,
+        auth_url=exc.auth_url,
+        llm_msg=llm_msg,
+        user_msg=user_msg,
+        legacy_elicitation_id=_get_elicitation_id(exc.auth_url)
+        if call.protocol_era == ProxyProtocolEra.LEGACY
+        else None,
     )
 
 
 async def _prepare_proxy_headers(
     *,
-    request_id: str | int,
+    call: ProxyCall,
     request: Request,
     auth_context: UserContextDict,
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
     redis_client: Redis,
-    mcp_method: str | None,
-    tool_name: str | None,
 ) -> dict[str, str] | Response:
     """Build authenticated outbound headers, or return an early client-facing error Response.
 
@@ -385,34 +354,35 @@ async def _prepare_proxy_headers(
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
-        return _handle_url_elicitation_required(exc, request_id=request_id, request=request, mcp_method=mcp_method)
+        return _handle_url_elicitation_required(exc, call=call, request=request)
     except InternalServerException:
         logger.exception("Internal server exception")
-        return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "Internal server error"))
+        return JSONResponse(
+            status_code=200, content=build_jsonrpc_error(call.request_id, -32603, "Internal server error")
+        )
 
-    # mcp_method and tool_name are both parsed from client-controlled JSON-RPC body content, so
+    # call.method and call.tool_name are both parsed from client-controlled JSON-RPC body content, so
     # bound them before they become baggage values — an unbounded value risks tripping downstream
     # header-size limits (commonly ~8KB) and breaking otherwise-valid calls.
     ctx_baggage = baggage.set_baggage(BAGGAGE_KEY_MCP_SERVER_ID, str(server.id))
     ctx_baggage = baggage.set_baggage(
-        BAGGAGE_KEY_MCP_METHOD, bounded_baggage_value(mcp_method or ""), context=ctx_baggage
+        BAGGAGE_KEY_MCP_METHOD, bounded_baggage_value(call.method or ""), context=ctx_baggage
     )
-    if tool_name:
+    if call.tool_name:
         ctx_baggage = baggage.set_baggage(
-            BAGGAGE_KEY_MCP_TOOL_NAME, bounded_baggage_value(tool_name), context=ctx_baggage
+            BAGGAGE_KEY_MCP_TOOL_NAME, bounded_baggage_value(call.tool_name), context=ctx_baggage
         )
     return inject_trace_context(headers, context=ctx_baggage)
 
 
 async def _forward_to_downstream(
     *,
-    request_id: str | int,
+    call: ProxyCall,
     request: Request,
     target_url: str,
-    proxy_client: httpx.AsyncClient,
+    proxy_client: httpx2.AsyncClient,
     headers: dict[str, str],
     server_name: str = "",
-    mcp_method: str | None = None,
     on_unauthorized: UnauthorizedCallback | None = None,
 ) -> Response:
     """Send the proxied request downstream and relay the response (buffered JSON or SSE stream).
@@ -425,7 +395,7 @@ async def _forward_to_downstream(
     headers to resend with (once) or the final response. Headers returned for the retry's 401 are
     not sent; the client gets a "changed during this call" error instead of a third send.
     """
-    body = await request.body()
+    body = call.body
 
     try:
         accept_header = request.headers.get("accept", "")
@@ -434,17 +404,18 @@ async def _forward_to_downstream(
             logger.error(f"Accept header: '{accept_header}' from a client of a streamable-http MCP server")
             return JSONResponse(
                 status_code=200,
-                content=_build_method_error(
-                    request_id,
+                content=build_method_error(
+                    call.request_id,
                     "The client is trying to communicate with an MCP server on Streamable HTTP transport, so its "
                     f"Accept header MUST include 'text/event-stream'. However, the Accept header is '{accept_header}'.",
-                    method=mcp_method,
-                    code=_JSONRPC_INVALID_REQUEST,
+                    method=call.method,
+                    code=JSONRPC_INVALID_REQUEST,
                 ),
             )
 
         is_retry = False
         while True:
+            headers = {key: value for key, value in headers.items() if key.lower() != "content-length"}
             stream_context = proxy_client.stream(request.method, target_url, headers=headers, content=body)
             backend_response = await stream_context.__aenter__()
             if backend_response.status_code != HTTPStatus.UNAUTHORIZED or on_unauthorized is None:
@@ -460,10 +431,10 @@ async def _forward_to_downstream(
             if is_retry:
                 return JSONResponse(
                     status_code=200,
-                    content=_build_method_error(
-                        request_id,
+                    content=build_method_error(
+                        call.request_id,
                         f"Authorization for {server_name} changed during this call; retry it.",
-                        method=mcp_method,
+                        method=call.method,
                     ),
                 )
             headers = outcome
@@ -492,10 +463,12 @@ async def _forward_to_downstream(
                 # value may be stale or wrong (e.g. when upstream mis-reports under chunked encoding).
                 response_headers.pop("content-length", None)
                 # `content_bytes` above came from `aread()`, which already reversed the backend's
-                # Content-Encoding whenever httpx knows how to (see
+                # Content-Encoding whenever httpx2 knows how to (see
                 # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
                 # unchanged in that case would tell our client to decode an already-decoded body.
-                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                _pop_content_encoding_if_fully_decoded(
+                    response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+                )
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -510,7 +483,9 @@ async def _forward_to_downstream(
             response_headers.pop("content-length", None)
             # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
             # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
-            _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+            _pop_content_encoding_if_fully_decoded(
+                response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+            )
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
@@ -542,63 +517,47 @@ async def _forward_to_downstream(
             if not is_stream:
                 await stream_context.__aexit__(None, None, None)
 
-    except httpx.TimeoutException:
+    except httpx2.TimeoutException:
         logger.error(f"Timeout proxying to {target_url}")
-        return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "gateway timeout"))
+        return JSONResponse(status_code=200, content=build_jsonrpc_error(call.request_id, -32603, "gateway timeout"))
     except Exception:
         logger.exception(f"Error proxying to {target_url}")
-        return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "gateway internal error"))
+        return JSONResponse(
+            status_code=200, content=build_jsonrpc_error(call.request_id, -32603, "gateway internal error")
+        )
 
 
 async def proxy_to_mcp_server(
-    request_id: str | int,
+    call: ProxyCall,
     request: Request,
     target_url: str,
     auth_context: UserContextDict,
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
-    proxy_client: httpx.AsyncClient,
+    proxy_client: httpx2.AsyncClient,
     redis_client: Redis,
-    mcp_method: str | None = None,
-    tool_name: str | None = None,
 ) -> Response:
     """
     Proxy request to MCP server with auth headers.
     Handles both regular HTTP and SSE streaming, including OAuth token injection.
 
-    Args:
-        request_id: JSON-RPC request ID
-        request: Incoming FastAPI request
-        target_url: Backend MCP server URL
-        auth_context: UserContextDict
-        server: ExtendedMCPServer
-        oauth_service: OAuth service for building auth headers
-        proxy_client: Shared httpx client for connection pooling
-        redis_client: Redis client for JWT token caching
-        mcp_method: The JSON-RPC method of the proxied MCP request (e.g. "initialize",
-            "tools/list", "tools/call"). Used to decide how to surface a missing downstream
-            authorization: handshake methods get an HTTP 401 RFC 9728 discovery challenge,
-            everything else keeps the existing URL mode elicitation.
-        tool_name: The requested tool name, parsed from a "tools/call" request body by the
-            caller (client-controlled input). Bounded before it becomes a baggage value.
+    The call carries validated protocol context and the body shared by both sends.
     """
     # ponytail: span ends when this function returns, so for the SSE path it does not cover the
     # streaming duration (the StreamingResponse body drains after we return). It still covers auth,
     # trace-context injection and the downstream connect/first-response, which is what correlation needs.
     with _TRACER.start_as_current_span(
         "proxy.dynamic_mcp_post_proxy",
-        # mcp_method is client-controlled; bound it so a hostile value can't bloat span attributes.
-        attributes={"mcp.server.id": str(server.id), "mcp.method": bounded_baggage_value(mcp_method or "")},
+        # call.method is client-controlled; bound it so a hostile value can't bloat span attributes.
+        attributes={"mcp.server.id": str(server.id), "mcp.method": bounded_baggage_value(call.method or "")},
     ):
         headers = await _prepare_proxy_headers(
-            request_id=request_id,
+            call=call,
             request=request,
             auth_context=auth_context,
             server=server,
             oauth_service=oauth_service,
             redis_client=redis_client,
-            mcp_method=mcp_method,
-            tool_name=tool_name,
         )
         if isinstance(headers, Response):
             return headers  # early auth / elicitation error
@@ -621,56 +580,35 @@ async def proxy_to_mcp_server(
                     # Even for handshake methods: a 401 challenge here would restart the login loop.
                     return JSONResponse(
                         status_code=200,
-                        content=_build_method_error(request_id, str(exc), method=mcp_method),
+                        content=build_method_error(call.request_id, str(exc), method=call.method),
                     )
                 # Headers when a token is available (resend), else Registry's own 401 challenge for
                 # handshake methods or the URL elicitation for the rest.
                 return await _prepare_proxy_headers(
-                    request_id=request_id,
+                    call=call,
                     request=request,
                     auth_context=auth_context,
                     server=server,
                     oauth_service=oauth_service,
                     redis_client=redis_client,
-                    mcp_method=mcp_method,
-                    tool_name=tool_name,
                 )
 
         return await _forward_to_downstream(
-            request_id=request_id,
+            call=call,
             request=request,
             target_url=target_url,
             proxy_client=proxy_client,
             headers=headers,
             server_name=server.serverName,
-            mcp_method=mcp_method,
             on_unauthorized=on_unauthorized,
         )
-
-
-@router.delete("/sessions/{server_id}")
-async def clear_session_endpoint(request: Request, server_id: str, user_context: CurrentUser) -> JSONResponse:
-    """
-    Clear/disconnect MCP session for a server (useful for debugging stale sessions).
-
-    DELETE /api/v1/proxy/sessions/{server_id}
-    """
-    user_id = user_context.get("user_id", "unknown")
-    session_key = f"{user_id}:{server_id}"
-
-    request.app.state.container.mcp_client_service.clear_session(session_key)
-
-    return JSONResponse(
-        status_code=200,
-        content={"success": True, "message": f"Session cleared for server {server_id}", "session_key": session_key},
-    )
 
 
 def _jsonrpc_a2a_error_response(code: int, message: str) -> JSONResponse:
     """Return a A2A-spec-compliant JSON-RPC error response (HTTP 200)."""
     return JSONResponse(
         status_code=200,
-        content=_build_jsonrpc_error(None, code, message),
+        content=build_jsonrpc_error(None, code, message),
     )
 
 
@@ -705,7 +643,7 @@ async def _serve_managed_agent_card(
 async def _forward_a2a(
     request: Request,
     target_url: str,
-    proxy_client: httpx.AsyncClient,
+    proxy_client: a2a_http.AsyncClient,
     agent_path: str,
     is_jsonrpc: bool = False,
 ) -> Response:
@@ -732,7 +670,7 @@ async def _forward_a2a(
             # Use 5 min timeout when forwarding GET stream.
             # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
             stream_context = proxy_client.stream(
-                request.method, target_url, headers=headers, content=body, params=params, timeout=httpx.Timeout(300)
+                request.method, target_url, headers=headers, content=body, params=params, timeout=a2a_http.Timeout(300)
             )
             backend_response = await stream_context.__aenter__()
 
@@ -765,10 +703,12 @@ async def _forward_a2a(
                     # to complete JSON responses, causing the reported Content-Length to be unreliable).
                     response_headers.pop("content-length", None)
                     # `content_bytes` above came from `aread()`, which already reversed the backend's
-                    # Content-Encoding whenever httpx knows how to (see
+                    # Content-Encoding whenever the A2A client knows how to (see
                     # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
                     # unchanged in that case would tell our client to decode an already-decoded body.
-                    _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                    _pop_content_encoding_if_fully_decoded(
+                        response_headers, backend_response.headers, a2a_http.DECODABLE_CONTENT_ENCODINGS
+                    )
                     return Response(
                         content=content_bytes,
                         status_code=backend_response.status_code,
@@ -783,7 +723,9 @@ async def _forward_a2a(
                 response_headers.pop("content-length", None)
                 # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
                 # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
-                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
+                _pop_content_encoding_if_fully_decoded(
+                    response_headers, backend_response.headers, a2a_http.DECODABLE_CONTENT_ENCODINGS
+                )
                 response_headers.update(
                     {
                         "Cache-Control": "no-cache",
@@ -814,7 +756,7 @@ async def _forward_a2a(
                 if not is_stream:
                     await stream_context.__aexit__(None, None, None)
 
-        except httpx.TimeoutException:
+        except a2a_http.TimeoutException:
             logger.error(f"A2A proxy timeout for agent [{agent_path}] {target_url}")
             if is_jsonrpc:
                 return _jsonrpc_a2a_error_response(-32603, "Gateway timeout communicating with agent")
@@ -975,6 +917,88 @@ async def http_json_proxy(
         return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
+async def _load_direct_proxy_server(
+    server_path: str, request_id: str | int, server_service: ServerServiceV1
+) -> ExtendedMCPServer | JSONResponse:
+    matched_path = await server_service.extract_server_path(f"/{server_path}")
+    server = await server_service.get_server_by_path(matched_path) if matched_path is not None else None
+    if server is None:
+        return JSONResponse(
+            content=build_jsonrpc_error(
+                request_id,
+                JSONRPC_INVALID_REQUEST,
+                "The path portion of the MCP server URL is misconfigured. Prompt user to re-configure it.",
+            )
+        )
+    return server
+
+
+async def _prepare_direct_proxy_call(
+    request: Request, msg_body: dict[str, Any], request_id: str | int
+) -> ProxyCall | JSONResponse:
+    mcp_method = msg_body.get("method")
+    # A JSON-RPC request MUST carry a string "method". Reject a missing/non-string method with a
+    # clean protocol error here rather than letting a truthy non-string (e.g. an int) reach the
+    # downstream bounded_baggage_value() string-slice and blow up as an unhandled 500.
+    if not isinstance(mcp_method, str):
+        return JSONResponse(
+            status_code=200,
+            content=build_jsonrpc_error(
+                request_id,
+                JSONRPC_INVALID_REQUEST,
+                "The JSON-RPC request body is malformed. The 'method' field is missing or not a string.",
+            ),
+        )
+    try:
+        return ProxyCall.from_message(
+            request_id, mcp_method, msg_body, await request.body(), request.headers.get("mcp-protocol-version")
+        )
+    except ValueError:
+        return JSONResponse(
+            content=build_jsonrpc_error(request_id, JSONRPC_INVALID_PARAMS, "Invalid MCP proxy request parameters.")
+        )
+
+
+def _resolve_direct_proxy_target(call: ProxyCall, server: ExtendedMCPServer) -> str | JSONResponse:
+    # Check if server is enabled
+    config = server.config or {}
+    if not config.get("enabled", False):
+        return JSONResponse(
+            status_code=200,
+            content=build_method_error(
+                call.request_id, f"Server '{server.serverName}' is disabled", method=call.method
+            ),
+        )
+    elif config.get("type", "") != MCPClientConfig.TRANSPORT_HTTP:
+        configured_transport = config.get("type") or "unknown"
+        return JSONResponse(
+            status_code=200,
+            content=build_method_error(
+                call.request_id,
+                f"MCP server '{server.serverName}' is registered with the '{configured_transport}' transport, which "
+                "cannot be reached through this direct Streamable HTTP proxy. Reach it through the Jarvis Registry MCP "
+                "Gateway instead, or, if its endpoint supports Streamable HTTP, update the server's transport to "
+                "'streamable-http' (and its URL to the Streamable HTTP endpoint) in the registry.",
+                method=call.method,
+            ),
+        )
+
+    # Get target URL
+    try:
+        return get_target_url(server)
+    except InternalServerException:
+        # POST requests use JSON-RPC. There is no problem at the HTTP layer, so use status code 200 for HTTP
+        # and embed a JSON-RPC error in the response body.
+        return JSONResponse(
+            status_code=200,
+            content=build_jsonrpc_error(
+                call.request_id,
+                JSONRPC_INTERNAL_ERROR,
+                "Server URL is not configured. The MCP server is not reachable.",
+            ),
+        )
+
+
 @router.post("/server/{user_id}/{server_path:path}")
 async def dynamic_mcp_post_proxy(
     request: Request,
@@ -983,25 +1007,16 @@ async def dynamic_mcp_post_proxy(
     auth_context: CurrentUser,
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
-    proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
+    proxy_client: httpx2.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-):
-    """
-    Dynamic catch-all route for MCP server proxying, but only works for POST.
-    Enables developers to connect directly to all MCP servers through the registry.
+) -> Response:
+    """Proxy direct MCP POSTs after identity, ACL, consent and target validation.
 
-    The URL carries the connecting user's MongoDB ObjectId as `{user_id}`, so the full
-    downstream OAuth discovery chain (protected resource metadata, authorization server
-    metadata, `/authorize`, `/token`) can thread user identity through URLs alone, without
-    any client-side protocol extension.
-
-    CRITICAL: This catch-all route matches ANY path pattern, so it must be defined LAST.
-    FastAPI matches routes in order, so this will capture all unmatched routes.
-
-    MCP protocol only uses GET and POST methods.
+    Keep this catch-all after the specific POST routes. The URL user identity is
+    bound to the authenticated principal by UnifiedAuthMiddleware.
     """
     if not ObjectId.is_valid(user_id):
         return JSONResponse(
@@ -1024,38 +1039,16 @@ async def dynamic_mcp_post_proxy(
     if request_id is None:
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error(
+            content=build_jsonrpc_error(
                 request_id,
-                _JSONRPC_INVALID_REQUEST,
+                JSONRPC_INVALID_REQUEST,
                 "The JSON-RPC request body is malformed. The 'id' field doesn't exist or is not of the right type.",
             ),
         )
 
-    # Extract registered server path from request URL. The `user_id` prefix is never part of a
-    # registered server path in MongoDB, so only the server's path segment is matched here.
-    path = f"/{server_path}"
-    matched_server_path = await server_service.extract_server_path(path)
-    if matched_server_path is None:
-        return JSONResponse(
-            status_code=200,
-            content=_build_jsonrpc_error(
-                request_id,
-                _JSONRPC_INVALID_REQUEST,
-                "The path portion of the MCP server URL is misconfigured. Prompt user to re-configure it.",
-            ),
-        )
-
-    # Get server by the extracted path
-    server = await server_service.get_server_by_path(matched_server_path)
-    if server is None:
-        return JSONResponse(
-            status_code=200,
-            content=_build_jsonrpc_error(
-                request_id,
-                _JSONRPC_INVALID_REQUEST,
-                "The path portion of the MCP server URL is misconfigured. Prompt user to re-configure it.",
-            ),
-        )
+    server = await _load_direct_proxy_server(server_path, request_id, server_service)
+    if isinstance(server, Response):
+        return server
 
     try:
         await acl_service.check_user_permission(
@@ -1067,104 +1060,55 @@ async def dynamic_mcp_post_proxy(
     except HTTPException:
         return JSONResponse(
             status_code=200,
-            content=_build_method_error(request_id, "Access denied to this MCP server.", method=msg_body.get("method")),
+            content=build_method_error(request_id, "Access denied to this MCP server.", method=msg_body.get("method")),
         )
 
-    user_id = auth_context["user_id"]
-    client_id = auth_context["client_id"]
-    mcp_method = msg_body.get("method")
-    # A JSON-RPC request MUST carry a string "method". Reject a missing/non-string method with a
-    # clean protocol error here rather than letting a truthy non-string (e.g. an int) reach the
-    # downstream bounded_baggage_value() string-slice and blow up as an unhandled 500.
-    if not isinstance(mcp_method, str):
+    call = await _prepare_direct_proxy_call(request, msg_body, request_id)
+    if isinstance(call, Response):
+        return call
+    if call.authorization_declined:
+        return authorization_declined_response(call)
+    # Tool disabling is a registry policy, so it must hold on the direct proxy the same way it
+    # already does in the gateway's execute_tool: a tool the server owner disabled in the
+    # registry never reaches the downstream server. Handshake methods (initialize, tools/list)
+    # carry no tool_name and stay unaffected. Checked before the consent gate, as on the gateway,
+    # so the user is not sent through authorization for a call that cannot succeed.
+    if call.tool_name is not None and server.is_tool_disabled(call.tool_name):
         return JSONResponse(
             status_code=200,
-            content=_build_jsonrpc_error(
-                request_id,
-                _JSONRPC_INVALID_REQUEST,
-                "The JSON-RPC request body is malformed. The 'method' field is missing or not a string.",
+            content=build_method_error(
+                call.request_id,
+                f"Tool '{call.tool_name}' is currently disabled on server '{server.serverName}'. It was disabled in "
+                "Jarvis Registry — do not retry this tool until it is re-enabled there.",
+                method=call.method,
             ),
         )
-    tool_name = None
-    if mcp_method == "tools/call":
-        params = msg_body.get("params")
-        if isinstance(params, dict) and isinstance(params.get("name"), str):
-            tool_name = params["name"]
-    requires_server_consent = mcp_method not in _INIT_METHODS and not is_consent_exempt(
-        client_id,
-        settings.headless_agent_client_id,
-    )
-    if requires_server_consent and not consent_store.has_server_consent(user_id, client_id, server.path):
-        nonce = secrets.token_urlsafe(32)
-        pending_store.save(nonce, {"user_id": user_id, "client_id": client_id, "server_path": server.path})
-        auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
-        elicitation_id = str(uuid4())
-        llm_msg = (
-            "Jarvis Registry needs the user's explicit consent before this client can call the "
-            f"'{server.serverName}' MCP server. Please direct the user to open the provided URL in a browser "
-            "window, grant consent, and come back to retry the same request again."
-        )
-        user_msg = (
-            "Jarvis Registry needs your explicit consent before this application can call the "
-            f"'{server.serverName}' MCP server on your behalf. Please follow the URL to review and approve."
-        )
-        error_data = {
-            "elicitations": [
-                {
-                    "mode": "url",
-                    "message": user_msg,
-                    "url": auth_url,
-                    "elicitationId": elicitation_id,
-                }
-            ]
-        }
-        return JSONResponse(
-            status_code=200,
-            content=_build_jsonrpc_error(request_id, _URL_ELICITATION_REQUIRED_ERROR_CODE, llm_msg, error_data),
-        )
-
-    # Check if server is enabled
-    config = server.config or {}
-    if not config.get("enabled", False):
-        return JSONResponse(
-            status_code=200,
-            content=_build_method_error(request_id, f"Server '{server.serverName}' is disabled", method=mcp_method),
-        )
-    elif config.get("type", "") != MCPClientConfig.TRANSPORT_HTTP:
-        configured_transport = config.get("type") or "unknown"
-        return JSONResponse(
-            status_code=200,
-            content=_build_method_error(
-                request_id,
-                f"MCP server '{server.serverName}' is registered with the '{configured_transport}' transport, which "
-                "cannot be reached through this direct Streamable HTTP proxy. Reach it through the Jarvis Registry MCP "
-                "Gateway instead, or, if its endpoint supports Streamable HTTP, update the server's transport to "
-                "'streamable-http' (and its URL to the Streamable HTTP endpoint) in the registry.",
-                method=mcp_method,
-            ),
-        )
-
-    # Get target URL
     try:
-        target_url = get_target_url(server)
-    except InternalServerException:
-        # POST requests use JSON-RPC. There is no problem at the HTTP layer, so use status code 200 for HTTP
-        # and embed a JSON-RPC error in the response body.
-        return JSONResponse(
-            status_code=200,
-            content=_build_jsonrpc_error(
-                request_id,
-                _JSONRPC_INTERNAL_ERROR,
-                "Server URL is not configured. The MCP server is not reachable.",
-            ),
+        consent_url = await get_proxy_consent_url(
+            call,
+            auth_context=auth_context,
+            server_path=server.path,
+            consent_store=consent_store,
+            pending_store=pending_store,
         )
+    except RedisError:
+        logger.error("Direct MCP proxy consent storage failed")
+        return JSONResponse(
+            content=build_jsonrpc_error(call.request_id, JSONRPC_INTERNAL_ERROR, "Internal server error")
+        )
+    if consent_url is not None:
+        return server_consent_response(call, auth_url=consent_url, server_name=server.serverName)
+
+    target_url = _resolve_direct_proxy_target(call, server)
+    if isinstance(target_url, Response):
+        return target_url
 
     # Proxy the request. At this point, auth_context must exist as UserContextDict. Otherwise the UnifiedAuthMiddleware
     # would have responded with protected resource metadata doc according to RFC 9728.
-    logger.info(f"Proxying {request.method} {path} → {target_url}")
+    logger.info(f"Proxying {request.method} /{server_path} → {target_url}")
 
     return await proxy_to_mcp_server(
-        request_id,
+        call,
         request=request,
         target_url=target_url,
         auth_context=auth_context,
@@ -1172,8 +1116,6 @@ async def dynamic_mcp_post_proxy(
         oauth_service=oauth_service,
         proxy_client=proxy_client,
         redis_client=redis_client,
-        mcp_method=mcp_method,
-        tool_name=tool_name,
     )
 
 
@@ -1185,7 +1127,7 @@ async def dynamic_mcp_get_proxy(
     auth_context: CurrentUser,
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
-    proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
+    proxy_client: httpx2.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
 ):
@@ -1280,7 +1222,7 @@ async def dynamic_mcp_get_proxy(
 
     # Proxy the request. At this point, auth_context must exist as UserContextDict. Otherwise the UnifiedAuthMiddleware
     # would have responded with protected resource metadata doc according to RFC 9728.
-    logger.info(f"Proxying {request.method} {path} → {target_url}")
+    logger.info(f"Proxying {request.method} /{server_path} → {target_url}")
 
     # ponytail: span ends on return; the SSE body drains afterward (same trade-off as the POST
     # proxy). It still covers auth, trace injection and the downstream connect/first-response.
@@ -1355,7 +1297,7 @@ async def dynamic_mcp_get_proxy(
             # Use 5 min timeout when forwarding GET stream.
             # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
             stream_context = proxy_client.stream(
-                request.method, target_url, headers=headers, content=body, timeout=httpx.Timeout(300)
+                request.method, target_url, headers=headers, content=body, timeout=httpx2.Timeout(300)
             )
             backend_response = await stream_context.__aenter__()
 
@@ -1375,6 +1317,11 @@ async def dynamic_mcp_get_proxy(
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
+            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk -- see
+            # `_pop_content_encoding_if_fully_decoded`.
+            _pop_content_encoding_if_fully_decoded(
+                response_headers, backend_response.headers, _HTTPX_DECODABLE_CONTENT_ENCODINGS
+            )
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
@@ -1388,7 +1335,7 @@ async def dynamic_mcp_get_proxy(
                     # NOTE: Every chunk-reading has a 5 min timeout.
                     async for chunk in backend_response.aiter_bytes():
                         yield chunk
-                except httpx.TimeoutException:
+                except httpx2.TimeoutException:
                     logger.info("No event from downstream for 5 min. Disconnecting.")
 
                     raise

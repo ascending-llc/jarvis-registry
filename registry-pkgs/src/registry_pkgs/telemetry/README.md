@@ -296,13 +296,13 @@ Below are the standard metrics currently defined for the core services, includin
 | `mcp_tool_discovery_total` | Counter | `tool_name` (or query), `source`, `status` | Tracks tool discovery attempts via search or direct lookup. |
 | `mcp_tool_execution_total` | Counter | `tool_name`, `server_name`, `method`, `status` | Counts execution of specific tools on MCP servers. |
 | `mcp_resource_access_total` | Counter | `resource_uri`, `server_name`, `status` | Tracks access to specific resources (e.g., file reads, data fetch). |
-| `mcp_prompt_execution_total` | Counter | `prompt_name`, `server_name`, `status` | Counts executions of pre-defined prompts on MCP servers. |
+| `mcp_prompt_get_total` | Counter | `prompt_name`, `server_name`, `status` | Counts retrievals of pre-defined prompts on MCP servers. |
 | `auth_requests_total` | Counter | `mechanism`, `status` | Tracks authentication attempts handled by the registry middleware. |
 | `registry_operation_duration_seconds` | Histogram | *Same as above* | Latency distribution of registry operations. |
 | `mcp_tool_execution_duration_seconds` | Histogram | *Same as above* | Latency distribution of tool executions. |
 | `mcp_tool_discovery_duration_seconds` | Histogram | *Same as above* | Latency distribution of tool discovery operations. |
 | `mcp_resource_access_duration_seconds` | Histogram | *Same as above* | Latency distribution of resource access operations. |
-| `mcp_prompt_execution_duration_seconds` | Histogram | *Same as above* | Latency distribution of prompt executions. |
+| `mcp_prompt_get_duration_seconds` | Histogram | *Same as above* | Latency distribution of prompt retrievals. |
 
 ### Auth Server
 

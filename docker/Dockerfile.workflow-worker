@@ -11,6 +11,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 COPY ./config/metrics/registry.yml /app/config/metrics/registry.yml
 ENV OTEL_METRICS_CONFIG_PATH=/app/config/metrics/registry.yml
 

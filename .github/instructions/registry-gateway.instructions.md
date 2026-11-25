@@ -135,13 +135,13 @@ Call 2: discover_servers(query="slack post message")
 → Clear leader from slack-mcp; execute.
 ```
 
-### Example 4 — Non-tool intent, mixed type_list finds it in one call
+### Example 4 — User requests a predefined prompt
 
 ```
-User: "please summarize yesterday's meeting notes"
-Call: discover_servers(query="summarize meeting notes")
+User: "use the registered meeting-summary prompt template for yesterday's meeting notes"
+Call: discover_servers(query="meeting summary template", type_list=["prompt"])
 → Top result has entity_type="prompt", relevance_score 0.71, clearly leading.
-→ Call execute_prompt(prompt_name=..., server_id=..., arguments={...}).
+→ Call get_prompt(prompt_name=..., server_id=..., arguments={...}).
 ```
 
 ### Example 5 — Asking for agent (analysis)
@@ -225,8 +225,8 @@ Use identifiers verbatim — never transform, shorten, or invent them.
 | Entity type | Call |
 |-------------|------|
 | Tool | `execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})` |
-| Resource | `read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)` |
-| Prompt | `execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})` |
+| Resource | `read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)`; expand `resource_uri_template` using RFC 6570 with known inputs, respecting operators and percent-encoding, and pass the concrete URI as `resource_uri`. Ask for missing required inputs; never send unresolved expressions. Tool-result resource links may also be read using their source server_id. |
+| Prompt | `get_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})` |
 | Agent | `execute_agent(agent_id=<result.agent_id>, message={parts:[{kind:"text", text:"<full task description>"}]})` |
 
 ---
@@ -245,7 +245,8 @@ Use identifiers verbatim — never transform, shorten, or invent them.
 
 - **ALWAYS run discovery before responding to any request.** Choose `discover_servers`, `discover_agents`, or both based on intent.
 - **NEVER decline a request based on your perceived role or built-in limitations** (e.g. "I'm a coding assistant", "I can't browse the web") without first completing the full discovery chain including the survey fallback.
-- Never call `execute_tool` / `read_resource` / `execute_prompt` / `execute_agent` with identifiers not returned by discovery.
+- Use discovered identifiers for `execute_tool`, `get_prompt` and `execute_agent`. For `read_resource`, use a discovered concrete URI, a fully filled discovered resource_uri_template, or a tool-result resource link paired with its source server_id.
+- Call `get_prompt` only when the user requests a server's predefined prompt or workflow by name or clear intent; never to find instructions for yourself. All prompt argument values must be strings.
 - Prefer one discovery call with good keywords over many narrow calls.
 - When clustered, distinguish same-server ambiguity (ask which operation), cross-server ambiguity (ask which provider), and cross-collection ambiguity (tool vs agent, decide by description fit).
 - If discovery returns a clear match and execution is not blocked, execute in the same turn; do not stop at recommendation text.

@@ -43,7 +43,7 @@ import time
 import webbrowser
 from pathlib import Path
 
-import httpx
+import httpx2
 from dotenv import load_dotenv
 
 # Use your own `.env` path or ask Kent for his.
@@ -85,7 +85,7 @@ def _print_json(label: str, data: dict) -> None:
     print(f"{label}:\n{json.dumps(data, indent=2, default=str)}")
 
 
-def fetch_as_metadata(client: httpx.Client) -> dict:
+def fetch_as_metadata(client: httpx2.Client) -> dict:
     _print_header("Authorization Server Metadata")
     response = client.get(f"{AUTH_SERVER_EXTERNAL_URL}/.well-known/oauth-authorization-server")
     response.raise_for_status()
@@ -97,7 +97,7 @@ def fetch_as_metadata(client: httpx.Client) -> dict:
     return metadata
 
 
-def fetch_downstream_as_metadata(client: httpx.Client, user_id: str, server_path: str) -> dict:
+def fetch_downstream_as_metadata(client: httpx2.Client, user_id: str, server_path: str) -> dict:
     """Fetch the per-(user_id, server_path) virtual AS metadata (AS-1727, Mode 2 sub-case A).
 
     Hosted by auth-server, but `authorization_endpoint`/`token_endpoint`/`device_authorization_endpoint`
@@ -117,7 +117,7 @@ def fetch_downstream_as_metadata(client: httpx.Client, user_id: str, server_path
 
 
 def register_client(
-    client: httpx.Client, registration_endpoint: str, *, label: str, token_endpoint_auth_method: str
+    client: httpx2.Client, registration_endpoint: str, *, label: str, token_endpoint_auth_method: str
 ) -> dict:
     _print_header(f"DCR Registration — {label} (token_endpoint_auth_method={token_endpoint_auth_method!r})")
     payload = {
@@ -135,7 +135,7 @@ def register_client(
     return data
 
 
-def start_device_flow(client: httpx.Client, device_authorization_endpoint: str, *, client_id: str) -> dict:
+def start_device_flow(client: httpx2.Client, device_authorization_endpoint: str, *, client_id: str) -> dict:
     _print_header("Device Authorization Request")
     response = client.post(device_authorization_endpoint, data={"client_id": client_id})
     response.raise_for_status()
@@ -148,7 +148,7 @@ def start_device_flow(client: httpx.Client, device_authorization_endpoint: str, 
 
 
 def poll_for_token(
-    client: httpx.Client,
+    client: httpx2.Client,
     token_endpoint: str,
     *,
     device_code: str,
@@ -216,7 +216,7 @@ def decode_and_print_tokens(token_response: dict, jwks: dict, issuer: str) -> No
         print(f"refresh_token (opaque, not a JWT): {refresh_token}")
 
 
-def run_device_flow(client: httpx.Client, metadata: dict, jwks: dict, *, label: str, dcr_client: dict) -> None:
+def run_device_flow(client: httpx2.Client, metadata: dict, jwks: dict, *, label: str, dcr_client: dict) -> None:
     _print_header(f"Device Flow — {label}")
     device_data = start_device_flow(
         client, metadata["device_authorization_endpoint"], client_id=dcr_client["client_id"]
@@ -235,7 +235,7 @@ def run_device_flow(client: httpx.Client, metadata: dict, jwks: dict, *, label: 
 
 
 def run_downstream_device_flow(
-    client: httpx.Client,
+    client: httpx2.Client,
     downstream_metadata: dict,
     root_metadata: dict,
     jwks: dict,
@@ -269,7 +269,7 @@ def run_downstream_device_flow(
 
 
 def verify_downstream_device_grant_rejects_wrong_client_secret(
-    client: httpx.Client,
+    client: httpx2.Client,
     token_endpoint: str,
     *,
     client_id: str,
@@ -303,7 +303,7 @@ def main() -> None:
             "server a real user has already connected to."
         )
 
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+    with httpx2.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         metadata = fetch_as_metadata(client)
         jwks = client.get(metadata["jwks_uri"]).json()
 

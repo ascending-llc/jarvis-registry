@@ -21,10 +21,16 @@ Every lock here is hash-locked and installed with `--require-hashes` (`--python-
 for the `linux/amd64` image, not the host), so a rebuild cannot silently pick up a different transitive
 version.
 
+The Dockerfile installs the locks with `pip --only-binary :all:`: no sdist is built, so no package's build
+code runs and no unhashed build dependency is fetched. Every lock must therefore resolve to wheels for
+CPython 3.12 on manylinux x86_64. The commands below enforce that when the lock is generated, rather than
+leaving it to the image build, which runs only in the manual deploy and tag workflows.
+
 ### Cisco — compiled from `requirements.in`
 
 ```bash
 uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28 --generate-hashes \
+  --only-binary :all: \
   docker/skill-scanners/cisco/requirements.in -o docker/skill-scanners/cisco/requirements.txt
 ```
 
@@ -40,12 +46,22 @@ uv export --frozen --no-dev --no-emit-project --format requirements-txt -o requi
 ```
 
 Copy the result to `docker/skill-scanners/skillspector/requirements.txt` (it keeps hashes and markers,
-excludes optional extras `mcp`/`dev`, and does not include `skillspector` itself). Its only build
-requirement is `hatchling` (`[build-system]` at that commit), hash-locked separately so the no-isolation
+excludes optional extras `mcp`/`dev`, and does not include `skillspector` itself). `uv export` copies
+upstream's pins without checking for wheels, so check the exported file. This fails if any pin has no
+usable wheel:
+
+```bash
+uv pip install --dry-run --only-binary :all: --require-hashes --python-version 3.12 \
+  --python-platform x86_64-manylinux_2_28 --target "$(mktemp -d)" \
+  -r docker/skill-scanners/skillspector/requirements.txt
+```
+
+Its only build requirement is `hatchling` (`[build-system]` at that commit), hash-locked separately so the no-isolation
 build uses a pinned backend:
 
 ```bash
 uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28 --generate-hashes \
+  --only-binary :all: \
   docker/skill-scanners/skillspector/build-requirements.in \
   -o docker/skill-scanners/skillspector/build-requirements.txt
 ```

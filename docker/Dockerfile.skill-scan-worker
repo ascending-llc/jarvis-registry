@@ -16,23 +16,20 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Pinned uv for reproducible, hash-checked scanner installs.
-COPY --from=ghcr.io/astral-sh/uv:0.9.10 /uv /usr/local/bin/uv
-
 # Scanner virtualenvs, isolated from each other and from the worker's own environment: each tool's
 # interpreter never imports our code and ours never imports theirs.
 COPY docker/skill-scanners/ /opt/scanner-locks/
-RUN uv venv /opt/scanners/cisco --python /usr/local/bin/python3.12 \
- && uv pip install --python /opt/scanners/cisco/bin/python --require-hashes \
+RUN python -m venv /opt/scanners/cisco \
+ && /opt/scanners/cisco/bin/pip install --only-binary :all: --require-hashes \
       -r /opt/scanner-locks/cisco/requirements.txt
 # skillspector's deps and build backend (hatchling) are hash-locked; skillspector itself comes from the git
 # ref with --no-deps --no-build-isolation, so it builds against the pinned hatchling, not an unlocked one
 # fetched at build time (not on PyPI).
-RUN uv venv /opt/scanners/skillspector --python /usr/local/bin/python3.12 \
- && uv pip install --python /opt/scanners/skillspector/bin/python --require-hashes \
+RUN python -m venv /opt/scanners/skillspector \
+ && /opt/scanners/skillspector/bin/pip install --only-binary :all: --require-hashes \
       -r /opt/scanner-locks/skillspector/requirements.txt \
       -r /opt/scanner-locks/skillspector/build-requirements.txt \
- && uv pip install --python /opt/scanners/skillspector/bin/python --no-deps --no-build-isolation \
+ && /opt/scanners/skillspector/bin/pip install --no-deps --no-build-isolation \
       "skillspector @ git+https://github.com/NVIDIA/SkillSpector.git@38a1dfe93325d2f8bfcd4f8d0241eed706334915"
 
 WORKDIR /app
