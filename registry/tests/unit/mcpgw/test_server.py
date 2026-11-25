@@ -25,10 +25,6 @@ from registry.constants import UrlElicitationInputKey
 from registry.core.config import settings
 from registry.core.mcp_config import MCPTransport
 from registry.core.mcp_downstream import DownstreamOperation, PromptGet, ResourceRead, ToolCall
-from registry.core.telemetry_decorators import (
-    PromptGetMetricsContext,
-    ResourceAccessMetricsContext,
-)
 from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
@@ -67,23 +63,17 @@ async def _invoke_operation(
 async def _run_operation(
     ctx: Any, operation: DownstreamOperation, server_id: str, *, render: Callable | None = None
 ) -> CallToolResult | InputRequiredResult:
-    if render is None:
+    """Run every operation through its public impl (execute_tool_impl / read_resource_impl / get_prompt_impl).
+
+    A custom ``render`` replaces the module renderer the impl hands to the pipeline, so tests that stub rendering
+    still exercise the impl's own code path. It is called as ``render(result, server)``; the prompt impl's
+    ``prompt_name`` binding is dropped. Tools have no renderer, so ``render`` is ignored for them.
+    """
+    if render is None or isinstance(operation, ToolCall):
         return await _invoke_operation(ctx, operation, server_id)
-    # Tools go through the public entry point, so these tests also guard execute_tool_impl's delegation.
-    if isinstance(operation, ToolCall):
-        return await execute_tool_impl(ctx, operation.tool_name, operation.arguments, server_id)
-    if isinstance(operation, ResourceRead):
-        metrics = ResourceAccessMetricsContext()
-    else:
-        metrics = PromptGetMetricsContext(prompt_name=operation.name)
-    async with metrics:
-        return await server._execute_server_operation(
-            ctx,
-            operation,
-            server_id,
-            metrics_ctx=metrics,
-            render=render,
-        )
+    target = "_render_resource_result" if isinstance(operation, ResourceRead) else "_render_prompt_result"
+    with patch.object(server, target, lambda result, srv, **_bound: render(result, srv)):
+        return await _invoke_operation(ctx, operation, server_id)
 
 
 async def test_shared_authorization_logs_correlation_without_username(
