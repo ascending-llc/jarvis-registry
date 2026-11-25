@@ -10,6 +10,7 @@ from redis.exceptions import RedisError
 from registry.api.v1.consent_management_routes import router as consent_router
 from registry.api.v1.mcp.consent_routes import router as approval_router
 from registry.app_factory import _configure_middleware, _customize_openapi
+from registry.constants import MAX_CONSENT_CLIENT_ID_LENGTH, MAX_CONSENT_RESOURCE_PATH_LENGTH
 from registry.container import RegistryContainer
 from registry.core.config import settings
 from registry.core.exception_handler import register_validation_exception_handler
@@ -281,6 +282,8 @@ def test_protected_clients_are_rejected_without_deleting_consent(
         {"all": False},
         {"all": 1},
         {"all": True, "clientId": CLIENT_ID},
+        {"clientIds": [CLIENT_ID, ""]},
+        {"clientIds": [CLIENT_ID, "c" * (MAX_CONSENT_CLIENT_ID_LENGTH + 1)]},
     ],
 )
 def test_invalid_client_selection_is_rejected_before_deletion(
@@ -294,12 +297,38 @@ def test_invalid_client_selection_is_rejected_before_deletion(
 
 
 @pytest.mark.parametrize(
-    "resources", [[], [AGENT] * 101, [{"type": "app", "path": "/"}], [{"type": "unknown", "path": "/"}]]
+    "body",
+    [
+        {"resources": []},
+        {"resources": [AGENT] * 101},
+        {"resources": [{"type": "app", "path": "/"}]},
+        {"resources": [{"type": "unknown", "path": "/"}]},
+        {"resources": [{"type": "mcp_server", "path": ""}]},
+        {"resources": [{"type": "mcp_server", "path": "/" + "p" * MAX_CONSENT_RESOURCE_PATH_LENGTH}]},
+        {"resources": [{**SERVER, "kind": "mcp_server"}]},
+        {"resources": [SERVER], "all": True},
+    ],
 )
-def test_invalid_resource_selection_returns_422(client: TestClient, resources: list) -> None:
-    response = client.post(RESOURCES_URL, headers=_sign_in(client, USER_A), json={"resources": resources})
+def test_invalid_resource_selection_returns_422(client: TestClient, container: RegistryContainer, body: dict) -> None:
+    container.consent_store.grant_client_consent(USER_A, CLIENT_ID)
+    container.consent_store.grant_server_consent(USER_A, CLIENT_ID, SERVER["path"], require_app_consent=True)
+    response = client.post(RESOURCES_URL, headers=_sign_in(client, USER_A), json=body)
     assert response.status_code == 422
     assert isinstance(response.json()["detail"], str)
+    assert container.consent_store.has_server_consent(USER_A, CLIENT_ID, SERVER["path"])
+
+
+def test_revoke_accepts_strings_at_the_length_limits(client: TestClient) -> None:
+    headers = _sign_in(client, USER_A)
+    client_id = "c" * MAX_CONSENT_CLIENT_ID_LENGTH
+    response = client.post(BATCH_URL, headers=headers, json={"clientIds": [client_id]})
+    assert response.status_code == 200
+    assert response.json() == {"results": [{"clientId": client_id, "status": "not_found"}]}
+
+    path = "/" + "p" * (MAX_CONSENT_RESOURCE_PATH_LENGTH - 1)
+    response = client.post(RESOURCES_URL, headers=headers, json={"resources": [{"type": "mcp_server", "path": path}]})
+    assert response.status_code == 200
+    assert response.json() == {"results": [{"type": "mcp_server", "path": path, "status": "not_found"}]}
 
 
 def test_reserved_resource_field_returns_400_before_any_deletion(

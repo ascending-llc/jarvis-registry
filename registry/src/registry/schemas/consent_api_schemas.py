@@ -1,12 +1,14 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, field_validator
 
 from registry_pkgs.core.client_categories import ClientCategory
 from registry_pkgs.core.consent_store import ConsentEntryKind
 
-from ..constants import MAX_CONSENT_REVOKE_BATCH
+from ..constants import MAX_CONSENT_CLIENT_ID_LENGTH, MAX_CONSENT_RESOURCE_PATH_LENGTH, MAX_CONSENT_REVOKE_BATCH
 from .case_conversion import APIBaseModel
+
+ConsentClientId = Annotated[str, Field(min_length=1, max_length=MAX_CONSENT_CLIENT_ID_LENGTH)]
 
 
 class ConsentResourceOutput(APIBaseModel):
@@ -50,7 +52,7 @@ class ConsentErrorResponse(APIBaseModel):
 class RevokeSelectedClients(APIBaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    clientIds: list[str] = Field(min_length=1, max_length=MAX_CONSENT_REVOKE_BATCH)
+    clientIds: list[ConsentClientId] = Field(min_length=1, max_length=MAX_CONSENT_REVOKE_BATCH)
 
 
 class RevokeAllClients(APIBaseModel):
@@ -77,11 +79,15 @@ class ClientRevokeResponse(APIBaseModel):
 
 
 class ConsentResourceInput(APIBaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal[ConsentEntryKind.MCP_SERVER, ConsentEntryKind.A2A_AGENT]
-    path: str
+    path: str = Field(min_length=1, max_length=MAX_CONSENT_RESOURCE_PATH_LENGTH)
 
 
 class RevokeResourcesRequest(APIBaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     resources: list[ConsentResourceInput] = Field(min_length=1, max_length=MAX_CONSENT_REVOKE_BATCH)
 
 

@@ -13,6 +13,11 @@ MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 OPENAPI_SESSION_COOKIE_SCHEME = "SessionCookie"
 MAX_CONSENT_REVOKE_BATCH = 100
+# DCR client IDs are 33 characters; the static IDs are short config values.
+MAX_CONSENT_CLIENT_ID_LENGTH = 256
+# Server and agent paths have no length limit at creation, so a cap below a stored path would leave that approval
+# removable only by revoking the whole app.
+MAX_CONSENT_RESOURCE_PATH_LENGTH = 1024
 
 
 class PendingConsentFlow(StrEnum):

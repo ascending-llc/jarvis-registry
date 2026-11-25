@@ -142,10 +142,10 @@ The response body is empty, including on repeat requests. The frontend can remov
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `clientIds` | JSON body | string[] | For selected apps | 1–100 client IDs from the list. |
+| `clientIds` | JSON body | string[] | For selected apps | 1–100 client IDs from the list, each 1–256 characters. |
 | `all` | JSON body | boolean | For all apps | Must be the literal `true`. Selects every revocable app for this user. |
 
-Send exactly one of the two fields. No path or query parameters.
+Send exactly one of the two fields. Any other body field returns `422`. No path or query parameters.
 
 **Example request · `POST /api/v1/consents/clients/revoke`**
 
@@ -182,9 +182,9 @@ To revoke all eligible apps, send this body to the same endpoint.
 | `client_id` | Path | string | Yes | The app's `clientId` from the list. |
 | `resources` | JSON body | array | Yes | 1–100 resources belonging to this app. |
 | `resources[].type` | JSON body | enum | Yes | `mcp_server` or `a2a_agent`. |
-| `resources[].path` | JSON body | string | Yes | Exact path from the list. The type and path together identify the approval. |
+| `resources[].path` | JSON body | string | Yes | Exact path from the list, 1–1024 characters. The type and path together identify the approval. |
 
-No query parameters. An `unknown` resource can be removed with the whole app.
+Any other field, in the body or in a resource item, returns `422`. No query parameters. An `unknown` resource can be removed with the whole app.
 
 **Example request · `POST /api/v1/consents/clients/mcp-client-atlas/resources/revoke`**
 
@@ -295,5 +295,5 @@ Errors return a string `detail`, for example `{"detail":"Session authentication 
 | `403` | The session lacks `user-read`, or a write request has a missing or invalid CSRF header. |
 | `404` | The consent link has expired, was already consumed, or belongs to a different user or consent flow. |
 | `409` | A server or agent consent page requires the user to reconnect the app. |
-| `422` | Invalid request body, including an unsupported resource type, conflicting batch options or a list outside the 1–100 item range. |
+| `422` | Invalid request body, including an unsupported resource type, conflicting batch options, an unknown field, a list outside the 1–100 item range, or a client ID or path that is empty or too long. |
 | `500` | The operation failed. Reload the list to check the current approvals before retrying. |
