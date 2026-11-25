@@ -670,9 +670,12 @@ class WeaviateStore(VectorStoreAdapter):
 
         # Step 2: Rerank candidates via Bedrock (AWS config injected from store config)
         try:
-            logger.debug(f"Reranking {len(candidates)} candidates to get top {k}")
             merged_kwargs = self.build_bedrock_rerank_kwargs(top_n=k)
             merged_kwargs.update(reranker_kwargs or {})
+            top_n = merged_kwargs.get("top_n")
+            if isinstance(top_n, int) and not isinstance(top_n, bool):
+                merged_kwargs["top_n"] = min(top_n, len(candidates))
+            logger.debug(f"Reranking {len(candidates)} candidates to get top {merged_kwargs['top_n']}")
 
             reranker = create_reranker(reranker_type=reranker_type, client=self._get_bedrock_client(), **merged_kwargs)
             reranked = reranker.compress_documents(documents=candidates, query=query)
