@@ -1,6 +1,7 @@
 """Contract tests for explicit legacy workflow-model seeding."""
 
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -215,3 +216,63 @@ async def test_aip_placeholder_does_not_warn_when_concurrent_selection_wins(
         await migration.up(store)
     assert "canonical baseModelId" not in caplog.text
     assert "SkillSpector" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reads_model_and_region_from_dotenv_with_env_precedence(
+    store: dict[str, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "AWS_WORKFLOW_LLM_MODEL=dotenv-model\nAWS_REGION=eu-west-1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JARVIS_DISABLE_DOTENV", raising=False)
+
+    await migration.up(store)
+
+    doc = store["model_sources"].insert_one.await_args.args[0]
+    assert doc["providerConfig"] == {
+        "providerType": "aws_bedrock",
+        "awsRegion": "eu-west-1",
+        "modelIdOrArn": "dotenv-model",
+        "baseModelId": "dotenv-model",
+    }
+    store["model_gateway_selection"].update_one.assert_awaited_once()
+
+    # Environment variables must override .env (including empty string clearing a .env value).
+    store["model_sources"].insert_one.reset_mock()
+    store["model_gateway_selection"].update_one.reset_mock()
+    monkeypatch.setenv("AWS_BEDROCK_SONNET_AIP_ARN", "env-arn")
+    monkeypatch.setenv("AWS_REGION", "ap-northeast-1")
+
+    await migration.up(store)
+
+    doc = store["model_sources"].insert_one.await_args.args[0]
+    assert doc["providerConfig"] == {
+        "providerType": "aws_bedrock",
+        "awsRegion": "ap-northeast-1",
+        "modelIdOrArn": "env-arn",
+        "baseModelId": "env-arn",
+    }
+
+
+@pytest.mark.asyncio
+async def test_respects_jarvis_disable_dotenv(
+    store: dict[str, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "AWS_WORKFLOW_LLM_MODEL=dotenv-model\nAWS_REGION=eu-west-1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("JARVIS_DISABLE_DOTENV", "1")
+
+    await migration.up(store)
+
+    store["model_sources"].insert_one.assert_not_awaited()
+    store["model_gateway_selection"].update_one.assert_not_awaited()
