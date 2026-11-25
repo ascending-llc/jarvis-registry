@@ -67,6 +67,11 @@ async def with_resource_visibility(filters: dict[str, Any], allowed_server_ids: 
     return {"$and": [filters, {"$or": visible}]}
 
 
+def without_resources(filters: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on every resource document when the visibility columns cannot be filtered on."""
+    return {"$and": [filters, {"entity_type": {"$ne": MCPEntityType.RESOURCE.value}}]}
+
+
 async def drop_private_mcp_resources(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Recheck current proofs after search to catch configuration changes during retrieval."""
     concrete = [doc for doc in docs if _is_concrete_resource(doc)]

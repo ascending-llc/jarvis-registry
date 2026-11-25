@@ -965,3 +965,25 @@ async def test_capture_revision_rechecked_after_auth_change_and_recapture() -> N
         assert await drop_private_mcp_resources([old_vector]) == []
         current = dict(old_vector, **{RESOURCE_CAPTURE_REVISION: config[RESOURCE_CAPTURE_KEY]["revision"]})
         assert len(await drop_private_mcp_resources([current])) == 1
+
+
+@pytest.mark.parametrize("query", ["", "files"])
+async def test_unprepared_visibility_hides_resources_but_keeps_other_results(query: str) -> None:
+    """During a reindex a pod that cannot add the visibility columns still returns tools, never resources."""
+    server_id = str(ObjectId())
+    visible = {"server_id": server_id, "enabled": True, "tool_enabled": True}
+    tool = {**visible, "entity_type": "tool", "tool_name": "search"}
+    template = {**visible, "entity_type": "resource", "resource_uri_template": "files://{id}"}
+    legacy = {**visible, "entity_type": "resource", "resource_uri": "private://salary"}
+
+    async def search(**kwargs):
+        return [doc for doc in [tool, template, legacy] if _matches_visibility(doc, kwargs["filters"])]
+
+    repo = MagicMock(afilter=AsyncMock(side_effect=search), asearch_with_rerank=AsyncMock(side_effect=search))
+    service = _make_service(mcp_server_repo=repo)
+    repo.prepare_resource_visibility = AsyncMock(return_value=False)
+    types = [MCPEntityType.TOOL, MCPEntityType.RESOURCE]
+    result = await service._search_mcp_documents(
+        SearchRequest(query=query, top_n=5, type_list=types), query, types, [server_id]
+    )
+    assert result == [tool]

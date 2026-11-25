@@ -17,7 +17,7 @@ from ...auth.dependencies import UserContextDict
 from ...services.access_control_service import ACLService
 from ...utils.otel_metrics import record_tool_discovery
 from .base import VectorSearchService
-from .private_resources import drop_private_mcp_resources, with_resource_visibility
+from .private_resources import drop_private_mcp_resources, with_resource_visibility, without_resources
 
 logger = logging.getLogger(__name__)
 
@@ -202,8 +202,10 @@ class SearchService:
         if not search.include_disabled:
             filters["tool_enabled"] = True
         if MCPEntityType.RESOURCE in mcp_types:
-            await self.mcp_server_repo.prepare_resource_visibility()
-            filters = await with_resource_visibility(filters, allowed_server_ids)
+            if await self.mcp_server_repo.prepare_resource_visibility():
+                filters = await with_resource_visibility(filters, allowed_server_ids)
+            else:
+                filters = without_resources(filters)
         if not query:
             results = await self.mcp_server_repo.afilter(filters=filters, limit=search.top_n)
         else:

@@ -401,3 +401,30 @@ async def test_mixed_search_filters_private_candidates_before_ranking(rerank: bo
     result = await service.search_mixed(query="files", entity_types=["mcp_server"], max_results=1)
     assert [server["server_name"] for server in result["servers"]] == ["Templates"]
     repo.prepare_resource_visibility.assert_awaited_once()
+
+
+async def test_mixed_search_hides_resources_when_visibility_unprepared() -> None:
+    from tests.unit.services.search.test_service import _matches_visibility
+
+    server_id = str(ObjectId())
+    tool = {
+        "server_id": server_id,
+        "server_name": "Docs",
+        "path": "/docs",
+        "entity_type": MCPEntityType.TOOL,
+        "tool_name": "search",
+        "description": "search docs",
+        "relevance_score": 0.5,
+    }
+    legacy = _resource_doc(server_id=server_id, server_name="Docs", path="/docs", resource_name="salary", score=1.0)
+
+    async def search(**kwargs):
+        return [doc for doc in [legacy, tool] if _matches_visibility(doc, kwargs["filters"])]
+
+    repo = MagicMock(spec=MCPServerRepository, db_client=MagicMock())
+    repo.prepare_resource_visibility = AsyncMock(return_value=False)
+    repo.asearch = AsyncMock(side_effect=search)
+    service = ExternalVectorSearchService(mcp_server_repo=repo, enable_rerank=False)
+    result = await service.search_mixed(query="docs", entity_types=["mcp_server", "tool"], max_results=5)
+    assert "salary" not in str(result)
+    assert [t["tool_name"] for t in result["tools"]] == ["search"]
