@@ -86,6 +86,43 @@ export const getLanguageFromPath = (path: string): string | null => {
   return language && Prism.languages[language] ? language : null;
 };
 
+const PLAIN_TEXT_EXTENSIONS = new Set([
+  'txt',
+  'text',
+  'csv',
+  'tsv',
+  'log',
+  'ini',
+  'conf',
+  'cfg',
+  'env',
+  'properties',
+  'rst',
+  'adoc',
+]);
+const PLAIN_TEXT_FILENAMES = new Set([
+  'license',
+  'readme',
+  'makefile',
+  'copying',
+  'changelog',
+  'authors',
+  'notice',
+  'gitignore',
+  'gitattributes',
+  'editorconfig',
+]);
+
+// Formats the preview pane can render: registered Prism grammars plus plain-text documents.
+export const isPreviewableFormat = (path: string, mimeType?: string | null): boolean => {
+  if (getLanguageFromPath(path)) return true;
+  if (mimeType?.startsWith('text/')) return true;
+  const filename = path.split('/').pop()?.toLowerCase() ?? '';
+  if (PLAIN_TEXT_FILENAMES.has(filename)) return true;
+  const extensionSeparator = filename.lastIndexOf('.');
+  return extensionSeparator > 0 && PLAIN_TEXT_EXTENSIONS.has(filename.slice(extensionSeparator + 1));
+};
+
 export const highlightCode = (code: string, language?: string | null): string => {
   const resolvedLanguage = resolveLanguage(language);
   const grammar = resolvedLanguage ? Prism.languages[resolvedLanguage] : undefined;

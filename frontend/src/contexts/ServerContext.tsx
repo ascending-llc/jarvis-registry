@@ -7,7 +7,9 @@ import type { ExternalProviderEntity } from '@/services/externalProvider/type';
 import type { Federation } from '@/services/federation/type';
 import { ServerConnection } from '@/services/mcp/type';
 import type { ModelGatewaySelection, ModelSourceListItem } from '@/services/model/type';
+import type { RequestErrorPayload } from '@/services/request';
 import type { PermissionType, Server } from '@/services/server/type';
+import type { SkillScanBriefResponse } from '@/services/skill/scanTypes';
 import type { SkillMetadata } from '@/services/skill/type';
 import type { SkillSyncSource } from '@/services/skillSyncSource/type';
 import type { WorkflowItem } from '@/services/workflow/type';
@@ -65,7 +67,24 @@ interface ModelStats {
 const EMPTY_MODEL_SELECTION: ModelGatewaySelection = {
   defaultWorkflowModelSourceId: null,
   embeddingModelSourceId: null,
+  skillScanModelSourceId: null,
 };
+
+type SkillScanUpdate = {
+  version: number;
+  revision: number;
+  summary: SkillScanBriefResponse;
+};
+
+const isEarlierScan = (
+  incoming: SkillScanBriefResponse | null | undefined,
+  current: SkillScanBriefResponse | null | undefined,
+): boolean =>
+  Boolean(
+    incoming &&
+      current?.scannedAt &&
+      (!incoming.scannedAt || Date.parse(incoming.scannedAt) < Date.parse(current.scannedAt)),
+  );
 
 export interface FederationListStats {
   total: number;
@@ -139,7 +158,9 @@ interface ServerContextType {
   // Actions
   refreshServerData: (notLoading?: boolean) => Promise<ServerInfo[]>;
   refreshAgentData: (notLoading?: boolean) => Promise<void>;
-  refreshSkillData: (notLoading?: boolean) => Promise<void>;
+  refreshSkillData: (notLoading?: boolean, options?: { afterWrite?: boolean }) => Promise<boolean>;
+  updateSkillMetadata: (metadata: SkillMetadata) => void;
+  updateSkillScanSummary: (id: string, version: number, summary: SkillScanBriefResponse) => void;
   refreshModelData: (notLoading?: boolean) => Promise<void>;
   refreshFederationData: (notLoading?: boolean) => Promise<void>;
   refreshWorkflowData: (notLoading?: boolean) => Promise<void>;
@@ -168,9 +189,15 @@ interface ServerProviderProps {
 export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
-  const [skills, setSkills] = useState<SkillMetadata[]>([]);
+  const [skills, setSkillsState] = useState<SkillMetadata[]>([]);
+  const skillRequestRef = useRef(0);
+  const skillRefreshRef = useRef<{ requestId: number; promise: Promise<boolean> } | null>(null);
+  const skillListAccessDeniedRef = useRef(false);
+  const skillScanRevisionRef = useRef(0);
+  const skillScanUpdatesRef = useRef(new Map<string, SkillScanUpdate>());
   const [models, setModels] = useState<ModelSourceListItem[]>([]);
-  const [modelSelection, setModelSelection] = useState<ModelGatewaySelection>(EMPTY_MODEL_SELECTION);
+  const [modelSelection, setModelSelectionState] = useState<ModelGatewaySelection>(EMPTY_MODEL_SELECTION);
+  const modelSelectionRequestRef = useRef(0);
   const [federations, setFederations] = useState<Federation[]>([]);
   const [skillSyncSources, setSkillSyncSources] = useState<SkillSyncSource[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
@@ -192,6 +219,61 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [federationsError, setFederationsError] = useState<string | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const timeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
+
+  const setModelSelection: React.Dispatch<React.SetStateAction<ModelGatewaySelection>> = useCallback(update => {
+    modelSelectionRequestRef.current += 1;
+    setModelSelectionState(update);
+    setModelSelectionError(null);
+  }, []);
+
+  const setSkills: React.Dispatch<React.SetStateAction<SkillMetadata[]>> = useCallback(update => {
+    if (skillListAccessDeniedRef.current) return;
+    skillRequestRef.current += 1;
+    setSkillsState(update);
+    setSkillLoading(false);
+  }, []);
+
+  const updateSkillMetadata = useCallback(
+    (metadata: SkillMetadata) => {
+      setSkills(current => {
+        const previous = current.find(skill => skill.id === metadata.id);
+        if (previous && previous.version > metadata.version) return current;
+
+        let scanSummary = metadata.scanSummary;
+        if (
+          previous?.version === metadata.version &&
+          (!scanSummary || isEarlierScan(scanSummary, previous.scanSummary))
+        ) {
+          scanSummary = previous.scanSummary;
+        } else if (!scanSummary && previous?.scanSummary?.scannedAt) {
+          scanSummary = { ...previous.scanSummary, stale: true };
+        }
+        return [{ ...metadata, scanSummary }, ...current.filter(skill => skill.id !== metadata.id)];
+      });
+    },
+    [setSkills],
+  );
+
+  const updateSkillScanSummary = useCallback((id: string, version: number, summary: SkillScanBriefResponse) => {
+    if (skillListAccessDeniedRef.current) return;
+    const previous = skillScanUpdatesRef.current.get(id);
+    if (
+      previous &&
+      (previous.version > version || (previous.version === version && isEarlierScan(summary, previous.summary)))
+    ) {
+      return;
+    }
+
+    const revision = ++skillScanRevisionRef.current;
+    skillScanUpdatesRef.current.set(id, { version, revision, summary });
+    setSkillsState(current =>
+      current.map(skill =>
+        skill.id === id && skill.version === version && !isEarlierScan(summary, skill.scanSummary)
+          ? { ...skill, scanSummary: summary }
+          : skill,
+      ),
+    );
+  }, []);
 
   // Calculate server stats
   const stats = useMemo<ServerStats>(
@@ -358,21 +440,80 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     }
   }, []);
 
-  const refreshSkillData = useCallback(async (notLoading?: boolean) => {
-    try {
-      if (!notLoading) setSkillLoading(true);
-      setSkillError(null);
-      const result = await SERVICES.SKILL.getSkillsList();
-      setSkills(result.skills);
-    } catch (error: unknown) {
-      const detail = error && typeof error === 'object' && 'detail' in error ? error.detail : null;
-      setSkillError(typeof detail === 'string' && detail.trim() ? detail : 'Failed to fetch skills');
-    } finally {
-      setSkillLoading(false);
+  const refreshSkillData = useCallback(function refreshSkills(
+    notLoading?: boolean,
+    options?: { afterWrite?: boolean },
+  ): Promise<boolean> {
+    if (options?.afterWrite) skillRequestRef.current += 1;
+    const requestId = skillRequestRef.current;
+    const active = skillRefreshRef.current;
+    if (active) {
+      if (active.requestId === requestId) return active.promise;
+      // List requests started before a local mutation may return an older snapshot.
+      return active.promise.then(() => refreshSkills(notLoading));
     }
+
+    const scanRevision = skillScanRevisionRef.current;
+    if (!notLoading) setSkillLoading(true);
+    const promise = (async () => {
+      try {
+        const result = await SERVICES.SKILL.getSkillsList();
+        if (requestId !== skillRequestRef.current) return false;
+
+        const scanUpdates = new Map(skillScanUpdatesRef.current);
+        const versions = new Map(result.skills.map(skill => [skill.id, skill.version]));
+        for (const [id, update] of scanUpdates) {
+          const version = versions.get(id);
+          if (version === undefined || version >= update.version) skillScanUpdatesRef.current.delete(id);
+        }
+
+        skillListAccessDeniedRef.current = false;
+        setSkillsState(current => {
+          const previousSkills = new Map(current.map(skill => [skill.id, skill]));
+          return result.skills.map(skill => {
+            const previous = previousSkills.get(skill.id);
+            if (previous && previous.version > skill.version) return { ...previous, permissions: skill.permissions };
+
+            let summary = skill.scanSummary;
+            if (previous?.version === skill.version && isEarlierScan(summary, previous.scanSummary)) {
+              summary = previous.scanSummary;
+            }
+
+            const update = scanUpdates.get(skill.id);
+            if (
+              update?.version === skill.version &&
+              !isEarlierScan(update.summary, summary) &&
+              (update.revision > scanRevision || isEarlierScan(summary, update.summary))
+            ) {
+              summary = update.summary;
+            }
+            return summary === skill.scanSummary ? skill : { ...skill, scanSummary: summary };
+          });
+        });
+        setSkillError(null);
+        return true;
+      } catch (error: unknown) {
+        const status = error && typeof error === 'object' ? (error as RequestErrorPayload).httpStatus : undefined;
+        if (status === 401 || status === 403) {
+          skillListAccessDeniedRef.current = true;
+          skillScanUpdatesRef.current.clear();
+          setSkillsState([]);
+        } else if (requestId !== skillRequestRef.current) {
+          return false;
+        }
+        setSkillError(getErrorMessage(error, 'Failed to fetch skills') || 'Failed to fetch skills');
+        return false;
+      } finally {
+        skillRefreshRef.current = null;
+        if (requestId === skillRequestRef.current) setSkillLoading(false);
+      }
+    })();
+    skillRefreshRef.current = { requestId, promise };
+    return promise;
   }, []);
 
   const refreshModelData = useCallback(async (notLoading?: boolean) => {
+    const selectionRequestId = ++modelSelectionRequestRef.current;
     if (!notLoading) setModelLoading(true);
     setModelError(null);
     setModelSelectionError(null);
@@ -384,8 +525,10 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       if (modelsResult.status === 'fulfilled') setModels(modelsResult.value);
       else setModelError(getErrorMessage(modelsResult.reason, 'Failed to fetch models'));
 
-      if (selectionResult.status === 'fulfilled') setModelSelection(selectionResult.value);
-      else setModelSelectionError(getErrorMessage(selectionResult.reason, 'Failed to fetch default model status'));
+      if (selectionRequestId === modelSelectionRequestRef.current) {
+        if (selectionResult.status === 'fulfilled') setModelSelectionState(selectionResult.value);
+        else setModelSelectionError(getErrorMessage(selectionResult.reason, 'Failed to fetch default model status'));
+      }
     } finally {
       setModelLoading(false);
     }
@@ -612,6 +755,8 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     refreshServerData,
     refreshAgentData,
     refreshSkillData,
+    updateSkillMetadata,
+    updateSkillScanSummary,
     refreshModelData,
     refreshFederationData,
     refreshWorkflowData,

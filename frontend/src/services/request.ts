@@ -128,15 +128,29 @@ service.interceptors.response.use(
   },
 );
 
-type RequestType = { url: string; method: string; data?: object; config?: RequestConfig; reTry?: boolean };
-const request = async ({ url, method, data = {}, config = {} }: RequestType) => {
+type RequestType = {
+  url: string;
+  method: string;
+  data?: object;
+  config?: RequestConfig;
+  reTry?: boolean;
+  withStatus?: boolean;
+};
+const request = async ({ url, method, data = {}, config = {}, withStatus = false }: RequestType) => {
   const body = method.toUpperCase() === 'GET' ? { params: data } : { data };
   try {
     const response = await service({ url, method, ...body, ...config });
-    return response?.data;
+    return withStatus ? { data: response.data, status: response.status } : response?.data;
   } catch (error) {
     if (error && typeof error === 'object' && '__refreshError' in error) {
-      throw (error as { originalData?: unknown }).originalData;
+      const originalData = (error as { originalData?: unknown }).originalData;
+      if (originalData && typeof originalData === 'object' && !Array.isArray(originalData)) {
+        throw withHttpStatus(originalData, 401);
+      }
+      throw {
+        detail: typeof originalData === 'string' ? originalData : 'Not authenticated',
+        httpStatus: 401,
+      } satisfies RequestErrorPayload;
     }
     const axiosError = error as AxiosError;
     const responseData = axiosError.response?.data;
@@ -166,6 +180,8 @@ const Request = {
   get: requestGet,
   put: requestPut,
   post: requestPost,
+  postWithStatus: <T>(url: string, data?: object, config: RequestConfig = {}): Promise<{ data: T; status: number }> =>
+    request({ url, data, config, method: 'POST', withStatus: true }),
   patch: requestPatch,
   delete: requestDelete,
   cancels: cancelSources,
