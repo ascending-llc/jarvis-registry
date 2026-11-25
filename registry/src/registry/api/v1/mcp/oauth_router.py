@@ -45,7 +45,7 @@ from registry_pkgs.oauth.token_service import TokenService
 from registry_pkgs.oauth.types import ClientBranding
 
 from ....auth.dependencies import CurrentUser
-from ....constants import DownstreamOAuthConstants
+from ....constants import PENDING_CONSENT_FLOW_FIELD, DownstreamOAuthConstants, PendingConsentFlow
 from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
 from ....deps import (
@@ -765,6 +765,7 @@ async def _build_downstream_authorize_redirect(
             pending_store.save,
             nonce,
             {
+                PENDING_CONSENT_FLOW_FIELD: PendingConsentFlow.DOWNSTREAM,
                 "user_id": user_id,
                 "server_path": server_path,
                 "response_type": response_type,

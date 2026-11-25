@@ -860,6 +860,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["user_id"] == "507f1f77bcf86cd799439011"
     assert pending["client_id"] == INTERACTIVE_CLIENT_ID
+    assert pending["consent_flow"] == "server"
     assert pending["server_path"] == "/github"
     assert pending["elicitation_id"]
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(

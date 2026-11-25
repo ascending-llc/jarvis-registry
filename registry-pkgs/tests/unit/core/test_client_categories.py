@@ -14,6 +14,8 @@ from registry_pkgs.core.client_categories import (
     get_builtin_max_scopes,
     get_client_max_scopes,
     get_client_policy,
+    is_consent_revocable,
+    requires_app_consent,
     resolve_client_category,
     resolve_granted_scopes,
 )
@@ -50,6 +52,24 @@ _ALL_SCOPES = frozenset(
         "system-ops",
     }
 )
+
+
+@pytest.mark.parametrize(
+    ("category", "revocable", "requires_app"),
+    [
+        (ClientCategory.MCP_DCR, True, True),
+        (ClientCategory.A2A_DCR, True, True),
+        (ClientCategory.CLAUDE_DESKTOP, True, True),
+        (ClientCategory.REGISTRY_CLI, True, True),
+        (ClientCategory.UNKNOWN, True, True),
+        (ClientCategory.USER_GENERATED, True, False),
+        (ClientCategory.HEADLESS_AGENT, False, False),
+        (ClientCategory.REGISTRY_APP, False, False),
+    ],
+)
+def test_resource_approval_and_revocation_policy(category: ClientCategory, revocable: bool, requires_app: bool) -> None:
+    assert is_consent_revocable(category) is revocable
+    assert requires_app_consent(category) is requires_app
 
 
 @pytest.fixture

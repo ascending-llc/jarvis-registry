@@ -17,7 +17,7 @@ from registry_pkgs.core.downstream_oauth import (
 )
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 
-from ...constants import DownstreamOAuthConstants
+from ...constants import PENDING_CONSENT_FLOW_FIELD, DownstreamOAuthConstants, PendingConsentFlow
 from ...core.config import settings
 from ..server_service import ServerServiceV1
 from .mcp_service import MCPService
@@ -98,6 +98,7 @@ async def create_device_authorization(
         pending_store.save(
             nonce,
             {
+                PENDING_CONSENT_FLOW_FIELD: PendingConsentFlow.DOWNSTREAM,
                 "flow_type": "device",
                 "user_id": user_id,
                 "client_id": client_id,

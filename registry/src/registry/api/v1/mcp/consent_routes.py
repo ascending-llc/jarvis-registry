@@ -2,11 +2,12 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from registry_pkgs.core.client_categories import requires_app_consent, resolve_client_category
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 from registry_pkgs.core.redirect_uri import build_oauth_error_redirect_url
@@ -14,7 +15,7 @@ from registry_pkgs.core.scopes import get_scope_description
 from registry_pkgs.oauth.schemas import ConsentScopeDisplay, DownstreamConsentContext
 
 from ....auth.dependencies import CurrentUser
-from ....constants import DownstreamOAuthConstants
+from ....constants import PENDING_CONSENT_FLOW_FIELD, DownstreamOAuthConstants, PendingConsentFlow
 from ....core.config import settings
 from ....deps import (
     get_a2a_agent_service,
@@ -24,6 +25,7 @@ from ....deps import (
     get_pending_consent_store,
     get_server_service,
 )
+from ....schemas.consent_api_schemas import ConsentErrorResponse
 from ....services.a2a_agent_service import A2AAgentService
 from ....services.oauth.downstream_device_service import (
     DeviceCodeNotFoundError,
@@ -35,6 +37,7 @@ from ....services.oauth.downstream_device_service import (
 )
 from ....services.oauth.mcp_service import MCPService
 from ....services.server_service import ServerServiceV1
+from ..consent_openapi import CONSENT_WRITE_ERRORS, CONSENT_WRITE_OPENAPI
 from .oauth_router import (
     _DOWNSTREAM_ERROR_FLOW_TYPE,
     _build_downstream_authorize_redirect,
@@ -45,14 +48,65 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/mcp", tags=["mcp-consent"])
 
+_APP_REVOKED_DETAIL = "This app's access was revoked. Reconnect it from your AI app, then try again."
+_CONSENT_NOT_FOUND = "This consent link has expired."
+_CODE_FLOW_FIELDS = frozenset({"response_type", "redirect_uri", "code_challenge", "code_challenge_method", "state"})
 
-def _peek_regular_consent(
+_APPROVAL_RESPONSES = {
+    **CONSENT_WRITE_ERRORS,
+    404: {"model": ConsentErrorResponse, "description": "The consent link is unavailable for this approval."},
+    409: {"model": ConsentErrorResponse, "description": _APP_REVOKED_DETAIL},
+    500: {"model": ConsentErrorResponse, "description": "Approval could not be completed."},
+}
+
+
+def _pending_consent_flow(pending: dict[str, Any]) -> PendingConsentFlow | None:
+    """Return the Registry consent page that owns a record from the shared pending-consent store."""
+    if not pending.get("client_id"):
+        return None
+    if PENDING_CONSENT_FLOW_FIELD not in pending:
+        return _untagged_pending_consent_flow(pending)
+    try:
+        return PendingConsentFlow(pending[PENDING_CONSENT_FLOW_FIELD])
+    except ValueError:
+        return None
+
+
+def _untagged_pending_consent_flow(pending: dict[str, Any]) -> PendingConsentFlow | None:
+    """Infer the page for a record saved before Registry tagged its records.
+
+    Remove once every untagged record has expired: one device-code TTL after the rollout that added the tag.
+    """
+    if "flow_type" in pending or "device_code" in pending:
+        # auth-server also writes flow_type "device" records, but never with a server_path.
+        if pending.get("flow_type") == "device" and "server_path" in pending and "device_code" in pending:
+            return PendingConsentFlow.DOWNSTREAM
+        return None
+    if not _CODE_FLOW_FIELDS.isdisjoint(pending):
+        if _CODE_FLOW_FIELDS.issubset(pending) and "server_path" in pending and "agent_path" not in pending:
+            return PendingConsentFlow.DOWNSTREAM
+        return None
+    if "server_path" in pending and "agent_path" not in pending:
+        return PendingConsentFlow.SERVER
+    if "agent_path" in pending and "server_path" not in pending:
+        return PendingConsentFlow.AGENT
+    return None
+
+
+def _load_pending_consent(
     pending_store: PendingConsentStore,
     nonce: str,
-) -> dict[str, Any] | None:
+    user_id: str | None,
+    flow: PendingConsentFlow,
+    *,
+    consume: bool = False,
+) -> dict[str, Any]:
     pending = pending_store.peek(nonce)
-    if pending is None or pending.get("flow_type") == _DOWNSTREAM_ERROR_FLOW_TYPE:
-        return None
+    if not user_id or pending is None or pending.get("user_id") != user_id or _pending_consent_flow(pending) != flow:
+        raise HTTPException(status_code=404, detail=_CONSENT_NOT_FOUND)
+    # GETDEL chooses a single winner if two decisions race or the link expires.
+    if consume and pending_store.consume(nonce) != pending:
+        raise HTTPException(status_code=404, detail=_CONSENT_NOT_FOUND)
     return pending
 
 
@@ -106,9 +160,9 @@ async def get_downstream_consent_context(
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> DownstreamConsentContext:
     try:
-        pending = _peek_regular_consent(pending_store, nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+        pending = await asyncio.to_thread(
+            _load_pending_consent, pending_store, nonce, user_context["user_id"], PendingConsentFlow.DOWNSTREAM
+        )
 
         client_metadata = store.get_client(pending["client_id"]) or {}
         return DownstreamConsentContext(
@@ -143,16 +197,14 @@ async def approve_downstream_consent(
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str]:
     try:
-        # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
-        # that still legitimately belongs to its rightful owner.
-        pending = await asyncio.to_thread(_peek_regular_consent, pending_store, body.nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-
-        consumed = await asyncio.to_thread(pending_store.consume, body.nonce)
-        if consumed is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-        pending = consumed
+        pending = await asyncio.to_thread(
+            _load_pending_consent,
+            pending_store,
+            body.nonce,
+            user_context["user_id"],
+            PendingConsentFlow.DOWNSTREAM,
+            consume=True,
+        )
 
         if pending.get("flow_type") == "device":
             try:
@@ -229,9 +281,9 @@ async def get_server_consent_context(
     server_service: ServerServiceV1 = Depends(get_server_service),
 ) -> dict[str, str | int | None]:
     try:
-        pending = _peek_regular_consent(pending_store, nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+        pending = await asyncio.to_thread(
+            _load_pending_consent, pending_store, nonce, user_context["user_id"], PendingConsentFlow.SERVER
+        )
 
         client_metadata = store.get_client(pending["client_id"]) or {}
         server = await server_service.get_server_by_path(pending["server_path"])
@@ -250,36 +302,51 @@ async def get_server_consent_context(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
-@router.post("/consent/server")
+def _approve_resource_consent(
+    resource: Literal[PendingConsentFlow.SERVER, PendingConsentFlow.AGENT],
+    nonce: str,
+    user_id: str | None,
+    pending_store: PendingConsentStore,
+    consent_store: ConsentStore,
+) -> dict[str, str | None]:
+    try:
+        path_field = f"{resource}_path"
+        pending = _load_pending_consent(pending_store, nonce, user_id, resource, consume=True)
+        client_id = pending["client_id"]
+        category = resolve_client_category(client_id, settings.jwt_token_config)
+        grant = (
+            consent_store.grant_server_consent
+            if resource == PendingConsentFlow.SERVER
+            else consent_store.grant_agent_consent
+        )
+        if not grant(
+            pending["user_id"], client_id, pending[path_field], require_app_consent=requires_app_consent(category)
+        ):
+            raise HTTPException(status_code=409, detail=_APP_REVOKED_DETAIL)
+
+        return {"status": "ok", "client_branding": _client_branding_from_meta(pending)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to approve %s consent user_id=%s", resource, user_id)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.post("/consent/server", responses=_APPROVAL_RESPONSES, openapi_extra=CONSENT_WRITE_OPENAPI)
 async def approve_server_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
-    try:
-        # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
-        # that still legitimately belongs to its rightful owner.
-        pending = _peek_regular_consent(pending_store, body.nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-
-        consumed = pending_store.consume(body.nonce)
-        if consumed is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-        pending = consumed
-        consent_store.grant_server_consent(pending["user_id"], pending["client_id"], pending["server_path"])
-
-        # Mode 1 (mcpgw) pending records carry elicitation_id/client_branding so the frontend can
-        # deep-link the user back to their AI app. Mode 2 (direct-connect) records carry no
-        # elicitation_id, so branding is None for them.
-        client_branding = _client_branding_from_meta(pending)
-        return {"status": "ok", "client_branding": client_branding}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"[Server Consent] failed to approve consent: user={user_context['user_id']}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+    return await asyncio.to_thread(
+        _approve_resource_consent,
+        PendingConsentFlow.SERVER,
+        body.nonce,
+        user_context["user_id"],
+        pending_store,
+        consent_store,
+    )
 
 
 @router.get("/consent/agent")
@@ -291,9 +358,9 @@ async def get_agent_consent_context(
     agent_service: A2AAgentService = Depends(get_a2a_agent_service),
 ) -> dict[str, str | int | None]:
     try:
-        pending = _peek_regular_consent(pending_store, nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+        pending = await asyncio.to_thread(
+            _load_pending_consent, pending_store, nonce, user_context["user_id"], PendingConsentFlow.AGENT
+        )
 
         client_metadata = store.get_client(pending["client_id"]) or {}
         agent = await agent_service.get_agent_by_path(pending["agent_path"])
@@ -313,31 +380,21 @@ async def get_agent_consent_context(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
-@router.post("/consent/agent")
+@router.post("/consent/agent", responses=_APPROVAL_RESPONSES, openapi_extra=CONSENT_WRITE_OPENAPI)
 async def approve_agent_consent(
     body: ApproveConsentRequest,
     user_context: CurrentUser,
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
-    try:
-        pending = _peek_regular_consent(pending_store, body.nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-
-        consumed = pending_store.consume(body.nonce)
-        if consumed is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-        pending = consumed
-        consent_store.grant_agent_consent(pending["user_id"], pending["client_id"], pending["agent_path"])
-
-        client_branding = _client_branding_from_meta(pending)
-        return {"status": "ok", "client_branding": client_branding}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"[Agent Consent] failed to approve consent: user={user_context['user_id']}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+    return await asyncio.to_thread(
+        _approve_resource_consent,
+        PendingConsentFlow.AGENT,
+        body.nonce,
+        user_context["user_id"],
+        pending_store,
+        consent_store,
+    )
 
 
 async def _deny_consent(
@@ -345,26 +402,19 @@ async def _deny_consent(
     user_context: CurrentUser,
     pending_store: PendingConsentStore,
     *,
-    log_tag: str,
+    flow: PendingConsentFlow,
     store: DownstreamOAuthStoreProtocol | None = None,
 ) -> dict[str, str | None]:
-    """Shared deny logic for both consent flows.
+    """Deny a request belonging to the signed-in user and this consent page.
 
     The pending record is proactively removed and no consent is granted. Device-flow denials are
     additionally persisted on the device code so the polling client immediately receives
     ``access_denied``; other consent flows record nothing new and are gated again on retry.
     """
     try:
-        # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
-        # that still legitimately belongs to its rightful owner.
-        pending = _peek_regular_consent(pending_store, nonce)
-        if pending is None or pending["user_id"] != user_context["user_id"]:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-
-        consumed = pending_store.consume(nonce)
-        if consumed is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
-        pending = consumed
+        pending = await asyncio.to_thread(
+            _load_pending_consent, pending_store, nonce, user_context["user_id"], flow, consume=True
+        )
         if pending.get("flow_type") == "device" and store is not None:
             if not mark_device_denied(pending["device_code"], store):
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
@@ -373,7 +423,7 @@ async def _deny_consent(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"[{log_tag}] failed to deny consent: user={user_context['user_id']}")
+        logger.exception("Failed to deny %s consent user_id=%s", flow, user_context["user_id"])
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
@@ -388,7 +438,7 @@ async def deny_downstream_consent(
         body.nonce,
         user_context,
         pending_store,
-        log_tag="Downstream Consent",
+        flow=PendingConsentFlow.DOWNSTREAM,
         store=store,
     )
 
@@ -471,7 +521,7 @@ async def deny_server_consent(
     user_context: CurrentUser,
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
-    return await _deny_consent(body.nonce, user_context, pending_store, log_tag="Server Consent")
+    return await _deny_consent(body.nonce, user_context, pending_store, flow=PendingConsentFlow.SERVER)
 
 
 @router.post("/consent/agent/deny")
@@ -480,4 +530,4 @@ async def deny_agent_consent(
     user_context: CurrentUser,
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str | None]:
-    return await _deny_consent(body.nonce, user_context, pending_store, log_tag="Agent Consent")
+    return await _deny_consent(body.nonce, user_context, pending_store, flow=PendingConsentFlow.AGENT)

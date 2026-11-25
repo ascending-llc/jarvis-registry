@@ -29,7 +29,7 @@ from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import A2ACallResult, call_a2a, raise_if_iam_unsupported
 
-from ...constants import UrlElicitationInputKey
+from ...constants import PENDING_CONSENT_FLOW_FIELD, PendingConsentFlow, UrlElicitationInputKey
 from ...core.config import settings
 from ...services.access_control_service import ACLService
 from ...services.generated_token_policy import is_consent_exempt
@@ -268,6 +268,7 @@ async def execute_agent_impl(
             lifespan.pending_consent_store.save,
             nonce,
             {
+                PENDING_CONSENT_FLOW_FIELD: PendingConsentFlow.AGENT,
                 "user_id": user_id,
                 "client_id": client_id,
                 "agent_path": agent.path,

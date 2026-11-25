@@ -5,6 +5,7 @@ import secrets
 from starlette.concurrency import run_in_threadpool
 
 from registry.auth.dependencies import UserContextDict
+from registry.constants import PENDING_CONSENT_FLOW_FIELD, PendingConsentFlow
 from registry.core.config import settings
 from registry.core.proxy_call import CONSENT_EXEMPT_METHODS, ProxyCall
 from registry.services.generated_token_policy import is_consent_exempt
@@ -33,6 +34,13 @@ async def get_proxy_consent_url(
 
     nonce = secrets.token_urlsafe(32)
     await run_in_threadpool(
-        pending_store.save, nonce, {"user_id": user_id, "client_id": client_id, "server_path": server_path}
+        pending_store.save,
+        nonce,
+        {
+            PENDING_CONSENT_FLOW_FIELD: PendingConsentFlow.SERVER,
+            "user_id": user_id,
+            "client_id": client_id,
+            "server_path": server_path,
+        },
     )
     return f"{settings.registry_client_url}/consent/server?nonce={nonce}"

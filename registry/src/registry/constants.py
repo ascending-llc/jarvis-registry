@@ -12,6 +12,27 @@ class ExecutionOutcome(StrEnum):
 MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 OPENAPI_SESSION_COOKIE_SCHEME = "SessionCookie"
+MAX_CONSENT_REVOKE_BATCH = 100
+# DCR client IDs are 33 characters; the static IDs are short config values.
+MAX_CONSENT_CLIENT_ID_LENGTH = 256
+# Server and agent paths have no length limit at creation, so a cap below a stored path would leave that approval
+# removable only by revoking the whole app.
+MAX_CONSENT_RESOURCE_PATH_LENGTH = 1024
+
+
+class PendingConsentFlow(StrEnum):
+    """The Registry consent page that may read a pending-consent record.
+
+    Registry and auth-server share the pending-consent store, and both use ``flow_type`` for their own purposes,
+    so Registry tags its records under the separate ``PENDING_CONSENT_FLOW_FIELD`` key.
+    """
+
+    DOWNSTREAM = "downstream"
+    SERVER = "server"
+    AGENT = "agent"
+
+
+PENDING_CONSENT_FLOW_FIELD = "consent_flow"
 
 # Inline skill supporting-file limits, shared by Registry's skill API and GitHub skill sync. Each SkillFile is
 # its own MongoDB document, so the single-file cap keeps one file inside the 16 MB document limit. The total cap

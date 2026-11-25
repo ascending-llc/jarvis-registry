@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
+from fakeredis import FakeRedis
 from mcp.types import ClientCapabilities, Implementation, InitializeRequestParams
 from redis.exceptions import RedisError
 
@@ -166,6 +168,36 @@ def test_load_many_for_dcr_skips_empty_input_and_propagates_read_failure() -> No
     assert redis.mget_calls == []
     with pytest.raises(RedisError):
         store.load_many_for_dcr(USER_ID, ["mcp-client-abc"])
+
+
+def test_delete_for_clients_matches_exact_ids_with_or_without_jti_in_one_scan() -> None:
+    redis = FakeRedis(decode_responses=True)
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    user_prefix = f"{PREFIX}:mcpgw:client:{USER_ID}:"
+    targets = ["mcp-client-test", "user-generated"]
+    selected = [user_prefix + targets[0], user_prefix + targets[1] + ":one", user_prefix + targets[1] + ":two"]
+    preserved = [
+        user_prefix + "mcp-client-test-other",
+        user_prefix + "user-generated-other:one",
+        f"{PREFIX}:mcpgw:client:another-user:user-generated:one",
+        f"{PREFIX}:oauth:client:mcp-client-test",
+    ]
+    redis.mset(dict.fromkeys(selected + preserved, "cached"))
+
+    with patch.object(redis, "scan_iter", wraps=redis.scan_iter) as scan:
+        assert store.delete_for_clients(USER_ID, set(targets)) == len(selected)
+        scan.assert_called_once_with(match=f"{user_prefix}*", count=1000)
+
+    assert set(redis.scan_iter()) == set(preserved)
+    assert store.delete_for_clients(USER_ID, set(targets)) == 0
+
+
+def test_delete_for_clients_rejects_invalid_user_before_scan() -> None:
+    redis = FakeRedis(decode_responses=True)
+    store = ClientInfoStore(redis, PREFIX, JWT_CONFIG)
+    with patch.object(redis, "scan_iter") as scan, pytest.raises(ValueError, match="Invalid user ID"):
+        store.delete_for_clients("*", {"user-generated"})
+    scan.assert_not_called()
 
 
 def _scope(method: str = "POST", user: dict[str, Any] | None = None) -> dict[str, Any]:
