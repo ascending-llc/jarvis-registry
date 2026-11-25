@@ -1,0 +1,112 @@
+# Jarvis Registry Backend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-backend
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app: registry-backend
+spec:
+  replicas: {{ .Values.registry.backend.replicaCount }}
+  {{- with .Values.registry.backend.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: registry-backend
+  template:
+    metadata:
+      labels:
+        app: registry-backend
+        {{- with .Values.registry.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
+      {{- with .Values.registry.backend.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.registry.backend.terminationGracePeriodSeconds }}
+      {{- if .Values.registry.migrations.enabled }}
+      initContainers:
+        - name: migrations
+          image: "{{ .Values.registry.backend.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.backend.image.pullPolicy }}
+          command: ["python", "-m", "registry_pkgs.migrations"]
+          args: ["up"]
+          {{- with .Values.registry.backend.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.registry.migrations.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}
+      {{- end }}
+      containers:
+        - name: registry-backend
+          image: "{{ .Values.registry.backend.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.backend.image.pullPolicy }}
+          {{- with .Values.registry.backend.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.registry.backend.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.registry.backend.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.registry.backend.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.backend.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.backend.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.backend.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.registry.backend.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.registry.backend.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.backend.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.backend.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.backend.probes.readiness.failureThreshold }}
+          {{- with .Values.registry.backend.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if gt (int .Values.registry.backend.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.registry.backend.preStopSleepSeconds }}"]
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}
+---
+# Jarvis Registry Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-backend
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: registry-backend
+  ports:
+    - port: {{ .Values.registry.backend.service.port }}
+      targetPort: {{ .Values.registry.backend.service.port }}
+      name: http

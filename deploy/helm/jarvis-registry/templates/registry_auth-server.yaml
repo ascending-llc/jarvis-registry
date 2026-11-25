@@ -1,0 +1,106 @@
+# Jarvis Registry Auth Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-auth-server
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app: auth-server
+spec:
+  replicas: {{ .Values.registry.authServer.replicaCount }}
+  selector:
+    matchLabels:
+      app: auth-server
+  template:
+    metadata:
+      labels:
+        app: auth-server
+        {{- with .Values.registry.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
+      {{- with .Values.registry.authServer.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.registry.migrations.enabled }}
+      initContainers:
+        - name: migrations-wait
+          image: "{{ .Values.registry.authServer.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.authServer.image.pullPolicy }}
+          command: ["python", "-m", "registry_pkgs.migrations"]
+          args: ["wait"]
+          {{- with .Values.registry.authServer.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.registry.migrations.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}
+      {{- end }}
+      containers:
+        - name: auth-server
+          image: "{{ .Values.registry.authServer.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.authServer.image.pullPolicy }}
+          {{- with .Values.registry.authServer.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.registry.authServer.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.registry.authServer.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.registry.authServer.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.authServer.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.authServer.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.authServer.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.registry.authServer.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.registry.authServer.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.authServer.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.authServer.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.authServer.probes.readiness.failureThreshold }}
+          {{- with .Values.registry.authServer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.registry.authServer.forwardedAllowIps }}
+          env:
+            - name: FORWARDED_ALLOW_IPS
+              value: {{ . | quote }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}
+---
+# Jarvis Registry Auth Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-server
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: auth-server
+  ports:
+    - port: {{ .Values.registry.authServer.service.port }}
+      targetPort: {{ .Values.registry.authServer.service.port }}
+      name: http

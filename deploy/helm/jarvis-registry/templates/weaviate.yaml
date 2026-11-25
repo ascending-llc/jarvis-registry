@@ -1,0 +1,97 @@
+{{- if and .Values.registry.standalone .Values.registry.weaviate.enabled }}
+# Weaviate StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-weaviate
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app: weaviate
+spec:
+  selector:
+    matchLabels:
+      app: weaviate
+  serviceName: {{ include "jarvis-registry.fullname" . }}-weaviate
+  replicas: {{ .Values.registry.weaviate.replicaCount }}
+  template:
+    metadata:
+      labels:
+        app: weaviate
+      annotations:
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
+      {{- with .Values.registry.weaviate.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.weaviate.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: weaviate
+          image: "{{ .Values.registry.weaviate.image.repository }}:{{ .Values.registry.weaviate.image.tag }}"
+          {{- with .Values.registry.weaviate.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.weaviate.envSecretName | default .Values.registry.env.targetSecretName }}
+          ports:
+          {{- range .Values.registry.weaviate.service.ports }}
+            - containerPort: {{ .port }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.registry.weaviate.probes.liveness.path }}
+              port: {{ .Values.registry.weaviate.probes.liveness.port }}
+            initialDelaySeconds: {{ .Values.registry.weaviate.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.weaviate.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.weaviate.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.weaviate.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.registry.weaviate.probes.readiness.path }}
+              port: {{ .Values.registry.weaviate.probes.readiness.port }}
+            initialDelaySeconds: {{ .Values.registry.weaviate.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.weaviate.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.weaviate.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.weaviate.probes.readiness.failureThreshold }}
+          {{- with .Values.registry.weaviate.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: weaviate-data
+              mountPath: /var/lib/weaviate
+  volumeClaimTemplates:
+    - metadata:
+        name: weaviate-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.registry.weaviate.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.registry.weaviate.persistence.size }}
+---
+# Weaviate Headless Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-weaviate
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app: weaviate
+  ports:
+  {{- range .Values.registry.weaviate.service.ports }}
+    - port: {{ .port }}
+      targetPort: {{ .targetPort }}
+      name: {{ .name }}
+  {{- end }}
+{{- end }}

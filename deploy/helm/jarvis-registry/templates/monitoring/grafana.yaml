@@ -1,0 +1,161 @@
+{{- if and .Values.registry.monitoring.enabled (eq .Values.registry.monitoring.backend "prometheus") .Values.registry.monitoring.grafana.enabled }}
+{{- $g := .Values.registry.monitoring.grafana }}
+# Values for the `grafana/grafana` Helm chart (installed separately — see the
+# registry.monitoring prerequisites note in values.yaml). Apply with:
+#   helm upgrade grafana grafana/grafana -n {{ .Values.registry.monitoring.namespace }} \
+#     -f <(kubectl get cm -n {{ .Values.registry.monitoring.namespace }} grafana-values -o jsonpath='{.data.values\.yaml}')
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-values
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+data:
+  values.yaml: |
+    {{- if $g.smtp.enabled }}
+    grafana.ini:
+      smtp:
+        enabled: true
+        host: {{ $g.smtp.host | quote }}
+        from_address: {{ $g.smtp.fromAddress | quote }}
+        from_name: {{ $g.smtp.fromName | quote }}
+    smtp:
+      # Reference to the monitoring ExternalSecret's target Secret
+      # (externalsecret.yaml) containing the SMTP creds for Grafana.
+      existingSecret: {{ .Values.registry.monitoring.externalSecrets.targetSecretName | quote }}
+      userKey: {{ $g.smtp.userSecretKey | quote }}
+      passwordKey: {{ $g.smtp.passwordSecretKey | quote }}
+    {{- end }}
+
+    datasources:
+      datasources.yaml:
+        apiVersion: 1
+        datasources:
+        - name: Prometheus
+          type: prometheus
+          # Pinned so every deployment (fresh or existing) gets a deterministic
+          # UID — agent.json and any alert rule can reference "prometheus"
+          # reliably instead of a per-cluster auto-generated value.
+          uid: prometheus
+          url: http://prometheus-operated:9090
+          access: proxy
+          isDefault: true
+          jsonData:
+            httpMethod: GET
+        - name: Tempo
+          type: tempo
+          # Pinned for the same reason — see agent.json, which references
+          # this UID directly.
+          uid: tempo
+          url: http://tempo:3200
+          access: proxy
+          isDefault: false
+          jsonData:
+            httpMethod: GET
+            serviceMap:
+              datasourceUid: 'prometheus'
+
+    {{- if $g.persistence.enabled }}
+    # PVC-backed storage for Grafana's own DB (dashboards saved via the UI,
+    # users, alert state) — without this, all of that is lost on pod restart.
+    persistence:
+      type: pvc
+      enabled: true
+      storageClassName: {{ $g.persistence.storageClass | quote }}
+      accessModes:
+        - ReadWriteOnce
+      size: {{ $g.persistence.size }}
+    {{- end }}
+
+    # Enable sidecar to automatically discover and load dashboards from ConfigMaps
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        labelValue: "otel"
+        folder: /tmp/dashboards
+        searchNamespace: {{ .Values.registry.monitoring.namespace }}
+        provider:
+          foldersFromFilesStructure: true
+
+    {{- if $g.alerting.enabled }}
+    # Alerting configuration
+    alerting:
+      # Contact Points (notification channels)
+      contactpoints.yaml:
+        apiVersion: 1
+        contactPoints:
+          - orgId: 1
+            name: email-alerts
+            receivers:
+              - uid: email-contact
+                type: email
+                settings:
+                  addresses: {{ $g.alerting.contactEmails | quote }}
+                  singleEmail: false
+                  disableResolveMessage: false
+      # Alert Rules
+      rules.yaml:
+        apiVersion: 1
+        groups:
+          - orgId: 1
+            name: k8s-alerts
+            folder: jarvis-alerts
+            interval: 1m
+            rules:
+            apiVersion: 1
+            rules:
+              - uid: afc9cp5r12ww0e
+                title: PVC-Usage-High
+                condition: C
+                data:
+                  - refId: A
+                    relativeTimeRange:
+                      from: 600
+                      to: 0
+                    datasourceUid: prometheus
+                    model:
+                      editorMode: code
+                      expr: "(\n  max by(k8s_namespace_name, k8s_pod_name, k8s_volume_name, k8s_persistentvolumeclaim_name) (\n    k8s_pod_volume_usage_bytes{ \n      k8s_volume_type=\"persistentVolumeClaim\"\n    }\n  )\n  / on(k8s_namespace_name, k8s_pod_name, k8s_volume_name)\n  max by(k8s_namespace_name, k8s_pod_name, k8s_volume_name, k8s_persistentvolumeclaim_name) (\n    k8s_volume_capacity_bytes{\n      k8s_volume_type=\"persistentVolumeClaim\"\n    }\n  )\n) * 100"
+                      instant: true
+                      intervalMs: 1000
+                      legendFormat: __auto
+                      maxDataPoints: 43200
+                      range: false
+                      refId: A
+                  - refId: C
+                    datasourceUid: __expr__
+                    model:
+                      conditions:
+                          - evaluator:
+                              params:
+                                  - 80
+                              type: gt
+                            operator:
+                              type: and
+                            query:
+                              params:
+                                  - C
+                            reducer:
+                              params: []
+                              type: last
+                            type: query
+                      datasource:
+                          type: __expr__
+                          uid: __expr__
+                      expression: A
+                      intervalMs: 1000
+                      maxDataPoints: 43200
+                      refId: C
+                      type: threshold
+                noDataState: NoData
+                execErrState: Error
+                for: 1m
+                annotations: {}
+                labels: {}
+                isPaused: false
+                notification_settings:
+                  receiver: email-alerts
+    {{- end }}
+{{- end }}

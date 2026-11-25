@@ -1,0 +1,71 @@
+# Jarvis Registry workflow wokers Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-workflow-worker
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app: registry-workflow-worker
+spec:
+  replicas: {{ .Values.registry.workflow.replicaCount }}
+  {{- with .Values.registry.workflow.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: registry-workflow-worker
+  template:
+    metadata:
+      labels:
+        app: registry-workflow-worker
+        {{- with .Values.registry.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
+      {{- with .Values.registry.workflow.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.registry.workflow.terminationGracePeriodSeconds }}
+      {{- if .Values.registry.migrations.enabled }}
+      initContainers:
+        - name: migrations-wait
+          image: "{{ .Values.registry.workflow.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.workflow.image.pullPolicy }}
+          command: ["python", "-m", "registry_pkgs.migrations"]
+          args: ["wait"]
+          {{- with .Values.registry.workflow.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.registry.migrations.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}
+      {{- end }}
+      containers:
+        - name: registry-workflow-worker
+          image: "{{ .Values.registry.workflow.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.workflow.image.pullPolicy }}
+          {{- with .Values.registry.workflow.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.registry.workflow.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}

@@ -1,0 +1,73 @@
+{{- if and .Values.registry.monitoring.enabled (eq .Values.registry.monitoring.backend "prometheus") }}
+{{- $ns := .Values.registry.monitoring.namespace }}
+{{- $d := .Values.registry.monitoring.dashboards }}
+{{- if $d.agent }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-agent
+  namespace: {{ $ns }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    grafana_dashboard: "otel"
+data:
+  agent.json: |
+{{ .Files.Get "files/dashboards/agent.json" | indent 4 }}
+---
+{{- end }}
+{{- if $d.auth }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-auth
+  namespace: {{ $ns }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    grafana_dashboard: "otel"
+data:
+  auth.json: |
+{{ .Files.Get "files/dashboards/auth.json" | indent 4 }}
+---
+{{- end }}
+{{- if $d.k8s }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-otel-k8s
+  namespace: {{ $ns }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    grafana_dashboard: "otel"
+data:
+  otel-k8s-dashboard.json: |
+{{ .Files.Get "files/dashboards/k8s.json" | indent 4 }}
+---
+{{- end }}
+{{- if $d.jarvisRegistry }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-jarvis-registry
+  namespace: {{ $ns }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    grafana_dashboard: "otel"
+data:
+  jarvis-registry.json: |
+{{ .Files.Get "files/dashboards/jarvis-registry.json" | indent 4 }}
+---
+{{- end }}
+{{- if $d.registry }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-registry
+  namespace: {{ $ns }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    grafana_dashboard: "otel"
+data:
+  registry.json: |
+{{ .Files.Get "files/dashboards/registry-backend.json" | indent 4 }}
+{{- end }}
+{{- end }}

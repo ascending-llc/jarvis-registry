@@ -1,0 +1,43 @@
+{{- if and .Values.registry.monitoring.enabled (eq .Values.registry.monitoring.backend "prometheus") .Values.registry.monitoring.prometheus.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  # enableRemoteWriteReceiver / tsdb.outOfOrderTimeWindow are the current CRD
+  # fields for what used to be the "remote-write-receiver" /
+  # "out-of-order-time-series" --enable-feature flags (which log a harmless
+  # "Unknown option" warning on Prometheus 3.x — the flags were promoted to
+  # stable and renamed).
+  enableRemoteWriteReceiver: true
+  tsdb:
+    outOfOrderTimeWindow: {{ .Values.registry.monitoring.prometheus.outOfOrderTimeWindow }}
+  evaluationInterval: {{ .Values.registry.monitoring.prometheus.evaluationInterval }}
+  imagePullPolicy: IfNotPresent
+  nodeSelector:
+    kubernetes.io/os: linux
+  replicas: 1
+  retention: {{ .Values.registry.monitoring.prometheus.retention }}
+  scrapeInterval: {{ .Values.registry.monitoring.prometheus.scrapeInterval }}
+  # Required once storage.volumeClaimTemplate (below) is a real PVC instead
+  # of emptyDir: freshly provisioned volumes are owned by root, but the
+  # Prometheus image runs as a non-root user — without fsGroup it can't
+  # write its TSDB/query log and crash-loops with "permission denied".
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+  storage:
+    volumeClaimTemplate:
+      spec:
+        storageClassName: {{ .Values.registry.monitoring.prometheus.persistence.storageClass | quote }}
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.registry.monitoring.prometheus.persistence.size }}
+{{- end }}

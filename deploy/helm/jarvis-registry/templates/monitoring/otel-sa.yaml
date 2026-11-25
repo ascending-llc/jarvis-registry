@@ -1,0 +1,85 @@
+{{- if .Values.registry.monitoring.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+rules:
+  # For kubeletstats receiver - scraping node/pod/container metrics
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/stats
+      - nodes/proxy
+    verbs: ["get", "list", "watch"]
+
+  # For kubeletstats and k8sattributes - pod information
+  - apiGroups: [""]
+    resources:
+      - pods
+      - namespaces
+      - services
+      - endpoints
+      - persistentvolumes
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch"]
+
+  # For k8s_cluster receiver - workload metrics
+  - apiGroups: ["apps"]
+    resources:
+      - replicasets
+      - deployments
+      - daemonsets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+
+  # For k8s_cluster receiver - job metrics
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+
+  # For k8s_cluster receiver - autoscaling info
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+
+  # For k8s_cluster receiver - resource quotas
+  - apiGroups: [""]
+    resources:
+      - resourcequotas
+      - replicationcontrollers
+    verbs: ["get", "list", "watch"]
+
+  # For k8s_cluster receiver - events (optional)
+  - apiGroups: [""]
+    resources:
+      - events
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: {{ .Values.registry.monitoring.namespace }}
+{{- end }}

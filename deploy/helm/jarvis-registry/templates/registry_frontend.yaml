@@ -1,0 +1,82 @@
+# Jarvis Registry Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-frontend
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app: registry-frontend
+spec:
+  replicas: {{ .Values.registry.frontend.replicaCount }}
+  selector:
+    matchLabels:
+      app: registry-frontend
+  template:
+    metadata:
+      labels:
+        app: registry-frontend
+        {{- with .Values.registry.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
+      {{- with .Values.registry.frontend.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: registry-frontend
+          image: "{{ .Values.registry.frontend.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.frontend.image.pullPolicy }}
+          {{- with .Values.registry.frontend.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.registry.frontend.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.registry.frontend.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.registry.frontend.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.frontend.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.frontend.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.frontend.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.registry.frontend.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.registry.frontend.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.frontend.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.frontend.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.frontend.probes.readiness.failureThreshold }}
+          {{- with .Values.registry.frontend.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}
+---
+# Jarvis Registry Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-frontend
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: registry-frontend
+  ports:
+    - port: {{ .Values.registry.frontend.service.port }}
+      targetPort: {{ .Values.registry.frontend.service.port }}
+      name: http

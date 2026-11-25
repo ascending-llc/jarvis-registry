@@ -1,0 +1,51 @@
+{{- if and .Values.registry.monitoring.enabled (eq .Values.registry.monitoring.backend "prometheus") .Values.registry.monitoring.tempo.enabled }}
+# Values for the `grafana/tempo` Helm chart (installed separately — see the
+# registry.monitoring prerequisites note in values.yaml). Apply with:
+#   helm upgrade tempo grafana/tempo -n {{ .Values.registry.monitoring.namespace }} \
+#     -f <(kubectl get cm -n {{ .Values.registry.monitoring.namespace }} tempo-values -o jsonpath='{.data.values\.yaml}')
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-values
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+data:
+  values.yaml: |
+    server:
+      http_listen_port: 3200
+    tempo:
+      metricsGenerator:
+        # Converts traces into Prometheus metrics.
+        enabled: true
+        remoteWriteUrl: {{ .Values.registry.monitoring.backends.prometheus.remoteWriteUrl | quote }}
+        # Global processor config. gen_ai chat/tool/agent spans are SpanKind=internal;
+        # the local_blocks default (filter_server_spans: true) would drop them and
+        # TraceQL metrics would see nothing. Keep all spans so token/model/tool
+        # metrics work across frameworks.
+        processor:
+          local_blocks:
+            filter_server_spans: false
+            # Flush completed local blocks to trace storage so TraceQL metrics can be
+            # queried over the full retention period. Without this, local_blocks keeps
+            # only a short in-memory window and historical metrics (older than a few
+            # minutes) disappear from the dashboard.
+            flush_to_storage: true
+      overrides:
+        defaults:
+          metrics_generator:
+            processors:
+            - service-graphs
+            - span-metrics
+            - local-blocks
+
+    # Persist Tempo's data dir (/var/tempo) so traces and the flushed local_blocks
+    # metric blocks survive pod restarts/reschedules. The chart mounts this PVC at
+    # /var/tempo, which is exactly where trace storage + flushed metrics blocks live.
+    persistence:
+      enabled: true
+      storageClassName: {{ .Values.registry.monitoring.tempo.storageClass | quote }}
+      accessModes:
+        - ReadWriteOnce
+      size: {{ .Values.registry.monitoring.tempo.size }}
+{{- end }}

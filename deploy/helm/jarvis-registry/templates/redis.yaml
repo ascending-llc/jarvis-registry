@@ -1,0 +1,98 @@
+{{- if and .Values.registry.standalone .Values.registry.redis.enabled }}
+# redis StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-redis
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app: redis
+spec:
+  selector:
+    matchLabels:
+      app: redis
+  serviceName: redis
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      {{- with .Values.registry.redis.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.redis.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: "{{ .Values.registry.redis.image.repository }}:{{ .Values.registry.redis.image.tag }}"
+          {{- with .Values.registry.redis.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            - --appendonly
+            - "yes"
+          {{- with .Values.registry.redis.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+          {{- range .Values.registry.redis.service.ports }}
+            - containerPort: {{ .port }}
+          {{- end }}
+          livenessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - redis-cli ping
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - redis-cli ping
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+          {{- if .Values.registry.redis.persistence.enabled }}
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          {{- end }}
+  {{- if .Values.registry.redis.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.registry.redis.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.registry.redis.persistence.size }}
+  {{- end }}
+---
+# redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: redis
+  type: ClusterIP
+  ports:
+  {{- range .Values.registry.redis.service.ports }}
+    - port: {{ .port }}
+      targetPort: {{ .targetPort }}
+      name: {{ .name }}
+  {{- end }}
+{{- end }}

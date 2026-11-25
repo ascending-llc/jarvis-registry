@@ -1,0 +1,178 @@
+{{- if .Values.registry.skillScan.enabled }}
+# Skill-scan worker. It runs untrusted skill content through the scanner tools, so the pod is locked down:
+# non-root, read-only root fs, no capabilities, and an optional egress firewall. Off by default.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-skill-scan-worker
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app: registry-skill-scan-worker
+spec:
+  replicas: {{ .Values.registry.skillScan.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Overlapping pods are fine — jobs are claimed under a lease, so two workers never double-run one.
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: registry-skill-scan-worker
+  template:
+    metadata:
+      labels:
+        app: registry-skill-scan-worker
+        {{- with .Values.registry.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # On shutdown the worker drops its running tools and requeues those jobs. No traffic to drain, so no
+      # preStop and 30s is plenty.
+      terminationGracePeriodSeconds: 30
+      {{- if .Values.registry.migrations.enabled }}
+      initContainers:
+        - name: migrations-wait
+          image: "{{ .Values.registry.skillScan.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.skillScan.image.pullPolicy }}
+          command: ["python", "-m", "registry_pkgs.migrations"]
+          args: ["wait"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          {{- with .Values.registry.migrations.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}
+      {{- end }}
+      containers:
+        - name: registry-skill-scan-worker
+          image: "{{ .Values.registry.skillScan.image.repository }}:{{ include "jarvis-registry.imageTag" . }}"
+          imagePullPolicy: {{ .Values.registry.skillScan.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          {{- with .Values.registry.skillScan.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: SKILL_SCAN_WORKER_CONCURRENCY
+              value: {{ .Values.registry.skillScan.concurrency | quote }}
+            - name: SKILL_SCAN_WORKER_TOOL_TIMEOUT_SECONDS
+              value: {{ .Values.registry.skillScan.toolTimeoutSeconds | quote }}
+            - name: SKILL_SCAN_WORKER_LLM_MAX_TEXT_BYTES
+              value: {{ .Values.registry.skillScan.llmMaxTextBytes | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.env.targetSecretName }}
+          volumeMounts:
+            - name: scan-tmp
+              mountPath: /scan-tmp
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Scratch for the skills we pull down and the tool output. Size it with concurrency.
+        - name: scan-tmp
+          emptyDir:
+            sizeLimit: {{ .Values.registry.skillScan.tmpSizeLimit }}
+        # Some libs write to /tmp no matter what TMPDIR says.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- if .Values.registry.skillScan.networkPolicy.enabled }}
+---
+# Egress firewall for the scanner pod. Only bites where the CNI enforces NetworkPolicy (EKS VPC CNI agent,
+# AKS Azure NPM or Cilium). We can't match on hostnames, so "LLM + OSV only" becomes "public HTTPS only" by
+# blocking the private and metadata ranges.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-skill-scan-worker
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app: registry-skill-scan-worker
+spec:
+  podSelector:
+    matchLabels:
+      app: registry-skill-scan-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # 1. DNS resolution.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. MongoDB. Uses the configured peers; falls back to both ways the charts label Mongo (standalone
+    #    StatefulSet app=mongodb, operator pods app=mongodb-svc) if a client clears the list.
+    - to:
+        {{- if .Values.registry.skillScan.networkPolicy.mongodbEgressTo }}
+        {{- toYaml .Values.registry.skillScan.networkPolicy.mongodbEgressTo | nindent 8 }}
+        {{- else }}
+        - podSelector:
+            matchLabels:
+              app: mongodb
+        - podSelector:
+            matchLabels:
+              app: mongodb-svc
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 27017
+    {{- if and .Values.registry.monitoring.enabled .Values.registry.monitoring.otelCollector.enabled }}
+    # OTLP to the in-cluster collector, else the public-HTTPS rule below would drop the worker's metrics.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.registry.monitoring.namespace }}
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+    {{- end }}
+    # 3. Public HTTPS (LLM endpoints, STS/IRSA, Entra ID, api.osv.dev); private and metadata CIDRs blocked.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml .Values.registry.skillScan.networkPolicy.blockedCidrs | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- with .Values.registry.skillScan.networkPolicy.extraEgress }}
+    # 4. Extra egress for private LLM endpoints or an HTTPS proxy.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,59 @@
+{{- if and .Values.registry.standalone .Values.registry.mongodb.enabled }}
+# Note: The operator creates statefulset, headless service, and init sidecars automatically
+apiVersion: mongodbcommunity.mongodb.com/v1
+kind: MongoDBCommunity
+metadata:
+  name: mongodb
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  members: {{ .Values.registry.mongodb.replicaCount }}
+  type: ReplicaSet
+  version: {{ .Values.registry.mongodb.version | quote }}
+  security:
+    authentication:
+      modes: ["SCRAM"]
+  users:
+    - name: mongodb-admin
+      db: admin
+      passwordSecretRef:
+        name: {{ .Values.registry.mongodb.adminPasswordSecret.name | default .Values.registry.env.targetSecretName }}
+        key: {{ .Values.registry.mongodb.adminPasswordSecret.key }}
+      roles:
+        - name: root
+          db: admin
+      scramCredentialsSecretName: mongodb-admin
+  statefulSet:
+    spec:
+      template:
+        spec:
+          {{- with .Values.registry.mongodb.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: mongod # MongoDB Operator expects the container to be named "mongod"
+              {{- with .Values.registry.mongodb.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+      volumeClaimTemplates:
+        - metadata:
+            name: data-volume
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: {{ .Values.registry.mongodb.persistence.storageClass }}
+            resources:
+              requests:
+                storage: {{ .Values.registry.mongodb.persistence.size }}
+        - metadata:
+            name: logs-volume
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: {{ .Values.registry.mongodb.persistence.storageClass }}
+            resources:
+              requests:
+                storage: 1Gi
+{{- end }}
