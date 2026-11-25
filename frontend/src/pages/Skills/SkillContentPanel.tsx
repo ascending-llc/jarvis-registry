@@ -18,7 +18,7 @@ import {
   isScanForVersion,
   type SkillScanTarget,
 } from './skillScan';
-import { getLanguageFromPath, highlightCode, highlightSkillMarkdown } from './syntaxHighlighting';
+import { getLanguageFromPath, highlightCode, highlightSkillMarkdown, isPreviewableFormat } from './syntaxHighlighting';
 import type { EditorMode } from './types';
 
 type SkillContentPanelProps = {
@@ -246,6 +246,14 @@ const SkillContentPanel: React.FC<SkillContentPanelProps> = ({
             {file.mimeType} · {formatBytes(fileMetadata?.bytes)}
           </p>
           <p className='mt-4 text-sm text-[var(--jarvis-muted)]'>Binary files cannot be previewed as text.</p>
+        </div>
+      );
+    }
+
+    if (!isPreviewableFormat(selectedPath, file.mimeType ?? fileMetadata?.mimeType)) {
+      return (
+        <div className='flex min-h-72 items-center justify-center px-6 text-center text-sm text-[var(--jarvis-muted)]'>
+          This format cannot be previewed.
         </div>
       );
     }

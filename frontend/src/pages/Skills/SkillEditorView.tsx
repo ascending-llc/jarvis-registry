@@ -358,7 +358,7 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
             className={`mt-5 min-w-0 items-start gap-4 ${supportingFiles.length > 0 ? 'flex flex-col md:flex-row' : 'flex'}`}
           >
             {(supportingFiles.length > 0 || scanFindings.length > 0) && (
-              <aside className='w-full flex-none overflow-auto rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-2 md:w-[216px]'>
+              <aside className='w-full flex-none overflow-auto rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-2 md:w-[260px]'>
                 <SkillFileTree
                   files={supportingFiles}
                   selectedPath={selectedPath}
@@ -367,6 +367,11 @@ const SkillEditorView: React.FC<SkillEditorViewProps> = ({
                   scanFindings={scanFindings}
                   olderFindings={olderFileFindings}
                   findingsTruncated={scanState?.scan?.results.some(result => result.findingsTruncated)}
+                  scan={scanState?.scan ?? null}
+                  skillId={draft.id}
+                  skillVersion={draft.version}
+                  hasUnsavedChanges={hasUnsavedChanges}
+                  skillMarkdown={getSkillMarkdownInput(draft.markdown)}
                 />
               </aside>
             )}
