@@ -14,6 +14,7 @@ import asyncio
 import functools
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from agno.models.base import Model
@@ -30,7 +31,11 @@ from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider, make_mcp_executor
-from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider, resolve_model
+from registry_pkgs.workflows.model_resolution import (
+    AzureAdTokenProvider,
+    resolve_default_workflow_model,
+    resolve_model,
+)
 from registry_pkgs.workflows.types import (
     BUILTIN_ECHO_EXECUTOR_KEY,
     BUILTIN_SET_VALUE_EXECUTOR_KEY,
@@ -133,7 +138,6 @@ def _builtin_executor(key: str) -> StepExecutor | None:
 async def build_executor_registry(
     nodes: list[WorkflowNode],
     *,
-    default_model: Model | None,
     auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
     encryption_key: bytes,
@@ -150,14 +154,15 @@ async def build_executor_registry(
     The registry is keyed by ``node.id`` so two nodes referencing the same backend with different
     ``model_source_id`` overrides get distinct executors. The actual resolve+build work is still
     deduplicated per ``(executor_key, model_source_id)`` combo, so the common case (many nodes, no
-    override) costs no more than before.
+    override) costs no more than before. The workspace default model is resolved lazily on first
+    need and cached for this registry build, so workflows without LLM steps using the default
+    never touch the default gateway selection.
 
     Args:
         nodes:            Non-pool STEP nodes with ``executor_key`` set.
-        default_model:    Optional model used when an LLM node has no override.
         auth_context:     Triggering user's auth context for manually-registered MCP servers.
         jwt_config:       JWT signing config used by A2A executors and AgentCore MCP servers.
-        encryption_key:   Key used to decrypt a ModelSource's stored Azure credential.
+        encryption_key:   Key used to decrypt a ModelSource's stored credentials.
         azure_ad_token_provider: Shared Azure AD bearer-token provider for Workload-Identity models.
         pool_nodes:       STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
         a2a_httpx_client: Optional shared httpx client passed to A2A executors.
@@ -175,6 +180,18 @@ async def build_executor_registry(
     """
     registry: dict[str, StepExecutor] = {}
     built_by_combo: dict[tuple[str, str | None], StepExecutor] = {}
+    default_model_loaded = False
+    cached_default_model: Model | None = None
+
+    async def get_default_model() -> Model | None:
+        nonlocal default_model_loaded, cached_default_model
+        if not default_model_loaded:
+            cached_default_model = await resolve_default_workflow_model(
+                encryption_key=encryption_key,
+                azure_ad_token_provider=azure_ad_token_provider,
+            )
+            default_model_loaded = True
+        return cached_default_model
 
     for node in nodes:
         combo = (node.executor_key, node.model_source_id)
@@ -183,7 +200,7 @@ async def build_executor_registry(
                 node.executor_key,
                 node_name=node.name,
                 model_source_id=node.model_source_id,
-                default_model=default_model,
+                get_default_model=get_default_model,
                 encryption_key=encryption_key,
                 azure_ad_token_provider=azure_ad_token_provider,
                 auth_context=auth_context,
@@ -202,7 +219,7 @@ async def build_executor_registry(
         node_model = await _resolve_node_model(
             node.name,
             node.model_source_id,
-            default_model=default_model,
+            get_default_model=get_default_model,
             encryption_key=encryption_key,
             azure_ad_token_provider=azure_ad_token_provider,
         )
@@ -224,7 +241,7 @@ async def _resolve_node_model(
     node_name: str,
     model_source_id: str | None,
     *,
-    default_model: Model | None,
+    get_default_model: Callable[[], Awaitable[Model | None]],
     encryption_key: bytes,
     azure_ad_token_provider: AzureAdTokenProvider | None,
 ) -> Model:
@@ -238,6 +255,7 @@ async def _resolve_node_model(
             )
         except WorkflowConfigError as exc:
             raise WorkflowConfigError(f"Step '{node_name}': {exc}") from exc
+    default_model = await get_default_model()
     if default_model is None:
         raise WorkflowConfigError(
             f"Step '{node_name}' needs a model, but no usable default workflow model is selected. "
@@ -251,7 +269,7 @@ async def _resolve_executor(
     *,
     node_name: str,
     model_source_id: str | None,
-    default_model: Model | None,
+    get_default_model: Callable[[], Awaitable[Model | None]],
     encryption_key: bytes,
     azure_ad_token_provider: AzureAdTokenProvider | None,
     auth_context: UserContextDict | None,
@@ -284,7 +302,7 @@ async def _resolve_executor(
             llm=await _resolve_node_model(
                 node_name,
                 model_source_id,
-                default_model=default_model,
+                get_default_model=get_default_model,
                 encryption_key=encryption_key,
                 azure_ad_token_provider=azure_ad_token_provider,
             ),

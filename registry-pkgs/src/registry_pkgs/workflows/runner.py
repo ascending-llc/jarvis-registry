@@ -76,7 +76,7 @@ from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledErr
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider
-from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider, resolve_default_workflow_model
+from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider
 from registry_pkgs.workflows.persistence import (
     _first_failure_error,
     _flatten_step_results,
@@ -327,12 +327,6 @@ class WorkflowRunner:
         MongoDB and constructs the corresponding executor closures.
         """
         all_nodes = flatten_workflow_nodes(definition.nodes)
-        # Resolve the effective default model fresh on every run so an admin's change to the
-        # default takes effect on the next run without a pod restart.
-        default_model = await resolve_default_workflow_model(
-            encryption_key=self._encryption_key,
-            azure_ad_token_provider=self._azure_ad_token_provider,
-        )
         # Non-pool STEP nodes keyed by executor_key; pool nodes use a synthetic key.
         keyed_nodes = [n for n in all_nodes if n.executor_key and not n.a2a_pool]
         pool_nodes = [n for n in all_nodes if n.a2a_pool]
@@ -346,7 +340,6 @@ class WorkflowRunner:
 
         return await build_executor_registry(
             keyed_nodes,
-            default_model=default_model,
             auth_context=auth_context,
             jwt_config=self._jwt_config,
             encryption_key=self._encryption_key,

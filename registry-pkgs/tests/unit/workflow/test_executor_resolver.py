@@ -113,7 +113,6 @@ class TestExecutorResolver:
 
         registry = await executor_resolver.build_executor_registry(
             nodes,
-            default_model=SimpleNamespace(),
             auth_context=None,
             jwt_config=_jwt_config(),
             encryption_key=b"key",
@@ -133,11 +132,12 @@ class TestExecutorResolver:
     ) -> None:
         resolved_with: list[object] = []
 
-        async def fake_resolve(key: str, *, model_source_id, default_model, **_kwargs):
-            resolved_with.append(model_source_id or default_model)
+        async def fake_resolve(key: str, *, model_source_id, get_default_model, **_kwargs):
+            resolved_with.append(model_source_id or await get_default_model())
             return f"executor:{key}:{model_source_id}"
 
         monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
+        monkeypatch.setattr(executor_resolver, "resolve_default_workflow_model", AsyncMock(return_value="default"))
         nodes = [
             WorkflowNode(id="default", name="default", executor_key="tool", step_objective="run"),
             WorkflowNode(
@@ -151,7 +151,6 @@ class TestExecutorResolver:
 
         registry = await executor_resolver.build_executor_registry(
             nodes,
-            default_model="default",
             auth_context=None,
             jwt_config=_jwt_config(),
             encryption_key=b"key",
@@ -189,7 +188,6 @@ class TestExecutorResolver:
 
         registry = await executor_resolver.build_executor_registry(
             [WorkflowNode(id="n1", name="n", executor_key="tool", model_source_id="0" * 24, step_objective="run")],
-            default_model=SimpleNamespace(id="DEFAULT"),
             auth_context=None,
             jwt_config=_jwt_config(),
             encryption_key=b"key",
@@ -227,7 +225,6 @@ class TestExecutorResolver:
         )
         registry = await executor_resolver.build_executor_registry(
             [],
-            default_model=SimpleNamespace(id="DEFAULT"),
             auth_context=None,
             jwt_config=_jwt_config(),
             encryption_key=b"key",
@@ -253,7 +250,7 @@ class TestExecutorResolver:
             "github",
             node_name="step",
             model_source_id=None,
-            default_model=SimpleNamespace(),
+            get_default_model=AsyncMock(return_value=SimpleNamespace()),
             encryption_key=b"key",
             azure_ad_token_provider=None,
             auth_context=None,
@@ -273,7 +270,7 @@ class TestExecutorResolver:
             "echo",
             node_name="step",
             model_source_id=None,
-            default_model=SimpleNamespace(),
+            get_default_model=AsyncMock(return_value=SimpleNamespace()),
             encryption_key=b"key",
             azure_ad_token_provider=None,
             auth_context=None,
@@ -305,7 +302,7 @@ class TestExecutorResolver:
             "deep-intel",
             node_name="step",
             model_source_id=None,
-            default_model=SimpleNamespace(),
+            get_default_model=AsyncMock(return_value=SimpleNamespace()),
             encryption_key=b"key",
             azure_ad_token_provider=None,
             auth_context=None,
@@ -327,11 +324,15 @@ class TestExecutorResolver:
         make_a2a = MagicMock(return_value="a2a-executor")
         monkeypatch.setattr(executor_resolver, "make_a2a_executor", make_a2a)
 
+        resolve_override = AsyncMock()
+        monkeypatch.setattr(executor_resolver, "resolve_model", resolve_override)
+        get_default = AsyncMock(return_value="default-model")
+
         without_override = await executor_resolver._resolve_executor(
             "deep-intel",
             node_name="step",
             model_source_id=None,
-            default_model="default-model",
+            get_default_model=get_default,
             encryption_key=b"key",
             azure_ad_token_provider=None,
             auth_context=None,
@@ -340,8 +341,8 @@ class TestExecutorResolver:
         with_override = await executor_resolver._resolve_executor(
             "deep-intel",
             node_name="step",
-            model_source_id=None,
-            default_model="override-model",
+            model_source_id="override-id",
+            get_default_model=get_default,
             encryption_key=b"key",
             azure_ad_token_provider=None,
             auth_context=None,
@@ -351,6 +352,8 @@ class TestExecutorResolver:
         assert without_override == with_override == "a2a-executor"
         assert make_a2a.call_count == 2
         assert all("llm" not in call.kwargs for call in make_a2a.call_args_list)
+        resolve_override.assert_not_awaited()
+        get_default.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_resolve_executor_raises_when_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch):
@@ -363,7 +366,7 @@ class TestExecutorResolver:
                 "unknown",
                 node_name="step",
                 model_source_id=None,
-                default_model=SimpleNamespace(),
+                get_default_model=AsyncMock(return_value=SimpleNamespace()),
                 encryption_key=b"key",
                 azure_ad_token_provider=None,
                 auth_context=None,
@@ -724,8 +727,9 @@ async def test_registry_model_requirements_follow_executor_type(
         step_objective="run",
     )
     default_model = SimpleNamespace(id="default-model") if has_default else None
+    resolve_default = AsyncMock(return_value=default_model)
+    monkeypatch.setattr(executor_resolver, "resolve_default_workflow_model", resolve_default)
     kwargs = {
-        "default_model": default_model,
         "auth_context": None,
         "jwt_config": _jwt_config(),
         "encryption_key": b"key",
@@ -756,3 +760,45 @@ async def test_registry_model_requirements_follow_executor_type(
     if kind in ["builtin", "a2a"]:
         resolve.assert_not_awaited()
         get_source.assert_not_awaited()
+        resolve_default.assert_not_awaited()
+    elif override is not None:
+        resolve_default.assert_not_awaited()
+    else:
+        resolve_default.assert_awaited_once_with(encryption_key=b"key", azure_ad_token_provider=None)
+
+
+@pytest.mark.asyncio
+async def test_build_executor_registry_caches_default_model_lookup_across_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multiple MCP/pool nodes without overrides must resolve the gateway default only once per build."""
+    TestExecutorResolver._patch_beanie_filters(monkeypatch)
+    monkeypatch.setattr(
+        executor_resolver.ExtendedMCPServer,
+        "find_one",
+        AsyncMock(side_effect=[_mcp_server("tool-a"), _mcp_server("tool-b")]),
+    )
+    make_mcp = MagicMock(return_value="mcp-executor")
+    make_pool = MagicMock(return_value="pool-executor")
+    monkeypatch.setattr(executor_resolver, "make_mcp_executor", make_mcp)
+    monkeypatch.setattr(executor_resolver, "make_a2a_pool_executor", make_pool)
+    default_model = SimpleNamespace(id="default-model")
+    resolve_default = AsyncMock(return_value=default_model)
+    monkeypatch.setattr(executor_resolver, "resolve_default_workflow_model", resolve_default)
+
+    registry = await executor_resolver.build_executor_registry(
+        [
+            WorkflowNode(id="m1", name="mcp-1", executor_key="tool-a", step_objective="run"),
+            WorkflowNode(id="m2", name="mcp-2", executor_key="tool-b", step_objective="run"),
+        ],
+        pool_nodes=[WorkflowNode(id="p1", name="pool-1", a2a_pool=["agent-a"], step_objective="run")],
+        auth_context=None,
+        jwt_config=_jwt_config(),
+        encryption_key=b"key",
+        azure_ad_token_provider=None,
+    )
+
+    assert len(registry) == 3
+    resolve_default.assert_awaited_once_with(encryption_key=b"key", azure_ad_token_provider=None)
+    assert all(call.kwargs["llm"] is default_model for call in make_mcp.call_args_list)
+    assert make_pool.call_args.kwargs["selector_llm"] is default_model

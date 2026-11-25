@@ -278,7 +278,6 @@ class TestBuildRegistry:
         async def fake_build(
             nodes,
             *,
-            default_model,
             auth_context,
             jwt_config,
             encryption_key,
@@ -298,7 +297,6 @@ class TestBuildRegistry:
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
-        monkeypatch.setattr(runner, "resolve_default_workflow_model", AsyncMock(return_value=object()))
 
         r = _make_runner(
             redis_key_prefix="test-registry",
@@ -315,18 +313,25 @@ class TestBuildRegistry:
     @pytest.mark.asyncio
     async def test_resolves_changed_default_for_each_registry_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A changed gateway default must affect the next run without rebuilding the runner."""
+        from registry_pkgs.workflows import executor_resolver
+
         definition = _definition()
         resolve_default = AsyncMock(side_effect=["model-a", "model-b"])
-        build_registry = AsyncMock(return_value={})
-        monkeypatch.setattr(runner, "resolve_default_workflow_model", resolve_default)
-        monkeypatch.setattr(runner, "build_executor_registry", build_registry)
+        captured_llms: list[object] = []
+
+        async def fake_resolve_executor(key: str, *, get_default_model, **_kwargs):
+            captured_llms.append(await get_default_model())
+            return AsyncMock()
+
+        monkeypatch.setattr(executor_resolver, "resolve_default_workflow_model", resolve_default)
+        monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve_executor)
         workflow_runner = _make_runner()
 
         await workflow_runner._build_registry(definition, None)
         await workflow_runner._build_registry(definition, None)
 
         assert resolve_default.await_count == 2
-        assert [call.kwargs["default_model"] for call in build_registry.await_args_list] == ["model-a", "model-b"]
+        assert captured_llms == ["model-a", "model-b"]
 
 
 @pytest.mark.unit
