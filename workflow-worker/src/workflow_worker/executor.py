@@ -18,6 +18,7 @@ from registry_pkgs.workflows.run_lease import (
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 from registry_pkgs.workflows.scheduling import calculate_next_run_at
+from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +314,10 @@ async def _execute_schedule(
         else:
             updated_run, _ = result
             final_status = updated_run.status
+    except WorkflowConfigError as exc:
+        # Expected misconfiguration (e.g. no usable default workflow model); the run is already
+        # FAILED with the message, so log it without a traceback, matching BackgroundTaskTracker.
+        logger.warning("Scheduled workflow for schedule %s aborted — configuration error: %s", schedule.id, exc)
     except Exception:
         # execute_leased_run already wrote FAILED (fenced) before re-raising; just log here.
         logger.exception("Scheduled workflow execution failed for schedule %s", schedule.id)
