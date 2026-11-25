@@ -9,6 +9,7 @@ from agno.models.base import Model
 from agno.models.litellm import LiteLLM
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
+from pydantic import ValidationError
 
 from registry_pkgs.core.crypto_utils import decrypt_value
 from registry_pkgs.database.model_gateway_selection_repository import get_model_gateway_selection
@@ -21,6 +22,7 @@ from registry_pkgs.models.model_source import (
     OpenAIModelConfig,
 )
 from registry_pkgs.workflows.bedrock_ids import bedrock_litellm_model_id
+from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +81,6 @@ class AzureModelCredential:
         self._credential.close()
 
 
-def build_legacy_bedrock_model(model_id: str, aws_region: str) -> Model:
-    """Build the Settings-based fallback used before a workflow ModelSource is selected."""
-    return _litellm_model(bedrock_litellm_model_id(model_id), _bedrock_request_params(aws_region))
-
-
 def get_litellm_model_info(model: str) -> dict[str, Any]:
     """Return metadata from the LiteLLM version selected by Agno's litellm extra."""
     return litellm.get_model_info(model)
@@ -127,25 +124,30 @@ def build_agno_model(
     raise TypeError(f"Unsupported model source provider config: {type(config).__name__}")
 
 
+async def _require_chat_source(model_source_id: str | PydanticObjectId) -> ModelSource:
+    """Load an available chat source; infrastructure failures propagate unchanged."""
+    try:
+        object_id = PydanticObjectId(model_source_id)
+    except (InvalidId, TypeError, ValueError) as exc:
+        raise WorkflowConfigError(f"ModelSource '{model_source_id}' has an invalid id") from exc
+    model_source = await ModelSource.get(object_id)
+    if model_source is None:
+        raise WorkflowConfigError(f"ModelSource '{model_source_id}' does not exist")
+    if model_source.deletedAt is not None:
+        raise WorkflowConfigError(f"ModelSource '{model_source_id}' is deleted")
+    if model_source.mode != ModelSourceMode.CHAT:
+        raise WorkflowConfigError(f"ModelSource '{model_source_id}' is not in chat mode")
+    return model_source
+
+
 async def resolve_model(
-    model_source_id: str | PydanticObjectId | None,
+    model_source_id: str | PydanticObjectId,
     *,
-    fallback_model: Model,
     encryption_key: bytes,
     azure_ad_token_provider: AzureAdTokenProvider | None,
 ) -> Model:
-    """Resolve one ModelSource id to an agno Model, or fall back. Resolved fresh on every call."""
-    if model_source_id is None:
-        return fallback_model
-    try:
-        object_id = PydanticObjectId(model_source_id)
-    except (InvalidId, TypeError, ValueError):
-        logger.warning("ModelSource %s has an invalid id; using fallback model", model_source_id)
-        return fallback_model
-    model_source = await ModelSource.get(object_id)
-    if model_source is None or model_source.deletedAt is not None or model_source.mode != ModelSourceMode.CHAT:
-        logger.warning("ModelSource %s is unavailable for chat; using fallback model", model_source_id)
-        return fallback_model
+    """Resolve an explicit node override, failing on an unusable reference."""
+    model_source = await _require_chat_source(model_source_id)
     return build_agno_model(
         model_source,
         encryption_key=encryption_key,
@@ -155,20 +157,30 @@ async def resolve_model(
 
 async def resolve_default_workflow_model(
     *,
-    fallback_model: Model,
     encryption_key: bytes,
     azure_ad_token_provider: AzureAdTokenProvider | None,
-) -> Model:
-    """Resolve the currently-configured default workflow model.
-
-    Falls back to the legacy Settings-based model when no ModelSource has been set as default yet
-    (fresh deployment / pre-migration).
-    """
-    selection = await get_model_gateway_selection(create_if_missing=False)
+) -> Model | None:
+    """Read the default fresh for each registry build; unusable references return None."""
+    try:
+        selection = await get_model_gateway_selection(create_if_missing=False)
+    except ValidationError as exc:
+        errors = exc.errors(include_input=False, include_url=False)
+        if not errors or not all(
+            error["loc"] == ("defaultWorkflowModelSourceId",) and error["type"] == "value_error" for error in errors
+        ):
+            raise
+        logger.warning("Default workflow ModelSource has an invalid id")
+        return None
     default_id = selection.defaultWorkflowModelSourceId if selection else None
-    return await resolve_model(
-        default_id,
-        fallback_model=fallback_model,
+    if default_id is None:
+        return None
+    try:
+        model_source = await _require_chat_source(default_id)
+    except WorkflowConfigError as exc:
+        logger.warning("No usable default workflow model: %s", exc)
+        return None
+    return build_agno_model(
+        model_source,
         encryption_key=encryption_key,
         azure_ad_token_provider=azure_ad_token_provider,
     )

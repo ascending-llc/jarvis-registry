@@ -24,7 +24,7 @@ from registry_pkgs.workflows.a2a_headers_provider import make_a2a_headers_provid
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
 from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
-from registry_pkgs.workflows.model_resolution import AzureModelCredential, build_legacy_bedrock_model
+from registry_pkgs.workflows.model_resolution import AzureModelCredential
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
 from workflow_worker.config import settings
@@ -115,17 +115,11 @@ async def _build_runner(
     azure_model_credential: AzureModelCredential,
 ) -> WorkflowRunner:
     """Construct the workflow runner and its A2A authentication provider."""
-    # Legacy fallback model: used only when no ModelSource is set as the default workflow model.
-    fallback_model = build_legacy_bedrock_model(
-        settings.workflow_llm_model_id,
-        settings.aws_region,
-    )
     headers_provider = make_a2a_headers_provider(
         jwt_config=settings.jwt_signing_config,
         azure_client_cache=azure_client_cache,
     )
     return WorkflowRunner(
-        fallback_model=fallback_model,
         encryption_key=settings.encryption_key,
         azure_ad_token_provider=azure_model_credential.token_provider,
         db_client=MongoDB.get_client(),

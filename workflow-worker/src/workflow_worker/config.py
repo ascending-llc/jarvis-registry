@@ -28,7 +28,6 @@ class WorkerSettings(JarvisBaseSettings):
     redis_uri: str = "redis://127.0.0.1:6379/1"
     redis_key_prefix: str = "jarvis-registry"
 
-    workflow_llm_model_id: str = Field(default="amazon.nova-2-lite-v1:0", validation_alias="AWS_WORKFLOW_LLM_MODEL")
     aws_region: str = "us-east-1"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
