@@ -8,7 +8,7 @@ import pytest
 from bson import ObjectId
 from pymongo.errors import AutoReconnect, DuplicateKeyError
 
-from registry_pkgs.migrations.versions import m0006_seed_default_workflow_model as migration
+from registry_pkgs.migrations.versions import m0007_seed_default_workflow_model as migration
 from registry_pkgs.models.model_source import ModelSource
 
 
