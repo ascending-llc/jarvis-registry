@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
@@ -43,6 +44,7 @@ def test_search_with_rerank_disabled_skips_reranker():
 def test_search_with_rerank_injects_bedrock_config():
     """Enabled path injects region/model_id/creds/top_n from store config into the reranker."""
     store = _make_store(enabled=True)
+    store.search = MagicMock(return_value=[MagicMock() for _ in range(3)])
     reranker = MagicMock()
     reranker.compress_documents.return_value = ["doc"]
 
@@ -60,6 +62,44 @@ def test_search_with_rerank_injects_bedrock_config():
         session_token=None,
         top_n=3,
     )
+
+
+def test_search_with_rerank_caps_top_n_to_candidate_count(caplog):
+    """When fewer candidates than k are found, top_n is capped at len(candidates) so Bedrock accepts it."""
+    store = _make_store(enabled=True)
+    candidates = [MagicMock(name=f"cand{i}") for i in range(4)]
+    store.search = MagicMock(return_value=candidates)
+
+    reranked = [MagicMock(name=f"ranked{i}") for i in range(4)]
+    reranker = MagicMock()
+    reranker.compress_documents.return_value = reranked
+
+    with caplog.at_level(logging.WARNING, logger="registry_pkgs.vector.backends.weaviate_store"):
+        with patch(
+            "registry_pkgs.vector.backends.weaviate_store.create_reranker", return_value=reranker
+        ) as mock_create:
+            result = store.search_with_rerank(query="q", k=5)
+
+    assert result == reranked
+    assert mock_create.call_args.kwargs["top_n"] == 4
+    reranker.compress_documents.assert_called_once_with(documents=candidates, query="q")
+    assert caplog.records == []
+
+
+def test_search_with_rerank_caps_reranker_kwargs_top_n():
+    """Explicit reranker_kwargs['top_n'] is also capped at len(candidates)."""
+    store = _make_store(enabled=True)
+    candidates = [MagicMock(name=f"cand{i}") for i in range(2)]
+    store.search = MagicMock(return_value=candidates)
+
+    reranker = MagicMock()
+    reranker.compress_documents.return_value = candidates
+
+    with patch("registry_pkgs.vector.backends.weaviate_store.create_reranker", return_value=reranker) as mock_create:
+        result = store.search_with_rerank(query="q", k=5, reranker_kwargs={"top_n": 10})
+
+    assert result == candidates
+    assert mock_create.call_args.kwargs["top_n"] == 2
 
 
 def test_search_with_rerank_returns_reranked_candidates():
