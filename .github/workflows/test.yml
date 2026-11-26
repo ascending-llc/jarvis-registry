@@ -39,9 +39,9 @@ jobs:
         run: uv run poe test-all-cov
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         with:
-          file: ./registry/coverage.xml,./auth-server/coverage.xml,./registry-pkgs/coverage.xml
+          files: ./registry/coverage.xml,./auth-server/coverage.xml,./registry-pkgs/coverage.xml
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
