@@ -1,6 +1,6 @@
 """JWT minting helpers for AWS Bedrock AgentCore Runtime access."""
 
-import logging
+from time import monotonic
 from typing import Any
 from urllib.parse import urlparse
 
@@ -8,7 +8,9 @@ from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
 
-logger = logging.getLogger(__name__)
+_AGENTCORE_JWT_TTL_SECONDS = 3600
+_AGENTCORE_JWT_LEEWAY_SECONDS = 60
+_token_cache: dict[tuple[str, str, str, str], tuple[str, float]] = {}
 
 
 def _normalize_claim_value(value: Any) -> Any:
@@ -74,10 +76,6 @@ def mint_agentcore_runtime_jwt(
     return encode_jwt(payload, signing.jwt_private_key, kid=signing.jwt_self_signed_kid)
 
 
-_AGENTCORE_JWT_TTL_SECONDS = 3600
-_AGENTCORE_JWT_LEEWAY_SECONDS = 60
-
-
 def parse_agentcore_runtime_access(
     runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any],
 ) -> AgentCoreRuntimeAccessConfig:
@@ -92,21 +90,19 @@ def sign_agentcore_jwt(
     *,
     subject: str,
     signing: JwtSigningConfig,
-    cache_key: str,
-    redis_client: Any | None = None,
+    server_id: str,
 ) -> str:
-    """Mint (or return a cached) AgentCore Runtime JWT.
-
-    This function is synchronous so it can be used inside agno's
-    ``MCPTools.header_provider`` callback, which is never awaited.
-    """
-    if redis_client is not None:
-        try:
-            cached = redis_client.get(cache_key)
-            if cached:
-                return cached.decode("utf-8") if isinstance(cached, bytes) else cached
-        except Exception:
-            logger.exception("Failed to read cached AgentCore JWT for %s", cache_key)
+    """Return a process-cached JWT without I/O for agno's synchronous header_provider."""
+    key = (
+        server_id,
+        subject,
+        runtime_jwt_config.model_dump_json() if runtime_jwt_config else "",
+        signing.jwt_self_signed_kid,
+    )
+    now = monotonic()
+    cached = _token_cache.get(key)
+    if cached is not None and now < cached[1]:
+        return cached[0]
 
     token = mint_agentcore_runtime_jwt(
         runtime_jwt_config,
@@ -114,15 +110,8 @@ def sign_agentcore_jwt(
         signing=signing,
         expires_in_seconds=_AGENTCORE_JWT_TTL_SECONDS,
     )
-
-    if redis_client is not None:
-        try:
-            redis_client.setex(
-                cache_key,
-                _AGENTCORE_JWT_TTL_SECONDS - _AGENTCORE_JWT_LEEWAY_SECONDS,
-                token,
-            )
-        except Exception:
-            logger.exception("Failed to cache AgentCore JWT for %s", cache_key)
-
+    expired_keys = [entry_key for entry_key, (_, expires_at) in _token_cache.items() if expires_at <= now]
+    for expired_key in expired_keys:
+        del _token_cache[expired_key]
+    _token_cache[key] = (token, now + _AGENTCORE_JWT_TTL_SECONDS - _AGENTCORE_JWT_LEEWAY_SECONDS)
     return token

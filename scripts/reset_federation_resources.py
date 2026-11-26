@@ -24,6 +24,7 @@ import asyncio
 import logging
 import sys
 import traceback
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -33,8 +34,13 @@ from beanie import PydanticObjectId
 from registry.container import RegistryContainer
 from registry.core.config import Settings
 from registry.core.vector_backend import resolve_vector_backend_config
-from registry_pkgs.database.mongodb import init_mongodb
-from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
+from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
+from registry_pkgs.database.redis_client import (
+    close_async_redis_client,
+    close_redis_client,
+    create_async_redis_client,
+    create_redis_client,
+)
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, RegistryAclEntry
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.federation import Federation
@@ -298,22 +304,28 @@ async def run(argv: list[str] | None = None) -> int:
     env_path = Path(".env")
     settings = Settings(_env_file=str(env_path)) if env_path.exists() else Settings()
 
-    db_client = None
-    redis_client = None
+    resources = AsyncExitStack()
     container: RegistryContainer | None = None
 
     try:
+        resources.push_async_callback(close_mongodb)
         await init_mongodb(settings.mongo_config)
         print("MongoDB connected.")
 
         if not opts.skip_vector:
-            redis_client = create_redis_client(settings.redis_config)
+            redis_client = await create_async_redis_client(settings.redis_config)
+            resources.push_async_callback(close_async_redis_client, redis_client)
+            sync_redis_client = create_redis_client(settings.redis_config)
+            resources.callback(close_redis_client, sync_redis_client)
             db_client = create_database_client(await resolve_vector_backend_config(settings))
+            resources.callback(db_client.close)
             container = RegistryContainer(
                 settings=settings,
                 db_client=db_client,
                 redis_client=redis_client,
+                sync_redis_client=sync_redis_client,
             )
+            resources.push_async_callback(container.shutdown)
             print(f"Vector DB connected (store={settings.vector_store_type}, provider={settings.embedding_provider}).")
 
         plan = await collect_reset_plan(opts.federation_id)
@@ -356,11 +368,7 @@ async def run(argv: list[str] | None = None) -> int:
         return 1
     finally:
         try:
-            if container is not None:
-                await container.shutdown()
-            close_redis_client(redis_client)
-            if db_client is not None:
-                db_client.close()
+            await resources.aclose()
         except Exception as exc:
             print(f"\nFatal error: {exc}")
             traceback.print_exc()

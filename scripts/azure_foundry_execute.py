@@ -15,13 +15,19 @@ import asyncio
 import logging
 import os
 import sys
+from contextlib import AsyncExitStack
 
 from dotenv import load_dotenv
 
 from registry.container import RegistryContainer
 from registry.core.config import settings
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
-from registry_pkgs.database.redis_client import create_redis_client
+from registry_pkgs.database.redis_client import (
+    close_async_redis_client,
+    close_redis_client,
+    create_async_redis_client,
+    create_redis_client,
+)
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.vector.client import create_database_client
@@ -36,12 +42,20 @@ async def main() -> None:
     prompt = os.environ.get("FOUNDRY_TEST_PROMPT", "Hello, what can you do?")
     target_path = os.environ.get("AGENT_PATH")
 
-    await init_mongodb(settings.mongo_config)
-    redis_client = create_redis_client(settings.redis_config)
-    db_client = create_database_client(settings.vector_backend_config)
-    container = RegistryContainer(settings=settings, db_client=db_client, redis_client=redis_client)
+    async with AsyncExitStack() as resources:
+        resources.push_async_callback(close_mongodb)
+        await init_mongodb(settings.mongo_config)
+        redis_client = await create_async_redis_client(settings.redis_config)
+        resources.push_async_callback(close_async_redis_client, redis_client)
+        sync_redis_client = create_redis_client(settings.redis_config)
+        resources.callback(close_redis_client, sync_redis_client)
+        db_client = create_database_client(settings.vector_backend_config)
+        resources.callback(db_client.close)
+        container = RegistryContainer(
+            settings=settings, db_client=db_client, redis_client=redis_client, sync_redis_client=sync_redis_client
+        )
+        resources.push_async_callback(container.a2a_client_registry.close)
 
-    try:
         if target_path:
             agent = await A2AAgent.find_one(A2AAgent.path == target_path)
         else:
@@ -76,9 +90,6 @@ async def main() -> None:
         print(f"error      = {result.error}")
         print(f"task_state = {getattr(result.task_state, 'value', result.task_state)}")
         print("response text:\n" + (result.render_text() or "<empty>"))
-    finally:
-        await container.a2a_client_registry.close()
-        await close_mongodb()
 
 
 if __name__ == "__main__":

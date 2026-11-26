@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agno.run.cancel import get_cancellation_manager, set_cancellation_manager
@@ -11,8 +12,13 @@ from agno.run.cancellation_management.in_memory_cancellation_manager import InMe
 from fastapi import FastAPI
 
 from registry_pkgs.core.structured_logging import configure_structured_logging
-from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
-from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
+from registry_pkgs.database.mongodb import MongoDB, close_mongodb, init_mongodb
+from registry_pkgs.database.redis_client import (
+    close_async_redis_client,
+    close_redis_client,
+    create_async_redis_client,
+    create_redis_client,
+)
 from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
 from registry_pkgs.telemetry.workflow_metrics import initialize_workflow_metrics
 from registry_pkgs.vector.client import create_database_client
@@ -28,6 +34,7 @@ from .mcpgw import create_gateway_mcp_app
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
     from redis import Redis
+    from redis.asyncio import Redis as AsyncRedis
 
     from registry_pkgs.vector.client import DatabaseClient
 
@@ -52,15 +59,15 @@ def _get_gateway_mcp_app(app: FastAPI):
     return getattr(app.state, "gateway_mcp_app", gateway_mcp_app)
 
 
+@dataclass
 class _RuntimeResources:
-    db_client: DatabaseClient
-    redis_client: Redis
+    """Resources acquired by this lifespan, including when startup only partly succeeds."""
 
-    """Keep track of infrastructure clients that must be closed during shutdown."""
-
-    def __init__(self, db_client: DatabaseClient, redis_client: Redis):
-        self.db_client = db_client
-        self.redis_client = redis_client
+    owns_mongodb: bool = False
+    redis_client: AsyncRedis | None = None
+    sync_redis_client: Redis | None = None
+    db_client: DatabaseClient | None = None
+    container: RegistryContainer | None = None
 
 
 def _shutdown_telemetry_safe() -> None:
@@ -94,27 +101,30 @@ def _initialize_telemetry() -> None:
         logger.warning("Failed to configure structured logging", exc_info=True)
 
 
-async def _startup_container(app: FastAPI) -> _RuntimeResources:
+async def _startup_container(app: FastAPI, resources: _RuntimeResources) -> None:
     """Create infra clients, build the registry container, and expose it on app.state."""
     logger.info("Initializing MongoDB connection")
+    resources.owns_mongodb = MongoDB.client is None
     await init_mongodb(settings.mongo_config)
 
     logger.info("Initializing Redis connection")
-    redis_client = create_redis_client(settings.redis_config)
+    resources.redis_client = await create_async_redis_client(settings.redis_config)
+    resources.sync_redis_client = create_redis_client(settings.redis_config)
 
     logger.info("Initializing vector database client")
     backend_config = await resolve_vector_backend_config(settings)
-    db_client = create_database_client(backend_config)
+    resources.db_client = create_database_client(backend_config)
 
     container = RegistryContainer(
         settings=settings,
-        db_client=db_client,
-        redis_client=redis_client,
+        db_client=resources.db_client,
+        redis_client=resources.redis_client,
+        sync_redis_client=resources.sync_redis_client,
     )
     _install_agno_cancellation_manager(container.directive_queue)
+    resources.container = container
     app.state.container = container
     await container.startup()
-    return _RuntimeResources(db_client, redis_client)
 
 
 def _install_agno_cancellation_manager(directive_queue: DirectiveQueue) -> None:
@@ -152,35 +162,23 @@ def _restore_default_cancellation_manager() -> None:
 
 async def _shutdown_container(app: FastAPI, resources: _RuntimeResources) -> None:
     """Shutdown app-scoped services before tearing down the underlying infra clients."""
-    _restore_default_cancellation_manager()
+    async with AsyncExitStack() as cleanup:
+        if resources.owns_mongodb:
+            cleanup.push_async_callback(close_mongodb)
+        if resources.db_client is not None:
+            cleanup.callback(resources.db_client.close)
+        if resources.sync_redis_client is not None:
+            cleanup.callback(close_redis_client, resources.sync_redis_client)
+        if resources.redis_client is not None:
+            cleanup.push_async_callback(close_async_redis_client, resources.redis_client)
 
-    container = getattr(app.state, "container", None)
-    if container is not None:
-        try:
-            await container.shutdown()
-        except Exception as exc:
-            logger.error("Container shutdown error: %s", exc, exc_info=True)
-        finally:
-            del app.state.container
-
-    try:
-        logger.info("Closing Redis connection")
-        close_redis_client(resources.redis_client)
-    except Exception as exc:
-        logger.error("Redis close error: %s", exc, exc_info=True)
-
-    if resources.db_client is not None:
-        try:
-            logger.info("Closing vector database client")
-            resources.db_client.close()
-        except Exception as exc:
-            logger.error("Vector database client close error: %s", exc, exc_info=True)
-
-    try:
-        logger.info("Closing MongoDB connection")
-        await close_mongodb()
-    except Exception as exc:
-        logger.error("MongoDB close error: %s", exc, exc_info=True)
+        if resources.container is not None:
+            _restore_default_cancellation_manager()
+            try:
+                await resources.container.shutdown()
+            finally:
+                if getattr(app.state, "container", None) is resources.container:
+                    del app.state.container
 
 
 @asynccontextmanager
@@ -193,16 +191,15 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting MCP Gateway Registry")
 
+    resources = _RuntimeResources()
     try:
         _initialize_telemetry()
-        resources = await _startup_container(app)
+        try:
+            await _startup_container(app, resources)
+        except Exception:
+            logger.exception("Failed to initialize services")
+            raise
         logger.info("Application startup completed")
-    except Exception as exc:
-        logger.error("Failed to initialize services: %s", exc, exc_info=True)
-        _shutdown_telemetry_safe()
-        raise
-
-    try:
         async with _get_gateway_mcp_app(app).session_manager.run():
             yield
     finally:

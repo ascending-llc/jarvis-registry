@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from fakeredis import FakeRedis
+from fakeredis import FakeAsyncRedis, FakeRedis, FakeServer
 from fastapi.testclient import TestClient
 from httpx2 import Response
 
@@ -38,7 +38,13 @@ def mock_rbac_for_tests() -> None:
 
 @pytest.fixture
 def container() -> RegistryContainer:
-    container = RegistryContainer(settings, db_client=Mock(), redis_client=FakeRedis(decode_responses=True))
+    redis = FakeServer()
+    container = RegistryContainer(
+        settings,
+        db_client=Mock(),
+        redis_client=FakeAsyncRedis(server=redis, decode_responses=True),
+        sync_redis_client=FakeRedis(server=redis, decode_responses=True),
+    )
     server = _server_doc()
     container.server_service = AsyncMock()
     container.server_service.get_server_by_id.return_value = server

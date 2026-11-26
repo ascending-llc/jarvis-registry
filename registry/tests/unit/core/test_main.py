@@ -1,8 +1,12 @@
 """Unit tests for the registry entrypoint module."""
 
+import asyncio
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from agno.run.cancel import get_cancellation_manager
+from agno.run.cancellation_management.in_memory_cancellation_manager import InMemoryRunCancellationManager
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -19,60 +23,48 @@ def _mock_async_context_manager() -> AsyncMock:
     return manager
 
 
+@pytest.fixture
+def mock_services() -> Iterator[dict[str, Mock]]:
+    """Mock the startup/shutdown dependencies used by lifespan."""
+    mock_container = Mock()
+    mock_container.startup = AsyncMock()
+    mock_container.shutdown = AsyncMock()
+
+    with (
+        patch("registry.main.RegistryContainer", return_value=mock_container) as mock_container_cls,
+        patch("registry.main.init_mongodb", new=AsyncMock()) as mock_init_mongodb,
+        patch("registry.main.close_mongodb", new=AsyncMock()) as mock_close_mongodb,
+        patch("registry.main.create_async_redis_client") as mock_create_async_redis_client,
+        patch("registry.main.close_async_redis_client") as mock_close_async_redis_client,
+        patch("registry.main.create_redis_client") as mock_create_redis_client,
+        patch("registry.main.close_redis_client") as mock_close_redis_client,
+        patch("registry.main.create_database_client") as mock_create_database_client,
+        patch("registry.main.resolve_vector_backend_config", new=AsyncMock()) as mock_resolve_vector_backend_config,
+    ):
+        mock_create_redis_client.return_value = Mock()
+        mock_create_database_client.return_value = Mock()
+        mock_gateway_mcp_app = Mock()
+        mock_gateway_mcp_app.session_manager.run.return_value = _mock_async_context_manager()
+
+        yield {
+            "container": mock_container,
+            "container_cls": mock_container_cls,
+            "init_mongodb": mock_init_mongodb,
+            "close_mongodb": mock_close_mongodb,
+            "create_async_redis_client": mock_create_async_redis_client,
+            "close_async_redis_client": mock_close_async_redis_client,
+            "create_redis_client": mock_create_redis_client,
+            "close_redis_client": mock_close_redis_client,
+            "create_database_client": mock_create_database_client,
+            "resolve_vector_backend_config": mock_resolve_vector_backend_config,
+            "gateway_mcp_app": mock_gateway_mcp_app,
+        }
+
+
 @pytest.mark.unit
 @pytest.mark.core
 class TestMainApplication:
     """Test suite for main application functionality."""
-
-    @pytest.fixture(autouse=True)
-    def _reset_agno_cancellation_manager(self):
-        """Restore agno's global cancellation manager after each test.
-
-        ``lifespan`` installs a process-global MongoBackedCancellationManager
-        during startup. A startup that fails *after* that install (e.g.
-        ``test_lifespan_startup_container_failure``) never reaches shutdown, so
-        the global leaks and the next lifespan startup trips the install guard.
-        """
-        yield
-        from agno.run.cancel import set_cancellation_manager
-        from agno.run.cancellation_management.in_memory_cancellation_manager import (
-            InMemoryRunCancellationManager,
-        )
-
-        set_cancellation_manager(InMemoryRunCancellationManager())
-
-    @pytest.fixture
-    def mock_services(self):
-        """Mock the startup/shutdown dependencies used by lifespan."""
-        mock_container = Mock()
-        mock_container.startup = AsyncMock()
-        mock_container.shutdown = AsyncMock()
-
-        with (
-            patch("registry.main.RegistryContainer", return_value=mock_container) as mock_container_cls,
-            patch("registry.main.init_mongodb", new=AsyncMock()) as mock_init_mongodb,
-            patch("registry.main.close_mongodb", new=AsyncMock()) as mock_close_mongodb,
-            patch("registry.main.create_redis_client") as mock_create_redis_client,
-            patch("registry.main.close_redis_client") as mock_close_redis_client,
-            patch("registry.main.create_database_client") as mock_create_database_client,
-            patch("registry.main.resolve_vector_backend_config", new=AsyncMock()) as mock_resolve_vector_backend_config,
-        ):
-            mock_create_redis_client.return_value = Mock()
-            mock_create_database_client.return_value = Mock()
-            mock_gateway_mcp_app = Mock()
-            mock_gateway_mcp_app.session_manager.run.return_value = _mock_async_context_manager()
-
-            yield {
-                "container": mock_container,
-                "container_cls": mock_container_cls,
-                "init_mongodb": mock_init_mongodb,
-                "close_mongodb": mock_close_mongodb,
-                "create_redis_client": mock_create_redis_client,
-                "close_redis_client": mock_close_redis_client,
-                "create_database_client": mock_create_database_client,
-                "resolve_vector_backend_config": mock_resolve_vector_backend_config,
-                "gateway_mcp_app": mock_gateway_mcp_app,
-            }
 
     @pytest.mark.asyncio
     async def test_lifespan_startup_success(self, mock_services):
@@ -84,6 +76,7 @@ class TestMainApplication:
             assert test_app.state.container is mock_services["container"]
 
         mock_services["init_mongodb"].assert_awaited_once_with(settings.mongo_config)
+        mock_services["create_async_redis_client"].assert_awaited_once_with(settings.redis_config)
         mock_services["create_redis_client"].assert_called_once_with(settings.redis_config)
         mock_services["resolve_vector_backend_config"].assert_awaited_once_with(settings)
         mock_services["create_database_client"].assert_called_once_with(
@@ -92,7 +85,8 @@ class TestMainApplication:
         mock_services["container_cls"].assert_called_once_with(
             settings=settings,
             db_client=mock_services["create_database_client"].return_value,
-            redis_client=mock_services["create_redis_client"].return_value,
+            redis_client=mock_services["create_async_redis_client"].return_value,
+            sync_redis_client=mock_services["create_redis_client"].return_value,
         )
         mock_services["container"].startup.assert_awaited_once()
 
@@ -107,6 +101,67 @@ class TestMainApplication:
             async with lifespan(test_app):
                 pass
 
+        mock_services["container"].shutdown.assert_awaited_once()
+        mock_services["close_async_redis_client"].assert_awaited_once_with(
+            mock_services["create_async_redis_client"].return_value
+        )
+        mock_services["close_redis_client"].assert_called_once_with(mock_services["create_redis_client"].return_value)
+        assert not hasattr(test_app.state, "container")
+        assert isinstance(get_cancellation_manager(), InMemoryRunCancellationManager)
+
+    async def test_partial_startup_closes_first_redis_client(self, mock_services) -> None:
+        mock_services["create_redis_client"].side_effect = RuntimeError("sync Redis startup failed")
+        with pytest.raises(RuntimeError, match="sync Redis startup failed"):
+            async with lifespan(FastAPI()):
+                pytest.fail("startup should have failed")
+
+        mock_services["close_async_redis_client"].assert_awaited_once_with(
+            mock_services["create_async_redis_client"].return_value
+        )
+        mock_services["close_mongodb"].assert_awaited_once()
+        mock_services["container_cls"].assert_not_called()
+
+    async def test_failed_install_preserves_running_app(self, mock_services) -> None:
+        test_app = FastAPI()
+        previous = test_app.state.container = Mock()
+        with (
+            patch("registry.main.get_cancellation_manager", return_value=Mock()),
+            patch("registry.main.set_cancellation_manager") as set_manager,
+            patch("registry.main.MongoDB.client", new=Mock()),
+            pytest.raises(RuntimeError, match="already replaced"),
+        ):
+            async with lifespan(test_app):
+                pytest.fail("startup should have failed")
+
+        set_manager.assert_not_called()
+        mock_services["close_mongodb"].assert_not_awaited()
+        mock_services["container"].shutdown.assert_not_awaited()
+        assert test_app.state.container is previous
+
+    async def test_redis_close_failure_still_closes_other_clients(self, mock_services) -> None:
+        mock_services["close_async_redis_client"].side_effect = RuntimeError("async Redis close failed")
+        test_app = FastAPI()
+        test_app.state.gateway_mcp_app = mock_services["gateway_mcp_app"]
+        async with lifespan(test_app):
+            pass
+
+        mock_services["close_redis_client"].assert_called_once_with(mock_services["create_redis_client"].return_value)
+        mock_services["create_database_client"].return_value.close.assert_called_once()
+        mock_services["close_mongodb"].assert_awaited_once()
+
+    async def test_cancelled_async_redis_close_releases_remaining_clients(self, mock_services) -> None:
+        mock_services["close_async_redis_client"].side_effect = asyncio.CancelledError
+        test_app = FastAPI()
+        test_app.state.gateway_mcp_app = mock_services["gateway_mcp_app"]
+
+        with pytest.raises(asyncio.CancelledError):
+            async with lifespan(test_app):
+                pass
+
+        mock_services["close_redis_client"].assert_called_once_with(mock_services["create_redis_client"].return_value)
+        mock_services["create_database_client"].return_value.close.assert_called_once()
+        mock_services["close_mongodb"].assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_lifespan_shutdown_success(self, mock_services):
         """Test successful application shutdown."""
@@ -117,7 +172,10 @@ class TestMainApplication:
             pass
 
         mock_services["container"].shutdown.assert_awaited_once()
-        mock_services["close_redis_client"].assert_called_once()
+        mock_services["close_async_redis_client"].assert_awaited_once_with(
+            mock_services["create_async_redis_client"].return_value
+        )
+        mock_services["close_redis_client"].assert_called_once_with(mock_services["create_redis_client"].return_value)
         mock_services["create_database_client"].return_value.close.assert_called_once()
         mock_services["close_mongodb"].assert_awaited_once()
         assert not hasattr(test_app.state, "container")
@@ -132,7 +190,10 @@ class TestMainApplication:
         async with lifespan(test_app):
             pass
 
-        mock_services["close_redis_client"].assert_called_once()
+        mock_services["close_async_redis_client"].assert_awaited_once_with(
+            mock_services["create_async_redis_client"].return_value
+        )
+        mock_services["close_redis_client"].assert_called_once_with(mock_services["create_redis_client"].return_value)
         mock_services["create_database_client"].return_value.close.assert_called_once()
         mock_services["close_mongodb"].assert_awaited_once()
 
@@ -195,39 +256,6 @@ class TestMainApplication:
 @pytest.mark.core
 class TestLifespanTelemetryShutdown:
     """Verify _shutdown_telemetry_safe() is called on all lifespan exit paths."""
-
-    @pytest.fixture(autouse=True)
-    def _reset_agno_cancellation_manager(self):
-        yield
-        from agno.run.cancel import set_cancellation_manager
-        from agno.run.cancellation_management.in_memory_cancellation_manager import (
-            InMemoryRunCancellationManager,
-        )
-
-        set_cancellation_manager(InMemoryRunCancellationManager())
-
-    @pytest.fixture
-    def mock_services(self):
-        mock_container = Mock()
-        mock_container.startup = AsyncMock()
-        mock_container.shutdown = AsyncMock()
-
-        with (
-            patch("registry.main.RegistryContainer", return_value=mock_container),
-            patch("registry.main.init_mongodb", new=AsyncMock()),
-            patch("registry.main.close_mongodb", new=AsyncMock()),
-            patch("registry.main.create_redis_client", return_value=Mock()),
-            patch("registry.main.close_redis_client"),
-            patch("registry.main.create_database_client", return_value=Mock()),
-            patch("registry.main.resolve_vector_backend_config", new=AsyncMock()),
-        ):
-            mock_gateway_mcp_app = Mock()
-            mock_gateway_mcp_app.session_manager.run.return_value = _mock_async_context_manager()
-
-            yield {
-                "container": mock_container,
-                "gateway_mcp_app": mock_gateway_mcp_app,
-            }
 
     @pytest.mark.asyncio
     async def test_normal_exit_calls_shutdown_telemetry(self, mock_services):

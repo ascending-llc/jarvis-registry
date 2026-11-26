@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from fakeredis import FakeAsyncRedis
 from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
 from mcp.types import (
     CallToolResult,
@@ -132,7 +133,6 @@ def _make_ctx(
         downstream_response_cache=MagicMock(),
         downstream_era_cache=MagicMock(),
         oauth_service=MagicMock(),
-        redis_client=MagicMock(),
         client_info_store=MagicMock(),
         consent_store=MagicMock(),
         pending_consent_store=MagicMock(),
@@ -1212,7 +1212,6 @@ async def test_mcp_lifespan_caches_context_and_reuses_proxy_client():
         search_service=MagicMock(),
         oauth_service=MagicMock(),
         client_info_store=MagicMock(),
-        redis_client=MagicMock(),
         acl_service=MagicMock(),
         consent_store=MagicMock(),
         pending_consent_store=MagicMock(),
@@ -1389,14 +1388,14 @@ async def test_real_sdk_oauth_recovery_respects_execution_phase(monkeypatch, fai
 
     import httpx2
     from mcp.client.caching import InMemoryResponseCacheStore
-    from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
+    from tests.mcp_downstream_support import sdk_endpoint
 
     from registry.core.mcp_downstream import DownstreamCallUnauthorized, DownstreamEraCache
     from registry.core.mcp_transport import DownstreamPhase
 
     server_id, ctx, srv, _, oauth, tokens = _oauth_setup(monkeypatch)
-    redis = MemoryRedis()
-    redis.values[f"test:mcp_era:{server_id}"] = "legacy"
+    redis = FakeAsyncRedis(decode_responses=True)
+    await redis.set(f"test:mcp_era:{server_id}", "legacy")
 
     async def refresh(*args, **kwargs) -> None:
         tokens[0] = "t2"
@@ -1465,15 +1464,15 @@ async def test_tool_list_deadline_stops_before_execution_without_oauth_recovery(
 
     import httpx2
     from mcp.client.caching import InMemoryResponseCacheStore
-    from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
+    from tests.mcp_downstream_support import sdk_endpoint
 
     from registry.core.mcp_config import MCPClientConfig
     from registry.core.mcp_downstream import DownstreamEraCache
 
     monkeypatch.setattr(MCPClientConfig, "TOOLS_TIMEOUT", 0.1)
     server_id, ctx, srv, _, oauth, _ = _oauth_setup(monkeypatch)
-    redis = MemoryRedis()
-    redis.values[f"test:mcp_era:{server_id}"] = "legacy"
+    redis = FakeAsyncRedis(decode_responses=True)
+    await redis.set(f"test:mcp_era:{server_id}", "legacy")
     pages = []
     cancelled = asyncio.Event()
     async with sdk_endpoint(era="legacy") as transport:
@@ -1727,13 +1726,13 @@ async def test_real_sdk_non_tool_oauth_recovery(
     monkeypatch: pytest.MonkeyPatch, operation: DownstreamOperation
 ) -> None:
     from mcp.client.caching import InMemoryResponseCacheStore
-    from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
+    from tests.mcp_downstream_support import sdk_endpoint
 
     from registry.core.mcp_downstream import DownstreamEraCache
 
     server_id, ctx, srv, _, oauth, tokens = _oauth_setup(monkeypatch)
-    redis = MemoryRedis()
-    redis.values[f"test:mcp_era:{server_id}"] = "legacy"
+    redis = FakeAsyncRedis(decode_responses=True)
+    await redis.set(f"test:mcp_era:{server_id}", "legacy")
 
     async def refresh(*args, **kwargs) -> None:
         tokens[0] = "t2"
@@ -1773,7 +1772,7 @@ async def test_resource_read_never_logs_the_uri(
 ) -> None:
     """A ResourceRead through call_downstream and _call_with_oauth_recovery keeps its URI out of every log."""
     from mcp.client.caching import InMemoryResponseCacheStore
-    from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
+    from tests.mcp_downstream_support import sdk_endpoint
 
     from registry.core import mcp_downstream
     from registry.core.mcp_downstream import DownstreamEraCache
@@ -1804,7 +1803,7 @@ async def test_resource_read_never_logs_the_uri(
         lifespan = ctx.request_context.lifespan_context
         lifespan.downstream_transport = transport
         lifespan.downstream_response_cache = InMemoryResponseCacheStore()
-        lifespan.downstream_era_cache = DownstreamEraCache(MemoryRedis(), "test")
+        lifespan.downstream_era_cache = DownstreamEraCache(FakeAsyncRedis(decode_responses=True), "test")
         srv.config["url"] = "http://downstream/mcp"
         renderer = Mock(return_value=_OK)
         if scenario == "oauth_recovery":

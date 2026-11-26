@@ -10,6 +10,7 @@ from unittest.mock import patch
 import httpx2
 import pytest
 import uvicorn
+from fakeredis import FakeAsyncRedis
 from mcp.client.caching import InMemoryResponseCacheStore
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -18,7 +19,6 @@ from mcp.types import CallToolResult
 from registry.core.mcp_config import MCPTransport
 from registry.core.mcp_downstream import DownstreamEraCache, ToolCall, call_downstream
 from registry.core.mcp_transport import MethodRoutedTransport
-from tests.mcp_downstream_support import MemoryRedis
 
 pytestmark = pytest.mark.integration
 
@@ -105,8 +105,8 @@ async def test_open_get_streams_never_starve_requests_or_cleanup(json_response: 
         return "done"
 
     messages, http_methods = [], []
-    redis = MemoryRedis()
-    redis.values["test:mcp_era:s"] = "legacy"
+    redis = FakeAsyncRedis(decode_responses=True)
+    await redis.set("test:mcp_era:s", "legacy")
     pools = MethodRoutedTransport(
         request_pool=httpx2.AsyncHTTPTransport(limits=httpx2.Limits(max_connections=2, max_keepalive_connections=2)),
         stream_pool=httpx2.AsyncHTTPTransport(limits=httpx2.Limits(max_connections=1, max_keepalive_connections=1)),

@@ -44,7 +44,7 @@ class TestGetHeaderBuildConfig:
         cfg = get_header_build_config()
         assert isinstance(cfg, HeaderBuildConfig)
         assert cfg.registry_app_name == settings.registry_app_name
-        assert cfg.redis_key_prefix == settings.redis_key_prefix
+        assert cfg.jwt_signing_config == settings.jwt_signing_config
         assert cfg.encryption_key == settings.encryption_key
 
     def test_is_cached(self):

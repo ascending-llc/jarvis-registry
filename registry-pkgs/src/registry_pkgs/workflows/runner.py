@@ -139,8 +139,6 @@ class WorkflowRunner:
         directive_queue:      Optional in-process signal bus for pause/cancel/retry.
         a2a_httpx_client:     Optional shared httpx client for A2A invocations.
         headers_provider:     Optional shared headers provider for A2A executors.
-        redis_client:         Optional shared Redis client for AgentCore JWT caching.
-        redis_key_prefix:     Prefix for Redis cache keys.
         mcp_headers_provider: Optional headers provider for manually-registered MCP servers.
     """
 
@@ -155,8 +153,6 @@ class WorkflowRunner:
         directive_queue: DirectiveQueue | None = None,
         a2a_httpx_client: a2a_http.AsyncClient | None = None,
         headers_provider: HeadersProvider | None = None,
-        redis_client: Any | None = None,
-        redis_key_prefix: str | None = None,
         mcp_headers_provider: McpHeadersProvider | None = None,
     ) -> None:
         if db_client is None:
@@ -174,8 +170,6 @@ class WorkflowRunner:
         self._directive_queue = directive_queue
         self._a2a_httpx_client = a2a_httpx_client
         self._headers_provider = headers_provider
-        self._redis_client = redis_client
-        self._redis_key_prefix = redis_key_prefix
         self._mcp_headers_provider = mcp_headers_provider
 
     @trace_workflow_run
@@ -347,8 +341,6 @@ class WorkflowRunner:
             pool_nodes=pool_nodes,
             a2a_httpx_client=self._a2a_httpx_client,
             headers_provider=self._headers_provider,
-            redis_client=self._redis_client,
-            redis_key_prefix=self._redis_key_prefix,
             mcp_headers_provider=self._mcp_headers_provider,
         )
 

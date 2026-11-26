@@ -159,8 +159,8 @@ def get_a2a_client_registry(container: RegistryContainer = Depends(get_container
 
 
 def get_redis_client(container: RegistryContainer = Depends(get_container)) -> Redis:
-    """Get Redis client for caching."""
-    return container.redis_client
+    """Synchronous Redis for the downstream OAuth routes."""
+    return container.sync_redis_client
 
 
 def get_oauth_state_store(container: RegistryContainer = Depends(get_container)) -> DownstreamOAuthStoreProtocol:

@@ -61,7 +61,6 @@ async def test_init_methods_return_401_with_discovery_header(raise_elicitation, 
         server=_server(),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
     )
     assert resp.status_code == 401
     www = resp.headers["WWW-Authenticate"]
@@ -85,7 +84,6 @@ async def test_tool_call_still_returns_elicitation(raise_elicitation, method):
         server=_server(),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
     )
     # Non-handshake methods keep the HTTP 200 + JSON-RPC -32042 URL-mode elicitation.
     assert resp.status_code == 200

@@ -145,8 +145,6 @@ async def build_executor_registry(
     pool_nodes: list[WorkflowNode] | None = None,
     a2a_httpx_client: a2a_http.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
-    redis_client: Any | None = None,
-    redis_key_prefix: str | None = None,
     mcp_headers_provider: McpHeadersProvider | None = None,
 ) -> dict[str, StepExecutor]:
     """Resolve each STEP node to an MCP server / A2A agent / A2A pool executor.
@@ -167,8 +165,6 @@ async def build_executor_registry(
         pool_nodes:       STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
         a2a_httpx_client: Optional shared httpx client passed to A2A executors.
         headers_provider: Optional shared headers provider passed to A2A executors.
-        redis_client:     Optional shared Redis client for AgentCore JWT caching.
-        redis_key_prefix: Prefix for Redis cache keys.
         mcp_headers_provider: Optional headers provider for manually-registered MCP servers.
 
     Returns:
@@ -207,8 +203,6 @@ async def build_executor_registry(
                 jwt_config=jwt_config,
                 a2a_httpx_client=a2a_httpx_client,
                 headers_provider=headers_provider,
-                redis_client=redis_client,
-                redis_key_prefix=redis_key_prefix,
                 mcp_headers_provider=mcp_headers_provider,
             )
             built_by_combo[combo] = _instrumented_executor(raw, _detect_agent_type(raw), node.executor_key)
@@ -276,8 +270,6 @@ async def _resolve_executor(
     jwt_config: JwtSigningConfig,
     a2a_httpx_client: a2a_http.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
-    redis_client: Any | None = None,
-    redis_key_prefix: str | None = None,
     mcp_headers_provider: McpHeadersProvider | None = None,
 ) -> StepExecutor:
     """Resolve a single executor key to its MCP or A2A executor.
@@ -308,8 +300,6 @@ async def _resolve_executor(
             ),
             auth_context=auth_context,
             jwt_config=jwt_config,
-            redis_client=redis_client,
-            redis_key_prefix=redis_key_prefix or "jarvis-registry",
             mcp_headers_provider=mcp_headers_provider,
         )
 

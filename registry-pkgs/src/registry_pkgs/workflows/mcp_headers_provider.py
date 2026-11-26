@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.oauth.headers import HeaderBuildConfig, build_authenticated_headers
@@ -20,13 +19,11 @@ class McpHeadersProvider:
         oauth_service: MCPOAuthService,
         cfg: HeaderBuildConfig,
         scope_resolver: ScopeResolver,
-        redis_client: Any | None = None,
         interactive: bool = True,
     ) -> None:
         self._oauth_service = oauth_service
         self._cfg = cfg
         self._scope_resolver = scope_resolver
-        self._redis_client = redis_client
         self._interactive = interactive
 
     async def __call__(self, server: ExtendedMCPServer, auth_context: UserContextDict | None) -> dict[str, str]:
@@ -39,7 +36,6 @@ class McpHeadersProvider:
             auth_context,
             effective_scopes=effective_scopes,
             cfg=self._cfg,
-            redis_client=self._redis_client,
             interactive=self._interactive,
         )
 
@@ -49,7 +45,6 @@ def make_mcp_headers_provider(
     oauth_service: MCPOAuthService,
     cfg: HeaderBuildConfig,
     scope_resolver: ScopeResolver,
-    redis_client: Any | None = None,
     interactive: bool = True,
 ) -> McpHeadersProvider:
     """Factory used by the DI container (registry) and workflow-worker startup."""
@@ -57,6 +52,5 @@ def make_mcp_headers_provider(
         oauth_service=oauth_service,
         cfg=cfg,
         scope_resolver=scope_resolver,
-        redis_client=redis_client,
         interactive=interactive,
     )

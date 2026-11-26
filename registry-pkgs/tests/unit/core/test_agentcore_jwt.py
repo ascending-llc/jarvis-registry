@@ -1,8 +1,10 @@
-from unittest.mock import MagicMock
+from unittest.mock import Mock
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from registry_pkgs.core import agentcore_jwt
 from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt, sign_agentcore_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified, get_token_unverified_header
@@ -96,88 +98,66 @@ def test_adds_normalized_client_scope_and_custom_claims():
     assert claims["list"] == ["a", "b"]
 
 
-def test_sign_agentcore_jwt_returns_cached_token_without_minting():
-    redis_client = MagicMock()
-    redis_client.get.return_value = b"cached-token"
+@pytest.fixture
+def mint(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    monkeypatch.setattr(agentcore_jwt, "_token_cache", {})
+    mint = Mock(side_effect=["first-token", "second-token", "third-token"])
+    monkeypatch.setattr(agentcore_jwt, "mint_agentcore_runtime_jwt", mint)
+    return mint
 
-    token = sign_agentcore_jwt(
-        None,
-        subject="jarvis-registry",
-        signing=_signing_config(),
-        cache_key="test:agentcore_jwt:server-1",
-        redis_client=redis_client,
+
+@pytest.mark.parametrize(
+    ("server_id", "subject", "audience", "kid"),
+    [
+        ("server-2", "jarvis", "runtime-a", _KID),
+        ("server-1", "another-subject", "runtime-a", _KID),
+        ("server-1", "jarvis", "runtime-b", _KID),
+        ("server-1", "jarvis", "runtime-a", "rotated-key"),
+    ],
+)
+def test_sign_reuses_identical_inputs_and_separates_changed_inputs(
+    mint: Mock, server_id: str, subject: str, audience: str, kid: str
+) -> None:
+    signing = _signing_config()
+    runtime = AgentCoreRuntimeJwtConfig(audiences=["runtime-a"])
+    first = sign_agentcore_jwt(runtime, server_id="server-1", subject="jarvis", signing=signing)
+    repeated = sign_agentcore_jwt(runtime.model_copy(), server_id="server-1", subject="jarvis", signing=signing)
+    assert first == repeated == "first-token"
+    mint.assert_called_once_with(runtime, subject="jarvis", signing=signing, expires_in_seconds=3600)
+
+    updated = sign_agentcore_jwt(
+        AgentCoreRuntimeJwtConfig(audiences=[audience]),
+        server_id=server_id,
+        subject=subject,
+        signing=signing.model_copy(update={"jwt_self_signed_kid": kid}),
     )
-
-    assert token == "cached-token"
-    redis_client.get.assert_called_once_with("test:agentcore_jwt:server-1")
-    redis_client.setex.assert_not_called()
+    assert updated == "second-token"
+    assert mint.call_count == 2
 
 
-def test_sign_agentcore_jwt_mints_and_caches_on_miss():
-    redis_client = MagicMock()
-    redis_client.get.return_value = None
+def test_sign_refreshes_at_expiry_and_prunes_other_expired_tokens(mint: Mock, monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = Mock(return_value=1000.0)
+    monkeypatch.setattr(agentcore_jwt, "monotonic", clock)
+    signing = _signing_config()
+    first = sign_agentcore_jwt(None, server_id="server-1", subject="jarvis", signing=signing)
+    sign_agentcore_jwt(None, server_id="server-2", subject="jarvis", signing=signing)
 
-    token = sign_agentcore_jwt(
-        None,
-        subject="jarvis-registry",
-        signing=_signing_config(),
-        cache_key="test:agentcore_jwt:server-2",
-        redis_client=redis_client,
-    )
-
-    claims = decode_jwt_unverified(token)
-    assert claims["sub"] == "jarvis-registry"
-    assert claims["iss"] == "https://registry.test"
-    assert claims["aud"] == "jarvis-services"
-
-    redis_client.get.assert_called_once_with("test:agentcore_jwt:server-2")
-    redis_client.setex.assert_called_once()
-    _, ttl, cached_value = redis_client.setex.call_args.args
-    assert ttl == 3540
-    assert cached_value == token
+    clock.return_value += 3539
+    cached = sign_agentcore_jwt(None, server_id="server-1", subject="jarvis", signing=signing)
+    assert cached == first
+    clock.return_value += 1
+    renewed = sign_agentcore_jwt(None, server_id="server-1", subject="jarvis", signing=signing)
+    assert renewed == "third-token"
+    assert mint.call_count == 3
+    assert len(agentcore_jwt._token_cache) == 1
 
 
-def test_sign_agentcore_jwt_mints_uncached_when_no_redis_client():
-    token = sign_agentcore_jwt(
-        None,
-        subject="jarvis-registry",
-        signing=_signing_config(),
-        cache_key="test:agentcore_jwt:server-3",
-        redis_client=None,
-    )
+def test_failed_mint_can_be_retried(mint: Mock) -> None:
+    mint.side_effect = [ValueError("invalid signing key"), "new-token"]
+    signing = _signing_config()
+    with pytest.raises(ValueError, match="invalid signing key"):
+        sign_agentcore_jwt(None, server_id="server", subject="jarvis", signing=signing)
 
-    claims = decode_jwt_unverified(token)
-    assert claims["sub"] == "jarvis-registry"
-
-
-def test_sign_agentcore_jwt_falls_back_when_cache_read_fails():
-    redis_client = MagicMock()
-    redis_client.get.side_effect = ConnectionError("redis unavailable")
-
-    token = sign_agentcore_jwt(
-        None,
-        subject="jarvis-registry",
-        signing=_signing_config(),
-        cache_key="test:agentcore_jwt:read-failure",
-        redis_client=redis_client,
-    )
-
-    assert decode_jwt_unverified(token)["sub"] == "jarvis-registry"
-    redis_client.setex.assert_called_once()
-
-
-def test_sign_agentcore_jwt_returns_token_when_cache_write_fails():
-    redis_client = MagicMock()
-    redis_client.get.return_value = None
-    redis_client.setex.side_effect = ConnectionError("redis unavailable")
-
-    token = sign_agentcore_jwt(
-        None,
-        subject="jarvis-registry",
-        signing=_signing_config(),
-        cache_key="test:agentcore_jwt:write-failure",
-        redis_client=redis_client,
-    )
-
-    assert decode_jwt_unverified(token)["sub"] == "jarvis-registry"
-    redis_client.setex.assert_called_once()
+    token = sign_agentcore_jwt(None, server_id="server", subject="jarvis", signing=signing)
+    assert token == "new-token"
+    assert mint.call_count == 2
