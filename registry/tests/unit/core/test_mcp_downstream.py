@@ -298,15 +298,12 @@ def test_tool_list_cache_target_hashes_endpoint_without_leaking_url() -> None:
     assert target != _tool_list_cache_target("s", MCPTransport.SSE, url)
 
 
-@pytest.mark.parametrize("decode_responses", [True, False])
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [("legacy", "legacy"), ("2026-07-28", "2026-07-28"), ("bad", None), (b"\xff", None), (None, None)],
 )
-async def test_era_cache_validates_values(
-    raw: str | bytes | None, expected: str | None, decode_responses: bool
-) -> None:
-    redis = FakeAsyncRedis(decode_responses=decode_responses)
+async def test_era_cache_validates_values(raw: str | bytes | None, expected: str | None) -> None:
+    redis = FakeAsyncRedis(decode_responses=True)
     if raw is not None:
         await redis.set("test:mcp_era:s", raw)
     assert await DownstreamEraCache(redis, "test").get("s") == expected

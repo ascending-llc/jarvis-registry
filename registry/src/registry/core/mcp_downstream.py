@@ -93,8 +93,6 @@ class DownstreamEraCache:
         except (RedisError, UnicodeDecodeError):
             logger.warning(_ERA_CACHE_UNAVAILABLE, exc_info=True)
             return None
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8", errors="replace")
         return raw if raw in ("legacy", "2026-07-28") else None
 
     async def record(self, server_id: str | None, protocol_version: str) -> None:
