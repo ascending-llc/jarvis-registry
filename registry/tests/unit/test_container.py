@@ -1,11 +1,14 @@
 """Unit tests for RegistryContainer service wiring and lifecycle."""
 
+import hashlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from fakeredis import FakeAsyncRedis, FakeRedis, FakeServer
 
 from registry.container import RegistryContainer
+from registry.deps import get_redis_client
 from registry.services.group_directory_client import EntraIdGroupDirectoryClient
 from registry_pkgs.models import ExtendedGroupSource
 
@@ -25,11 +28,34 @@ def _make_container(settings: MagicMock) -> RegistryContainer:
     container = RegistryContainer(
         settings=settings,
         db_client=MagicMock(),
-        redis_client=MagicMock(),
+        redis_client=AsyncMock(),
+        sync_redis_client=MagicMock(),
     )
     container.__dict__["a2a_httpx_client"] = MagicMock()
     container.__dict__["azure_model_credential"] = MagicMock(token_provider=object())
     return container
+
+
+@pytest.mark.asyncio
+async def test_registry_caches_read_values_written_by_sync_clients() -> None:
+    server = FakeServer()
+    settings = _make_settings()
+    settings.redis_key_prefix = "registry"
+    with FakeRedis(server=server, decode_responses=True) as sync_client:
+        async with FakeAsyncRedis(server=server, decode_responses=True) as async_client:
+            container = RegistryContainer(
+                settings, db_client=MagicMock(), redis_client=async_client, sync_redis_client=sync_client
+            )
+            container.mcp_proxy_client = AsyncMock()
+            assert get_redis_client(container) is sync_client
+            sync_client.set("registry:mcp_era:server", "legacy")
+            assert await container.downstream_era_cache.get("server") == "legacy"
+
+            state = container.flow_state_manager.encode_state("flow")
+            state_hash = hashlib.sha256(state.encode()).hexdigest()
+            sync_client.set("registry:skill_sync:oauth_completed:flow", f"{state_hash}:source")
+            completed = await container.skill_sync_oauth_service.resolve_completed_source_id(state)
+            assert completed == "source"
 
 
 @pytest.mark.unit
@@ -123,7 +149,8 @@ def test_a2a_httpx_client_pool_limits_come_from_settings(mock_async_client):
     container = RegistryContainer(
         settings=settings,
         db_client=MagicMock(),
-        redis_client=MagicMock(),
+        redis_client=AsyncMock(),
+        sync_redis_client=MagicMock(),
     )
 
     _ = container.a2a_httpx_client
@@ -145,7 +172,8 @@ def test_proxy_and_azure_pools_use_their_own_settings():
     container = RegistryContainer(
         settings=settings,
         db_client=MagicMock(),
-        redis_client=MagicMock(),
+        redis_client=AsyncMock(),
+        sync_redis_client=MagicMock(),
     )
 
     registry = container.a2a_client_registry

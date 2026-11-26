@@ -16,7 +16,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from httpx2._decoders import SUPPORTED_DECODERS
 from opentelemetry import baggage, trace
-from redis import Redis
 from redis.exceptions import RedisError
 
 from registry.constants import (
@@ -65,7 +64,6 @@ from ..deps import (
     get_mcp_proxy_client,
     get_oauth_service,
     get_pending_consent_store,
-    get_redis_client,
     get_server_service,
 )
 from ..mcpgw.tools.utils import get_target_url, parse_elicitation_id
@@ -323,7 +321,6 @@ async def _prepare_proxy_headers(
     auth_context: UserContextDict,
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
-    redis_client: Redis,
 ) -> dict[str, str] | Response:
     """Build authenticated outbound headers, or return an early client-facing error Response.
 
@@ -351,7 +348,6 @@ async def _prepare_proxy_headers(
             auth_context=auth_context,
             additional_headers=headers,
             state_metadata={"client_branding": ClientBranding.UNRECOGNIZED},
-            redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
         return _handle_url_elicitation_required(exc, call=call, request=request)
@@ -535,7 +531,6 @@ async def proxy_to_mcp_server(
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
     proxy_client: httpx2.AsyncClient,
-    redis_client: Redis,
 ) -> Response:
     """
     Proxy request to MCP server with auth headers.
@@ -557,7 +552,6 @@ async def proxy_to_mcp_server(
             auth_context=auth_context,
             server=server,
             oauth_service=oauth_service,
-            redis_client=redis_client,
         )
         if isinstance(headers, Response):
             return headers  # early auth / elicitation error
@@ -590,7 +584,6 @@ async def proxy_to_mcp_server(
                     auth_context=auth_context,
                     server=server,
                     oauth_service=oauth_service,
-                    redis_client=redis_client,
                 )
 
         return await _forward_to_downstream(
@@ -1008,7 +1001,6 @@ async def dynamic_mcp_post_proxy(
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx2.AsyncClient = Depends(get_mcp_proxy_client),
-    redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
@@ -1115,7 +1107,6 @@ async def dynamic_mcp_post_proxy(
         server=server,
         oauth_service=oauth_service,
         proxy_client=proxy_client,
-        redis_client=redis_client,
     )
 
 
@@ -1128,7 +1119,6 @@ async def dynamic_mcp_get_proxy(
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx2.AsyncClient = Depends(get_mcp_proxy_client),
-    redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
 ):
     """
@@ -1253,7 +1243,6 @@ async def dynamic_mcp_get_proxy(
                 auth_context=auth_context,
                 additional_headers=headers,
                 state_metadata={"client_branding": ClientBranding.UNRECOGNIZED},
-                redis_client=redis_client,
             )
         except UrlElicitationRequiredException as exc:
             # If token expired for a GET request, follow RFC 9457 and RFC 7807.

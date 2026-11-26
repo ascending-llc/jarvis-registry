@@ -241,7 +241,6 @@ async def test_post_proxy_rejects_invalid_user_id(user_id):
         server_service=Mock(),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
     )
     assert resp.status_code == 400
 
@@ -260,7 +259,6 @@ async def test_get_proxy_rejects_invalid_user_id(user_id):
         server_service=Mock(),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
     )
     assert resp.status_code == 400
 
@@ -289,7 +287,6 @@ async def test_post_proxy_does_not_reject_valid_object_id(monkeypatch):
         server_service=mock_server_service,
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
     )
     # ObjectId guard would produce {"detail": "...invalid user ID..."}.
     # Any other response (e.g. 404 for unknown server) means the guard passed.
@@ -312,7 +309,6 @@ async def test_post_proxy_acl_denied_returns_jsonrpc_error(monkeypatch):
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(denied=True),
     )
 
@@ -337,7 +333,6 @@ async def test_post_proxy_acl_denied_returns_jsonrpc_error_for_handshake(monkeyp
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(denied=True),
     )
 
@@ -362,7 +357,6 @@ async def test_post_proxy_acl_allowed_continues(monkeypatch):
         server_service=_server_service(_make_server(enabled=False)),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
     )
@@ -386,7 +380,6 @@ async def test_post_proxy_rejects_non_string_method(monkeypatch):
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
     )
@@ -416,7 +409,6 @@ async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeyp
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=consent_store,
         pending_store=pending_store,
@@ -459,7 +451,6 @@ async def test_post_proxy_without_server_consent_allows_handshake_methods(monkey
         server_service=_server_service(_make_server(enabled=False)),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=consent_store,
         pending_store=_PendingConsentStore(),
@@ -493,7 +484,6 @@ async def test_post_proxy_wrong_transport_returns_jsonrpc_error_for_handshake(mo
         server_service=_server_service(_make_server(transport="sse")),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -524,7 +514,6 @@ async def test_post_proxy_wrong_transport_returns_iserror_result_for_tools_call(
         server_service=_server_service(_make_server(transport="sse")),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -562,7 +551,6 @@ async def test_post_proxy_disabled_tool_refuses_tools_call_before_forwarding(mon
         server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -601,7 +589,6 @@ async def test_post_proxy_enabled_tool_still_forwards(monkeypatch):
         server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -629,7 +616,6 @@ async def test_post_proxy_disabled_tools_do_not_gate_handshake_methods(monkeypat
         server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -668,7 +654,6 @@ async def test_post_proxy_disabled_tool_refused_before_consent_gate(monkeypatch)
         server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=consent_store,
         pending_store=pending_store,
@@ -705,7 +690,6 @@ async def test_post_proxy_headless_agent_bypasses_server_consent(monkeypatch):
         server_service=_server_service(_make_server(enabled=False)),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=consent_store,
         pending_store=pending_store,
@@ -733,7 +717,6 @@ async def test_post_proxy_headless_agent_still_enforces_acl(monkeypatch):
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(denied=True),
         consent_store=consent_store,
         pending_store=_PendingConsentStore(),
@@ -754,7 +737,6 @@ async def test_get_proxy_acl_denied_returns_403():
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(denied=True),
     )
 
@@ -772,7 +754,6 @@ async def test_get_proxy_acl_allowed_continues():
         server_service=_server_service(_make_server(enabled=False)),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
     )
 
@@ -929,7 +910,6 @@ async def _run_proxy_and_capture(monkeypatch, msg_body: dict, extra_headers=None
         server_service=_server_service(_make_server(enabled=True)),
         oauth_service=Mock(),
         proxy_client=proxy_client,
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(has_server_consent=True),
     )
@@ -1072,7 +1052,6 @@ async def test_get_proxy_strips_client_trace_headers_and_creates_span(monkeypatc
         server_service=_server_service(_make_server(enabled=True)),
         oauth_service=Mock(),
         proxy_client=proxy_client,
-        redis_client=Mock(),
         acl_service=_acl_service(),
     )
 
@@ -1191,7 +1170,6 @@ async def _proxy(downstream, server, oauth_service, method: str = "tools/call"):
         server=server,
         oauth_service=oauth_service,
         proxy_client=downstream,
-        redis_client=Mock(),
     )
 
 
@@ -1397,7 +1375,6 @@ async def _get(downstream, server, oauth_service):
         server_service=_server_service(server),
         oauth_service=oauth_service,
         proxy_client=downstream,
-        redis_client=Mock(),
         acl_service=_acl_service(),
     )
 
@@ -1503,7 +1480,6 @@ async def _direct_run(
             server_service=_server_service(server or _make_server()),
             oauth_service=oauth,
             proxy_client=client,
-            redis_client=Mock(),
             acl_service=acl or _acl_service(),
             consent_store=store,
             pending_store=pending,

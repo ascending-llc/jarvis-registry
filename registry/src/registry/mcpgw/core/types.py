@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 from httpx2 import AsyncBaseTransport
 from mcp.client.caching import InMemoryResponseCacheStore
-from redis import Redis
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
@@ -32,7 +31,6 @@ class McpAppContext:
     search_service: SearchService
     oauth_service: MCPOAuthService
     client_info_store: ClientInfoStore
-    redis_client: Redis
     jwt_signing_config: JwtSigningConfig
     acl_service: ACLService
     consent_store: ConsentStore

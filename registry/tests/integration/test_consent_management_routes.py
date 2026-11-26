@@ -2,7 +2,7 @@ from collections.abc import Iterator
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from fakeredis import FakeRedis
+from fakeredis import FakeAsyncRedis, FakeRedis, FakeServer
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from redis.exceptions import RedisError
@@ -39,7 +39,13 @@ def mock_rbac_for_tests() -> None:
 
 @pytest.fixture
 def container() -> RegistryContainer:
-    container = RegistryContainer(settings, db_client=Mock(), redis_client=FakeRedis(decode_responses=True))
+    redis = FakeServer()
+    container = RegistryContainer(
+        settings,
+        db_client=Mock(),
+        redis_client=FakeAsyncRedis(server=redis, decode_responses=True),
+        sync_redis_client=FakeRedis(server=redis, decode_responses=True),
+    )
     container.server_service = AsyncMock(spec=ServerServiceV1)
     container.server_service.get_names_by_paths.return_value = {}
     container.a2a_agent_service = AsyncMock(spec=A2AAgentService)
@@ -75,7 +81,7 @@ def test_list_is_scoped_to_session_and_preserves_expiry(client: TestClient, cont
     grant_id = container.consent_store.grant_client_consent(USER_A, CLIENT_ID)
     container.consent_store.grant_server_consent(USER_A, CLIENT_ID, "/alice", require_app_consent=True)
     # A legacy resource-only consent is still visible after resource grants start requiring app consent.
-    container.redis_client.hset(
+    container.sync_redis_client.hset(
         f"{settings.auth_server_redis_key_prefix}:mcp:consent:{USER_B}:{CLIENT_ID}", "/bob", "1"
     )
 
@@ -83,8 +89,8 @@ def test_list_is_scoped_to_session_and_preserves_expiry(client: TestClient, cont
     keys = [f"{prefix}:mcp:consent:{user}:{CLIENT_ID}" for user in (USER_A, USER_B)]
     keys.append(f"{prefix}:oauth:client:{CLIENT_ID}")
     for key in keys:
-        assert container.redis_client.expire(key, 300)
-    expiries = [container.redis_client.pexpiretime(key) for key in keys]
+        assert container.sync_redis_client.expire(key, 300)
+    expiries = [container.sync_redis_client.pexpiretime(key) for key in keys]
 
     for user, other_user, path in ((USER_A, USER_B, "/alice"), (USER_B, USER_A, "/bob")):
         _sign_in(client, user)
@@ -99,7 +105,7 @@ def test_list_is_scoped_to_session_and_preserves_expiry(client: TestClient, cont
         assert grant_id not in response.text
         assert "client_secret" not in response.text
 
-    assert [container.redis_client.pexpiretime(key) for key in keys] == expiries
+    assert [container.sync_redis_client.pexpiretime(key) for key in keys] == expiries
 
 
 def test_empty_list(client: TestClient) -> None:
@@ -140,7 +146,7 @@ def test_store_failure_is_not_an_empty_list(
     client: TestClient, container: RegistryContainer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _sign_in(client, USER_A)
-    monkeypatch.setattr(container.redis_client, "scan", Mock(side_effect=RedisError("Redis unavailable")))
+    monkeypatch.setattr(container.sync_redis_client, "scan", Mock(side_effect=RedisError("Redis unavailable")))
     response = client.get(URL)
     assert response.status_code == 500
     assert response.json() == {"detail": "Internal server error"}
@@ -185,7 +191,7 @@ def test_revoke_app_only_clears_callers_consent_and_client_info(
     client: TestClient, container: RegistryContainer, selection: str
 ) -> None:
     store = container.consent_store
-    redis = container.redis_client
+    redis = container.sync_redis_client
     cache_a = f"{settings.redis_key_prefix}:mcpgw:client:{USER_A}:{CLIENT_ID}"
     cache_b = f"{settings.redis_key_prefix}:mcpgw:client:{USER_B}:{CLIENT_ID}"
     for key in (cache_a, cache_b, f"{cache_a}:device", f"{cache_b}:device"):
@@ -222,7 +228,7 @@ def test_resource_revoke_preserves_other_fields_and_caches(client: TestClient, c
         store.grant_server_consent(user, CLIENT_ID, "/shared", require_app_consent=True)
         store.grant_agent_consent(user, CLIENT_ID, "/shared", require_app_consent=True)
     for key in keys:
-        container.redis_client.set(key, "client info")
+        container.sync_redis_client.set(key, "client info")
 
     missing = {"type": "a2a_agent", "path": "/missing"}
     response = client.post(
@@ -244,7 +250,7 @@ def test_resource_revoke_preserves_other_fields_and_caches(client: TestClient, c
     for user in (USER_A, USER_B):
         assert store.get_client_grant_id(user, CLIENT_ID)
         assert store.has_agent_consent(user, CLIENT_ID, "/shared")
-    assert container.redis_client.exists(*keys) == len(keys)
+    assert container.sync_redis_client.exists(*keys) == len(keys)
 
 
 def test_protected_clients_are_rejected_without_deleting_consent(
@@ -351,7 +357,7 @@ def test_redis_errors_are_not_reported_as_success(
     client: TestClient, container: RegistryContainer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     headers = _sign_in(client, USER_A)
-    monkeypatch.setattr(container.redis_client, "pipeline", Mock(side_effect=RedisError("Redis unavailable")))
+    monkeypatch.setattr(container.sync_redis_client, "pipeline", Mock(side_effect=RedisError("Redis unavailable")))
     for response in (
         client.delete(CLIENT_URL, headers=headers),
         client.post(BATCH_URL, headers=headers, json={"clientIds": [CLIENT_ID]}),

@@ -1,13 +1,12 @@
 import hashlib
 import logging
-import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from fakeredis import FakeAsyncRedis
 from httpx2 import Response
-from redis import Redis
 from redis.exceptions import RedisError
 
 from registry.services.skill_sync_oauth_service import SkillSyncOAuthService
@@ -29,7 +28,7 @@ async def test_authorization_url_uses_pkce_and_persists_flow() -> None:
     flow_manager.create_flow_metadata.return_value = SimpleNamespace(state="encoded-state", authorization_url="")
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
-        redis_client=MagicMock(spec=Redis),
+        redis_client=FakeAsyncRedis(decode_responses=True),
         redis_key_prefix="test",
         token_service=MagicMock(),
         http_client=MagicMock(),
@@ -55,7 +54,7 @@ async def test_resolve_source_id_returns_flow_server_id() -> None:
     flow_manager.get_flow.return_value = SimpleNamespace(server_id="source-123", state="state")
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
-        redis_client=MagicMock(spec=Redis),
+        redis_client=FakeAsyncRedis(decode_responses=True),
         redis_key_prefix="test",
         token_service=MagicMock(),
         http_client=MagicMock(),
@@ -72,7 +71,7 @@ async def test_resolve_source_id_raises_when_flow_missing() -> None:
     flow_manager.get_flow.return_value = None
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
-        redis_client=MagicMock(spec=Redis),
+        redis_client=FakeAsyncRedis(decode_responses=True),
         redis_key_prefix="test",
         token_service=MagicMock(),
         http_client=MagicMock(),
@@ -89,7 +88,7 @@ async def test_resolve_source_id_raises_when_state_does_not_match_flow() -> None
     flow_manager.get_flow.return_value = SimpleNamespace(server_id="source-123", state="the-real-state")
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
-        redis_client=MagicMock(spec=Redis),
+        redis_client=FakeAsyncRedis(decode_responses=True),
         redis_key_prefix="test",
         token_service=MagicMock(),
         http_client=MagicMock(),
@@ -105,7 +104,7 @@ async def test_resolve_source_id_propagates_malformed_state() -> None:
     flow_manager.decode_state.side_effect = ValueError("bad state")
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
-        redis_client=MagicMock(spec=Redis),
+        redis_client=FakeAsyncRedis(decode_responses=True),
         redis_key_prefix="test",
         token_service=MagicMock(),
         http_client=MagicMock(),
@@ -136,7 +135,7 @@ async def test_callback_consumes_state_and_stores_tokens() -> None:
     token_service.store_tokens = AsyncMock()
     service = SkillSyncOAuthService(
         flow_state_manager=flow_manager,
-        redis_client=MagicMock(spec=Redis),
+        redis_client=FakeAsyncRedis(decode_responses=True),
         redis_key_prefix="test",
         token_service=token_service,
         http_client=http_client,
@@ -163,8 +162,7 @@ def callback_context() -> SimpleNamespace:
     flow_manager.consume_flow.return_value = SimpleNamespace(
         server_id=str(source.id), user_id="user-1", code_verifier="verifier"
     )
-    redis_client = MagicMock(spec=Redis)
-    redis_client.get.return_value = None
+    redis_client = FakeAsyncRedis(decode_responses=True)
     token_service = MagicMock()
     token_service.store_tokens = AsyncMock()
     http_client = MagicMock()
@@ -197,19 +195,20 @@ async def _exchange(ctx: SimpleNamespace) -> str:
 
 async def test_callback_records_completed_marker_after_storing_tokens(callback_context: SimpleNamespace) -> None:
     ctx = callback_context
-    event_loop_thread = threading.get_ident()
 
-    def check_write(*args: object, **kwargs: object) -> bool:
-        ctx.token_service.store_tokens.assert_awaited_once()
-        assert threading.get_ident() != event_loop_thread
-        return True
+    async def check_marker_before_token_save(**kwargs: object) -> None:
+        assert await ctx.redis_client.get(ctx.marker_key) is None
 
-    ctx.redis_client.set.side_effect = check_write
+    ctx.token_service.store_tokens.side_effect = check_marker_before_token_save
 
-    assert await _exchange(ctx) == "user-1"
+    with patch.object(ctx.redis_client, "set", wraps=ctx.redis_client.set) as write_marker:
+        user_id = await _exchange(ctx)
 
+    assert user_id == "user-1"
     ctx.flow_manager.consume_flow.assert_awaited_once_with("flow", ctx.state)
-    ctx.redis_client.set.assert_called_once_with(ctx.marker_key, ctx.marker_value, ex=86400)
+    ctx.token_service.store_tokens.assert_awaited_once()
+    write_marker.assert_called_once_with(ctx.marker_key, ctx.marker_value, ex=86400)
+    assert await ctx.redis_client.get(ctx.marker_key) == ctx.marker_value
     assert ctx.state not in ctx.marker_value
 
 
@@ -229,7 +228,7 @@ async def test_failed_exchange_does_not_record_completed_marker(
     with pytest.raises(RuntimeError if failure == "token_storage" else ValueError):
         await _exchange(ctx)
 
-    ctx.redis_client.set.assert_not_called()
+    assert await ctx.redis_client.get(ctx.marker_key) is None
     if failure == "missing_flow":
         ctx.http_client.post.assert_not_awaited()
     if failure != "token_storage":
@@ -240,9 +239,12 @@ async def test_marker_write_failure_preserves_success(
     callback_context: SimpleNamespace, caplog: pytest.LogCaptureFixture
 ) -> None:
     ctx = callback_context
-    ctx.redis_client.set.side_effect = RedisError(f"sensitive: {ctx.state}")
-
-    with caplog.at_level(logging.WARNING):
+    with (
+        patch.object(
+            ctx.redis_client, "set", new_callable=AsyncMock, side_effect=RedisError(f"sensitive: {ctx.state}")
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
         assert await _exchange(ctx) == "user-1"
 
     ctx.token_service.store_tokens.assert_awaited_once()
@@ -255,14 +257,8 @@ async def test_completed_flow_can_be_resolved_repeatedly_without_consuming_or_ex
     callback_context: SimpleNamespace,
 ) -> None:
     ctx = callback_context
-    event_loop_thread = threading.get_ident()
-
-    def read_marker(key: str) -> str:
-        assert key == ctx.marker_key
-        assert threading.get_ident() != event_loop_thread
-        return ctx.marker_value
-
-    ctx.redis_client.get.side_effect = read_marker
+    await ctx.redis_client.set(ctx.marker_key, ctx.marker_value, ex=300)
+    expires_at = await ctx.redis_client.pexpiretime(ctx.marker_key)
 
     for _ in range(2):
         assert await ctx.service.resolve_completed_source_id(ctx.state) == str(ctx.source.id)
@@ -270,8 +266,8 @@ async def test_completed_flow_can_be_resolved_repeatedly_without_consuming_or_ex
     ctx.flow_manager.consume_flow.assert_not_awaited()
     ctx.http_client.post.assert_not_awaited()
     ctx.token_service.store_tokens.assert_not_awaited()
-    ctx.redis_client.set.assert_not_called()
-    ctx.redis_client.delete.assert_not_called()
+    assert await ctx.redis_client.get(ctx.marker_key) == ctx.marker_value
+    assert await ctx.redis_client.pexpiretime(ctx.marker_key) == expires_at
 
 
 @pytest.mark.parametrize("marker", [None, "", "malformed", "wrong-hash:source-123"])
@@ -279,18 +275,18 @@ async def test_missing_or_invalid_completed_marker_returns_none(
     callback_context: SimpleNamespace, marker: str | None
 ) -> None:
     ctx = callback_context
-    ctx.redis_client.get.return_value = marker
+    if marker is not None:
+        await ctx.redis_client.set(ctx.marker_key, marker)
 
     assert await ctx.service.resolve_completed_source_id(ctx.state) is None
 
 
 async def test_completed_marker_rejects_different_state_for_same_flow(callback_context: SimpleNamespace) -> None:
     ctx = callback_context
-    ctx.redis_client.get.return_value = ctx.marker_value
+    await ctx.redis_client.set(ctx.marker_key, ctx.marker_value)
     forged_state = FlowStateManager.encode_state("flow", "different-token")
 
     assert await ctx.service.resolve_completed_source_id(forged_state) is None
-    ctx.redis_client.get.assert_called_once_with(ctx.marker_key)
 
 
 async def test_completed_marker_rejects_malformed_state_without_reading_redis(
@@ -298,17 +294,21 @@ async def test_completed_marker_rejects_malformed_state_without_reading_redis(
 ) -> None:
     ctx = callback_context
 
-    assert await ctx.service.resolve_completed_source_id("garbage") is None
-    ctx.redis_client.get.assert_not_called()
+    with patch.object(ctx.redis_client, "get", new_callable=AsyncMock) as read:
+        assert await ctx.service.resolve_completed_source_id("garbage") is None
+    read.assert_not_called()
 
 
 async def test_marker_read_failure_returns_none(
     callback_context: SimpleNamespace, caplog: pytest.LogCaptureFixture
 ) -> None:
     ctx = callback_context
-    ctx.redis_client.get.side_effect = RedisError(f"sensitive: {ctx.state}")
-
-    with caplog.at_level(logging.WARNING):
+    with (
+        patch.object(
+            ctx.redis_client, "get", new_callable=AsyncMock, side_effect=RedisError(f"sensitive: {ctx.state}")
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
         assert await ctx.service.resolve_completed_source_id(ctx.state) is None
 
     assert caplog.records

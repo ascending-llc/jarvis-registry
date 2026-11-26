@@ -193,7 +193,6 @@ async def test_build_runner_supplies_a2a_headers_provider(monkeypatch: pytest.Mo
         aws_session_token=None,
         encryption_key=b"test-key",
         jwt_signing_config=object(),
-        redis_key_prefix="worker-prefix",
     )
     headers_provider = object()
     mcp_headers_provider = object()
@@ -231,11 +230,16 @@ async def test_build_mcp_headers_provider_is_non_interactive(monkeypatch: pytest
     monkeypatch.setattr(main, "settings", mock_settings)
     monkeypatch.setattr(main, "UserService", object)
     monkeypatch.setattr(main, "TokenService", lambda **_kwargs: object())
-    monkeypatch.setattr(main, "FlowStateManager", lambda **_kwargs: SimpleNamespace(initialize=AsyncMock()))
-    monkeypatch.setattr(main, "MCPOAuthService", lambda **_kwargs: object())
+    flow_state_manager = MagicMock(return_value=SimpleNamespace(initialize=AsyncMock()))
+    oauth_service = MagicMock()
+    monkeypatch.setattr(main, "FlowStateManager", flow_state_manager)
+    monkeypatch.setattr(main, "MCPOAuthService", oauth_service)
     monkeypatch.setattr(main, "make_mcp_headers_provider", lambda **kwargs: captured.update(kwargs) or object())
 
-    await main._build_mcp_headers_provider(object())
+    redis_client = object()
+    await main._build_mcp_headers_provider(redis_client)
+    flow_state_manager.assert_called_once_with(redis_client=redis_client, redis_key_prefix="worker-prefix")
+    assert oauth_service.call_args.kwargs["redis_client"] is redis_client
 
     # Scheduled runs must be non-interactive so no Redis OAuth flow is minted.
     assert captured["interactive"] is False

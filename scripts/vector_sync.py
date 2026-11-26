@@ -28,6 +28,7 @@ import argparse
 import asyncio
 import os
 import sys
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -39,7 +40,12 @@ from registry.core.config import Settings
 from registry.core.vector_backend import resolve_vector_backend_config
 from registry.services.vector_orphan_sweeper import VectorOrphanSweeper
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
-from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
+from registry_pkgs.database.redis_client import (
+    close_async_redis_client,
+    close_redis_client,
+    create_async_redis_client,
+    create_redis_client,
+)
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.vector.adapters.factory import VectorStoreFactory
@@ -382,19 +388,27 @@ async def run() -> int:
     env_path = Path(".env")
     settings = Settings(_env_file=str(env_path)) if env_path.exists() else Settings()
 
-    db_client = redis_client = container = None
-    try:
+    db_client = container = None
+    async with AsyncExitStack() as resources:
+        resources.push_async_callback(close_mongodb)
         await init_mongodb(settings.mongo_config)
         db = ExtendedMCPServer.get_pymongo_collection().database
 
         # durable is a pure Mongo+Weaviate probe of the running registry. sync and crud write here, so
         # they need the container (which wires the write gate) with the gate open.
         if args.verify != "durable":
-            redis_client = create_redis_client(settings.redis_config)
+            redis_client = await create_async_redis_client(settings.redis_config)
+            resources.push_async_callback(close_async_redis_client, redis_client)
+            sync_redis_client = create_redis_client(settings.redis_config)
+            resources.callback(close_redis_client, sync_redis_client)
             config = await resolve_vector_backend_config(settings)
             await asyncio.to_thread(VectorStoreFactory._create_embedding(config).embed_query, "preflight")
             db_client = create_database_client(config)
-            container = RegistryContainer(settings=settings, db_client=db_client, redis_client=redis_client)
+            resources.callback(db_client.close)
+            container = RegistryContainer(
+                settings=settings, db_client=db_client, redis_client=redis_client, sync_redis_client=sync_redis_client
+            )
+            resources.push_async_callback(container.shutdown)
             if not await _open_write_gate(container):
                 print("✗ Aborting: an embedding-model reindex is in progress.")
                 return 1
@@ -413,14 +427,6 @@ async def run() -> int:
 
         print(f"\n{'✓ PASS' if passed else '✗ FAIL'}")
         return 0 if passed else 1
-    finally:
-        if container is not None:
-            await container.shutdown()
-        if redis_client is not None:
-            close_redis_client(redis_client)
-        if db_client is not None:
-            db_client.close()
-        await close_mongodb()
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx2
 import pytest
+from fakeredis import FakeAsyncRedis, FakeServer
 from mcp.client.caching import InMemoryResponseCacheStore
 from mcp.shared.exceptions import MCPError
 from mcp.types import (
@@ -15,8 +16,7 @@ from mcp.types import (
     InputRequiredResult,
     ReadResourceResult,
 )
-from redis.exceptions import RedisError
-from tests.mcp_downstream_support import MemoryRedis, sdk_endpoint
+from tests.mcp_downstream_support import sdk_endpoint
 
 from registry.core.mcp_downstream import (
     DownstreamEraCache,
@@ -49,7 +49,7 @@ async def call(
         operation=operation,
         downstream_transport=transport,
         response_cache=store if store is not None else InMemoryResponseCacheStore(),
-        era_cache=DownstreamEraCache(redis if redis is not None else MemoryRedis(), "test"),
+        era_cache=DownstreamEraCache(redis if redis is not None else FakeAsyncRedis(decode_responses=True), "test"),
         **kwargs,
     )
 
@@ -89,13 +89,14 @@ def operation_server(handler):
 
 @pytest.mark.parametrize("era", ["legacy", "2026-07-28"])
 async def test_real_sdk_call_caches_era_and_tools_and_keeps_pool(operation, era):
-    redis, store = MemoryRedis(), InMemoryResponseCacheStore()
+    redis, store = FakeAsyncRedis(decode_responses=True), InMemoryResponseCacheStore()
     async with sdk_endpoint(era=era) as transport:
-        first = await call(transport, operation=operation, redis=redis, store=store)
+        with patch.object(redis, "set", wraps=redis.set) as write_era:
+            first = await call(transport, operation=operation, redis=redis, store=store)
         assert result_text(first) == "done"
+        write_era.assert_called_once_with("test:mcp_era:s", era, ex=3600)
         probes = transport.count("server/discover")
-        assert redis.values["test:mcp_era:s"] == era
-        assert redis.ttls["test:mcp_era:s"] == 3600
+        assert await redis.get("test:mcp_era:s") == era
         await call(transport, operation=operation, redis=redis, store=store)
         assert transport.count("server/discover") == probes
         assert transport.count("tools/list") == (1 if isinstance(operation, ToolCall) else 0)
@@ -108,8 +109,8 @@ async def test_real_sdk_call_caches_era_and_tools_and_keeps_pool(operation, era)
 
 @pytest.mark.parametrize(("cached", "actual"), [("legacy", "2026-07-28"), ("2026-07-28", "legacy")])
 async def test_stale_era_retries_only_before_tool_send(operation, cached, actual):
-    redis = MemoryRedis()
-    redis.values["test:mcp_era:s"] = cached
+    redis = FakeAsyncRedis(decode_responses=True)
+    await redis.set("test:mcp_era:s", cached)
     async with sdk_endpoint(era=actual) as transport:
         if cached == "2026-07-28" and not isinstance(operation, ToolCall):
             # Modern cached mode sends the operation without a handshake/listing. Once sent,
@@ -117,13 +118,13 @@ async def test_stale_era_retries_only_before_tool_send(operation, cached, actual
             with pytest.raises(DownstreamHttpFailureException):
                 await call(transport, operation=operation, redis=redis)
             assert transport.count(operation_method(operation)) == 1
-            assert "test:mcp_era:s" not in redis.values
+            assert await redis.get("test:mcp_era:s") is None
             assert result_text(await call(transport, operation=operation, redis=redis)) == "done"
             assert transport.count(operation_method(operation)) == 2
         else:
             assert result_text(await call(transport, operation=operation, redis=redis)) == "done"
             assert transport.count(operation_method(operation)) == 1
-        assert redis.values["test:mcp_era:s"] == actual
+        assert await redis.get("test:mcp_era:s") == actual
 
 
 @pytest.mark.parametrize("method", ["initialize", "operation"])
@@ -188,13 +189,26 @@ async def test_modern_log_opt_in_is_warning_only_when_relaying(on_log):
 
 
 async def test_redis_errors_degrade_without_failing_executed_tool(operation):
-    redis = MemoryRedis()
-    with patch.object(redis, "get", side_effect=RedisError), patch.object(redis, "set", side_effect=RedisError):
-        async with sdk_endpoint() as transport:
-            assert isinstance(
-                await call(transport, operation=operation, redis=redis),
-                (CallToolResult, ReadResourceResult, GetPromptResult),
-            )
+    server = FakeServer()
+    server.connected = False
+    redis = FakeAsyncRedis(server=server, decode_responses=True)
+    async with sdk_endpoint() as transport:
+        assert isinstance(
+            await call(transport, operation=operation, redis=redis),
+            (CallToolResult, ReadResourceResult, GetPromptResult),
+        )
+
+
+async def test_era_cache_get_record_and_delete_fail_open(caplog: pytest.LogCaptureFixture) -> None:
+    server = FakeServer()
+    server.connected = False
+    cache = DownstreamEraCache(FakeAsyncRedis(server=server, decode_responses=True), "test")
+
+    assert await cache.get("s") is None
+    await cache.record("s", "2026-07-28")
+    await cache.delete("s")
+
+    assert caplog.messages.count("Downstream era cache unavailable; continuing without cache") == 3
 
 
 async def test_transport_failure_maps_without_replay(operation):
@@ -206,8 +220,8 @@ async def test_transport_failure_maps_without_replay(operation):
 
 
 async def test_jsonrpc_version_error_after_tool_is_not_replayed(operation):
-    redis = MemoryRedis()
-    redis.values["test:mcp_era:s"] = "2026-07-28"
+    redis = FakeAsyncRedis(decode_responses=True)
+    await redis.set("test:mcp_era:s", "2026-07-28")
     # Fault injection at the HTTP boundary, after a real SDK listing succeeded.
     async with sdk_endpoint() as transport:
         original = transport.handle_async_request
@@ -237,7 +251,7 @@ async def test_jsonrpc_version_error_after_tool_is_not_replayed(operation):
             await call(transport, operation=operation, redis=redis)
         assert error.value.code == -32022
         assert transport.count(operation_method(operation)) == 1
-        assert "test:mcp_era:s" not in redis.values
+        assert await redis.get("test:mcp_era:s") is None
 
 
 async def test_cache_expiry_and_explicit_zero_ttl(monkeypatch):
@@ -247,7 +261,7 @@ async def test_cache_expiry_and_explicit_zero_ttl(monkeypatch):
 
     now = [1000.0]
     monkeypatch.setattr(mcp_downstream, "CacheConfig", lambda **kwargs: CacheConfig(**kwargs, clock=lambda: now[0]))
-    redis, store = MemoryRedis(), InMemoryResponseCacheStore()
+    redis, store = FakeAsyncRedis(decode_responses=True), InMemoryResponseCacheStore()
     async with sdk_endpoint() as transport:
         await call(transport, redis=redis, store=store)
         now[0] += 301
@@ -260,7 +274,7 @@ async def test_cache_expiry_and_explicit_zero_ttl(monkeypatch):
 
 
 async def test_endpoint_change_gets_a_fresh_tool_list_cache_entry():
-    redis, store = MemoryRedis(), InMemoryResponseCacheStore()
+    redis, store = FakeAsyncRedis(decode_responses=True), InMemoryResponseCacheStore()
     async with sdk_endpoint() as transport:
         await call(transport, redis=redis, store=store)
         await call(transport, redis=redis, store=store)
@@ -284,13 +298,17 @@ def test_tool_list_cache_target_hashes_endpoint_without_leaking_url() -> None:
     assert target != _tool_list_cache_target("s", MCPTransport.SSE, url)
 
 
-@pytest.mark.parametrize("raw", [b"legacy", "legacy", b"2026-07-28", "2026-07-28", "bad", b"\xff", None])
-async def test_era_cache_validates_values(raw):
-    redis = MemoryRedis()
+@pytest.mark.parametrize("decode_responses", [True, False])
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("legacy", "legacy"), ("2026-07-28", "2026-07-28"), ("bad", None), (b"\xff", None), (None, None)],
+)
+async def test_era_cache_validates_values(
+    raw: str | bytes | None, expected: str | None, decode_responses: bool
+) -> None:
+    redis = FakeAsyncRedis(decode_responses=decode_responses)
     if raw is not None:
-        redis.values["test:mcp_era:s"] = raw
-    expected = raw.decode() if isinstance(raw, bytes) and raw != b"\xff" else raw
-    expected = expected if expected in ("legacy", "2026-07-28") else None
+        await redis.set("test:mcp_era:s", raw)
     assert await DownstreamEraCache(redis, "test").get("s") == expected
 
 
@@ -321,7 +339,7 @@ async def test_schema_validation_still_runs_on_cache_hit():
     server = Server(
         "schema-test", on_list_tools=listing, on_call_tool=execute, cache_hints={"tools/list": CacheHint(ttl_ms=300000)}
     )
-    redis, store = MemoryRedis(), InMemoryResponseCacheStore()
+    redis, store = FakeAsyncRedis(decode_responses=True), InMemoryResponseCacheStore()
     async with sdk_endpoint(server_override=server) as transport:
         await call(transport, redis=redis, store=store)
         valid[0] = False
@@ -393,8 +411,8 @@ async def test_legacy_sse_real_sdk_stream_closes_and_pool_survives():
 
     app = server.sse_app(transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
     transport = StreamingASGITransport(app)
-    redis = MemoryRedis()
-    redis.values["test:mcp_era:s"] = "legacy"
+    redis = FakeAsyncRedis(decode_responses=True)
+    await redis.set("test:mcp_era:s", "legacy")
     async with asyncio.timeout(5):
         for _ in range(2):
             result = await call_downstream(
@@ -411,7 +429,7 @@ async def test_legacy_sse_real_sdk_stream_closes_and_pool_survives():
             assert result.content[0].text == "sse done"
             assert transport.closed == 0
     assert not transport.tasks
-    assert redis.values["test:mcp_era:s"] == "legacy"
+    assert await redis.get("test:mcp_era:s") == "legacy"
     await transport.aclose()
 
 
@@ -441,7 +459,7 @@ async def test_discovery_and_health_negotiate_and_write_era(monkeypatch, era):
     from registry.core.mcp_transport import SharedTransport
 
     original_client = httpx2.AsyncClient
-    redis = MemoryRedis()
+    redis = FakeAsyncRedis(decode_responses=True)
     cache = DownstreamEraCache(redis, "test")
     async with sdk_endpoint(era=era) as transport:
 
@@ -458,13 +476,13 @@ async def test_discovery_and_health_negotiate_and_write_era(monkeypatch, era):
         )
         assert result.error_message is None
         assert {tool["name"] for tool in result.tools} == {"search", "tavily_search"}
-        assert redis.values["test:mcp_era:s"] == era
+        assert await redis.get("test:mcp_era:s") == era
         healthy, _, _, snapshot = await perform_health_check(
             "http://downstream/mcp", server_id="health", era_cache=cache
         )
         assert healthy
         assert snapshot.protocol_version == ("2025-11-25" if era == "legacy" else era)
-        assert redis.values["test:mcp_era:health"] == era
+        assert await redis.get("test:mcp_era:health") == era
 
 
 async def test_connection_route_reports_actual_modern_version(monkeypatch):
@@ -495,7 +513,7 @@ async def test_concurrent_users_close_clients_without_closing_pool(monkeypatch) 
 
     monkeypatch.setattr(httpx2, "AsyncClient", create)
     async with sdk_endpoint() as transport:
-        redis, store = MemoryRedis(), InMemoryResponseCacheStore()
+        redis, store = FakeAsyncRedis(decode_responses=True), InMemoryResponseCacheStore()
         results = await asyncio.gather(
             call(transport, redis=redis, store=store, user="alice"),
             call(transport, redis=redis, store=store, user="bob"),
@@ -609,7 +627,7 @@ async def test_unknown_transport_is_rejected_before_network_io() -> None:
             operation=ToolCall("search", {}),
             downstream_transport=httpx2.MockTransport(reject),
             response_cache=InMemoryResponseCacheStore(),
-            era_cache=DownstreamEraCache(MemoryRedis(), "test"),
+            era_cache=DownstreamEraCache(FakeAsyncRedis(decode_responses=True), "test"),
         )
     assert MCPTransport.STREAMABLE_HTTP.value == "streamable-http"
 
@@ -646,8 +664,8 @@ async def test_stateful_legacy_http_sessions_are_isolated_and_cleaned_up(outcome
             await asyncio.Event().wait()
         return CallToolResult(content=[])
 
-    redis, store = MemoryRedis(), InMemoryResponseCacheStore()
-    redis.values["test:mcp_era:s"] = "legacy"
+    redis, store = FakeAsyncRedis(decode_responses=True), InMemoryResponseCacheStore()
+    await redis.set("test:mcp_era:s", "legacy")
     async with sdk_endpoint(era="legacy", stateless_http=False, action=execute) as transport:
         assert isinstance(transport.inner, StreamingASGITransport)
         if outcome == "failure":
@@ -750,7 +768,7 @@ async def test_legacy_sse_post_401_fails_fast_with_challenge():
                     operation=ToolCall("search", {}),
                     downstream_transport=transport,
                     response_cache=InMemoryResponseCacheStore(),
-                    era_cache=DownstreamEraCache(MemoryRedis(), "test"),
+                    era_cache=DownstreamEraCache(FakeAsyncRedis(decode_responses=True), "test"),
                 )
         assert error.value.www_authenticate == "Bearer sse-challenge"
         assert error.value.oauth_retry_safe
@@ -1024,7 +1042,7 @@ async def test_downstream_sse_post_rejection_logs_warning_without_sensitive_data
                         operation=PromptGet("secret-prompt-name", {"domain": "secret-prompt-arg"}),
                         downstream_transport=transport,
                         response_cache=InMemoryResponseCacheStore(),
-                        era_cache=DownstreamEraCache(MemoryRedis(), "test"),
+                        era_cache=DownstreamEraCache(FakeAsyncRedis(decode_responses=True), "test"),
                     )
     finally:
         await transport.aclose()
@@ -1040,8 +1058,8 @@ async def test_downstream_sse_post_rejection_logs_warning_without_sensitive_data
 
 
 async def test_stale_era_retry_does_not_log_warning_when_retry_succeeds(caplog: pytest.LogCaptureFixture) -> None:
-    redis = MemoryRedis()
-    redis.values["test:mcp_era:srv-era"] = "legacy"
+    redis = FakeAsyncRedis(decode_responses=True)
+    await redis.set("test:mcp_era:srv-era", "legacy")
     async with sdk_endpoint(era="2026-07-28") as transport:
         with caplog.at_level(logging.WARNING, logger="registry.core.mcp_downstream"):
             result = await call(transport, server="srv-era", operation=ToolCall("search", {}), redis=redis)

@@ -24,7 +24,6 @@ _GATEWAY_DEPS = (
     "downstream_era_cache",
     "oauth_service",
     "client_info_store",
-    "redis_client",
     "acl_service",
     "consent_store",
     "pending_consent_store",

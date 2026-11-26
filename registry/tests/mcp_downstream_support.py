@@ -12,22 +12,6 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, InputRequiredResult, TextContent
 
 
-class MemoryRedis:
-    def __init__(self) -> None:
-        self.values: dict[str, str | bytes] = {}
-        self.ttls: dict[str, int] = {}
-
-    def get(self, key: str) -> str | bytes | None:
-        return self.values.get(key)
-
-    def set(self, key: str, value: str, *, ex: int) -> None:
-        self.values[key] = value
-        self.ttls[key] = ex
-
-    def delete(self, key: str) -> None:
-        self.values.pop(key, None)
-
-
 class SDKTransport(httpx2.AsyncBaseTransport):
     def __init__(self, app: Any, era: str, *, streaming: bool = False) -> None:
         self.inner = StreamingASGITransport(app) if streaming else httpx2.ASGITransport(app=app)

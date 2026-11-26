@@ -12,7 +12,6 @@ from registry_pkgs.oauth.headers import HeaderBuildConfig
 def _cfg() -> HeaderBuildConfig:
     return HeaderBuildConfig(
         registry_app_name="jarvis-registry",
-        redis_key_prefix="jarvis-registry",
         jwt_signing_config=SimpleNamespace(),
         encryption_key=None,
     )
