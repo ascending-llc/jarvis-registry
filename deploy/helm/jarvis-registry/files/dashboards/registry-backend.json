@@ -30,7 +30,8 @@
         "y": 0
       },
       "id": 1,
-      "title": "Key Metrics Summary"
+      "title": "Key Metrics Summary",
+      "type": "row"
     },
     {
       "datasource": {
@@ -214,7 +215,8 @@
         "y": 6
       },
       "id": 3,
-      "title": "Registry Operations"
+      "title": "Registry Operations",
+      "type": "row"
     },
     {
       "fieldConfig": {
@@ -870,6 +872,7 @@
       },
       "id": 16,
       "title": "Authentication",
+      "type": "row",
       "panels": [
         {
           "fieldConfig": {

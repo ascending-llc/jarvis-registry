@@ -39,6 +39,9 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          env:
+            - name: PERSISTENCE_DATA_PATH
+              value: /var/lib/weaviate
           envFrom:
             - secretRef:
                 name: {{ .Values.registry.weaviate.envSecretName | default .Values.registry.env.targetSecretName }}

@@ -89,6 +89,12 @@ tests:
         equal:
           path: spec.template.metadata.labels["app.kubernetes.io/component"]
           value: weaviate
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PERSISTENCE_DATA_PATH
+            value: /var/lib/weaviate
       - documentIndex: 1
         isKind:
           of: Service
@@ -352,3 +358,24 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "registry.secretStore.provider must be set when registry.externalSecrets.enabled is true"
+
+  - it: skips rendering SecretStore when an external secretStoreRef.name is provided
+    templates:
+      - secretstore.yaml
+      - registry_externalsecret.yaml
+    set:
+      registry.env.secretStoreRef.name: existing-store
+      registry.env.secretStoreRef.kind: ClusterSecretStore
+      registry.secretStore.provider: null
+    asserts:
+      - template: secretstore.yaml
+        hasDocuments:
+          count: 0
+      - template: registry_externalsecret.yaml
+        equal:
+          path: spec.secretStoreRef.name
+          value: existing-store
+      - template: registry_externalsecret.yaml
+        equal:
+          path: spec.secretStoreRef.kind
+          value: ClusterSecretStore

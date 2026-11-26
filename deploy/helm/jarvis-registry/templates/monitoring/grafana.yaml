@@ -104,8 +104,6 @@ data:
             folder: jarvis-alerts
             interval: 1m
             rules:
-            apiVersion: 1
-            rules:
               - uid: afc9cp5r12ww0e
                 title: PVC-Usage-High
                 condition: C
