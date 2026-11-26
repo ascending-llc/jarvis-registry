@@ -1,5 +1,6 @@
 """Exercise the real SDK wire, cache partitions and error boundaries without external I/O."""
 
+import logging
 from unittest.mock import AsyncMock, patch
 
 import httpx2
@@ -881,3 +882,169 @@ async def test_non_tool_operations_ignore_progress_callback(operation: Downstrea
         callback.assert_not_awaited()
         message = next(m for m in transport.messages if m["method"] == operation_method(operation))
         assert "progressToken" not in message["params"].get("_meta", {})
+
+
+_SENSITIVE_OPERATIONS = [
+    pytest.param(ToolCall("search", {"query": "secret-tool-arg"}), "tool", id="tool"),
+    pytest.param(ResourceRead("test://secret-resource-uri"), "resource", id="resource"),
+    pytest.param(PromptGet("secret-prompt-name", {"domain": "secret-prompt-arg"}), "prompt", id="prompt"),
+]
+
+_FORBIDDEN_LOG_VALUES = (
+    "secret-token-xyz",
+    "secret-tool-arg",
+    "secret-resource-uri",
+    "secret-prompt-name",
+    "secret-prompt-arg",
+    "test-challenge",
+    "secret-connect-exception-text",
+)
+
+
+def _assert_sanitized_failure_log(
+    caplog: pytest.LogCaptureFixture,
+    *,
+    server_id: str,
+    expected_kind: str,
+    expected_phase: str,
+    expected_status: int | None,
+    expected_method: str | None = None,
+    expected_error_type: str | None = None,
+) -> None:
+    warnings = [r for r in caplog.records if r.name == "registry.core.mcp_downstream" and r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    record = warnings[0]
+    message = record.getMessage()
+    assert f"server_id={server_id}" in message
+    assert f"operation={expected_kind}" in message
+    if expected_kind == "tool":
+        assert "tool_name=search" in message
+    else:
+        assert "tool_name=" not in message
+    assert f"phase={expected_phase}" in message
+    assert f"status_code={expected_status}" in message
+    if expected_method is not None:
+        assert f"method={expected_method}" in message
+    if expected_error_type is not None:
+        assert f"error_type={expected_error_type}" in message
+    else:
+        assert "error_type=" in message
+    assert record.exc_info is None
+    assert record.exc_text is None
+    for forbidden in _FORBIDDEN_LOG_VALUES:
+        assert forbidden not in message
+
+
+@pytest.mark.parametrize(("sensitive_op", "expected_kind"), _SENSITIVE_OPERATIONS)
+async def test_downstream_401_logs_warning_without_sensitive_data(
+    caplog: pytest.LogCaptureFixture,
+    sensitive_op: DownstreamOperation,
+    expected_kind: str,
+) -> None:
+    async with sdk_endpoint(era="legacy") as transport:
+        transport.failure_method = operation_method(sensitive_op)
+        with caplog.at_level(logging.WARNING, logger="registry.core.mcp_downstream"):
+            with pytest.raises(DownstreamUnauthorizedException):
+                await call(transport, server="srv-401", user="secret-token-xyz", operation=sensitive_op)
+
+    _assert_sanitized_failure_log(
+        caplog,
+        server_id="srv-401",
+        expected_kind=expected_kind,
+        expected_phase="calling",
+        expected_status=401,
+        expected_method=operation_method(sensitive_op),
+    )
+
+
+@pytest.mark.parametrize(("sensitive_op", "expected_kind"), _SENSITIVE_OPERATIONS)
+async def test_downstream_5xx_logs_warning_without_sensitive_data(
+    caplog: pytest.LogCaptureFixture,
+    sensitive_op: DownstreamOperation,
+    expected_kind: str,
+) -> None:
+    async with sdk_endpoint() as transport:
+        transport.failure_method = operation_method(sensitive_op)
+        transport.failure_status = 500
+        with caplog.at_level(logging.WARNING, logger="registry.core.mcp_downstream"):
+            with pytest.raises(DownstreamHttpFailureException):
+                await call(transport, server="srv-500", user="secret-token-xyz", operation=sensitive_op)
+
+    _assert_sanitized_failure_log(
+        caplog,
+        server_id="srv-500",
+        expected_kind=expected_kind,
+        expected_phase="calling",
+        expected_status=500,
+        expected_method=operation_method(sensitive_op),
+    )
+
+
+@pytest.mark.parametrize(("sensitive_op", "expected_kind"), _SENSITIVE_OPERATIONS)
+async def test_downstream_transport_error_logs_warning_without_sensitive_data(
+    caplog: pytest.LogCaptureFixture,
+    sensitive_op: DownstreamOperation,
+    expected_kind: str,
+) -> None:
+    async def fail(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("secret-connect-exception-text")
+
+    with caplog.at_level(logging.WARNING, logger="registry.core.mcp_downstream"):
+        with pytest.raises(DownstreamHttpFailureException):
+            await call(httpx2.MockTransport(fail), server="srv-net", user="secret-token-xyz", operation=sensitive_op)
+
+    _assert_sanitized_failure_log(
+        caplog,
+        server_id="srv-net",
+        expected_kind=expected_kind,
+        expected_phase="connecting",
+        expected_status=None,
+        expected_error_type="ConnectError",
+    )
+
+
+async def test_downstream_sse_post_rejection_logs_warning_without_sensitive_data(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import asyncio
+
+    from tests.mcp_downstream_support import StreamingASGITransport
+
+    transport = StreamingASGITransport(_sse_app_rejecting_posts(500))
+    try:
+        with caplog.at_level(logging.WARNING, logger="registry.core.mcp_downstream"):
+            async with asyncio.timeout(5):
+                with pytest.raises(DownstreamHttpFailureException):
+                    await call_downstream(
+                        url="http://downstream/sse",
+                        transport_type="sse",
+                        server_id="srv-sse-500",
+                        user_id="secret-token-xyz",
+                        headers={"Authorization": "Bearer secret-token-xyz"},
+                        operation=PromptGet("secret-prompt-name", {"domain": "secret-prompt-arg"}),
+                        downstream_transport=transport,
+                        response_cache=InMemoryResponseCacheStore(),
+                        era_cache=DownstreamEraCache(MemoryRedis(), "test"),
+                    )
+    finally:
+        await transport.aclose()
+
+    _assert_sanitized_failure_log(
+        caplog,
+        server_id="srv-sse-500",
+        expected_kind="prompt",
+        expected_phase="connecting",
+        expected_status=500,
+        expected_error_type="DownstreamHttpFailureException",
+    )
+
+
+async def test_stale_era_retry_does_not_log_warning_when_retry_succeeds(caplog: pytest.LogCaptureFixture) -> None:
+    redis = MemoryRedis()
+    redis.values["test:mcp_era:srv-era"] = "legacy"
+    async with sdk_endpoint(era="2026-07-28") as transport:
+        with caplog.at_level(logging.WARNING, logger="registry.core.mcp_downstream"):
+            result = await call(transport, server="srv-era", operation=ToolCall("search", {}), redis=redis)
+    assert result_text(result) == "done"
+    warnings = [r for r in caplog.records if r.name == "registry.core.mcp_downstream" and r.levelno == logging.WARNING]
+    assert warnings == []

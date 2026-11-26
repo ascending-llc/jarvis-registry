@@ -18,8 +18,8 @@ all internal coordination is hidden here:
 Why auth_context is on run() not __init__
 -----------------------------------------
 ``auth_context`` is scoped to a single user request; it must NOT be shared
-across concurrent runs from different users.  All other parameters (LLMs,
-DB credentials, JWT signing config) are service-level constants safe to share.
+across concurrent runs from different users. All other parameters (DB
+credentials, JWT signing config) are service-level constants safe to share.
 
 Error handling
 --------------
@@ -29,16 +29,18 @@ If agno raises before ``upsert_session`` is called, ``WorkflowRunner`` writes
 Usage::
 
     runner = WorkflowRunner(
-        fallback_model=build_legacy_bedrock_model(model_id, aws_region),
         encryption_key=settings.encryption_key,
+        azure_ad_token_provider=None,
         db_client=MongoDB.get_client(),
         db_name="jarvis",
+        jwt_config=settings.jwt_signing_config,
     )
     # Each request passes its own auth context — no cross-user state leakage.
     run, node_runs = await runner.run(
         definition_id,
         user_text,
         auth_context=current_user,
+        existing_run_id=existing_run_id,
     )
 """
 
@@ -49,7 +51,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from agno.exceptions import RunCancelledException
-from agno.models.base import Model
 from agno.run.cancel import acancel_run as agno_acancel_run
 from agno.run.workflow import WorkflowRunOutput
 from beanie import PydanticObjectId
@@ -75,7 +76,7 @@ from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledErr
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider
-from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider, resolve_default_workflow_model
+from registry_pkgs.workflows.model_resolution import AzureAdTokenProvider
 from registry_pkgs.workflows.persistence import (
     _first_failure_error,
     _flatten_step_results,
@@ -131,9 +132,6 @@ class WorkflowRunner:
     parameter is ``auth_context`` passed to ``run()``.
 
     Args:
-        fallback_model:       Model used when neither a per-node ``model_source_id`` override nor a
-                              configured default workflow ModelSource resolves (legacy /
-                              fresh-deployment path). The effective default is resolved fresh per run.
         encryption_key:       Key used to decrypt a ModelSource's stored Azure credential.
         db_client:            pymongo AsyncMongoClient for session + Beanie persistence.
         db_name:              MongoDB database name.
@@ -149,7 +147,6 @@ class WorkflowRunner:
     def __init__(
         self,
         *,
-        fallback_model: Model,
         encryption_key: bytes,
         azure_ad_token_provider: AzureAdTokenProvider | None,
         db_client: Any,
@@ -167,9 +164,6 @@ class WorkflowRunner:
         if not db_name:
             raise ValueError("WorkflowRunner requires db_name")
 
-        # Model used when neither a node override nor a configured default resolves (legacy /
-        # fresh-deployment path). The effective default is resolved fresh per run in _build_registry.
-        self._fallback_model = fallback_model
         self._encryption_key = encryption_key
         self._azure_ad_token_provider = azure_ad_token_provider
         self._db_client = db_client
@@ -333,13 +327,6 @@ class WorkflowRunner:
         MongoDB and constructs the corresponding executor closures.
         """
         all_nodes = flatten_workflow_nodes(definition.nodes)
-        # Resolve the effective default model fresh on every run so an admin's change to the
-        # default takes effect on the next run without a pod restart.
-        default_model = await resolve_default_workflow_model(
-            fallback_model=self._fallback_model,
-            encryption_key=self._encryption_key,
-            azure_ad_token_provider=self._azure_ad_token_provider,
-        )
         # Non-pool STEP nodes keyed by executor_key; pool nodes use a synthetic key.
         keyed_nodes = [n for n in all_nodes if n.executor_key and not n.a2a_pool]
         pool_nodes = [n for n in all_nodes if n.a2a_pool]
@@ -353,7 +340,6 @@ class WorkflowRunner:
 
         return await build_executor_registry(
             keyed_nodes,
-            default_model=default_model,
             auth_context=auth_context,
             jwt_config=self._jwt_config,
             encryption_key=self._encryption_key,

@@ -107,6 +107,11 @@ export type DeleteModelSourceResponse = {
 export type ModelGatewaySelection = {
   defaultWorkflowModelSourceId: string | null;
   embeddingModelSourceId: string | null;
+  skillScanModelSourceId?: string | null;
+};
+
+export type SetSkillScanModelRequest = {
+  modelSourceId: string | null;
 };
 
 export type SetModelGatewaySelectionRequest = {

@@ -49,13 +49,11 @@ export const ModelSourceSection = ({ modelSourceId, isReadOnly, onChange }: Mode
   const deleted = !modelLoading && modelError == null && modelSourceId != null && !selected;
 
   let defaultDetail = 'Follows the workspace default.';
-  let fallback = 'the workspace default';
   if (defaultName) {
     defaultDetail = `Currently ${defaultName}. Follows changes to the default.`;
-    fallback = `the workspace default (${defaultName})`;
   } else if (defaultUnset) {
-    defaultDetail = "Not configured. Runs use the server's built-in fallback model.";
-    fallback = "the server's built-in fallback model (no workspace default is set)";
+    defaultDetail =
+      'Not configured. MCP and A2A-pool steps using the workspace default require a default model. Select one on the Models page or choose a model for this step.';
   }
 
   let trigger: ReactNode;
@@ -93,8 +91,8 @@ export const ModelSourceSection = ({ modelSourceId, isReadOnly, onChange }: Mode
     );
     help = (
       <span className='text-[var(--jarvis-warning-text)]'>
-        The selected model source no longer exists. Runs fall back to {fallback}, and saving is blocked until you pick
-        another model.
+        The selected model source is unavailable. Workflow runs cannot start with this configuration, and saving is
+        blocked until you pick another model.
       </span>
     );
   } else if (selected) {
@@ -124,8 +122,8 @@ export const ModelSourceSection = ({ modelSourceId, isReadOnly, onChange }: Mode
     if (defaultUnset) {
       help = (
         <>
-          No workspace default is set, so runs use the server's built-in fallback model. An admin can set a default on
-          the{' '}
+          No workspace default is set. MCP and A2A-pool steps using the workspace default require one, or a model
+          override for this step. An admin can set a default on the{' '}
           <Link to={APP_ROUTES.models} className='text-[var(--jarvis-primary-text)] underline'>
             Models page
           </Link>

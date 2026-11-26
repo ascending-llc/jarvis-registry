@@ -107,7 +107,7 @@ describe('ModelSourceSection states', () => {
     expect(trigger.textContent).toContain('Workspace default · not configured');
     expect(screen.getByRole('link', { name: 'Models page' })).toBeTruthy();
     expect(openOptions(trigger)[0].textContent).toContain(
-      "Not configured. Runs use the server's built-in fallback model.",
+      'Not configured. MCP and A2A-pool steps using the workspace default require a default model. Select one on the Models page or choose a model for this step.',
     );
   });
 
@@ -140,10 +140,7 @@ describe('ModelSourceSection states', () => {
     expect(screen.getByText(DEFAULT_HELP)).toBeTruthy();
   });
 
-  test.each([
-    ['sonnet', 'the workspace default (Claude Sonnet)'],
-    [null, "the server's built-in fallback model (no workspace default is set)"],
-  ])('deleted model shows the warning state (default %s)', (defaultId, fallback) => {
+  test.each(['sonnet', null])('deleted model shows the warning state (default %s)', defaultId => {
     setServer({ modelSelection: { defaultWorkflowModelSourceId: defaultId, embeddingModelSourceId: null } });
     const { trigger } = renderSection('gone');
 
@@ -151,7 +148,7 @@ describe('ModelSourceSection states', () => {
     expect(trigger.className).toContain('border-amber-600');
     expect(
       screen.getByText(
-        `The selected model source no longer exists. Runs fall back to ${fallback}, and saving is blocked until you pick another model.`,
+        'The selected model source is unavailable. Workflow runs cannot start with this configuration, and saving is blocked until you pick another model.',
         { exact: false },
       ),
     ).toBeTruthy();

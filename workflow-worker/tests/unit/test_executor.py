@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,6 +11,7 @@ from beanie import PydanticObjectId
 from registry_pkgs.database.leased_job import Lease
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.workflows import run_lease
+from registry_pkgs.workflows.types import WorkflowConfigError
 from workflow_worker import executor
 
 
@@ -437,8 +439,24 @@ async def test_execute_schedule_skips_when_workflow_disabled(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_execute_schedule_finishes_failed_when_runner_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """execute_leased_run already wrote FAILED (fenced) and re-raised; _execute_schedule just finishes."""
+@pytest.mark.parametrize(
+    ("error", "level", "has_traceback"),
+    [
+        (RuntimeError("runner failed"), logging.ERROR, True),
+        (WorkflowConfigError("Step 'fetch' needs a model. Select one on the Models page."), logging.WARNING, False),
+    ],
+)
+async def test_execute_schedule_finishes_failed_when_runner_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+    level: int,
+    has_traceback: bool,
+) -> None:
+    """execute_leased_run already wrote FAILED (fenced) and re-raised; _execute_schedule just finishes.
+
+    An expected configuration error logs a warning without a traceback; anything else logs an error with one.
+    """
     schedule = SimpleNamespace(id=PydanticObjectId(), lease_token="lease-1")
     definition = SimpleNamespace(id=PydanticObjectId())
     run = SimpleNamespace(id=PydanticObjectId())
@@ -454,15 +472,21 @@ async def test_execute_schedule_finishes_failed_when_runner_raises(monkeypatch: 
 
     async def fake_execute_leased_run(_lease: object, coro: object, *, interrupted_reason: str) -> object:
         coro.close()  # don't actually run it
-        raise RuntimeError("runner failed")
+        raise error
 
     monkeypatch.setattr(executor, "execute_leased_run", fake_execute_leased_run)
     runner = SimpleNamespace(run=AsyncMock(return_value=(SimpleNamespace(), None)))
     repository = object()
 
-    await executor._execute_schedule(schedule, runner, repository, "owner-1")
+    with caplog.at_level(logging.WARNING, logger=executor.logger.name):
+        await executor._execute_schedule(schedule, runner, repository, "owner-1")
 
     finish.assert_awaited_once_with(schedule, run, WorkflowRunStatus.FAILED, repository)
+    [record] = [r for r in caplog.records if r.name == executor.logger.name]
+    assert record.levelno == level
+    assert (record.exc_info is not None) is has_traceback
+    if not has_traceback:
+        assert str(error) in record.getMessage()
 
 
 def test_scheduled_run_auth_context_uses_creator_as_user_id() -> None:

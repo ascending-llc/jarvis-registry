@@ -28,7 +28,7 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 from registry_pkgs.workflows.a2a_headers_provider import A2aHeadersProvider, make_a2a_headers_provider
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
-from registry_pkgs.workflows.model_resolution import AzureModelCredential, build_legacy_bedrock_model
+from registry_pkgs.workflows.model_resolution import AzureModelCredential
 from registry_pkgs.workflows.run_lease import reap_expired_runs
 from registry_pkgs.workflows.runner import WorkflowRunner
 from registry_pkgs.workflows.schedule_repository import WorkflowScheduleRepository
@@ -400,13 +400,7 @@ class RegistryContainer:
     def workflow_runner(self) -> WorkflowRunner:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
-            fallback_model = build_legacy_bedrock_model(
-                self.settings.workflow_llm_model_id,
-                self.settings.aws_region,
-            )
-
             return WorkflowRunner(
-                fallback_model=fallback_model,
                 encryption_key=self.settings.encryption_key,
                 azure_ad_token_provider=self.azure_model_credential.token_provider,
                 db_client=MongoDB.get_client(),

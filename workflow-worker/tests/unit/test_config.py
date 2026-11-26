@@ -72,3 +72,15 @@ def test_worker_settings_reject_shutdown_budget_without_headroom() -> None:
             creds_key="00" * 16,
             _env_file=None,
         )
+
+
+@pytest.mark.parametrize("residual", [False, True])
+def test_worker_ignores_removed_workflow_model_keys(monkeypatch: pytest.MonkeyPatch, residual: bool) -> None:
+    for key in ["AWS_BEDROCK_SONNET_AIP_ARN", "AWS_WORKFLOW_LLM_MODEL", "AWS_BEDROCK_REQUIRE_AIP"]:
+        monkeypatch.delenv(key, raising=False)
+    if residual:
+        monkeypatch.setenv("AWS_BEDROCK_SONNET_AIP_ARN", "")
+        monkeypatch.setenv("AWS_WORKFLOW_LLM_MODEL", "")
+        monkeypatch.setenv("AWS_BEDROCK_REQUIRE_AIP", "true")
+    settings = WorkerSettings(creds_key="00" * 16, _env_file=None)
+    assert settings.aws_region == "us-east-1"

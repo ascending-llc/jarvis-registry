@@ -373,4 +373,5 @@ export const metadataFromDetail = (detail: SkillDetail): SkillMetadata => ({
   permissions: detail.permissions,
   updatedAt: detail.updatedAt,
   deletedAt: null,
+  scanSummary: detail.scanSummary,
 });

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,6 +15,7 @@ from registry_pkgs.models.model_source import (
     OpenAIModelConfig,
 )
 from registry_pkgs.workflows import model_resolution
+from registry_pkgs.workflows.types import WorkflowConfigError
 
 
 def _source(provider_config, *, mode: ModelSourceMode = ModelSourceMode.CHAT) -> ModelSource:
@@ -81,16 +83,6 @@ def test_build_agno_model_for_bedrock() -> None:
     assert isinstance(model, LiteLLM)
     assert model.id == "bedrock/anthropic.claude-v1"
     assert model.get_request_params()["aws_region_name"] == "us-east-1"
-
-
-def test_build_legacy_bedrock_model() -> None:
-    model = model_resolution.build_legacy_bedrock_model("amazon.nova-lite-v1:0", "us-west-2")
-
-    assert isinstance(model, LiteLLM)
-    assert model.id == "bedrock/amazon.nova-lite-v1:0"
-    assert model.get_request_params()["aws_region_name"] == "us-west-2"
-    # LiteLLM must drop params Bedrock rejects (agno sends tool_choice="auto" on every tool node).
-    assert model.get_request_params()["drop_params"] is True
 
 
 def test_build_agno_model_for_bedrock_application_inference_profile() -> None:
@@ -221,13 +213,6 @@ def test_build_agno_model_rejects_unknown_provider_config() -> None:
         )
 
 
-def _legacy_bedrock_aip() -> LiteLLM:
-    return model_resolution.build_legacy_bedrock_model(
-        "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id",
-        "us-east-1",
-    )
-
-
 def _bedrock_source_model() -> LiteLLM:
     source = _source(
         AwsBedrockModelConfig(
@@ -253,8 +238,8 @@ def _azure_source_model() -> LiteLLM:
 
 @pytest.mark.parametrize(
     "build",
-    [_legacy_bedrock_aip, _bedrock_source_model, _azure_source_model],
-    ids=["legacy-bedrock", "bedrock-model-source", "azure-model-source"],
+    [_bedrock_source_model, _azure_source_model],
+    ids=["bedrock-model-source", "azure-model-source"],
 )
 def test_built_models_send_no_sampling_params(build) -> None:
     # Claude Sonnet 5 on Bedrock rejects both ("`temperature` is deprecated for this model"), and
@@ -281,85 +266,114 @@ def test_azure_model_credential_owns_and_closes_credential(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_resolve_model_uses_fallback_for_invalid_unavailable_or_non_chat(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fallback = object()
-    assert (
-        await model_resolution.resolve_model(
-            "invalid",
-            fallback_model=fallback,
-            encryption_key=b"key",
-            azure_ad_token_provider=None,
-        )
-        is fallback
-    )
+@pytest.mark.parametrize("case", ["invalid", "missing", "deleted", "embedding"])
+async def test_explicit_override_rejects_unusable_source(monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    source = _source(AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn="chat", baseModelId="chat"))
+    if case == "deleted":
+        source.deletedAt = datetime.now(UTC)
+    if case == "embedding":
+        source.mode = ModelSourceMode.EMBEDDING
+    source_id = "invalid" if case == "invalid" else str(source.id)
+    get_source = AsyncMock(return_value=None if case == "missing" else source)
+    monkeypatch.setattr(model_resolution.ModelSource, "get", get_source)
+    build = MagicMock()
+    monkeypatch.setattr(model_resolution, "build_agno_model", build)
+    with pytest.raises(WorkflowConfigError, match=source_id):
+        await model_resolution.resolve_model(source_id, encryption_key=b"key", azure_ad_token_provider=None)
+    build.assert_not_called()
+    if case == "invalid":
+        get_source.assert_not_awaited()
 
-    monkeypatch.setattr(model_resolution.ModelSource, "get", AsyncMock(return_value=None))
-    assert (
-        await model_resolution.resolve_model(
-            str(PydanticObjectId()),
-            fallback_model=fallback,
-            encryption_key=b"key",
-            azure_ad_token_provider=None,
-        )
-        is fallback
-    )
 
-    embedding = _source(
-        AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn="embed", baseModelId="embed"),
-        mode=ModelSourceMode.EMBEDDING,
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["no-selection", "no-id", "invalid", "missing", "deleted", "embedding"])
+async def test_default_returns_none_for_unusable_reference(monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    source = _source(AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn="chat", baseModelId="chat"))
+    if case == "deleted":
+        source.deletedAt = datetime.now(UTC)
+    if case == "embedding":
+        source.mode = ModelSourceMode.EMBEDDING
+    source_id = None if case == "no-id" else ("invalid" if case == "invalid" else source.id)
+    selection = None if case == "no-selection" else SimpleNamespace(defaultWorkflowModelSourceId=source_id)
+    monkeypatch.setattr(model_resolution, "get_model_gateway_selection", AsyncMock(return_value=selection))
+    monkeypatch.setattr(
+        model_resolution.ModelSource, "get", AsyncMock(return_value=None if case == "missing" else source)
     )
-    monkeypatch.setattr(model_resolution.ModelSource, "get", AsyncMock(return_value=embedding))
     assert (
-        await model_resolution.resolve_model(
-            str(embedding.id),
-            fallback_model=fallback,
-            encryption_key=b"key",
-            azure_ad_token_provider=None,
-        )
-        is fallback
+        await model_resolution.resolve_default_workflow_model(encryption_key=b"key", azure_ad_token_provider=None)
+        is None
     )
 
 
 @pytest.mark.asyncio
 async def test_resolve_default_reads_selection_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
-    source_id = PydanticObjectId()
-    get_selection = AsyncMock(return_value=SimpleNamespace(defaultWorkflowModelSourceId=source_id))
-    resolve = AsyncMock(return_value="resolved")
-    monkeypatch.setattr(model_resolution, "get_model_gateway_selection", get_selection)
-    monkeypatch.setattr(model_resolution, "resolve_model", resolve)
-
-    result = await model_resolution.resolve_default_workflow_model(
-        fallback_model="fallback",
-        encryption_key=b"key",
-        azure_ad_token_provider=None,
-    )
-
-    assert result == "resolved"
-    get_selection.assert_awaited_once_with(create_if_missing=False)
-    resolve.assert_awaited_once_with(
-        source_id,
-        fallback_model="fallback",
-        encryption_key=b"key",
-        azure_ad_token_provider=None,
-    )
+    sources = [
+        _source(AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn=name, baseModelId=name))
+        for name in ["a", "b"]
+    ]
+    selection = AsyncMock(side_effect=[SimpleNamespace(defaultWorkflowModelSourceId=source.id) for source in sources])
+    get_source = AsyncMock(side_effect=sources)
+    monkeypatch.setattr(model_resolution, "get_model_gateway_selection", selection)
+    monkeypatch.setattr(model_resolution.ModelSource, "get", get_source)
+    models = [
+        await model_resolution.resolve_default_workflow_model(encryption_key=b"key", azure_ad_token_provider=None)
+        for _ in sources
+    ]
+    assert [model.id for model in models] == ["bedrock/a", "bedrock/b"]
+    assert all(call.kwargs == {"create_if_missing": False} for call in selection.await_args_list)
+    assert [call.args[0] for call in get_source.await_args_list] == [source.id for source in sources]
 
 
 @pytest.mark.asyncio
-async def test_resolve_default_uses_legacy_fallback_when_selection_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("other_field", [None, "embeddingModelSourceId"])
+async def test_default_handles_only_invalid_default_id_from_real_repository(
+    monkeypatch: pytest.MonkeyPatch, other_field: str | None
 ) -> None:
+    from pydantic import ValidationError
+
+    from registry_pkgs.models.model_gateway_selection import MODEL_GATEWAY_SELECTION_ID, ModelGatewaySelection
+
+    doc = {"_id": MODEL_GATEWAY_SELECTION_ID, "defaultWorkflowModelSourceId": "invalid"}
+    if other_field:
+        doc[other_field] = "also-invalid"
+    collection = SimpleNamespace(find_one=AsyncMock(return_value=doc))
+    monkeypatch.setattr(ModelGatewaySelection, "get_pymongo_collection", lambda *_args: collection)
+    monkeypatch.setattr(ModelGatewaySelection, "get_settings", lambda *_args: SimpleNamespace())
+    if other_field:
+        with pytest.raises(ValidationError):
+            await model_resolution.resolve_default_workflow_model(encryption_key=b"key", azure_ad_token_provider=None)
+    else:
+        assert (
+            await model_resolution.resolve_default_workflow_model(encryption_key=b"key", azure_ad_token_provider=None)
+            is None
+        )
+    collection.find_one.assert_awaited_once_with({"_id": MODEL_GATEWAY_SELECTION_ID})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("default", [False, True])
+@pytest.mark.parametrize("failure", ["database", "build"])
+async def test_model_resolution_propagates_unexpected_errors(
+    monkeypatch: pytest.MonkeyPatch, default: bool, failure: str
+) -> None:
+    from pymongo.errors import AutoReconnect
+
+    source = _source(AwsBedrockModelConfig(awsRegion="us-east-1", modelIdOrArn="chat", baseModelId="chat"))
     monkeypatch.setattr(
         model_resolution,
         "get_model_gateway_selection",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=SimpleNamespace(defaultWorkflowModelSourceId=source.id)),
     )
-
-    result = await model_resolution.resolve_default_workflow_model(
-        fallback_model="legacy",
-        encryption_key=b"key",
-        azure_ad_token_provider=None,
+    error = AutoReconnect("offline") if failure == "database" else ValueError("cannot decrypt")
+    monkeypatch.setattr(
+        model_resolution.ModelSource,
+        "get",
+        AsyncMock(side_effect=error) if failure == "database" else AsyncMock(return_value=source),
     )
-
-    assert result == "legacy"
+    monkeypatch.setattr(model_resolution, "build_agno_model", MagicMock(side_effect=error))
+    with pytest.raises(type(error)) as caught:
+        if default:
+            await model_resolution.resolve_default_workflow_model(encryption_key=b"key", azure_ad_token_provider=None)
+        else:
+            await model_resolution.resolve_model(str(source.id), encryption_key=b"key", azure_ad_token_provider=None)
+    assert caught.value is error

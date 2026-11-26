@@ -300,6 +300,34 @@ async def _send_operation(
     return await session.get_prompt(operation.name, operation.arguments, allow_input_required=True)
 
 
+def _log_downstream_failure(
+    *,
+    server_id: str,
+    operation: DownstreamOperation,
+    recorder: ResponseRecorder,
+    error: Exception,
+) -> None:
+    """Log safe diagnostic fields for an unrecovered downstream call failure.
+
+    Never log exception text, resource URIs, prompt names/arguments, tool arguments, or headers.
+    """
+    if isinstance(operation, ToolCall):
+        operation_desc = f"tool tool_name={operation.tool_name}"
+    elif isinstance(operation, ResourceRead):
+        operation_desc = "resource"
+    else:
+        operation_desc = "prompt"
+    logger.warning(
+        "Downstream call failed: server_id=%s operation=%s phase=%s method=%s status_code=%s error_type=%s",
+        server_id,
+        operation_desc,
+        recorder.phase,
+        recorder.method,
+        recorder.status_code,
+        type(error).__name__,
+    )
+
+
 @overload
 async def call_downstream(
     *,
@@ -437,6 +465,12 @@ async def call_downstream(
             # 8. Preserve the public error contract when retry is not allowed. In particular,
             #    an HTTP 400 after business send may be invalid input, never a replay signal.
             mapped = _map_error(error, recorder)
+            _log_downstream_failure(
+                server_id=server_id,
+                operation=operation,
+                recorder=recorder,
+                error=error,
+            )
             if mapped is exc:
                 raise
             raise mapped from exc

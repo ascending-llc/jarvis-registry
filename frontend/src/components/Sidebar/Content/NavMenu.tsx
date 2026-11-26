@@ -380,6 +380,29 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen, skillsNa
           </div>
         </div>
       )}
+      {isSkillsPage && !collapsed && skillsNavigation?.showStatusFilters && skillsNavigation.scanFilters && (
+        <div className='mt-6 space-y-1' role='group' aria-label='Filter by scan'>
+          <div className='mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-[var(--jarvis-faint)]'>
+            Filter by scan
+          </div>
+          {skillsNavigation.scanFilters.items.map(({ value, label, count, dotClass }) => (
+            <button
+              key={value}
+              type='button'
+              aria-pressed={skillsNavigation.scanFilters?.active === value}
+              onClick={() => {
+                skillsNavigation.scanFilters?.onChange(value);
+                if (window.innerWidth < 768) setSidebarOpen(false);
+              }}
+              className='flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-card-muted)] aria-pressed:bg-[var(--jarvis-primary-soft)] aria-pressed:text-[var(--jarvis-text)]'
+            >
+              <span aria-hidden='true' className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+              <span className='min-w-0 flex-1'>{label}</span>
+              <span className='text-xs tabular-nums'>{count}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
