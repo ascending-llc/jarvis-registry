@@ -41,8 +41,8 @@ jobs:
         run: |
           LATEST_TAG=$(git describe --tags --match 'asc*' --abbrev=0 2>/dev/null || echo "asc0.0.0")
           CURRENT_VERSION=${LATEST_TAG#asc}
-          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
           echo "📋 Current version: $CURRENT_VERSION"
           echo "📋 Latest tag: $LATEST_TAG"
 
@@ -58,6 +58,7 @@ jobs:
           DEFAULT_BUMP: ${{ inputs.version_type }}
 
   build-images:
+    if: ${{ !inputs.dry_run }}
     uses: ./.github/workflows/build-images-reusable.yaml
     needs: bump-version-and-tag
     with:
@@ -65,3 +66,64 @@ jobs:
       version_tag: ${{ needs.bump-version-and-tag.outputs.new_tag }}
     secrets:
       GH_COPILOT_KEY: ${{ secrets.GH_COPILOT_KEY }}
+
+  publish-chart:
+    name: Package and Push Helm Chart
+    runs-on: ubuntu-latest
+    needs: [bump-version-and-tag, build-images]
+    if: >-
+      !cancelled() &&
+      github.repository == 'ascending-llc/jarvis-registry' &&
+      needs.bump-version-and-tag.result == 'success' &&
+      ((inputs.dry_run && needs.build-images.result == 'skipped') ||
+       (!inputs.dry_run && needs.build-images.result == 'success'))
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CHART_DIR: deploy/helm/jarvis-registry
+      CHART_NAME: jarvis-registry
+      REGISTRY: ghcr.io
+      CHART_REPO: jarvis-chart
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Resolve chart version
+        id: version
+        env:
+          NEW_TAG: ${{ needs.bump-version-and-tag.outputs.new_tag }}
+        run: |
+          SEMVER="${NEW_TAG#asc}"
+          echo "Packaging ${CHART_NAME} version ${SEMVER} (appVersion ${NEW_TAG})"
+          echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
+          echo "app_version=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Package Helm Chart
+        run: |
+          helm package "${CHART_DIR}" \
+            --version "${{ steps.version.outputs.semver }}" \
+            --app-version "${{ steps.version.outputs.app_version }}" \
+            --destination "${RUNNER_TEMP}"
+
+      - name: Login to GHCR Helm Registry
+        if: ${{ !inputs.dry_run }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login "${REGISTRY}" --username "${{ github.actor }}" --password-stdin
+
+      - name: Push Chart to GHCR
+        if: ${{ !inputs.dry_run }}
+        run: |
+          helm push "${RUNNER_TEMP}/${CHART_NAME}-${{ steps.version.outputs.semver }}.tgz" \
+            "oci://${REGISTRY}/${{ github.repository_owner }}/${CHART_REPO}"
+
+      - name: Dry run notice
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "::notice::Dry run enabled — packaged ${CHART_NAME}-${{ steps.version.outputs.semver }}.tgz (appVersion ${{ steps.version.outputs.app_version }}) without pushing."
