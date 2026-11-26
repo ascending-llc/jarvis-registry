@@ -2,5 +2,5 @@ apiVersion: v2
 name: jarvis-registry
 description: A Helm chart for the Jarvis Registry (backend, frontend, auth-server) with optional bundled MongoDB, Redis, Weaviate, and monitoring stack.
 type: application
-version: 0.4.0
-appVersion: "asc0.5.17"
+version: 0.0.0-dev
+appVersion: "0.0.0-dev"

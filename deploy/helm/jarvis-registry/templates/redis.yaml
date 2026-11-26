@@ -1,22 +1,25 @@
-{{- if and .Values.registry.standalone .Values.registry.redis.enabled }}
+{{- if .Values.registry.redis.enabled }}
+{{- $fullname := include "jarvis-registry.fullname" . -}}
 # redis StatefulSet
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "jarvis-registry.fullname" . }}-redis
+  name: {{ $fullname }}-redis
   labels:
     {{- include "jarvis-registry.labels" . | nindent 4 }}
-    app: redis
+    app.kubernetes.io/component: redis
 spec:
   selector:
     matchLabels:
-      app: redis
-  serviceName: redis
+      {{- include "jarvis-registry.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  serviceName: {{ $fullname }}-redis
   replicas: 1
   template:
     metadata:
       labels:
-        app: redis
+        {{- include "jarvis-registry.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
     spec:
       {{- with .Values.registry.redis.podSecurityContext }}
       securityContext:
@@ -72,7 +75,9 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
-        storageClassName: {{ .Values.registry.redis.persistence.storageClass }}
+        {{- with .Values.registry.redis.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
         resources:
           requests:
             storage: {{ .Values.registry.redis.persistence.size }}
@@ -82,12 +87,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: redis
+  name: {{ $fullname }}-redis
   labels:
     {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
 spec:
   selector:
-    app: redis
+    {{- include "jarvis-registry.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
   type: ClusterIP
   ports:
   {{- range .Values.registry.redis.service.ports }}

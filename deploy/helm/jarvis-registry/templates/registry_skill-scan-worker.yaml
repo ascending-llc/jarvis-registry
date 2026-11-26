@@ -27,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        reloader.stakater.com/auto: "true"
+        {{ include "jarvis-registry.reloaderAnnotation" . }}: "true"
     spec:
       serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
       securityContext:
@@ -60,6 +60,10 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          env:
+            {{- . | nindent 12 }}
+          {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Values.registry.env.targetSecretName }}
@@ -85,6 +89,9 @@ spec:
               value: {{ .Values.registry.skillScan.toolTimeoutSeconds | quote }}
             - name: SKILL_SCAN_WORKER_LLM_MAX_TEXT_BYTES
               value: {{ .Values.registry.skillScan.llmMaxTextBytes | quote }}
+            {{- with (include "jarvis-registry.databaseEnv" .) }}
+            {{- . | nindent 12 }}
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Values.registry.env.targetSecretName }}
@@ -133,11 +140,15 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # 2. MongoDB. Uses the configured peers; falls back to both ways the charts label Mongo (standalone
-    #    StatefulSet app=mongodb, operator pods app=mongodb-svc) if a client clears the list.
+    # 2. MongoDB: custom peers > built-in MongoDB (if enabled) > Chat's MongoDB fallback.
     - to:
         {{- if .Values.registry.skillScan.networkPolicy.mongodbEgressTo }}
         {{- toYaml .Values.registry.skillScan.networkPolicy.mongodbEgressTo | nindent 8 }}
+        {{- else if .Values.registry.mongodb.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "jarvis-registry.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: mongodb
         {{- else }}
         - podSelector:
             matchLabels:

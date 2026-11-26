@@ -44,7 +44,9 @@ data:
     # /var/tempo, which is exactly where trace storage + flushed metrics blocks live.
     persistence:
       enabled: true
-      storageClassName: {{ .Values.registry.monitoring.tempo.storageClass | quote }}
+      {{- with .Values.registry.monitoring.tempo.storageClass }}
+      storageClassName: {{ . | quote }}
+      {{- end }}
       accessModes:
         - ReadWriteOnce
       size: {{ .Values.registry.monitoring.tempo.size }}

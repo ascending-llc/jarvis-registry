@@ -9,6 +9,7 @@ Python 3.12 monorepo (FastAPI, Beanie on MongoDB, Weaviate, Redis) plus a React 
 | `workflow-worker/` | `registry-pkgs` | Workflow scheduler and executor |
 | `registry-pkgs/` | — | Shared Beanie models, DB/Redis clients, vector search, telemetry, migrations |
 | `frontend/` | — | SPA (Vite, React 18, TailwindCSS, Biome) |
+| `deploy/` | — | Helm chart (and future Terraform); not a `uv` workspace |
 
 ---
 

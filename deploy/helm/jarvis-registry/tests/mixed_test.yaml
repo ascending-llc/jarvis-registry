@@ -1,0 +1,61 @@
+suite: mixed databases scenario (external MongoDB, built-in Redis and Weaviate)
+release:
+  name: jarvis-registry
+  namespace: jarvis
+values:
+  - ./values/mixed.yaml
+tests:
+  - it: skips MongoDB while rendering Redis and Weaviate
+    templates:
+      - mongodb.yaml
+      - redis.yaml
+      - weaviate.yaml
+    asserts:
+      - template: mongodb.yaml
+        hasDocuments:
+          count: 0
+      - template: redis.yaml
+        hasDocuments:
+          count: 2
+      - template: weaviate.yaml
+        hasDocuments:
+          count: 2
+
+  - it: injects only Redis and Weaviate env vars (not MONGO_URI) into backend
+    template: registry_backend.yaml
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGO_URI
+          any: true
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+
+  - it: uses fallback MongoDB egress peers for skill-scan-worker when MongoDB is disabled
+    template: registry_skill-scan-worker.yaml
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - contains:
+          path: spec.egress[1].to
+          content:
+            podSelector:
+              matchLabels:
+                app: mongodb
+      - contains:
+          path: spec.egress[1].to
+          content:
+            podSelector:
+              matchLabels:
+                app: mongodb-svc

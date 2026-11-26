@@ -1,59 +1,157 @@
-{{- if and .Values.registry.standalone .Values.registry.mongodb.enabled }}
-# Note: The operator creates statefulset, headless service, and init sidecars automatically
-apiVersion: mongodbcommunity.mongodb.com/v1
-kind: MongoDBCommunity
+{{- if .Values.registry.mongodb.enabled }}
+{{- $fullname := include "jarvis-registry.fullname" . -}}
+{{- $memberHost := printf "%s-mongodb-0.%s-mongodb:27017" $fullname $fullname -}}
+# Single-member MongoDB replica set (needed for transactions, no operator).
+apiVersion: apps/v1
+kind: StatefulSet
 metadata:
-  name: mongodb
+  name: {{ $fullname }}-mongodb
   labels:
     {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
 spec:
-  members: {{ .Values.registry.mongodb.replicaCount }}
-  type: ReplicaSet
-  version: {{ .Values.registry.mongodb.version | quote }}
-  security:
-    authentication:
-      modes: ["SCRAM"]
-  users:
-    - name: mongodb-admin
-      db: admin
-      passwordSecretRef:
-        name: {{ .Values.registry.mongodb.adminPasswordSecret.name | default .Values.registry.env.targetSecretName }}
-        key: {{ .Values.registry.mongodb.adminPasswordSecret.key }}
-      roles:
-        - name: root
-          db: admin
-      scramCredentialsSecretName: mongodb-admin
-  statefulSet:
+  serviceName: {{ $fullname }}-mongodb
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "jarvis-registry.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        {{- include "jarvis-registry.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mongodb
     spec:
-      template:
-        spec:
-          {{- with .Values.registry.mongodb.nodeSelector }}
-          nodeSelector:
+      {{- with .Values.registry.mongodb.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: copy-keyfile
+          image: "{{ .Values.registry.mongodb.image.repository }}:{{ .Values.registry.mongodb.version }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              cp /etc/mongodb-keyfile-src/MONGODB_KEYFILE /etc/mongodb-keyfile/keyfile
+              chown 999:999 /etc/mongodb-keyfile/keyfile
+              chmod 0400 /etc/mongodb-keyfile/keyfile
+          volumeMounts:
+            - name: keyfile-src
+              mountPath: /etc/mongodb-keyfile-src
+              readOnly: true
+            - name: keyfile
+              mountPath: /etc/mongodb-keyfile
+      containers:
+        - name: mongodb
+          image: "{{ .Values.registry.mongodb.image.repository }}:{{ .Values.registry.mongodb.version }}"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --replSet
+            - rs0
+            - --bind_ip_all
+            - --auth
+            - --keyFile
+            - /etc/mongodb-keyfile/keyfile
+          ports:
+            - name: mongodb
+              containerPort: 27017
+              protocol: TCP
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: {{ .Values.registry.mongodb.auth.username | quote }}
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.registry.env.targetSecretName }}
+                  key: MONGODB_ADMIN_PASSWORD
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - |
+                    # Wait for the real replSet mongod and init rs0 once (safe on restarts).
+                    until mongosh --quiet \
+                      -u "$MONGO_INITDB_ROOT_USERNAME" \
+                      -p "$MONGO_INITDB_ROOT_PASSWORD" \
+                      --authenticationDatabase admin \
+                      --eval "try { if (rs.status().ok === 1) quit(0); } catch (e) { if (e.codeName === 'NotYetInitialized') { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '{{ $memberHost }}' }] }); quit(0); } } quit(1);" >/dev/null 2>&1; do
+                      sleep 2
+                    done
+          livenessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - "quit(db.hello().isWritablePrimary ? 0 : 1)"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          {{- with .Values.registry.mongodb.resources }}
+          resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          containers:
-            - name: mongod # MongoDB Operator expects the container to be named "mongod"
-              {{- with .Values.registry.mongodb.resources }}
-              resources:
-                {{- toYaml . | nindent 16 }}
-              {{- end }}
-      volumeClaimTemplates:
-        - metadata:
-            name: data-volume
-          spec:
-            accessModes:
-              - ReadWriteOnce
-            storageClassName: {{ .Values.registry.mongodb.persistence.storageClass }}
-            resources:
-              requests:
-                storage: {{ .Values.registry.mongodb.persistence.size }}
-        - metadata:
-            name: logs-volume
-          spec:
-            accessModes:
-              - ReadWriteOnce
-            storageClassName: {{ .Values.registry.mongodb.persistence.storageClass }}
-            resources:
-              requests:
-                storage: 1Gi
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+            - name: keyfile
+              mountPath: /etc/mongodb-keyfile
+              readOnly: true
+      volumes:
+        - name: keyfile-src
+          secret:
+            secretName: {{ .Values.registry.env.targetSecretName }}
+            items:
+              - key: MONGODB_KEYFILE
+                path: MONGODB_KEYFILE
+        - name: keyfile
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: mongodb-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with .Values.registry.mongodb.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.registry.mongodb.persistence.size }}
+---
+# MongoDB Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-mongodb
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  clusterIP: None
+  # Replica-set initialization resolves the member hostname before it becomes PRIMARY.
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "jarvis-registry.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+  ports:
+    - port: 27017
+      targetPort: 27017
+      name: mongodb
 {{- end }}

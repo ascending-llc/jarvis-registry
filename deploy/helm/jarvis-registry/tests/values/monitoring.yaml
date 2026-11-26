@@ -1,0 +1,24 @@
+registry:
+  env:
+    remoteRef: jarvis/registry-env
+  secretStore:
+    provider:
+      aws:
+        service: SecretsManager
+        region: us-east-1
+        auth:
+          jwt:
+            serviceAccountRef:
+              name: jarvis-registry-sa
+  monitoring:
+    enabled: true
+    externalSecrets:
+      remoteRef: jarvis/monitoring-env
+      provider:
+        aws:
+          service: SecretsManager
+          region: us-east-1
+          auth:
+            jwt:
+              serviceAccountRef:
+                name: monitoring-eso-sa

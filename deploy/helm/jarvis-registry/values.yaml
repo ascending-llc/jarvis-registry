@@ -1,13 +1,10 @@
 # Jarvis Registry chart values
+# Breaking change (from <= 0.4.0): MongoDB, Redis and Weaviate now default to
+# enabled: true. If you share databases with Jarvis Chat or bring your own,
+# set all three to enabled: false before upgrading.
 
 registry:
-  # When true, the chart additionally renders the bundled datastores
-  # (redis, mongodb, weaviate), the SecretStore, the secret reloader, and the
-  # StorageClass.
-  standalone: true
-
-  # Override the tag used for backend/frontend/authServer images. When empty,
-  # the chart's appVersion (Chart.yaml) is used.
+  # Image tag override; defaults to Chart.yaml appVersion.
   imageTag: ""
   podLabels: {}
   nodeSelector: {}
@@ -22,25 +19,16 @@ registry:
     #   AKS (WI):     azure.workload.identity/client-id: "<client-id>"
     annotations: {}
 
-  # When enabled, the chart renders an ExternalSecret (and, in standalone mode,
-  # the SecretStore) so a Secret named `registry.env.targetSecretName` is synced
-  # from the upstream secret manager via the External Secrets Operator. When
-  # disabled, supply that Secret yourself — the workloads still reference it
-  # via envFrom.
+  # Syncs `registry.env.targetSecretName` via External Secrets Operator.
+  # Turn off if you manage that Secret yourself.
   externalSecrets:
-    # Gates SecretStore (standalone) and ExternalSecret creation by this chart.
-    # Requires the External Secrets Operator (CRDs + controller) to be installed
-    # cluster-wide.
     enabled: true
-    serviceAccount:
-      create: true
-      name: ""
-      annotations: {}
 
   env:
     refreshInterval: 1h
     secretStoreRef:
-      name: secretstore-jarvis
+      # Empty = use this chart's <fullname>-secretstore.
+      name: ""
       kind: SecretStore
     targetSecretName: registry-env
     remoteRef: ""
@@ -71,7 +59,7 @@ registry:
         maxUnavailable: 0
     image:
       repository: ghcr.io/ascending-llc/jarvis/registry
-      pullPolicy: Always
+      pullPolicy: IfNotPresent
     service:
       port: 7860
     resources:
@@ -107,7 +95,7 @@ registry:
     replicaCount: 1
     image:
       repository: ghcr.io/ascending-llc/jarvis/registry-frontend
-      pullPolicy: Always
+      pullPolicy: IfNotPresent
     service:
       port: 80
     resources:
@@ -143,7 +131,7 @@ registry:
     replicaCount: 1
     image:
       repository: ghcr.io/ascending-llc/jarvis/auth-server
-      pullPolicy: Always
+      pullPolicy: IfNotPresent
     service:
       port: 8888
     # Comma-separated IPs/CIDRs of the proxies in front of auth-server (e.g. the ALB's VPC CIDR),
@@ -198,7 +186,7 @@ registry:
         maxUnavailable: 0
     image:
       repository: ghcr.io/ascending-llc/jarvis/workflow-worker
-      pullPolicy: Always
+      pullPolicy: IfNotPresent
     resources:
       requests:
         cpu: 500m
@@ -222,7 +210,7 @@ registry:
     replicaCount: 1
     image:
       repository: ghcr.io/ascending-llc/jarvis/skill-scan-worker
-      pullPolicy: Always
+      pullPolicy: IfNotPresent
     # Job runners per pod, which also caps scanner processes since tools in a job run one at a time.
     # Each runner costs ~300 MB (mostly SkillSpector). The Bedrock quota is shared with Chat, so raise
     # this slowly.
@@ -240,19 +228,9 @@ registry:
     # AKS Azure NPM or Cilium); elsewhere it's a no-op.
     networkPolicy:
       enabled: true
-      # Where the worker's MongoDB lives, for the egress rule. Two peers by default, one per way the charts
-      # run MongoDB in the namespace: Chat's standalone StatefulSet (app=mongodb) and the MongoDBCommunity
-      # operator's pods (app=<name>-svc, i.e. mongodb-svc). An egress peer for a pod that doesn't exist is
-      # harmless, so both are listed; override for a client whose Mongo carries some other label, or a Mongo
-      # outside the cluster (Atlas, DocumentDB). A wrong/empty selector crash-loops the worker where the CNI
-      # enforces policy.
-      mongodbEgressTo:
-        - podSelector:
-            matchLabels:
-              app: mongodb
-        - podSelector:
-            matchLabels:
-              app: mongodb-svc
+      # Empty = target built-in MongoDB if enabled, else fall back to Chat's MongoDB pods.
+      # Set explicitly if your MongoDB uses other labels or lives outside the cluster.
+      mongodbEgressTo: []
       # Ranges we block on the HTTPS rule: in-cluster, VPC and the cloud metadata endpoint. What's left is
       # public HTTPS — Bedrock, Azure OpenAI, STS, Entra ID, api.osv.dev.
       blockedCidrs:
@@ -275,8 +253,8 @@ registry:
   # Each client's Bedrock quota is shared with Chat — lower concurrency before raising it.
 
   # -------------------------------------------------------------------------
-  # SecretStore provider configuration (used when registry.standalone and
-  # registry.externalSecrets.enabled are both true).
+  # SecretStore provider configuration (used whenever
+  # `registry.externalSecrets.enabled` is true).
   # The provider block is passed verbatim to the SecretStore spec, so use the
   # External Secrets Operator provider format for your cloud:
   #
@@ -288,7 +266,7 @@ registry:
   #         auth:
   #           jwt:
   #             serviceAccountRef:
-  #               name: registry-service-account
+  #               name: jarvis-registry-sa
   #
   #   AKS — Azure Key Vault (Workload Identity):
   #     provider:
@@ -297,48 +275,33 @@ registry:
   #         vaultUrl: "https://<vault-name>.vault.azure.net"
   #         authType: WorkloadIdentity
   #         serviceAccountRef:
-  #           name: registry-service-account
+  #           name: jarvis-registry-sa
   # -------------------------------------------------------------------------
 
   secretStore:
     provider: {}
 
-  # -------------------------------------------------------------------------
-  # StorageClass — only rendered when registry.standalone is true and
-  # registry.storageClass.create is true. Leave create: false to use a
-  # pre-existing StorageClass (set persistence.storageClass on the datastores
-  # to match).
-  #
-  #   EKS example:
-  #     create: true
-  #     name: ebs-sc
-  #     provisioner: ebs.csi.aws.com
-  #     parameters:
-  #       type: gp3
-  #
-  #   AKS example:
-  #     create: true
-  #     name: azure-disk-sc
-  #     provisioner: disk.csi.azure.com
-  #     parameters:
-  #       skuName: Premium_LRS
-  # -------------------------------------------------------------------------
-
-  storageClass:
-    create: false
-    name: ""
-    provisioner: ""
-    parameters: {}
-
-  # -------------------------------------------------------------------------
-  # Optional bundled datastores. Disabled by default; enable only when this
-  # chart is deployed standalone (no co-located jarvis chart provides them).
-  # -------------------------------------------------------------------------
-
-  mongodb:
+  # Ingress (off by default — set host and annotations when enabling).
+  ingress:
     enabled: false
-    replicaCount: 1
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
+    # Must match AUTH_SERVER_API_PREFIX in registry-env.
+    authServerPathPrefix: /auth
+
+  # Bundled databases (all on by default; set enabled: false to bring your own).
+  mongodb:
+    enabled: true
     version: "8.2.4"
+    image:
+      repository: mongo
+    database: jarvis
+    auth:
+      # Password (MONGODB_ADMIN_PASSWORD, must be URL-safe) and keyfile (MONGODB_KEYFILE)
+      # come from registry-env.
+      username: registry
     resources:
       requests:
         cpu: 500m
@@ -350,14 +313,9 @@ registry:
       storageClass: ""
       size: 10Gi
     nodeSelector: {}
-    # The MongoDBCommunity resource reads the admin password from this secret.
-    # name defaults to registry.env.targetSecretName when empty.
-    adminPasswordSecret:
-      name: ""
-      key: MONGODB_ADMIN_PASSWORD
 
   redis:
-    enabled: false
+    enabled: true
     image:
       repository: redis
       tag: latest
@@ -388,7 +346,7 @@ registry:
       allowPrivilegeEscalation: false
 
   weaviate:
-    enabled: false
+    enabled: true
     replicaCount: 1
     image:
       repository: cr.weaviate.io/semitechnologies/weaviate
@@ -486,7 +444,7 @@ registry:
       # workloads being auto-instrumented, e.g. jarvis-demo).
       namespace: ""
 
-    # Standalone OTLP ALB gateway for ingesting telemetry from outside the
+    # Dedicated OTLP ALB gateway for ingesting telemetry from outside the
     # cluster. Disabled by default — most environments only need in-cluster
     # OTLP (auto-instrumentation talks to the collector directly).
     otelGateway:
@@ -515,7 +473,7 @@ registry:
       # pod restarts/rescheduling. Without this, the Prometheus Operator
       # defaults to emptyDir and all metrics are lost on every pod restart.
       persistence:
-        storageClass: ebs-sc
+        storageClass: ""
         size: 20Gi
 
     grafana:
@@ -569,7 +527,7 @@ registry:
 
     tempo:
       enabled: true
-      storageClass: ebs-sc
+      storageClass: ""
       size: 10Gi
 
     dashboards:

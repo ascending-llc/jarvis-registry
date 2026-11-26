@@ -1,0 +1,20 @@
+registry:
+  env:
+    remoteRef: jarvis/registry-env
+  secretStore:
+    provider:
+      aws:
+        service: SecretsManager
+        region: us-east-1
+        auth:
+          jwt:
+            serviceAccountRef:
+              name: jarvis-registry-sa
+  mongodb:
+    enabled: false
+  redis:
+    enabled: true
+  weaviate:
+    enabled: true
+  skillScan:
+    enabled: true

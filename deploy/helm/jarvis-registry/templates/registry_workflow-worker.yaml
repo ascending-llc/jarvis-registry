@@ -23,7 +23,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        reloader.stakater.com/auto: "true"
+        {{ include "jarvis-registry.reloaderAnnotation" . }}: "true"
     spec:
       serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
       {{- with .Values.registry.workflow.podSecurityContext }}
@@ -50,6 +50,10 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          env:
+            {{- . | nindent 12 }}
+          {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Values.registry.env.targetSecretName }}
@@ -65,6 +69,10 @@ spec:
           {{- with .Values.registry.workflow.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          env:
+            {{- . | nindent 12 }}
           {{- end }}
           envFrom:
             - secretRef:

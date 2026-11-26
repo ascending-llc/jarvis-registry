@@ -1,0 +1,27 @@
+Jarvis Registry has been deployed (release: {{ .Release.Name }}, namespace: {{ .Release.Namespace }}).
+
+Datastores:
+{{- if .Values.registry.mongodb.enabled }}
+  - MongoDB:  created by this chart ({{ include "jarvis-registry.fullname" . }}-mongodb)
+{{- else }}
+  - MongoDB:  external (bring-your-own; configured via {{ .Values.registry.env.targetSecretName }})
+{{- end }}
+{{- if .Values.registry.redis.enabled }}
+  - Redis:    created by this chart ({{ include "jarvis-registry.fullname" . }}-redis)
+{{- else }}
+  - Redis:    external (bring-your-own; configured via {{ .Values.registry.env.targetSecretName }})
+{{- end }}
+{{- if .Values.registry.weaviate.enabled }}
+  - Weaviate: created by this chart ({{ include "jarvis-registry.fullname" . }}-weaviate)
+{{- else }}
+  - Weaviate: external (bring-your-own; configured via {{ .Values.registry.env.targetSecretName }})
+{{- end }}
+{{- if and .Values.registry.ingress.enabled .Values.registry.ingress.host }}
+
+Registry URL:
+  https://{{ .Values.registry.ingress.host }}/gateway
+{{- end }}
+
+Note: Upgrading from chart <= 0.4.0? All three bundled datastores now default to
+enabled: true. Set registry.{mongodb,redis,weaviate}.enabled=false if you bring
+your own databases or share databases with Jarvis Chat.

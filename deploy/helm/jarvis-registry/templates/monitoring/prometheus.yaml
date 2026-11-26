@@ -34,7 +34,9 @@ spec:
   storage:
     volumeClaimTemplate:
       spec:
-        storageClassName: {{ .Values.registry.monitoring.prometheus.persistence.storageClass | quote }}
+        {{- with .Values.registry.monitoring.prometheus.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
         accessModes:
           - ReadWriteOnce
         resources:

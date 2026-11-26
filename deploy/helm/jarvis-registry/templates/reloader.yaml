@@ -1,14 +1,20 @@
-{{- if .Values.registry.standalone }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "jarvis-registry.fullname" . }}-reloader
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reloader
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: {{ include "jarvis-registry.fullname" . }}-reloader-role
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reloader
 rules:
 - apiGroups:
   - ""
@@ -65,12 +71,16 @@ rules:
   - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: {{ include "jarvis-registry.fullname" . }}-reloader-rb
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reloader
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: {{ include "jarvis-registry.fullname" . }}-reloader-role
 subjects:
 - kind: ServiceAccount
@@ -82,19 +92,26 @@ kind: Deployment
 metadata:
   name: {{ include "jarvis-registry.fullname" . }}-reloader
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reloader
 spec:
   replicas: 1
   revisionHistoryLimit: 2
   selector:
     matchLabels:
-      app: secret-reloader
+      {{- include "jarvis-registry.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: reloader
   template:
     metadata:
       labels:
-        app: secret-reloader
+        {{- include "jarvis-registry.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: reloader
     spec:
       containers:
-      - env:
+      - args:
+        - "--auto-annotation={{ include "jarvis-registry.reloaderAnnotation" . }}"
+        env:
         - name: GOMAXPROCS
           valueFrom:
             resourceFieldRef:
@@ -107,7 +124,7 @@ spec:
             resourceFieldRef:
               divisor: "1"
               resource: limits.memory
-        image: "ghcr.io/stakater/reloader:latest"
+        image: "ghcr.io/stakater/reloader:v1.4.24"
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 5
@@ -145,4 +162,3 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       serviceAccountName: {{ include "jarvis-registry.fullname" . }}-reloader
-{{- end }}

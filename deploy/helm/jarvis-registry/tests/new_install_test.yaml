@@ -1,0 +1,354 @@
+suite: new-install scenario
+release:
+  name: jarvis-registry
+  namespace: jarvis
+values:
+  - ./values/new-install.yaml
+tests:
+  - it: renders built-in MongoDB StatefulSet and headless Service (operator-free)
+    template: mongodb.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 0
+        isKind:
+          of: StatefulSet
+      - documentIndex: 0
+        equal:
+          path: metadata.name
+          value: jarvis-registry-mongodb
+      - documentIndex: 0
+        equal:
+          path: spec.serviceName
+          value: jarvis-registry-mongodb
+      - documentIndex: 0
+        equal:
+          path: spec.replicas
+          value: 1
+      - documentIndex: 0
+        equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/component"]
+          value: mongodb
+      - documentIndex: 1
+        isKind:
+          of: Service
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: jarvis-registry-mongodb
+      - documentIndex: 1
+        equal:
+          path: spec.clusterIP
+          value: None
+      - documentIndex: 1
+        equal:
+          path: spec.publishNotReadyAddresses
+          value: true
+
+  - it: renders built-in Redis StatefulSet and release-prefixed Service
+    template: redis.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 0
+        isKind:
+          of: StatefulSet
+      - documentIndex: 0
+        equal:
+          path: metadata.name
+          value: jarvis-registry-redis
+      - documentIndex: 0
+        equal:
+          path: spec.serviceName
+          value: jarvis-registry-redis
+      - documentIndex: 0
+        equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/component"]
+          value: redis
+      - documentIndex: 1
+        isKind:
+          of: Service
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: jarvis-registry-redis
+
+  - it: renders built-in Weaviate StatefulSet and headless Service with component labels
+    template: weaviate.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 0
+        isKind:
+          of: StatefulSet
+      - documentIndex: 0
+        equal:
+          path: metadata.name
+          value: jarvis-registry-weaviate
+      - documentIndex: 0
+        equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/component"]
+          value: weaviate
+      - documentIndex: 1
+        isKind:
+          of: Service
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: jarvis-registry-weaviate
+
+  - it: injects database env vars into backend container and migrations initContainer
+    template: registry_backend.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGO_URI
+            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEAVIATE_PORT
+            value: "8080"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEAVIATE_GRPC_PORT
+            value: "50051"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGO_URI
+            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+
+  - it: injects database env vars into auth-server container and migrations-wait initContainer
+    template: registry_auth-server.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGO_URI
+            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGO_URI
+            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+
+  - it: injects database env vars into workflow-worker container and migrations-wait initContainer
+    template: registry_workflow-worker.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGO_URI
+            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGO_URI
+            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+
+  - it: injects database env vars into skill-scan-worker and targets built-in MongoDB in NetworkPolicy
+    template: registry_skill-scan-worker.yaml
+    asserts:
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGO_URI
+            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGO_URI
+            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_URI
+            value: "redis://jarvis-registry-redis:6379"
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: WEAVIATE_HOST
+            value: "jarvis-registry-weaviate"
+      - documentIndex: 1
+        isKind:
+          of: NetworkPolicy
+      - documentIndex: 1
+        equal:
+          path: spec.egress[1].to[0].podSelector.matchLabels["app.kubernetes.io/component"]
+          value: mongodb
+
+  - it: sets frontend imagePullPolicy to IfNotPresent
+    template: registry_frontend.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+
+  - it: renders SecretStore owned by Registry and referenced by ExternalSecret
+    templates:
+      - secretstore.yaml
+      - registry_externalsecret.yaml
+    asserts:
+      - template: secretstore.yaml
+        isKind:
+          of: SecretStore
+      - template: secretstore.yaml
+        equal:
+          path: metadata.name
+          value: jarvis-registry-secretstore
+      - template: registry_externalsecret.yaml
+        equal:
+          path: spec.secretStoreRef.name
+          value: jarvis-registry-secretstore
+
+  - it: renders Ingress with /.well-known, /auth and /gateway and no /authorize
+    template: ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Ingress
+      - equal:
+          path: spec.ingressClassName
+          value: alb
+      - equal:
+          path: spec.rules[0].host
+          value: registry.example.com
+      - lengthEqual:
+          path: spec.rules[0].http.paths
+          count: 3
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /.well-known
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: auth-server
+      - equal:
+          path: spec.rules[0].http.paths[1].path
+          value: /auth
+      - equal:
+          path: spec.rules[0].http.paths[1].backend.service.name
+          value: auth-server
+      - equal:
+          path: spec.rules[0].http.paths[2].path
+          value: /gateway
+      - equal:
+          path: spec.rules[0].http.paths[2].backend.service.name
+          value: registry-frontend
+      - notContains:
+          path: spec.rules[0].http.paths
+          content:
+            path: /authorize
+          any: true
+
+  - it: renders only the single Registry ServiceAccount (no separate ESO ServiceAccount)
+    template: serviceaccount.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: jarvis-registry-sa
+
+  - it: fails rendering SecretStore when provider is empty
+    template: secretstore.yaml
+    set:
+      registry.secretStore.provider: null
+    asserts:
+      - failedTemplate:
+          errorMessage: "registry.secretStore.provider must be set when registry.externalSecrets.enabled is true"

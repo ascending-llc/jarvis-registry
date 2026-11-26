@@ -1,24 +1,27 @@
-{{- if and .Values.registry.standalone .Values.registry.weaviate.enabled }}
+{{- if .Values.registry.weaviate.enabled }}
+{{- $fullname := include "jarvis-registry.fullname" . -}}
 # Weaviate StatefulSet
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "jarvis-registry.fullname" . }}-weaviate
+  name: {{ $fullname }}-weaviate
   labels:
     {{- include "jarvis-registry.labels" . | nindent 4 }}
-    app: weaviate
+    app.kubernetes.io/component: weaviate
 spec:
   selector:
     matchLabels:
-      app: weaviate
-  serviceName: {{ include "jarvis-registry.fullname" . }}-weaviate
+      {{- include "jarvis-registry.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: weaviate
+  serviceName: {{ $fullname }}-weaviate
   replicas: {{ .Values.registry.weaviate.replicaCount }}
   template:
     metadata:
       labels:
-        app: weaviate
+        {{- include "jarvis-registry.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: weaviate
       annotations:
-        reloader.stakater.com/auto: "true"
+        {{ include "jarvis-registry.reloaderAnnotation" . }}: "true"
     spec:
       serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
       {{- with .Values.registry.weaviate.podSecurityContext }}
@@ -72,7 +75,9 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
-        storageClassName: {{ .Values.registry.weaviate.persistence.storageClass }}
+        {{- with .Values.registry.weaviate.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
         resources:
           requests:
             storage: {{ .Values.registry.weaviate.persistence.size }}
@@ -81,13 +86,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "jarvis-registry.fullname" . }}-weaviate
+  name: {{ $fullname }}-weaviate
   labels:
     {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: weaviate
 spec:
   clusterIP: None
   selector:
-    app: weaviate
+    {{- include "jarvis-registry.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: weaviate
   ports:
   {{- range .Values.registry.weaviate.service.ports }}
     - port: {{ .port }}

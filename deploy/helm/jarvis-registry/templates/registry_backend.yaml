@@ -23,7 +23,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        reloader.stakater.com/auto: "true"
+        {{ include "jarvis-registry.reloaderAnnotation" . }}: "true"
     spec:
       serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
       {{- with .Values.registry.backend.podSecurityContext }}
@@ -49,6 +49,10 @@ spec:
           {{- with .Values.registry.migrations.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          env:
+            {{- . | nindent 12 }}
           {{- end }}
           envFrom:
             - secretRef:
@@ -91,6 +95,10 @@ spec:
             preStop:
               exec:
                 command: ["sleep", "{{ .Values.registry.backend.preStopSleepSeconds }}"]
+          {{- end }}
+          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          env:
+            {{- . | nindent 12 }}
           {{- end }}
           envFrom:
             - secretRef:

@@ -67,10 +67,39 @@ Defaults to <fullname>-sa; override with registry.serviceAccount.name.
 {{- .Values.registry.serviceAccount.name | default (printf "%s-sa" (include "jarvis-registry.fullname" .)) }}
 {{- end }}
 
-{{/*
-Service account name for the External Secrets Operator.
-Defaults to <fullname>-eso-sa; override with registry.externalSecrets.serviceAccount.name.
-*/}}
-{{- define "jarvis-registry.externalSecretsServiceAccountName" -}}
-{{- .Values.registry.externalSecrets.serviceAccount.name | default (printf "%s-eso-sa" (include "jarvis-registry.fullname" .)) }}
+{{/* SecretStore name; defaults to <fullname>-secretstore. */}}
+{{- define "jarvis-registry.secretStoreName" -}}
+{{- .Values.registry.env.secretStoreRef.name | default (printf "%s-secretstore" (include "jarvis-registry.fullname" .)) -}}
+{{- end }}
+
+{{/* Registry-specific reloader annotation so it doesn't touch Chat's pods. */}}
+{{- define "jarvis-registry.reloaderAnnotation" -}}
+jarvis-registry.reloader/auto
+{{- end }}
+
+{{/* Override DB env vars from envFrom when a built-in database is enabled. */}}
+{{- define "jarvis-registry.databaseEnv" -}}
+{{- $fullname := include "jarvis-registry.fullname" . -}}
+{{- if .Values.registry.mongodb.enabled }}
+# $(MONGODB_ADMIN_PASSWORD) expands from envFrom (verified end-to-end in AS-2036).
+# Clear username/password vars so stale keys in the Secret don't override MONGO_URI.
+- name: MONGO_URI
+  value: {{ printf "mongodb://%s:$(MONGODB_ADMIN_PASSWORD)@%s-mongodb-0.%s-mongodb:27017/%s?replicaSet=rs0&authSource=admin" .Values.registry.mongodb.auth.username $fullname $fullname .Values.registry.mongodb.database | quote }}
+- name: MONGODB_USERNAME
+  value: ""
+- name: MONGODB_PASSWORD
+  value: ""
+{{- end }}
+{{- if .Values.registry.redis.enabled }}
+- name: REDIS_URI
+  value: {{ printf "redis://%s-redis:6379" $fullname | quote }}
+{{- end }}
+{{- if .Values.registry.weaviate.enabled }}
+- name: WEAVIATE_HOST
+  value: {{ printf "%s-weaviate" $fullname | quote }}
+- name: WEAVIATE_PORT
+  value: "8080"
+- name: WEAVIATE_GRPC_PORT
+  value: "50051"
+{{- end }}
 {{- end }}

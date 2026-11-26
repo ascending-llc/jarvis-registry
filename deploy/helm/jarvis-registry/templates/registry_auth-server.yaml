@@ -19,7 +19,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        reloader.stakater.com/auto: "true"
+        {{ include "jarvis-registry.reloaderAnnotation" . }}: "true"
     spec:
       serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
       {{- with .Values.registry.authServer.podSecurityContext }}
@@ -44,6 +44,10 @@ spec:
           {{- with .Values.registry.migrations.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          env:
+            {{- . | nindent 12 }}
           {{- end }}
           envFrom:
             - secretRef:
@@ -81,10 +85,16 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.registry.authServer.forwardedAllowIps }}
+          {{- $dbEnv := include "jarvis-registry.databaseEnv" . }}
+          {{- if or .Values.registry.authServer.forwardedAllowIps $dbEnv }}
           env:
+            {{- with .Values.registry.authServer.forwardedAllowIps }}
             - name: FORWARDED_ALLOW_IPS
               value: {{ . | quote }}
+            {{- end }}
+            {{- with $dbEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
           {{- end }}
           envFrom:
             - secretRef:

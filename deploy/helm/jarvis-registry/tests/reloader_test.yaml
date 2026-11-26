@@ -1,0 +1,103 @@
+suite: reloader isolation and image pinning
+release:
+  name: jarvis-registry
+  namespace: jarvis
+values:
+  - ./values/new-install.yaml
+tests:
+  - it: binds the reloader service account to a role in the release namespace
+    template: reloader.yaml
+    asserts:
+      - documentIndex: 1
+        isKind:
+          of: Role
+      - documentIndex: 1
+        equal:
+          path: metadata.namespace
+          value: jarvis
+      - documentIndex: 2
+        isKind:
+          of: RoleBinding
+      - documentIndex: 2
+        equal:
+          path: metadata.namespace
+          value: jarvis
+      - documentIndex: 2
+        equal:
+          path: roleRef.kind
+          value: Role
+
+  - it: pins reloader image tag (not latest) and configures Registry-specific auto annotation
+    template: reloader.yaml
+    documentIndex: 3
+    asserts:
+      - isKind:
+          of: Deployment
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: ":latest$"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--auto-annotation=jarvis-registry.reloader/auto"
+
+  - it: annotates all Registry workloads and Weaviate with jarvis-registry.reloader/auto only
+    templates:
+      - registry_backend.yaml
+      - registry_auth-server.yaml
+      - registry_frontend.yaml
+      - registry_workflow-worker.yaml
+      - registry_skill-scan-worker.yaml
+      - weaviate.yaml
+    asserts:
+      - template: registry_backend.yaml
+        documentIndex: 0
+        equal:
+          path: spec.template.metadata.annotations["jarvis-registry.reloader/auto"]
+          value: "true"
+      - template: registry_backend.yaml
+        documentIndex: 0
+        isNull:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+      - template: registry_auth-server.yaml
+        documentIndex: 0
+        equal:
+          path: spec.template.metadata.annotations["jarvis-registry.reloader/auto"]
+          value: "true"
+      - template: registry_auth-server.yaml
+        documentIndex: 0
+        isNull:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+      - template: registry_frontend.yaml
+        documentIndex: 0
+        equal:
+          path: spec.template.metadata.annotations["jarvis-registry.reloader/auto"]
+          value: "true"
+      - template: registry_frontend.yaml
+        documentIndex: 0
+        isNull:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+      - template: registry_workflow-worker.yaml
+        equal:
+          path: spec.template.metadata.annotations["jarvis-registry.reloader/auto"]
+          value: "true"
+      - template: registry_workflow-worker.yaml
+        isNull:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+      - template: registry_skill-scan-worker.yaml
+        documentIndex: 0
+        equal:
+          path: spec.template.metadata.annotations["jarvis-registry.reloader/auto"]
+          value: "true"
+      - template: registry_skill-scan-worker.yaml
+        documentIndex: 0
+        isNull:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+      - template: weaviate.yaml
+        documentIndex: 0
+        equal:
+          path: spec.template.metadata.annotations["jarvis-registry.reloader/auto"]
+          value: "true"
+      - template: weaviate.yaml
+        documentIndex: 0
+        isNull:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
