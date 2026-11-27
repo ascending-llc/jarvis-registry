@@ -101,8 +101,6 @@ select = [
 ]
 ignore = [
   "E501",   # line too long (handled by formatter)
-  "E402",   # module level import not at top of file (sometimes intentional)
-  "E722",   # bare except (will fix incrementally)
   "B008",   # do not perform function calls in argument defaults (FastAPI uses this pattern)
   "B019",   # lru_cache on methods (acceptable in this codebase)
   "B904",   # raise-without-from-inside-except (too noisy)
@@ -123,6 +121,8 @@ known-first-party = ["registry_pkgs", "auth_utils", "registry", "auth_server", "
 "registry-pkgs/src/registry_pkgs/core/a2a_http.py" = ["TID251"]
 # Import order matters some files. Exclude them from automatic import sorting.
 "registry-pkgs/src/registry_pkgs/vector/__init__.py" = ["I001"]
+# Scripts load .env / set env vars before importing app modules that read settings at import time.
+"scripts/*" = ["E402"]
 
 [tool.ruff.format]
 # See [tool.ruff.lint] exclude: a formatter upgrade must never rewrite an applied migration.

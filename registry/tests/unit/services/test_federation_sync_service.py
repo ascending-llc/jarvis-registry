@@ -1,5 +1,3 @@
-from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
-
 """Tests for federation sync orchestration and lifecycle operations."""
 
 from datetime import UTC, datetime
@@ -26,6 +24,7 @@ from registry_pkgs.models.enums import (
     FederationStatus,
     FederationSyncStatus,
 )
+from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 from registry_pkgs.testing.federation_metadata import make_azure_foundry_metadata
 from tests.unit.services.federation_sync_test_helpers import (

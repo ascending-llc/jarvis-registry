@@ -1,11 +1,10 @@
-from tests.fake_redis import FakeRedis
-
 """Unit tests for FlowStateManager — RFC 8707 resource indicator resolution (RC1)."""
 
 import pytest
 
 from registry_pkgs.oauth.flow_state_manager import FlowStateManager
 from registry_pkgs.oauth.schemas import OAuthFlow, OAuthProtectedResourceMetadata
+from tests.fake_redis import FakeRedis
 
 
 class TestCreateFlowMetadataResourceResolution:
