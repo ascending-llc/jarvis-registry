@@ -103,3 +103,12 @@ jarvis-registry.reloader/auto
   value: "50051"
 {{- end }}
 {{- end }}
+
+{{/* Extra env vars (map -> env entries), rendered after databaseEnv. */}}
+{{- define "jarvis-registry.extraEnv" -}}
+{{- $extra := .Values.registry.extraEnv -}}
+{{- range $key := keys $extra | sortAlpha }}
+- name: {{ $key }}
+  value: {{ printf "%v" (index $extra $key) | quote }}
+{{- end }}
+{{- end }}

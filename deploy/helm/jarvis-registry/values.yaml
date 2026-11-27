@@ -8,6 +8,9 @@ registry:
   imageTag: ""
   podLabels: {}
   nodeSelector: {}
+  # Extra environment variables (map of NAME: "value") injected into Registry
+  # workloads after databaseEnv (so they override envFrom from registry-env).
+  extraEnv: {}
 
   serviceAccount:
     # Set to false to use a pre-existing ServiceAccount (e.g., one managed by Terraform/CDK for IRSA).

@@ -50,9 +50,16 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          {{- $dbEnv := include "jarvis-registry.databaseEnv" . }}
+          {{- $extraEnv := include "jarvis-registry.extraEnv" . }}
+          {{- if or $dbEnv $extraEnv }}
           env:
+            {{- with $dbEnv }}
             {{- . | nindent 12 }}
+            {{- end }}
+            {{- with $extraEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
           {{- end }}
           envFrom:
             - secretRef:
@@ -96,9 +103,16 @@ spec:
               exec:
                 command: ["sleep", "{{ .Values.registry.backend.preStopSleepSeconds }}"]
           {{- end }}
-          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          {{- $dbEnv := include "jarvis-registry.databaseEnv" . }}
+          {{- $extraEnv := include "jarvis-registry.extraEnv" . }}
+          {{- if or $dbEnv $extraEnv }}
           env:
+            {{- with $dbEnv }}
             {{- . | nindent 12 }}
+            {{- end }}
+            {{- with $extraEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
           {{- end }}
           envFrom:
             - secretRef:

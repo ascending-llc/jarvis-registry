@@ -62,6 +62,10 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with (include "jarvis-registry.extraEnv" .) }}
+          env:
+            {{- . | nindent 12 }}
+          {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Values.registry.env.targetSecretName }}

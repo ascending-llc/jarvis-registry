@@ -45,9 +45,16 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          {{- $dbEnv := include "jarvis-registry.databaseEnv" . }}
+          {{- $extraEnv := include "jarvis-registry.extraEnv" . }}
+          {{- if or $dbEnv $extraEnv }}
           env:
+            {{- with $dbEnv }}
             {{- . | nindent 12 }}
+            {{- end }}
+            {{- with $extraEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
           {{- end }}
           envFrom:
             - secretRef:
@@ -86,13 +93,17 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- $dbEnv := include "jarvis-registry.databaseEnv" . }}
-          {{- if or .Values.registry.authServer.forwardedAllowIps $dbEnv }}
+          {{- $extraEnv := include "jarvis-registry.extraEnv" . }}
+          {{- if or .Values.registry.authServer.forwardedAllowIps $dbEnv $extraEnv }}
           env:
             {{- with .Values.registry.authServer.forwardedAllowIps }}
             - name: FORWARDED_ALLOW_IPS
               value: {{ . | quote }}
             {{- end }}
             {{- with $dbEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with $extraEnv }}
             {{- . | nindent 12 }}
             {{- end }}
           {{- end }}
