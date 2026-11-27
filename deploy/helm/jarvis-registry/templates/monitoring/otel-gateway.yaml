@@ -1,0 +1,119 @@
+{{- if and .Values.registry.monitoring.enabled .Values.registry.monitoring.otelGateway.enabled }}
+{{- $gw := .Values.registry.monitoring.otelGateway }}
+# Exposes OTLP ingest on an existing ALB (via alb.ingress.kubernetes.io/group.name)
+# for telemetry from outside the cluster. Forwards inward to the in-cluster
+# otel-collector, which then exports per registry.monitoring.backend.
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-gateway
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  mode: deployment
+  replicas: 1
+  image: {{ .Values.registry.monitoring.otelCollector.image }}
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities: { drop: ["ALL"] }
+    seccompProfile: { type: RuntimeDefault }
+  env:
+    - name: GATEWAY_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: {{ .Values.registry.monitoring.externalSecrets.targetSecretName }}
+          key: {{ $gw.authSecretKey }}
+  config:
+    extensions:
+      bearertokenauth:
+        scheme: "Bearer"
+        token: "${env:GATEWAY_TOKEN}"
+      health_check:
+        endpoint: 0.0.0.0:13133        # ALB health-checks this (pod IP:13133)
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+            auth: { authenticator: bearertokenauth }
+            # The ALB can't strip the path prefix, so the receiver owns the full
+            # sub-path. Clients point at https://<host>{{ $gw.gatewayPath }} and
+            # the OTLP/HTTP exporter appends /v1/<signal>.
+            traces_url_path: {{ $gw.gatewayPath }}/v1/traces
+            metrics_url_path: {{ $gw.gatewayPath }}/v1/metrics
+            logs_url_path: {{ $gw.gatewayPath }}/v1/logs
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 15
+      batch:
+        send_batch_size: 8192
+        timeout: 10s
+    exporters:
+      otlp/internal:
+        # forwards to the in-cluster otel-collector (otel-collector.yaml)
+        endpoint: otel-collector.{{ .Values.registry.monitoring.namespace }}.svc.cluster.local:4317
+        tls: { insecure: true }
+        retry_on_failure: { enabled: true }
+        sending_queue: { enabled: true }
+    service:
+      extensions: [bearertokenauth, health_check]
+      pipelines:
+        traces:  { receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp/internal] }
+        metrics: { receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp/internal] }
+        logs:    { receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp/internal] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/managed-by: opentelemetry-operator
+    app.kubernetes.io/instance: {{ .Values.registry.monitoring.namespace }}.otel-gateway
+    app.kubernetes.io/component: opentelemetry-collector
+  ports:
+    - { name: otlp-http,   port: 4318,  targetPort: 4318 }
+    - { name: healthcheck, port: 13133, targetPort: 13133 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: otel-gateway-ingress
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/group.name: {{ $gw.albGroupName | quote }}
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/group.order: "0"
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-port: "13133"
+    alb.ingress.kubernetes.io/healthcheck-path: "/"
+    alb.ingress.kubernetes.io/success-codes: "200"
+spec:
+  ingressClassName: {{ $gw.ingressClassName }}
+  rules:
+    - host: {{ $gw.host | quote }}
+      http:
+        paths:
+          - path: {{ $gw.gatewayPath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: otel-gateway
+                port:
+                  number: 4318
+{{- end }}

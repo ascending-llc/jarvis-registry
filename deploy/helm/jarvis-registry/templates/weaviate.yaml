@@ -1,0 +1,107 @@
+{{- if .Values.registry.weaviate.enabled }}
+{{- $fullname := include "jarvis-registry.fullname" . -}}
+# Weaviate StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-weaviate
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: weaviate
+spec:
+  selector:
+    matchLabels:
+      {{- include "jarvis-registry.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: weaviate
+  serviceName: {{ $fullname }}-weaviate
+  replicas: {{ .Values.registry.weaviate.replicaCount }}
+  template:
+    metadata:
+      labels:
+        {{- include "jarvis-registry.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: weaviate
+      annotations:
+        {{ include "jarvis-registry.reloaderAnnotation" . }}: "true"
+    spec:
+      serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
+      {{- with .Values.registry.weaviate.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.weaviate.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: weaviate
+          image: "{{ .Values.registry.weaviate.image.repository }}:{{ .Values.registry.weaviate.image.tag }}"
+          {{- with .Values.registry.weaviate.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: PERSISTENCE_DATA_PATH
+              value: /var/lib/weaviate
+          envFrom:
+            - secretRef:
+                name: {{ .Values.registry.weaviate.envSecretName | default .Values.registry.env.targetSecretName }}
+          ports:
+          {{- range .Values.registry.weaviate.service.ports }}
+            - containerPort: {{ .port }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.registry.weaviate.probes.liveness.path }}
+              port: {{ .Values.registry.weaviate.probes.liveness.port }}
+            initialDelaySeconds: {{ .Values.registry.weaviate.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.weaviate.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.weaviate.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.weaviate.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.registry.weaviate.probes.readiness.path }}
+              port: {{ .Values.registry.weaviate.probes.readiness.port }}
+            initialDelaySeconds: {{ .Values.registry.weaviate.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.registry.weaviate.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.registry.weaviate.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.registry.weaviate.probes.readiness.failureThreshold }}
+          {{- with .Values.registry.weaviate.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: weaviate-data
+              mountPath: /var/lib/weaviate
+  volumeClaimTemplates:
+    - metadata:
+        name: weaviate-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with .Values.registry.weaviate.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.registry.weaviate.persistence.size }}
+---
+# Weaviate Headless Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-weaviate
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: weaviate
+spec:
+  clusterIP: None
+  selector:
+    {{- include "jarvis-registry.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: weaviate
+  ports:
+  {{- range .Values.registry.weaviate.service.ports }}
+    - port: {{ .port }}
+      targetPort: {{ .targetPort }}
+      name: {{ .name }}
+  {{- end }}
+{{- end }}

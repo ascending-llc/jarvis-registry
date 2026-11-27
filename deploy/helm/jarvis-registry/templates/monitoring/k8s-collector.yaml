@@ -1,0 +1,88 @@
+{{- if and .Values.registry.monitoring.enabled .Values.registry.monitoring.k8sCollector.enabled }}
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-k8s-metrics
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  mode: daemonset
+  serviceAccount: otel-collector
+  image: {{ .Values.registry.monitoring.k8sCollector.image }}
+
+  config:
+    receivers:
+      # Kubelet metrics (node/pod stats)
+      kubeletstats:
+        collection_interval: 30s
+        auth_type: serviceAccount
+        endpoint: "https://${env:K8S_NODE_NAME}:10250"
+        insecure_skip_verify: true
+        # Enable metadata collection to get PVC labels
+        k8s_api_config:
+          auth_type: serviceAccount
+        extra_metadata_labels:
+          - container.id
+          - k8s.volume.type
+        metric_groups:
+          - container
+          - pod
+          - node
+          - volume
+        metrics:
+          k8s.pod.volume.usage:
+            enabled: true
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: 'otel-collector'
+              scrape_interval: 5s
+              static_configs:
+                - targets: ['0.0.0.0:8888']
+
+    processors:
+      # Memory limiter should be FIRST
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 512
+        spike_limit_mib: 128
+
+      # Add resource attributes (including node name)
+      resource:
+        attributes:
+          - key: node
+            value: ${env:K8S_NODE_NAME}
+            action: upsert
+          - key: cluster.name
+            value: {{ .Values.registry.monitoring.k8sCollector.clusterName | quote }}
+            action: upsert
+
+      # REMOVE k8sattributes - it doesn't work well with kubeletstats
+      # kubeletstats already includes k8s metadata
+
+      # Batch should be last
+      batch:
+        timeout: 10s
+        send_batch_size: 1024
+
+    exporters:
+      debug:
+        verbosity: detailed
+        sampling_initial: 5
+        sampling_thereafter: 200
+      {{- include "jarvis-registry.monitoring.exporterDefs" . | nindent 6 }}
+    service:
+      pipelines:
+        metrics:
+          receivers: [kubeletstats, prometheus]
+          processors: [memory_limiter, resource, batch]
+          exporters: [{{ include "jarvis-registry.monitoring.metricsExporterNames" . }}]
+
+  env:
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    {{- include "jarvis-registry.monitoring.backendEnv" . | nindent 4 }}
+{{- end }}

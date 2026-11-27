@@ -1,0 +1,55 @@
+{{- if and .Values.registry.monitoring.enabled .Values.registry.monitoring.autoInstrumentation.enabled }}
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: app-instrumentation
+  namespace: {{ .Values.registry.monitoring.autoInstrumentation.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  exporter:
+    endpoint: http://otel-collector.{{ .Values.registry.monitoring.namespace }}.svc.cluster.local:4318
+  propagators:
+    - tracecontext
+    - baggage
+  sampler:
+    type: parentbased_traceidratio
+    argument: '1'
+  python:
+    env:
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      - name: OTEL_LOGS_EXPORTER
+        value: otlp
+      - name: OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST
+        value: "path"
+
+  nodejs:
+    env:
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      - name: OTEL_LOGS_EXPORTER
+        value: otlp
+
+  nginx:
+    env:
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      - name: OTEL_LOGS_EXPORTER
+        value: otlp
+  # Go auto-instrumentation requires specifying the binary path via
+  # OTEL_GO_AUTO_TARGET_EXE, e.g. via the
+  # instrumentation.opentelemetry.io/otel-go-auto-target-exe annotation.
+  go:
+    env:
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: "grpc"
+      - name: OTEL_TRACES_EXPORTER
+        value: otlp
+{{- end }}

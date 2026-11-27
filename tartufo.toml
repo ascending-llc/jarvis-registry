@@ -210,4 +210,5 @@ exclude-signatures = [
     {signature = '8d2861040377feea34b7619cc927b649903881722d4f9dbcef2555f163e7ab50', reason = 'example key value pair in quick-start doc is not credential'},
     {signature = '20fe648845b4bed780226bfdbecd6f0dc158baed78afb1fb281ce3dc0eaeb70b', reason = 'example key value pair in quick-start doc is not credential'},
     {signature = 'fa64df3e9696f2cba233d209504f55287cf12020f33b3f3064888ecf855a3079', reason = 'MCP protocol version constant name is code, not a credential'},
+    {signature = '25e0ec0fd48ec745a70afbc78575539f027cf9b02ffd5e367155efc9f6d2b0ce', reason = 'MongoDB keyfile container path is not a credential'},
 ]

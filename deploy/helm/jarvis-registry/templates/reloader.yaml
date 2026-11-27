@@ -1,0 +1,164 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-reloader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reloader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-reloader-role
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reloader
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  - configmaps
+  verbs:
+  - list
+  - get
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - daemonsets
+  - statefulsets
+  verbs:
+  - list
+  - get
+  - update
+  - patch
+- apiGroups:
+  - extensions
+  resources:
+  - deployments
+  - daemonsets
+  verbs:
+  - list
+  - get
+  - update
+  - patch
+- apiGroups:
+  - batch
+  resources:
+  - cronjobs
+  verbs:
+  - list
+  - get
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - list
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-reloader-rb
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reloader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "jarvis-registry.fullname" . }}-reloader-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "jarvis-registry.fullname" . }}-reloader
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jarvis-registry.fullname" . }}-reloader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reloader
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      {{- include "jarvis-registry.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: reloader
+  template:
+    metadata:
+      labels:
+        {{- include "jarvis-registry.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: reloader
+    spec:
+      containers:
+      - args:
+        - "--auto-annotation={{ include "jarvis-registry.reloaderAnnotation" . }}"
+        env:
+        - name: GOMAXPROCS
+          valueFrom:
+            resourceFieldRef:
+              divisor: "1"
+              resource: limits.cpu
+        - name: KUBERNETES_NAMESPACE
+          value: "{{ .Release.Namespace }}"
+        - name: GOMEMLIMIT
+          valueFrom:
+            resourceFieldRef:
+              divisor: "1"
+              resource: limits.memory
+        image: "ghcr.io/stakater/reloader:v1.4.24"
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /live
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        name: secret-reloader
+        ports:
+        - containerPort: 9090
+          name: http
+        readinessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /metrics
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 10m
+            memory: 512Mi
+        securityContext: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: {{ include "jarvis-registry.fullname" . }}-reloader

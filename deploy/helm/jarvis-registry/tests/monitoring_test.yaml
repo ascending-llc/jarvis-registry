@@ -1,0 +1,58 @@
+suite: monitoring scenario
+release:
+  name: jarvis-registry
+  namespace: jarvis
+values:
+  - ./values/monitoring.yaml
+tests:
+  - it: renders OTel collector, Prometheus, Tempo, Grafana and Instrumentation
+    templates:
+      - monitoring/otel-collector.yaml
+      - monitoring/prometheus.yaml
+      - monitoring/tempo.yaml
+      - monitoring/grafana.yaml
+      - monitoring/auto-instrumentation.yaml
+    asserts:
+      - template: monitoring/otel-collector.yaml
+        isKind:
+          of: OpenTelemetryCollector
+      - template: monitoring/prometheus.yaml
+        isKind:
+          of: Prometheus
+      - template: monitoring/prometheus.yaml
+        notExists:
+          path: spec.storage.volumeClaimTemplate.spec.storageClassName
+      - template: monitoring/tempo.yaml
+        isKind:
+          of: ConfigMap
+      - template: monitoring/tempo.yaml
+        equal:
+          path: metadata.name
+          value: tempo-values
+      - template: monitoring/tempo.yaml
+        notMatchRegex:
+          path: data["values.yaml"]
+          pattern: 'storageClassName:'
+      - template: monitoring/grafana.yaml
+        isKind:
+          of: ConfigMap
+      - template: monitoring/auto-instrumentation.yaml
+        isKind:
+          of: Instrumentation
+
+  - it: preserves explicitly configured storage classes
+    templates:
+      - monitoring/prometheus.yaml
+      - monitoring/tempo.yaml
+    set:
+      registry.monitoring.prometheus.persistence.storageClass: ebs-sc
+      registry.monitoring.tempo.storageClass: ebs-sc
+    asserts:
+      - template: monitoring/prometheus.yaml
+        equal:
+          path: spec.storage.volumeClaimTemplate.spec.storageClassName
+          value: ebs-sc
+      - template: monitoring/tempo.yaml
+        matchRegex:
+          path: data["values.yaml"]
+          pattern: 'storageClassName: "ebs-sc"'

@@ -1,0 +1,70 @@
+name: Helm Chart CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/helm-chart.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/helm-chart.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CHART_DIR: deploy/helm/jarvis-registry
+  HELM_VERSION: v3.17.3
+  HELM_UNITTEST_VERSION: v0.8.2
+  KUBECONFORM_VERSION: v0.6.7
+
+jobs:
+  validate-chart:
+    name: "Helm Lint, Unit Tests & Schema Validation"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install helm-unittest plugin
+        run: |
+          helm plugin install https://github.com/helm-unittest/helm-unittest.git --version "${HELM_UNITTEST_VERSION}"
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Helm lint (all scenarios)
+        run: |
+          for values_file in "${CHART_DIR}"/tests/values/*.yaml; do
+            echo "::group::helm lint (${values_file})"
+            helm lint "${CHART_DIR}" -f "${values_file}"
+            echo "::endgroup::"
+          done
+
+      - name: Helm unit tests
+        run: |
+          helm unittest "${CHART_DIR}"
+
+      - name: Validate rendered manifests with kubeconform (all scenarios)
+        run: |
+          for values_file in "${CHART_DIR}"/tests/values/*.yaml; do
+            echo "::group::kubeconform (${values_file})"
+            helm template jarvis-registry "${CHART_DIR}" -f "${values_file}" \
+              | kubeconform -strict -summary \
+                -schema-location default \
+                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            echo "::endgroup::"
+          done

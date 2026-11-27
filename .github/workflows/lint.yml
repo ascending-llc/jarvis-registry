@@ -68,3 +68,21 @@ jobs:
       with:
         name: bandit-reports
         path: bandit-report.json
+
+  actionlint:
+    name: "GitHub Workflows Lint"
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Install actionlint
+      run: |
+        curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz" \
+          | tar -xz -C /usr/local/bin actionlint
+        actionlint -version
+
+    - name: Lint GitHub workflows
+      run: |
+        actionlint -shellcheck=

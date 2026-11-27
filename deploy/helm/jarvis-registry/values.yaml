@@ -1,0 +1,572 @@
+# Jarvis Registry chart values
+# Breaking change (from <= 0.4.0): MongoDB, Redis and Weaviate now default to
+# enabled: true. If you share databases with Jarvis Chat or bring your own,
+# set all three to enabled: false before upgrading.
+
+registry:
+  # Image tag override; defaults to Chart.yaml appVersion.
+  imageTag: ""
+  podLabels: {}
+  nodeSelector: {}
+
+  serviceAccount:
+    # Set to false to use a pre-existing ServiceAccount (e.g., one managed by Terraform/CDK for IRSA).
+    create: true
+    # Override the service account name. Defaults to <fullname>-sa when empty.
+    name: ""
+    # Supply cloud-specific annotations here:
+    #   EKS (IRSA):   eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/my-role
+    #   AKS (WI):     azure.workload.identity/client-id: "<client-id>"
+    annotations: {}
+
+  # Syncs `registry.env.targetSecretName` via External Secrets Operator.
+  # Turn off if you manage that Secret yourself.
+  externalSecrets:
+    enabled: true
+
+  env:
+    refreshInterval: 1h
+    secretStoreRef:
+      # Empty = use this chart's <fullname>-secretstore.
+      name: ""
+      kind: SecretStore
+    targetSecretName: registry-env
+    remoteRef: ""
+
+  # Database migrations (registry_pkgs.migrations), run as initContainers.
+  # registry-backend runs `up`; auth-server and workflow-worker run `wait`.
+  # Requires an image tag that contains registry_pkgs.migrations (asc0.5.12 or later);
+  # set enabled: false only to run an older image.
+  migrations:
+    enabled: true
+    resources: {}
+
+  backend:
+    replicaCount: 1
+    # Must exceed preStopSleepSeconds + uvicorn --timeout-graceful-shutdown (30s, jarvis-registry
+    # docker/registry-entrypoint.sh) + the in-app finalize budget (10s). See jarvis-registry AS-1909.
+    # The remaining headroom also covers the other container.shutdown() steps that run before finalize
+    # (reaper, skill-sync, reindex and maintenance-watcher runners), so keep those quick.
+    terminationGracePeriodSeconds: 60
+    # Lets the Service drop this pod's endpoint before SIGTERM, so no new requests arrive mid-drain.
+    # Set to 0 to disable the preStop hook.
+    preStopSleepSeconds: 5
+    # Explicit one-at-a-time rollout: the new pod is Ready before the old one stops.
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    image:
+      repository: ghcr.io/ascending-llc/jarvis/registry
+      pullPolicy: IfNotPresent
+    service:
+      port: 7860
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    # podSecurityContext:
+    #   runAsNonRoot: true
+    #   seccompProfile:
+    #     type: RuntimeDefault
+    # securityContext:
+    #   allowPrivilegeEscalation: false
+    #   capabilities:
+    #     drop:
+    #       - ALL
+    probes:
+      liveness:
+        path: /health
+        initialDelaySeconds: 40
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readiness:
+        path: /health
+        initialDelaySeconds: 40
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+
+  frontend:
+    replicaCount: 1
+    image:
+      repository: ghcr.io/ascending-llc/jarvis/registry-frontend
+      pullPolicy: IfNotPresent
+    service:
+      port: 80
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    # podSecurityContext:
+    #   runAsNonRoot: true
+    #   seccompProfile:
+    #     type: RuntimeDefault
+    # securityContext:
+    #   allowPrivilegeEscalation: false
+    #   capabilities:
+    #     drop:
+    #       - ALL
+    probes:
+      liveness:
+        path: /health
+        initialDelaySeconds: 10
+        periodSeconds: 15
+        timeoutSeconds: 3
+        failureThreshold: 3
+      readiness:
+        path: /health
+        initialDelaySeconds: 10
+        periodSeconds: 15
+        timeoutSeconds: 3
+        failureThreshold: 3
+
+  authServer:
+    replicaCount: 1
+    image:
+      repository: ghcr.io/ascending-llc/jarvis/auth-server
+      pullPolicy: IfNotPresent
+    service:
+      port: 8888
+    # Comma-separated IPs/CIDRs of the proxies in front of auth-server (e.g. the ALB's VPC CIDR),
+    # rendered as uvicorn's FORWARDED_ALLOW_IPS. uvicorn then takes the client IP from
+    # X-Forwarded-For, which auth-server records at DCR and shows on the OAuth consent page.
+    # Empty keeps uvicorn's default (127.0.0.1), so the proxy's own IP is recorded instead.
+    # Never use "*": uvicorn then takes the leftmost X-Forwarded-For entry, which the client controls.
+    # Set by Terraform (modules/jarvis_aws) from the VPC's CIDR blocks.
+    forwardedAllowIps: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+    # podSecurityContext:
+    #   runAsNonRoot: true
+    #   seccompProfile:
+    #     type: RuntimeDefault
+    # securityContext:
+    #   allowPrivilegeEscalation: false
+    #   capabilities:
+    #     drop:
+    #       - ALL
+    probes:
+      liveness:
+        path: /health
+        initialDelaySeconds: 20
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readiness:
+        path: /health
+        initialDelaySeconds: 20
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+
+  workflow:
+    replicaCount: 1
+    # Must be >= 60. It mirrors the hard-coded _TERMINATION_GRACE_PERIOD_SECONDS = 60 in jarvis-registry
+    # workflow-worker/src/workflow_worker/config.py, which the worker does not read from the pod spec:
+    # WorkerSettings rejects WORKFLOW_WORKER_SHUTDOWN_DRAIN_SECONDS + WORKFLOW_WORKER_SHUTDOWN_FINALIZE_SECONDS
+    # > 50 (60 minus 10s headroom). Lowering this value reintroduces SIGKILL mid-finalize with no check;
+    # raising it does not let the worker drain longer. See jarvis-registry AS-1910.
+    # No preStop: the worker serves no traffic and stops claiming immediately on SIGTERM.
+    terminationGracePeriodSeconds: 60
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    image:
+      repository: ghcr.io/ascending-llc/jarvis/workflow-worker
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    # podSecurityContext:
+    #   runAsNonRoot: true
+    #   seccompProfile:
+    #     type: RuntimeDefault
+    # securityContext:
+    #   allowPrivilegeEscalation: false
+    #   capabilities:
+    #     drop:
+    #       - ALL
+
+  # Skill-scan worker. Off by default — turn it on per environment. The image tag follows the chart
+  # (the jarvis-registry.imageTag helper), so it moves with every bump.
+  skillScan:
+    enabled: false
+    replicaCount: 1
+    image:
+      repository: ghcr.io/ascending-llc/jarvis/skill-scan-worker
+      pullPolicy: IfNotPresent
+    # Job runners per pod, which also caps scanner processes since tools in a job run one at a time.
+    # Each runner costs ~300 MB (mostly SkillSpector). The Bedrock quota is shared with Chat, so raise
+    # this slowly.
+    concurrency: 2
+    toolTimeoutSeconds: 600
+    llmMaxTextBytes: 524288
+    tmpSizeLimit: 1Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+    # Egress firewall. Only does anything where the CNI enforces NetworkPolicy (EKS VPC CNI agent,
+    # AKS Azure NPM or Cilium); elsewhere it's a no-op.
+    networkPolicy:
+      enabled: true
+      # Where the worker's MongoDB lives, for the egress rule. Empty = the built-in MongoDB if enabled,
+      # else Chat's MongoDB pods (standalone StatefulSet app=mongodb and operator pods app=mongodb-svc).
+      # Set explicitly if your MongoDB carries other labels or lives outside the cluster (Atlas, DocumentDB —
+      # use an ipBlock peer). A selector that matches nothing crash-loops the worker where the CNI enforces
+      # policy. An empty list never renders an empty `to:`, which would allow 27017 to anywhere.
+      mongodbEgressTo: []
+      # Ranges we block on the HTTPS rule: in-cluster, VPC and the cloud metadata endpoint. What's left is
+      # public HTTPS — Bedrock, Azure OpenAI, STS, Entra ID, api.osv.dev.
+      # Private endpoints are blocked too: if the VPC/VNet has AWS interface endpoints with private DNS
+      # (bedrock-runtime, sts) or Azure Private Endpoints for OpenAI/Entra, those hostnames resolve to
+      # private IPs and LLM calls / IRSA token exchange fail. Allow the endpoint subnets via extraEgress.
+      blockedCidrs:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+      # Extra egress rules, e.g. a private LLM endpoint or a proxy. Added as-is.
+      extraEgress: []
+
+  # Rollout:
+  #   1. Ship a Registry release that has the scan pipeline (jobs just queue as pending until then).
+  #   2. Pick a scan model via PUT /model-gateway/selection/skill-scan-model (or use the workflow default).
+  #   3. Set skillScan.enabled: true in the client's *Registry* release values — NOT Chat's. The
+  #      clients/terraform_{aws,azure}/clients_values/<client>/values.yaml files are Chat's values, and
+  #      registry.* there has no effect. On AWS the jarvis_registry release reads registry_values_file and
+  #      installs registry_helm_chart_version — set both where the release is applied, chart >= 0.4.0 or this
+  #      skillScan block won't exist. On Azure, enable it wherever that env's Registry release is installed.
+  #      Where the cluster enforces NetworkPolicy and LLM/STS traffic goes through private endpoints, add
+  #      those subnets to skillScan.networkPolicy.extraEgress first (see blockedCidrs).
+  # Flipping it back off leaves queued jobs and existing results untouched; turning it on resumes them.
+  # Each client's Bedrock quota is shared with Chat — lower concurrency before raising it.
+
+  # -------------------------------------------------------------------------
+  # SecretStore provider configuration (used whenever
+  # `registry.externalSecrets.enabled` is true).
+  # The provider block is passed verbatim to the SecretStore spec, so use the
+  # External Secrets Operator provider format for your cloud:
+  #
+  #   EKS — AWS Secrets Manager (IRSA):
+  #     provider:
+  #       aws:
+  #         service: SecretsManager
+  #         region: us-east-1
+  #         auth:
+  #           jwt:
+  #             serviceAccountRef:
+  #               name: jarvis-registry-sa
+  #
+  #   AKS — Azure Key Vault (Workload Identity):
+  #     provider:
+  #       azurekv:
+  #         tenantId: "<tenant-id>"
+  #         vaultUrl: "https://<vault-name>.vault.azure.net"
+  #         authType: WorkloadIdentity
+  #         serviceAccountRef:
+  #           name: jarvis-registry-sa
+  # -------------------------------------------------------------------------
+
+  secretStore:
+    provider: {}
+
+  # Ingress (off by default — set host and annotations when enabling).
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
+    # Must match AUTH_SERVER_API_PREFIX in registry-env.
+    authServerPathPrefix: /auth
+
+  # Bundled databases (all on by default; set enabled: false to bring your own).
+  mongodb:
+    enabled: true
+    version: "8.2.4"
+    image:
+      repository: mongo
+    database: jarvis
+    auth:
+      # Password (MONGODB_ADMIN_PASSWORD) and keyfile (MONGODB_KEYFILE) come from registry-env.
+      # The password is applied only on first boot (empty PVC). Changing MONGODB_ADMIN_PASSWORD in
+      # the Secret afterwards does not change the stored user's password. To rotate it:
+      #   1. With the current password, change it inside MongoDB:
+      #        kubectl exec <fullname>-mongodb-0 -- mongosh -u <username> -p '<current>' \
+      #          --authenticationDatabase admin \
+      #          --eval "db.getSiblingDB('admin').changeUserPassword('<username>', '<new>')"
+      #   2. Update MONGODB_ADMIN_PASSWORD in the source secret; External Secrets syncs it to registry-env.
+      #   3. The reloader restarts the Registry pods with the new password.
+      #   New connections fail between steps 1 and 3.
+      username: registry
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    persistence:
+      storageClass: ""
+      size: 10Gi
+    nodeSelector: {}
+
+  redis:
+    enabled: true
+    image:
+      repository: redis
+      tag: "8.8.0"
+    persistence:
+      enabled: true
+      storageClass: ""
+      size: 5Gi
+    service:
+      ports:
+        - port: 6379
+          targetPort: 6379
+          name: tcp
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    nodeSelector: {}
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 999
+      runAsGroup: 999
+      fsGroup: 999
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+
+  weaviate:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: cr.weaviate.io/semitechnologies/weaviate
+      tag: 1.32.0
+    persistence:
+      storageClass: ""
+      size: 25Gi
+    service:
+      ports:
+        - port: 8080
+          targetPort: 8080
+          name: http
+        - port: 50051
+          targetPort: 50051
+          name: grpc
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "1000m"
+      limits:
+        memory: "4Gi"
+        cpu: "2000m"
+    nodeSelector: {}
+    probes:
+      liveness:
+        path: /v1/.well-known/live
+        port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 15
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readiness:
+        path: /v1/.well-known/ready
+        port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 15
+        timeoutSeconds: 5
+        failureThreshold: 3
+    # Secret with env vars loaded into the weaviate pod. Defaults to registry.env.targetSecretName when empty.
+    envSecretName: ""
+
+  # -------------------------------------------------------------------------
+  # Monitoring stack: OTel Collector, auto-instrumentation, and (optionally)
+  # a self-hosted Prometheus/Grafana/Tempo stack.
+  #
+  # Prerequisites (NOT vendored by this chart — install cluster-wide first,
+  # same pattern as the External Secrets Operator required by
+  # registry.externalSecrets above). Needed whenever registry.monitoring.enabled
+  # is true, regardless of backend (every backend uses OpenTelemetryCollector/
+  # Instrumentation CRs, which require the operator + its webhook certs):
+  #   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+  #   helm repo add jetstack https://charts.jetstack.io
+  #   helm install cert-manager jetstack/cert-manager --namespace cert-manager --create-namespace --set crds.enabled=true
+  #   helm install opentelemetry-operator open-telemetry/opentelemetry-operator --namespace monitoring
+  #
+  # Only needed when registry.monitoring.backend is "prometheus" (the
+  # self-hosted stack): kube-prometheus-stack provides the Prometheus CRD/
+  # operator that prometheus.yaml renders; grafana is the dashboard UI.
+  #   helm repo add grafana https://grafana.github.io/helm-charts
+  #   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+  #   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack --namespace monitoring --create-namespace
+  #   helm install grafana grafana/grafana --namespace monitoring
+  # -------------------------------------------------------------------------
+
+  monitoring:
+    enabled: false
+    namespace: monitoring
+
+    # Which backend the otel-collector exports telemetry to.
+    # One of: prometheus (self-hosted, default) | datadog | splunk | dynatrace
+    # Only the matching block under `backends` below is used. Apps and
+    # auto-instrumentation always talk OTLP to the in-cluster otel-collector
+    # regardless of this setting — only the collector's export destination
+    # changes.
+    backend: prometheus
+
+    otelCollector:
+      enabled: true
+      image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.144.0
+
+    langfuse:
+      enabled: false
+      endpoint: https://us.cloud.langfuse.com/api/public/otel
+      # Property in the monitoring ExternalSecret containing base64(public-key:secret-key).
+      authorizationSecretKey: LANGFUSE_OTLP_AUTHORIZATION
+
+    k8sCollector:
+      enabled: true
+      image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.144.0
+      clusterName: ""
+
+    autoInstrumentation:
+      enabled: true
+      # Namespace the Instrumentation CR is created in (the namespace of the
+      # workloads being auto-instrumented, e.g. jarvis-demo).
+      namespace: ""
+
+    # Dedicated OTLP ALB gateway for ingesting telemetry from outside the
+    # cluster. Disabled by default — most environments only need in-cluster
+    # OTLP (auto-instrumentation talks to the collector directly).
+    otelGateway:
+      enabled: false
+      host: ""
+      albGroupName: ""
+      ingressClassName: alb
+      gatewayPath: /gateway/otel
+      # Key in the monitoring ExternalSecret (below) holding the gateway's
+      # bearer auth token.
+      authSecretKey: OTEL_GATEWAY_TOKEN
+
+    # -----------------------------------------------------------------------
+    # Self-hosted stack — only rendered when backend: prometheus.
+    # -----------------------------------------------------------------------
+
+    prometheus:
+      enabled: true
+      retention: 10d
+      scrapeInterval: 30s
+      evaluationInterval: 30s
+      # Accept out-of-order samples within this window (replaces the old
+      # "out-of-order-time-series" --enable-feature flag).
+      outOfOrderTimeWindow: 10m
+      # PVC-backed storage so the `retention` window above actually survives
+      # pod restarts/rescheduling. Without this, the Prometheus Operator
+      # defaults to emptyDir and all metrics are lost on every pod restart.
+      persistence:
+        storageClass: ""
+        size: 20Gi
+
+    grafana:
+      enabled: true
+      # Contact points / alert rules to render alongside the datasources.
+      # Leave contactPoints/alertRules empty to skip alerting config entirely.
+      smtp:
+        enabled: false
+        host: ""
+        fromAddress: ""
+        fromName: JARVIS-Registry-monitoring
+        # Keys in the monitoring ExternalSecret (below) holding the SMTP creds.
+        # Only fetched/referenced when smtp.enabled is true.
+        userSecretKey: GRAFANA_SMTP_USER
+        passwordSecretKey: GRAFANA_SMTP_PASSWORD
+      alerting:
+        enabled: false
+        contactEmails: ""
+      # PVC-backed storage for Grafana's own DB (dashboards saved via the UI,
+      # users, alert state). Without this, all of that is lost on pod restart.
+      persistence:
+        enabled: false
+        storageClass: ""
+        size: 10Gi
+
+    # -------------------------------------------------------------------------
+    # Single ExternalSecret for the monitoring stack. Unlike
+    # registry.externalSecrets above (which uses `dataFrom: extract` to pull
+    # every property of one AWS secret), this one lists individual keys via
+    # `data:`/remoteRef.property — so it only ever reads the specific
+    # values monitoring actually needs (backend API key/token, gateway auth
+    # token, grafana SMTP creds), not the whole secret. Only the keys for
+    # currently-enabled features are included in the rendered ExternalSecret.
+    # -------------------------------------------------------------------------
+    externalSecrets:
+      enabled: true
+      targetSecretName: monitoring-env
+      refreshInterval: 1h
+      secretStoreRef:
+        name: secretstore-monitoring
+        kind: SecretStore
+      serviceAccount:
+        create: true
+        name: monitoring-eso-sa
+        annotations: {}
+      # Passed verbatim to the SecretStore spec — see registry.secretStore.provider above for examples.
+      provider: {}
+      # AWS secret name (or path) each key below is read from. Keys map to
+      # `property` within that secret via the External Secrets Operator.
+      remoteRef: ""
+
+    tempo:
+      enabled: true
+      storageClass: ""
+      size: 10Gi
+
+    dashboards:
+      agent: true
+      auth: true
+      k8s: true
+      jarvisRegistry: true
+      registry: true
+
+    # Per-backend exporter config for the otel-collector. Only the block
+    # matching `backend` above is used. API keys/tokens are read from the
+    # monitoring ExternalSecret above (key names below) — never inlined here
+    # as plaintext.
+    backends:
+      prometheus:
+        remoteWriteUrl: http://prometheus-operated:9090/api/v1/write
+        tempoEndpoint: http://tempo:4317
+      datadog:
+        site: ""
+        apiKeySecretKey: DD_API_KEY
+      splunk:
+        hecEndpoint: ""
+        hecTokenSecretKey: SPLUNK_HEC_TOKEN
+      dynatrace:
+        endpoint: ""
+        apiTokenSecretKey: DYNATRACE_API_TOKEN

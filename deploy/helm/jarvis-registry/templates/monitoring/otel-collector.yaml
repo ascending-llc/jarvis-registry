@@ -1,0 +1,140 @@
+{{- if and .Values.registry.monitoring.enabled .Values.registry.monitoring.otelCollector.enabled }}
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: {{ .Values.registry.monitoring.namespace }}
+  labels:
+    {{- include "jarvis-registry.labels" . | nindent 4 }}
+spec:
+  mode: deployment
+  # Required so the k8sattributes processor can query the k8s API for pod/namespace
+  # metadata. The otel-collector SA (otel-sa.yaml) already grants pods/namespaces get/list/watch.
+  serviceAccount: otel-collector
+  image: {{ .Values.registry.monitoring.otelCollector.image }}
+  {{- $backendEnv := include "jarvis-registry.monitoring.backendEnv" . }}
+  {{- if or $backendEnv .Values.registry.monitoring.langfuse.enabled }}
+  env:
+    {{- $backendEnv | nindent 4 }}
+    {{- if .Values.registry.monitoring.langfuse.enabled }}
+    - name: LANGFUSE_OTLP_AUTHORIZATION
+      valueFrom:
+        secretKeyRef:
+          name: {{ .Values.registry.monitoring.externalSecrets.targetSecretName }}
+          key: {{ .Values.registry.monitoring.langfuse.authorizationSecretKey }}
+    {{- end }}
+  {{- end }}
+  config:
+    receivers:
+      # Kubernetes cluster metrics
+      k8s_cluster:
+        auth_type: serviceAccount
+        node_conditions_to_report: [Ready, MemoryPressure, DiskPressure]
+        allocatable_types_to_report: [cpu, memory, storage, ephemeral-storage]
+
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 15
+      batch:
+        send_batch_size: 10000
+        timeout: 10s
+
+      # Standardize on OpenLLMetry as the single LLM instrumentation layer across
+      # all agents. Strands emits its own spans (invoke_agent/cycle/chat/tool) on
+      # the shared tracer provider, which duplicates OpenLLMetry's LLM span and
+      # double-counts tokens. Drop everything from the Strands tracer scope so only
+      # OpenLLMetry's uniform gen_ai spans remain.
+      filter/drop_strands:
+        error_mode: ignore
+        traces:
+          span:
+            - 'instrumentation_scope.name == "strands.telemetry.tracer"'
+
+      {{- if .Values.registry.monitoring.langfuse.enabled }}
+      # Keep protocol and HTTP transport details in the existing observability
+      # backend, but exclude them from Langfuse's semantic LLM trace pipeline.
+      filter/langfuse_protocol:
+        error_mode: ignore
+        traces:
+          span:
+            - 'instrumentation_scope.name == "a2a-python-sdk"'
+            - 'instrumentation_scope.name == "opentelemetry.instrumentation.urllib3"'
+            - 'attributes["http.method"] != nil'
+            - 'attributes["http.request.method"] != nil'
+            - 'IsMatch(name, "^a2a\\.(client|server)\\.")'
+      {{- end }}
+
+      # Stamp k8s.namespace.name / k8s.pod.name / k8s.node.name onto incoming app
+      # OTLP telemetry (by source pod IP). Without this, two registry deployments in
+      # different namespaces share service.name="mcp-gateway-registry" with no
+      # distinguishing attribute and collapse into ONE prometheusremotewrite series,
+      # producing interleaved/sawtooth counters. transform/add_labels (below) copies
+      # these resource attrs to datapoint labels so the namespaces become separable.
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        pod_association:
+          - sources:
+              - from: connection
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.node.name
+
+      {{- if .Values.registry.monitoring.langfuse.enabled }}
+      transform/langfuse_span_names:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              - 'set(name, "llm") where attributes["gen_ai.operation.name"] == "chat" or attributes["gen_ai.operation.name"] == "generate_content" or attributes["gen_ai.operation.name"] == "text_completion"'
+      {{- end }}
+
+      transform/add_labels:
+        metric_statements:
+          - context: datapoint
+            statements:
+              - set(attributes["node"], resource.attributes["k8s.node.name"])
+              - set(attributes["cluster"], resource.attributes["k8s.cluster.name"])
+              - set(attributes["namespace"], resource.attributes["k8s.namespace.name"])
+              - set(attributes["pod"], resource.attributes["k8s.pod.name"])
+              - set(attributes["phase"], resource.attributes["k8s.pod.phase"])
+              - set(attributes["container"], resource.attributes["k8s.container.name"])
+              - set(attributes["version"], resource.attributes["service.version"])
+
+    exporters:
+      debug: {}
+      {{- include "jarvis-registry.monitoring.exporterDefs" . | nindent 6 }}
+      {{- if .Values.registry.monitoring.langfuse.enabled }}
+      otlp_http/langfuse:
+        endpoint: {{ .Values.registry.monitoring.langfuse.endpoint | quote }}
+        headers:
+          Authorization: "Basic ${env:LANGFUSE_OTLP_AUTHORIZATION}"
+          x-langfuse-ingestion-version: "4"
+      {{- end }}
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, filter/drop_strands, batch]
+          exporters: [{{ include "jarvis-registry.monitoring.tracesExporterNames" . }}]
+        {{- if .Values.registry.monitoring.langfuse.enabled }}
+        traces/langfuse:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/langfuse_span_names, filter/drop_strands, filter/langfuse_protocol, batch]
+          exporters: [otlp_http/langfuse]
+        {{- end }}
+        metrics:
+          receivers: [k8s_cluster,otlp]
+          processors: [k8sattributes,transform/add_labels,batch]
+          exporters: [{{ include "jarvis-registry.monitoring.metricsExporterNames" . }}]
+{{- end }}

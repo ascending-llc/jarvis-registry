@@ -1,0 +1,109 @@
+suite: co-deployed scenario
+release:
+  name: jarvis-registry
+  namespace: jarvis-demo
+values:
+  - ./values/co-deployed.yaml
+tests:
+  - it: renders zero MongoDB resources
+    template: mongodb.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders zero Redis resources
+    template: redis.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders zero Weaviate resources
+    template: weaviate.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: does not inject database env overrides into backend or migrations
+    template: registry_backend.yaml
+    documentIndex: 0
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].env
+      - isNull:
+          path: spec.template.spec.initContainers[0].env
+
+  - it: does not inject database env overrides into auth-server or migrations-wait
+    template: registry_auth-server.yaml
+    documentIndex: 0
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].env
+      - isNull:
+          path: spec.template.spec.initContainers[0].env
+
+  - it: does not inject database env overrides into workflow-worker or migrations-wait
+    template: registry_workflow-worker.yaml
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].env
+      - isNull:
+          path: spec.template.spec.initContainers[0].env
+
+  - it: does not inject database env overrides into skill-scan-worker and uses fallback Mongo peers
+    template: registry_skill-scan-worker.yaml
+    asserts:
+      - documentIndex: 0
+        notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGO_URI
+          any: true
+      - documentIndex: 0
+        notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URI
+          any: true
+      - documentIndex: 0
+        notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WEAVIATE_HOST
+          any: true
+      - documentIndex: 0
+        isNull:
+          path: spec.template.spec.initContainers[0].env
+      - documentIndex: 1
+        contains:
+          path: spec.egress[1].to
+          content:
+            podSelector:
+              matchLabels:
+                app: mongodb
+      - documentIndex: 1
+        contains:
+          path: spec.egress[1].to
+          content:
+            podSelector:
+              matchLabels:
+                app: mongodb-svc
+
+  - it: does not render Ingress when ingress.enabled is false
+    template: ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: references the chart SecretStore from ExternalSecret
+    templates:
+      - secretstore.yaml
+      - registry_externalsecret.yaml
+    asserts:
+      - template: secretstore.yaml
+        equal:
+          path: metadata.name
+          value: jarvis-registry-secretstore
+      - template: registry_externalsecret.yaml
+        equal:
+          path: spec.secretStoreRef.name
+          value: jarvis-registry-secretstore

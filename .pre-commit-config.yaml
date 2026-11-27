@@ -23,6 +23,7 @@ repos:
         exclude: ^frontend/
       - id: check-yaml
         args: [--unsafe]
+        exclude: ^deploy/helm/.*/templates/
       - id: check-added-large-files
         args: [--maxkb=1000]
       - id: check-merge-conflict
