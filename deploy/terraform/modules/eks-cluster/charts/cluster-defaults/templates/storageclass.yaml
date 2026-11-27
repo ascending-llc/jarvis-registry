@@ -1,0 +1,22 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: eks.amazonaws.com/compute-type
+        values:
+          - auto
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"
+  {{- $tags := .Values.tags | default dict }}
+  {{- $idx := 0 }}
+  {{- range $key := keys $tags | sortAlpha }}
+  {{- $idx = add $idx 1 }}
+  tagSpecification_{{ $idx }}: {{ printf "%s=%s" $key (index $tags $key) | quote }}
+  {{- end }}

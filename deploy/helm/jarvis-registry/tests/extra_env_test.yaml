@@ -1,0 +1,134 @@
+suite: registry.extraEnv rendering
+release:
+  name: jarvis-registry
+  namespace: jarvis
+values:
+  - ./values/new-install.yaml
+set:
+  registry.skillScan.enabled: true
+  registry.extraEnv:
+    AUTH_SERVER_API_PREFIX: /auth
+    AUTH_SERVER_EXTERNAL_URL: https://registry.example.com
+    NGINX_BASE_PATH: /gateway
+    REGISTRY_URL: https://registry.example.com/gateway
+tests:
+  - it: renders extraEnv after databaseEnv on backend container and migrations initContainer
+    template: registry_backend.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[6].name
+          value: WEAVIATE_GRPC_PORT
+      - equal:
+          path: spec.template.spec.containers[0].env[7]
+          value:
+            name: AUTH_SERVER_API_PREFIX
+            value: /auth
+      - equal:
+          path: spec.template.spec.containers[0].env[8]
+          value:
+            name: AUTH_SERVER_EXTERNAL_URL
+            value: https://registry.example.com
+      - equal:
+          path: spec.template.spec.containers[0].env[9]
+          value:
+            name: NGINX_BASE_PATH
+            value: /gateway
+      - equal:
+          path: spec.template.spec.containers[0].env[10]
+          value:
+            name: REGISTRY_URL
+            value: https://registry.example.com/gateway
+      - equal:
+          path: spec.template.spec.initContainers[0].env[10]
+          value:
+            name: REGISTRY_URL
+            value: https://registry.example.com/gateway
+
+  - it: renders extraEnv after databaseEnv on auth-server container and migrations-wait initContainer
+    template: registry_auth-server.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[6].name
+          value: WEAVIATE_GRPC_PORT
+      - equal:
+          path: spec.template.spec.containers[0].env[7]
+          value:
+            name: AUTH_SERVER_API_PREFIX
+            value: /auth
+      - equal:
+          path: spec.template.spec.containers[0].env[10]
+          value:
+            name: REGISTRY_URL
+            value: https://registry.example.com/gateway
+      - equal:
+          path: spec.template.spec.initContainers[0].env[10]
+          value:
+            name: REGISTRY_URL
+            value: https://registry.example.com/gateway
+
+  - it: renders extraEnv after databaseEnv on workflow-worker container and migrations-wait initContainer
+    template: registry_workflow-worker.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[6].name
+          value: WEAVIATE_GRPC_PORT
+      - equal:
+          path: spec.template.spec.containers[0].env[7]
+          value:
+            name: AUTH_SERVER_API_PREFIX
+            value: /auth
+      - equal:
+          path: spec.template.spec.containers[0].env[10]
+          value:
+            name: REGISTRY_URL
+            value: https://registry.example.com/gateway
+      - equal:
+          path: spec.template.spec.initContainers[0].env[10]
+          value:
+            name: REGISTRY_URL
+            value: https://registry.example.com/gateway
+
+  - it: renders extraEnv after databaseEnv on skill-scan-worker container and migrations-wait initContainer
+    template: registry_skill-scan-worker.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[9].name
+          value: WEAVIATE_GRPC_PORT
+      - equal:
+          path: spec.template.spec.containers[0].env[10]
+          value:
+            name: AUTH_SERVER_API_PREFIX
+            value: /auth
+      - equal:
+          path: spec.template.spec.containers[0].env[13]
+          value:
+            name: REGISTRY_URL
+            value: https://registry.example.com/gateway
+      - equal:
+          path: spec.template.spec.initContainers[0].env[10]
+          value:
+            name: REGISTRY_URL
+            value: https://registry.example.com/gateway
+
+  - it: renders extraEnv on frontend container
+    template: registry_frontend.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[2]
+          value:
+            name: NGINX_BASE_PATH
+            value: /gateway
+
+  - it: omits env block on frontend when extraEnv is empty
+    template: registry_frontend.yaml
+    documentIndex: 0
+    set:
+      registry.extraEnv: null
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].env

@@ -6,6 +6,7 @@ entropy = true
 exclude-path-patterns = [
     {path-pattern = '.*uv\.lock$', reason = 'uv lock file (root or any workspace)'},
     {path-pattern = '.*package-lock\.json$', reason = 'npm lock file'},
+    {path-pattern = '.*\.terraform\.lock\.hcl$', reason = 'Terraform provider dependency lock file (provider hashes are not credentials)'},
     {path-pattern = 'tartufo\.toml$', reason = 'Tartufo config file'},
     {path-pattern = '.*\.svg$', reason = 'SVG assets are static images and can trigger entropy false positives'},
     {path-pattern = 'docs/llms\.txt$', reason = 'llms.txt is a plain-text LLM index file with no credentials'},

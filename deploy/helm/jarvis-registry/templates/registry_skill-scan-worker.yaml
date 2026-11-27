@@ -63,9 +63,16 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with (include "jarvis-registry.databaseEnv" .) }}
+          {{- $dbEnv := include "jarvis-registry.databaseEnv" . }}
+          {{- $extraEnv := include "jarvis-registry.extraEnv" . }}
+          {{- if or $dbEnv $extraEnv }}
           env:
+            {{- with $dbEnv }}
             {{- . | nindent 12 }}
+            {{- end }}
+            {{- with $extraEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
           {{- end }}
           envFrom:
             - secretRef:
@@ -93,6 +100,9 @@ spec:
             - name: SKILL_SCAN_WORKER_LLM_MAX_TEXT_BYTES
               value: {{ .Values.registry.skillScan.llmMaxTextBytes | quote }}
             {{- with (include "jarvis-registry.databaseEnv" .) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with (include "jarvis-registry.extraEnv" .) }}
             {{- . | nindent 12 }}
             {{- end }}
           envFrom:
