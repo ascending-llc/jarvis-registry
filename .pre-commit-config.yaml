@@ -23,7 +23,7 @@ repos:
         exclude: ^frontend/
       - id: check-yaml
         args: [--unsafe]
-        exclude: ^deploy/helm/.*/templates/
+        exclude: ^deploy/(helm|terraform/modules/.*/charts)/.*/templates/
       - id: check-added-large-files
         args: [--maxkb=1000]
       - id: check-merge-conflict
@@ -47,6 +47,18 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: terraform-fmt
+        name: Check Terraform formatting
+        entry: bash -c 'command -v terraform >/dev/null || { echo "terraform not found; install terraform >= 1.11 to check deploy/ files" >&2; exit 1; }; terraform fmt -check -recursive deploy/'
+        language: system
+        files: ^deploy/(terraform|examples)/.*\.(tf|tftest\.hcl)$
+        pass_filenames: false
+      - id: helm-lint
+        name: Lint Helm charts
+        entry: bash -c 'command -v helm >/dev/null || { echo "helm not found; install helm to lint deploy/ charts" >&2; exit 1; }; for f in deploy/helm/jarvis-registry/tests/values/*.yaml; do helm lint deploy/helm/jarvis-registry -f "$f" || exit 1; done && helm lint deploy/terraform/modules/eks-cluster/charts/cluster-defaults'
+        language: system
+        files: ^deploy/(helm/jarvis-registry|terraform/modules/eks-cluster/charts/cluster-defaults)/
+        pass_filenames: false
 
   # If uv.lock changes after a git pull, run `uv sync`.
   - repo: https://github.com/satoseino/shell-cmd-on-change

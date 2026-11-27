@@ -260,6 +260,67 @@ shell = "uv run ruff check . && uv run ruff format --check ."
 help = "Fix all auto-fixable issues and format"
 shell = "uv run ruff check --fix . && uv run ruff format ."
 
+[tool.poe.tasks.check-helm]
+help = "Lint Helm charts and run unittest/kubeconform when installed"
+shell = """
+set -euo pipefail
+command -v helm >/dev/null || { echo "helm not found. Install helm to run check-helm." >&2; exit 1; }
+for f in deploy/helm/jarvis-registry/tests/values/*.yaml; do
+  helm lint deploy/helm/jarvis-registry -f "$f"
+done
+helm lint deploy/terraform/modules/eks-cluster/charts/cluster-defaults
+if helm plugin list 2>/dev/null | grep -q '^unittest[[:space:]]'; then
+  helm unittest deploy/helm/jarvis-registry
+else
+  echo "Note: helm-unittest plugin not installed locally; skipping helm unittest (runs in CI)."
+fi
+if command -v kubeconform >/dev/null; then
+  for f in deploy/helm/jarvis-registry/tests/values/*.yaml; do
+    helm template jarvis-registry deploy/helm/jarvis-registry -f "$f" \
+      | kubeconform -strict -summary \
+        -schema-location default \
+        -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+  done
+else
+  echo "Note: kubeconform not installed locally; skipping schema validation (runs in CI)."
+fi
+"""
+
+[tool.poe.tasks.check-terraform]
+help = "Run Terraform fmt, validate, tflint, provider-block check, and module tests"
+shell = """
+set -euo pipefail
+command -v terraform >/dev/null || { echo "terraform not found. Install terraform >= 1.11." >&2; exit 1; }
+command -v tflint >/dev/null || { echo "tflint not found. Install tflint." >&2; exit 1; }
+if grep -rnE '^[[:space:]]*provider "' --include='*.tf' --exclude-dir=.terraform deploy/terraform/modules; then
+  echo "Error: modules under deploy/terraform/modules must not declare provider blocks." >&2
+  exit 1
+fi
+terraform fmt -check -recursive deploy/
+for dir in \
+  deploy/terraform/modules/registry-aws \
+  deploy/terraform/modules/eks-cluster \
+  deploy/examples/bootstrap-state \
+  deploy/examples/quickstart \
+  deploy/examples/existing-cluster; do
+  if [ ! -d "${dir}/.terraform" ]; then
+    terraform -chdir="${dir}" init -backend=false -input=false
+  fi
+  terraform -chdir="${dir}" validate
+  tflint --chdir="${dir}" --config="${POE_ROOT}/deploy/.tflint.hcl"
+done
+for dir in \
+  deploy/terraform/modules/registry-aws \
+  deploy/terraform/modules/eks-cluster \
+  deploy/examples/quickstart; do
+  terraform -chdir="${dir}" test
+done
+"""
+
+[tool.poe.tasks.check-deploy]
+help = "Run all Helm and Terraform checks (matches CI)"
+sequence = ["check-helm", "check-terraform"]
+
 # Pre-commit hooks
 [tool.poe.tasks.hooks-install]
 help = "Install pre-commit and post-merge stage hooks"

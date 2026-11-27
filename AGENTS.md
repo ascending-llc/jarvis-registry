@@ -9,7 +9,7 @@ Python 3.12 monorepo (FastAPI, Beanie on MongoDB, Weaviate, Redis) plus a React 
 | `workflow-worker/` | `registry-pkgs` | Workflow scheduler and executor |
 | `registry-pkgs/` | — | Shared Beanie models, DB/Redis clients, vector search, telemetry, migrations |
 | `frontend/` | — | SPA (Vite, React 18, TailwindCSS, Biome) |
-| `deploy/` | — | Helm chart (and future Terraform); not a `uv` workspace |
+| `deploy/` | — | Helm chart, Terraform modules, and example roots; not a `uv` workspace |
 
 ---
 
@@ -90,15 +90,16 @@ Run from the repo root unless noted. Local end-to-end testing uses `docker compo
 | `uv run poe test-all` | Run tests in every Python workspace |
 | `uv run poe test-<workspace>` | Run one workspace's tests (`registry`, `auth-server`, `registry-pkgs`, `workflow-worker`) |
 | `uv run poe check` | Lint and format check (what CI runs) |
+| `uv run poe check-deploy` | Run Helm and Terraform checks (lint, unittest, kubeconform, fmt, validate, tflint, terraform test) |
 | `uv run poe fix` | Auto-fix lint issues and format |
 | `uv run poe hooks-install` | Install pre-commit and post-merge hooks |
 
 Frontend (from `frontend/`): `npm start` (Vite dev server), `npm run build`, `npm test`, `npm run format` (Biome).
 
 ### Before committing
-- Run `uv run poe fix`, then the touched workspace's tests (see § Testing).
+- Run `uv run poe fix`, then the touched workspace's tests (see § Testing). If you touched `deploy/`, run `uv run poe check-deploy`.
 - When a change removes or renames a symbol, `git grep` for remaining references.
-- Pre-commit hooks run ruff, bandit and gelato (secret scanning, configured in `tartufo.toml`) on `git commit`. Handle bandit false positives with `# nosec` and a justification.
+- Pre-commit hooks run ruff, bandit, gelato (secret scanning, configured in `tartufo.toml`), plus path-scoped `terraform-fmt` and `helm-lint` on `git commit`. Handle bandit false positives with `# nosec` and a justification.
 
 ---
 
@@ -119,6 +120,26 @@ Frontend (from `frontend/`): `npm start` (Vite dev server), `npm run build`, `np
 - **Out-of-order merges** are run, with a warning.
 - **Running locally**: from the repo root, `MONGO_URI=mongodb://localhost:27017/jarvis uv run python -m registry_pkgs.migrations status` (or `up`). Other settings come from `.env`; the explicit URI overrides its in-network host. In compose, the `registry-migrations` service runs `up` automatically, but with the migrations baked into the published `registry:latest` image, so apply a migration you are writing with the `uv run` command.
 - **Adding a member to `RegistryResourceType` requires a new migration that seeds its access roles.**
+
+---
+
+## Deploy (Helm & Terraform)
+
+### Terraform (`deploy/terraform/`, `deploy/examples/`)
+- **No `provider` blocks in modules**: configure providers only in root modules (`deploy/examples/*`), never under `deploy/terraform/modules/`.
+- **Version pinning**: modules declare minimum versions only (`required_version >= 1.11`, `aws >= 6.0`, `helm >= 3.0`, `random >= 3.8`, `tls >= 4.1`) and do not commit `.terraform.lock.hcl`; example roots pin exact versions and commit cross-platform `.terraform.lock.hcl` (`linux_amd64`, `darwin_arm64`, `darwin_amd64`).
+- **Stable resource addresses**: `registry-aws` resource addresses are an import interface for existing environments — never rename or remove them without a `moved` block and explicit review. Do not add `lifecycle { prevent_destroy = true }` to the secret.
+- **Secrets & state hygiene**: use `ephemeral` variables/resources and write-only (`*_wo`) arguments so secrets never enter plan or state. Never commit real `*.tfvars`, `*.tfvars.json`, `backend.hcl`, `*.tfplan`, or `*.tfstate*` (only `*.example` templates).
+- **Layer boundaries**: cluster-wide add-ons (VPC, EKS, StorageClass, IngressClass, External Secrets Operator) belong in `eks-cluster`, never in `registry-aws`.
+- **Tests**: every module has credential-free `terraform test` suites (`command = plan`) under `tests/*.tftest.hcl` using `mock_provider` for `aws`/`helm` (keep `random`/`tls` unmocked so `ephemeral` resources work).
+
+### Helm (`deploy/helm/jarvis-registry/`)
+- **Collision-free naming**: prefix chart-owned resources with `jarvis-registry.fullname` and use standard selector + `app.kubernetes.io/component` labels so co-deployed installs never collide with Jarvis Chat.
+- **Values & images**: use `camelCase` keys with safe defaults; never store real secrets in `values.yaml` (inject via ExternalSecret / SecretRef). Avoid `:latest` tags; use immutable tags (`Chart.AppVersion` or pinned versions) with `pullPolicy: IfNotPresent`.
+- **Packaging & tests**: keep `tests/` excluded in `.helmignore` and add `helm-unittest` assertions for new template behavior.
+
+### Verification
+- Run `uv run poe check-deploy` (or `check-helm` / `check-terraform`) before committing changes under `deploy/`. All checks run offline without AWS credentials.
 
 ---
 
