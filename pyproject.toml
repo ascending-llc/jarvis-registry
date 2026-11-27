@@ -101,7 +101,6 @@ select = [
 ]
 ignore = [
   "E501",   # line too long (handled by formatter)
-  "E722",   # bare except (will fix incrementally)
   "B008",   # do not perform function calls in argument defaults (FastAPI uses this pattern)
   "B019",   # lru_cache on methods (acceptable in this codebase)
   "B904",   # raise-without-from-inside-except (too noisy)
