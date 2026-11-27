@@ -1,0 +1,3 @@
+# AWS resource tags propagated to EBS volumes (StorageClass tagSpecification_*)
+# and ALBs (IngressClassParams spec.tags).
+tags: {}

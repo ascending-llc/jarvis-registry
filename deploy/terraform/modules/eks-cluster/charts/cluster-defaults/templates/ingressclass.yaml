@@ -1,0 +1,27 @@
+apiVersion: eks.amazonaws.com/v1
+kind: IngressClassParams
+metadata:
+  name: alb
+spec:
+  scheme: internet-facing
+  {{- $tags := .Values.tags | default dict }}
+  {{- if gt (len $tags) 0 }}
+  tags:
+    {{- range $key := keys $tags | sortAlpha }}
+    - key: {{ $key | quote }}
+      value: {{ printf "%v" (index $tags $key) | quote }}
+    {{- end }}
+  {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: alb
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: eks.amazonaws.com/alb
+  parameters:
+    apiGroup: eks.amazonaws.com
+    kind: IngressClassParams
+    name: alb

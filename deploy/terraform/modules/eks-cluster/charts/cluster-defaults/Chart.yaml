@@ -1,0 +1,5 @@
+apiVersion: v2
+name: cluster-defaults
+description: Default gp3 StorageClass and alb IngressClass/IngressClassParams for EKS Auto Mode
+type: application
+version: 0.1.0
