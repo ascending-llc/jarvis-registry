@@ -199,7 +199,7 @@ variable "alb_join_existing" {
 }
 
 variable "monitoring_enabled" {
-  description = "When true, wire the monitoring stack's External Secrets ServiceAccount to reuse the Registry IRSA role."
+  description = "When true, wire the monitoring stack's External Secrets ServiceAccount to reuse the Registry IRSA role. That ServiceAccount is named service_account_name (so the role trusts it) and lives in registry.monitoring.namespace, which must differ from namespace or the chart renders two ServiceAccounts with the same name."
   type        = bool
   default     = false
 }

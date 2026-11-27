@@ -45,17 +45,10 @@ ephemeral "random_password" "weaviate_api_key" {
 }
 
 locals {
-  generated_secrets = var.seed_secret ? {
-    SECRET_KEY                              = replace(replace(trimsuffix(ephemeral.random_bytes.secret_key[0].base64, "="), "+", "-"), "/", "_")
-    CREDS_KEY                               = ephemeral.random_bytes.creds_key[0].hex
-    REGISTRY_CLIENT_SECRET                  = ephemeral.random_bytes.registry_client_secret[0].hex
-    JWT_PRIVATE_KEY                         = ephemeral.tls_private_key.jwt[0].private_key_pem
-    JWT_PUBLIC_KEY                          = ephemeral.tls_private_key.jwt[0].public_key_pem
-    MONGODB_ADMIN_PASSWORD                  = ephemeral.random_password.mongodb_admin_password[0].result
-    MONGODB_KEYFILE                         = ephemeral.random_bytes.mongodb_keyfile[0].base64
-    WEAVIATE_API_KEY                        = ephemeral.random_password.weaviate_api_key[0].result
+  # Non-secret Weaviate server settings seeded alongside the generated keys. Kept out of the
+  # ephemeral map so tests can assert them.
+  seeded_weaviate_settings = {
     AUTHENTICATION_APIKEY_ENABLED           = "true"
-    AUTHENTICATION_APIKEY_ALLOWED_KEYS      = ephemeral.random_password.weaviate_api_key[0].result
     AUTHENTICATION_APIKEY_USERS             = "registry"
     AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED = "false"
     AUTHORIZATION_ADMINLIST_ENABLED         = "true"
@@ -63,7 +56,23 @@ locals {
     PERSISTENCE_DATA_PATH                   = "/var/lib/weaviate"
     CLUSTER_HOSTNAME                        = "node1"
     ENABLE_AUTO_SCHEMA                      = "true"
-  } : {}
+    # Registry creates collections with the text2vec-aws vectorizer (EMBEDDING_PROVIDER
+    # defaults to aws_bedrock); Weaviate rejects that unless the module is enabled.
+    ENABLE_MODULES = "text2vec-aws"
+  }
+
+  generated_secrets = var.seed_secret ? merge(local.seeded_weaviate_settings, {
+    # base64url without padding, matching docs/generate-secrets.md.
+    SECRET_KEY                         = replace(replace(replace(ephemeral.random_bytes.secret_key[0].base64, "=", ""), "+", "-"), "/", "_")
+    CREDS_KEY                          = ephemeral.random_bytes.creds_key[0].hex
+    REGISTRY_CLIENT_SECRET             = ephemeral.random_bytes.registry_client_secret[0].hex
+    JWT_PRIVATE_KEY                    = ephemeral.tls_private_key.jwt[0].private_key_pem
+    JWT_PUBLIC_KEY                     = ephemeral.tls_private_key.jwt[0].public_key_pem
+    MONGODB_ADMIN_PASSWORD             = ephemeral.random_password.mongodb_admin_password[0].result
+    MONGODB_KEYFILE                    = ephemeral.random_bytes.mongodb_keyfile[0].base64
+    WEAVIATE_API_KEY                   = ephemeral.random_password.weaviate_api_key[0].result
+    AUTHENTICATION_APIKEY_ALLOWED_KEYS = ephemeral.random_password.weaviate_api_key[0].result
+  }) : {}
 }
 
 # Seed the secret once via write-only arguments so neither generated keys nor app_secrets

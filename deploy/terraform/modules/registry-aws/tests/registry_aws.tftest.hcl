@@ -200,6 +200,11 @@ run "domain_without_alb_group_sets_certificate_and_no_group_name" {
   }
 
   assert {
+    condition     = local.seeded_weaviate_settings.ENABLE_MODULES == "text2vec-aws"
+    error_message = "Seeded secret must enable Weaviate's text2vec-aws module (Registry's default vectorizer)."
+  }
+
+  assert {
     condition     = yamldecode(helm_release.registry.values[0]).registry.extraEnv.AUTH_SERVER_API_PREFIX == "/auth"
     error_message = "Expected AUTH_SERVER_API_PREFIX=/auth in extraEnv on new installs."
   }
@@ -348,5 +353,10 @@ run "agentcore_and_monitoring_enabled_parity" {
   assert {
     condition     = yamldecode(helm_release.registry.values[0]).registry.monitoring.externalSecrets.serviceAccount.annotations["eks.amazonaws.com/role-arn"] == "arn:aws:iam::123456789012:role/jarvis-test-role"
     error_message = "monitoring_enabled must wire monitoring externalSecrets SA role-arn annotation."
+  }
+
+  assert {
+    condition     = yamldecode(helm_release.registry.values[0]).registry.monitoring.externalSecrets.serviceAccount.name == "registry-service-account"
+    error_message = "monitoring externalSecrets SA must be named service_account_name so the IRSA trust condition covers it."
   }
 }

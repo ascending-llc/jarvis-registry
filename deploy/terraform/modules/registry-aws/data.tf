@@ -9,7 +9,7 @@ data "aws_iam_openid_connect_provider" "this" {
 
   lifecycle {
     precondition {
-      condition     = var.add_ons_ready == null || trimspace(tostring(var.add_ons_ready)) != ""
+      condition     = local.add_ons_ready_valid
       error_message = "add_ons_ready must be null or a non-empty readiness token."
     }
   }

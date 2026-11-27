@@ -82,6 +82,9 @@ locals {
         monitoring = {
           externalSecrets = {
             serviceAccount = {
+              # Same name as the Registry SA so the role's IRSA trust
+              # (system:serviceaccount:*:<service_account_name>) covers it.
+              name = var.service_account_name
               annotations = {
                 "eks.amazonaws.com/role-arn" = aws_iam_role.registry.arn
               }
@@ -130,7 +133,7 @@ resource "helm_release" "registry" {
 
   lifecycle {
     precondition {
-      condition     = var.add_ons_ready == null || trimspace(tostring(var.add_ons_ready)) != ""
+      condition     = local.add_ons_ready_valid
       error_message = "add_ons_ready must be null or a non-empty readiness token."
     }
   }
