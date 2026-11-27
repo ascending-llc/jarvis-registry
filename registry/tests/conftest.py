@@ -22,9 +22,9 @@ from registry_pkgs.testing.fixtures import setup_registry_test_env
 setup_registry_test_env()
 
 # Import our application and services
-from registry.main import app
-from registry.services.search.base import VectorSearchService
-from registry.services.server_service import ServerServiceV1
+from registry.main import app  # noqa: E402
+from registry.services.search.base import VectorSearchService  # noqa: E402
+from registry.services.server_service import ServerServiceV1  # noqa: E402
 
 if TYPE_CHECKING:
     from registry.core.config import Settings

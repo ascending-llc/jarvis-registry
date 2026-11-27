@@ -6,10 +6,10 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services.federation_job_service import FederationJobService, federation_sync_lease_repository
+from registry_pkgs.models.enums import FederationJobPhase, FederationJobStatus
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 
 _TEST_LEASE = federation_sync_lease_repository.new_lease("test-pod", doc_id=PydanticObjectId())
-from registry_pkgs.models.enums import FederationJobPhase, FederationJobStatus
 
 
 def _make_job(status: FederationJobStatus = FederationJobStatus.PENDING):

@@ -61,7 +61,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from a2a.types import AgentCard, AgentInterface, TransportProtocol
+from a2a.types import AgentCard, AgentInterface, AgentProvider, AgentSkill, TransportProtocol
 from beanie import Document, Insert, PydanticObjectId, Replace, Save, SaveChanges, Update, before_event
 from langchain_core.documents import Document as LangChainDocument
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_serializer, model_validator
@@ -622,9 +622,6 @@ class A2AAgent(Document):
 
 # ========== Exports for Backward Compatibility ==========
 # Export SDK types directly for use in other modules
-
-from a2a.types import AgentProvider, AgentSkill
-
 __all__ = [
     "A2AAgent",
     "AgentCard",
