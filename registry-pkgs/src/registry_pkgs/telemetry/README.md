@@ -292,17 +292,20 @@ Below are the standard metrics currently defined for the core services, includin
 | Metric Name | Type | Labels | Description |
 |-------------|------|--------|-------------|
 | `registry_operations_total` | Counter | `operation`, `resource_type`, `status` | Tracks CRUD operations (create, read, list, search) on registry resources (server, tool). |
-| `mcp_server_requests_total` | Counter | `server_name` | Counts total requests proxied to a specific MCP server. |
+| `mcp_server_requests_total` | Counter | `server_name`, `mode` (`gateway` or `proxy`) | Counts operations on an MCP server (tool calls, resource reads, prompt gets), whether the gateway ran them or the direct proxy forwarded them. |
 | `mcp_tool_discovery_total` | Counter | `tool_name` (or query), `source`, `status` | Tracks tool discovery attempts via search or direct lookup. |
 | `mcp_tool_execution_total` | Counter | `tool_name`, `server_name`, `method`, `status` | Counts execution of specific tools on MCP servers. |
 | `mcp_resource_access_total` | Counter | `resource_uri`, `server_name`, `status` | Tracks access to specific resources (e.g., file reads, data fetch). |
 | `mcp_prompt_get_total` | Counter | `prompt_name`, `server_name`, `status` | Counts retrievals of pre-defined prompts on MCP servers. |
+| `mcp_proxy_requests_total` | Counter | `server_name`, `http_method` (`POST` or `GET`), `mcp_method` (an MCP spec client method, `other`, or `none` for GET), `status` (`success`, `failure`, `input_required` or `cancelled`) | Counts requests the direct MCP proxy sent to a server, by outcome. Requests refused before anything is sent are not counted. |
+| `mcp_proxy_tool_calls_total` | Counter | `tool_name` (a tool registered on the server, else `other`), `server_name`, `status` (same values as `mcp_proxy_requests_total`) | Counts `tools/call` requests the direct MCP proxy sent to a server, by outcome. |
 | `auth_requests_total` | Counter | `mechanism`, `status` | Tracks authentication attempts handled by the registry middleware. |
 | `registry_operation_duration_seconds` | Histogram | *Same as above* | Latency distribution of registry operations. |
 | `mcp_tool_execution_duration_seconds` | Histogram | *Same as above* | Latency distribution of tool executions. |
 | `mcp_tool_discovery_duration_seconds` | Histogram | *Same as above* | Latency distribution of tool discovery operations. |
 | `mcp_resource_access_duration_seconds` | Histogram | *Same as above* | Latency distribution of resource access operations. |
 | `mcp_prompt_get_duration_seconds` | Histogram | *Same as above* | Latency distribution of prompt retrievals. |
+| `mcp_proxy_request_duration_seconds` | Histogram | *Same as `mcp_proxy_requests_total`* | Latency distribution of direct proxy requests. For POST it lasts until the response is complete (for SSE, until the body has been read); for `http_method="GET"` it lasts until the server sends its response headers. |
 
 ### Auth Server
 
