@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (gitignored) and run:
+#   terraform init && terraform apply
+region      = "us-east-1"
+bucket_name = "my-org-jarvis-registry-tfstate"
+
+tags = {
+  ManagedBy = "terraform"
+}

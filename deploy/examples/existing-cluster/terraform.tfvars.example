@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars (gitignored) and fill in your values.
+# This example shows the co-deployed shape (sharing databases and an ALB with Jarvis Chat).
+region       = "us-east-1"
+name         = "jarvis-registry"
+cluster_name = "my-existing-eks-cluster"
+namespace    = "jarvis-registry"
+
+# Co-deployed with Jarvis Chat: reuse existing databases and pre-populated secret.
+create_databases = false
+seed_secret      = false
+
+# Join Chat's existing IngressGroup ALB on a self-managed AWS Load Balancer Controller.
+# With alb_join_existing = true, scheme/listen-ports/certificate-arn stay on Chat's Ingress.
+domain            = "jarvis.example.com"
+alb_group_name    = "group"
+alb_group_order   = 10
+alb_join_existing = true
+
+# Published chart version from oci://ghcr.io/ascending-llc/jarvis-chart/jarvis-registry.
+# Check GitHub Releases for the latest version.
+chart_version = "<latest-chart-version>"

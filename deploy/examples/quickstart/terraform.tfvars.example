@@ -1,0 +1,45 @@
+# Copy to terraform.tfvars (gitignored) and fill in your values.
+region          = "us-east-1"
+name            = "jarvis-registry-trial"
+domain          = "registry.example.com"
+certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+
+admin_principal_arns = [
+  "arn:aws:iam::123456789012:role/your-admin-role",
+]
+
+# Published chart version from oci://ghcr.io/ascending-llc/jarvis-chart/jarvis-registry.
+# Check GitHub Releases for the latest version (or set chart_path = "../../helm/jarvis-registry"
+# to deploy the unreleased chart from this checkout).
+chart_version = "<latest-chart-version>"
+
+# Set 0 for disposable trials so a torn-down secret name can be re-created immediately.
+# Use 30 in production.
+secret_recovery_window_in_days = 0
+
+# Supply identity-provider settings via an untracked secrets.auto.tfvars (gitignored)
+# or via the TF_VAR_app_secrets environment variable. Never commit real credentials.
+#
+# Example secrets.auto.tfvars (Entra ID):
+# app_secrets = {
+#   AUTH_PROVIDER                               = "entra"
+#   ENTRA_TENANT_ID                             = "<tenant-id>"
+#   ENTRA_CLIENT_ID                             = "<client-id>"
+#   ENTRA_CLIENT_SECRET                         = "<client-secret>"
+#   JARVIS_REGISTRY_ADMIN_GROUP_OBJECT_ID       = "<admin-group-uuid>"
+#   JARVIS_REGISTRY_POWER_USER_GROUP_OBJECT_ID  = "<power-user-group-uuid>"
+#   JARVIS_REGISTRY_USER_GROUP_OBJECT_ID        = "<user-group-uuid>"
+#   JARVIS_REGISTRY_READ_ONLY_GROUP_OBJECT_ID   = "<read-only-group-uuid>"
+# }
+#
+# Example secrets.auto.tfvars (Google Workspace only — note ENTRA_ENABLED = "false"):
+# app_secrets = {
+#   AUTH_PROVIDER                   = "google"
+#   ENTRA_ENABLED                   = "false"
+#   GOOGLE_ENABLED                  = "true"
+#   GOOGLE_CLIENT_ID                = "<client-id>.apps.googleusercontent.com"
+#   GOOGLE_CLIENT_SECRET            = "<client-secret>"
+#   GOOGLE_ALLOWED_HD               = "example.com"
+#   GOOGLE_CUSTOMER_ID              = "C0xxxxxxx"
+#   GOOGLE_SERVICE_ACCOUNT_KEY_JSON = "{\"type\":\"service_account\",...}"
+# }

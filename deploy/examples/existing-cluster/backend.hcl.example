@@ -1,0 +1,6 @@
+# Copy to backend.hcl (gitignored) and run:
+#   terraform init -backend-config=backend.hcl
+bucket  = "my-org-jarvis-registry-tfstate"
+key     = "existing-cluster/terraform.tfstate"
+region  = "us-east-1"
+encrypt = true
