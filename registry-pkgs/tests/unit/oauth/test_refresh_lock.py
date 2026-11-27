@@ -106,7 +106,10 @@ async def test_lost_owner_cannot_renew_or_delete_new_owner() -> None:
 
 
 @pytest.mark.asyncio
-async def test_waiter_observes_result_without_acquiring_second_lease() -> None:
+async def test_waiter_observes_result_without_acquiring_second_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The handoff spans several to_thread hops; 0.1s flakes on loaded CI runners.
+    # This test doesn't exercise the timeout, so give it a generous budget.
+    monkeypatch.setattr(refresh_lock_module, "REFRESH_LOCK_WAIT_SECONDS", 5.0)
     redis = FakeRedis()
     entered = asyncio.Event()
     release = asyncio.Event()

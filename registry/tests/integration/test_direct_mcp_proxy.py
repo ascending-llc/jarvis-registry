@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import httpx2
 import pytest
+from fakeredis import FakeServer
 from mcp import Client
 from mcp.client.session import ClientRequestContext
 from mcp.client.streamable_http import streamable_http_client
@@ -16,7 +17,6 @@ from registry.constants import UrlElicitationInputKey
 from tests.integration.test_mcpgw_stateless import (
     USER_ID,
     _container_stub,
-    _FakeRedis,
     _make_pod,
     _server_doc,
 )
@@ -82,7 +82,7 @@ async def _sdk_flow(
 
     monkeypatch.setattr(proxy_routes, "build_authenticated_headers", build)
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(downstream)) as proxy_client:
-        container = _container_stub(_FakeRedis(), has_consent=False)
+        container = _container_stub(FakeServer(), has_consent=False)
         container.mcp_proxy_client = proxy_client
         container.server_service.extract_server_path = AsyncMock(return_value="/github")
         server = _server_doc()

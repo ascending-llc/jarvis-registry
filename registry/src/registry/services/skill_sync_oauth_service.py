@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import logging
 import secrets
@@ -6,7 +5,7 @@ from urllib.parse import urlencode
 
 import httpx2
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
-from redis import Redis
+from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from registry.utils.crypto_utils import decrypt_value
@@ -103,7 +102,7 @@ class SkillSyncOAuthService:
 
         key = self._completed_marker_key(decoded["flow_id"])
         try:
-            marker = await asyncio.to_thread(self._redis_client.get, key)
+            marker = await self._redis_client.get(key)
         except RedisError:
             logger.warning("Failed to read GitHub OAuth completed-flow marker")
             return None
@@ -149,7 +148,7 @@ class SkillSyncOAuthService:
         # Hash the state: it carries the flow's security token.
         marker = f"{_hash_state(state)}:{flow.server_id}"
         try:
-            await asyncio.to_thread(self._redis_client.set, key, marker, ex=_COMPLETED_FLOW_MARKER_TTL_SECONDS)
+            await self._redis_client.set(key, marker, ex=_COMPLETED_FLOW_MARKER_TTL_SECONDS)
         except RedisError:
             # Tokens are already stored; the marker only lets a later replay be recognized, so don't fail the callback.
             logger.warning("Failed to write GitHub OAuth completed-flow marker")

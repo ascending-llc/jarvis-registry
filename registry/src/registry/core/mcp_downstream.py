@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, overload
@@ -27,9 +27,8 @@ from mcp.types import (
     ReadResourceResult,
 )
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
-from redis import Redis
+from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from starlette.concurrency import run_in_threadpool
 
 from registry_pkgs.core.exceptions import (
     DownstreamHttpFailureException,
@@ -49,6 +48,7 @@ from .mcp_transport import (
 
 logger = logging.getLogger(__name__)
 _ERA_CACHE_TTL_SECONDS = 3600
+_ERA_CACHE_UNAVAILABLE = "Downstream era cache unavailable; continuing without cache"
 _MAX_ERA_NEGOTIATION_ATTEMPTS = 2
 _TOOL_LIST_CACHE_TTL_MS = 300_000
 _RESPONSE_CACHE_MAX_ENTRIES = 4096
@@ -84,29 +84,30 @@ class DownstreamEraCache:
         self._redis = redis_client
         self._prefix = key_prefix
 
-    async def _run(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        try:
-            return await run_in_threadpool(operation, *args, **kwargs)
-        except RedisError:
-            logger.warning("Downstream era cache unavailable; continuing without cache", exc_info=True)
-            return None
-
     def _key(self, server_id: str) -> str:
         return f"{self._prefix}:mcp_era:{server_id}"
 
     async def get(self, server_id: str) -> DownstreamMode | None:
-        raw = await self._run(self._redis.get, self._key(server_id))
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8", errors="replace")
+        try:
+            raw = await self._redis.get(self._key(server_id))
+        except (RedisError, UnicodeDecodeError):
+            logger.warning(_ERA_CACHE_UNAVAILABLE, exc_info=True)
+            return None
         return raw if raw in ("legacy", "2026-07-28") else None
 
     async def record(self, server_id: str | None, protocol_version: str) -> None:
         if server_id:
             mode = "2026-07-28" if protocol_version in MODERN_PROTOCOL_VERSIONS else "legacy"
-            await self._run(self._redis.set, self._key(server_id), mode, ex=_ERA_CACHE_TTL_SECONDS)
+            try:
+                await self._redis.set(self._key(server_id), mode, ex=_ERA_CACHE_TTL_SECONDS)
+            except RedisError:
+                logger.warning(_ERA_CACHE_UNAVAILABLE, exc_info=True)
 
     async def delete(self, server_id: str) -> None:
-        await self._run(self._redis.delete, self._key(server_id))
+        try:
+            await self._redis.delete(self._key(server_id))
+        except RedisError:
+            logger.warning(_ERA_CACHE_UNAVAILABLE, exc_info=True)
 
 
 def _tool_list_cache_target(server_id: str, transport_type: MCPTransport, url: str) -> str:

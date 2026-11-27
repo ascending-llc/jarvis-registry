@@ -63,6 +63,14 @@ tests:
           value: jarvis-registry-redis
       - documentIndex: 0
         equal:
+          path: spec.template.spec.containers[0].image
+          value: redis:8.8.0
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+      - documentIndex: 0
+        equal:
           path: spec.template.metadata.labels["app.kubernetes.io/component"]
           value: redis
       - documentIndex: 1
@@ -114,7 +122,20 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: MONGO_URI
-            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+            value: "mongodb://jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_USERNAME
+            value: registry
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: registry-env
+                key: MONGODB_ADMIN_PASSWORD
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -139,7 +160,20 @@ tests:
           path: spec.template.spec.initContainers[0].env
           content:
             name: MONGO_URI
-            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+            value: "mongodb://jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGODB_USERNAME
+            value: registry
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: registry-env
+                key: MONGODB_ADMIN_PASSWORD
       - contains:
           path: spec.template.spec.initContainers[0].env
           content:
@@ -162,7 +196,20 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: MONGO_URI
-            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+            value: "mongodb://jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_USERNAME
+            value: registry
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: registry-env
+                key: MONGODB_ADMIN_PASSWORD
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -177,7 +224,20 @@ tests:
           path: spec.template.spec.initContainers[0].env
           content:
             name: MONGO_URI
-            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+            value: "mongodb://jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGODB_USERNAME
+            value: registry
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: registry-env
+                key: MONGODB_ADMIN_PASSWORD
       - contains:
           path: spec.template.spec.initContainers[0].env
           content:
@@ -199,7 +259,20 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: MONGO_URI
-            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+            value: "mongodb://jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_USERNAME
+            value: registry
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: registry-env
+                key: MONGODB_ADMIN_PASSWORD
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -214,7 +287,20 @@ tests:
           path: spec.template.spec.initContainers[0].env
           content:
             name: MONGO_URI
-            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+            value: "mongodb://jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGODB_USERNAME
+            value: registry
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: registry-env
+                key: MONGODB_ADMIN_PASSWORD
       - contains:
           path: spec.template.spec.initContainers[0].env
           content:
@@ -238,7 +324,22 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: MONGO_URI
-            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+            value: "mongodb://jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_USERNAME
+            value: registry
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: registry-env
+                key: MONGODB_ADMIN_PASSWORD
       - documentIndex: 0
         contains:
           path: spec.template.spec.containers[0].env
@@ -256,7 +357,22 @@ tests:
           path: spec.template.spec.initContainers[0].env
           content:
             name: MONGO_URI
-            value: "mongodb://registry:$(MONGODB_ADMIN_PASSWORD)@jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+            value: "mongodb://jarvis-registry-mongodb-0.jarvis-registry-mongodb:27017/jarvis?replicaSet=rs0&authSource=admin"
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGODB_USERNAME
+            value: registry
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: registry-env
+                key: MONGODB_ADMIN_PASSWORD
       - documentIndex: 0
         contains:
           path: spec.template.spec.initContainers[0].env
@@ -269,6 +385,10 @@ tests:
           content:
             name: WEAVIATE_HOST
             value: "jarvis-registry-weaviate"
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
       - documentIndex: 1
         isKind:
           of: NetworkPolicy

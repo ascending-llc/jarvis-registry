@@ -75,7 +75,6 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 search_service=container.search_service,
                 oauth_service=container.oauth_service,
                 client_info_store=container.client_info_store,
-                redis_client=container.redis_client,
                 jwt_signing_config=settings.jwt_signing_config,
                 acl_service=container.acl_service,
                 consent_store=container.consent_store,

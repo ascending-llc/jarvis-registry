@@ -129,8 +129,6 @@ async def _build_runner(
         a2a_httpx_client=http_client,
         headers_provider=headers_provider,
         mcp_headers_provider=await _build_mcp_headers_provider(redis_client),
-        redis_client=redis_client,
-        redis_key_prefix=settings.redis_key_prefix,
     )
 
 
@@ -154,7 +152,6 @@ async def _build_mcp_headers_provider(redis_client: Any) -> McpHeadersProvider:
     )
     cfg = HeaderBuildConfig(
         registry_app_name=settings.registry_app_name,
-        redis_key_prefix=settings.redis_key_prefix,
         jwt_signing_config=settings.jwt_signing_config,
         encryption_key=settings.encryption_key,
     )
@@ -162,7 +159,6 @@ async def _build_mcp_headers_provider(redis_client: Any) -> McpHeadersProvider:
         oauth_service=oauth_service,
         cfg=cfg,
         scope_resolver=lambda ctx: list(ctx.get("scopes") or []),
-        redis_client=redis_client,
         interactive=False,
     )
 

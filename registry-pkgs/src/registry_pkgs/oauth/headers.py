@@ -2,8 +2,6 @@ import base64
 import logging
 from dataclasses import dataclass
 
-from redis import Redis
-
 from registry_pkgs.core.agentcore_jwt import parse_agentcore_runtime_access, sign_agentcore_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.crypto_utils import decrypt_auth_fields
@@ -25,11 +23,10 @@ class HeaderBuildConfig:
     """Process-level settings the header-building chain needs, injected by the caller.
 
     Sourced from ``settings`` in each app (registry / workflow-worker): ``registry_app_name``,
-    ``redis_key_prefix``, ``jwt_signing_config``, ``encryption_key``.
+    ``jwt_signing_config``, ``encryption_key``.
     """
 
     registry_app_name: str
-    redis_key_prefix: str
     jwt_signing_config: JwtSigningConfig
     encryption_key: bytes | None
 
@@ -41,7 +38,6 @@ async def build_complete_headers_for_server(
     *,
     cfg: HeaderBuildConfig,
     state_metadata: StateMetadata | None = None,
-    redis_client: Redis | None = None,
     interactive: bool = True,
 ) -> dict[str, str]:
     """
@@ -54,7 +50,6 @@ async def build_complete_headers_for_server(
         user_id: User ID for OAuth token retrieval (required for OAuth servers)
         cfg: Process-level header-building settings
         state_metadata: OAuth flow state metadata
-        redis_client: Redis client for JWT token caching
         interactive: When False, an unrefreshable OAuth token raises
             OAuthReAuthRequiredError directly (no interactive flow initiated)
 
@@ -95,13 +90,11 @@ async def build_complete_headers_for_server(
             if access_config.mode == AgentCoreRuntimeAccessMode.JWT:
                 logger.info(f"Building JWT token for AgentCore Runtime server {server.serverName}")
 
-                cache_key = f"{cfg.redis_key_prefix}:agentcore_jwt:{server.id}"
                 token = sign_agentcore_jwt(
                     access_config.jwt,
                     subject=cfg.registry_app_name,
                     signing=cfg.jwt_signing_config,
-                    cache_key=cache_key,
-                    redis_client=redis_client,
+                    server_id=str(server.id),
                 )
                 headers["Authorization"] = f"Bearer {token}"
                 logger.info(f"Added AgentCore Runtime JWT for {server.serverName}")
@@ -216,7 +209,6 @@ async def build_authenticated_headers(
     cfg: HeaderBuildConfig,
     additional_headers: dict[str, str] | None = None,
     state_metadata: StateMetadata | None = None,
-    redis_client: Redis | None = None,
     interactive: bool = True,
 ) -> dict[str, str]:
     """
@@ -238,7 +230,6 @@ async def build_authenticated_headers(
         cfg: Process-level header-building settings
         additional_headers: Optional additional headers to merge
         state_metadata: OAuth flow state metadata
-        redis_client: Redis client for JWT token caching
         interactive: When False, an unrefreshable OAuth token raises
             OAuthReAuthRequiredError instead of converting to UrlElicitationRequiredException
 
@@ -277,7 +268,6 @@ async def build_authenticated_headers(
             user_id,
             cfg=cfg,
             state_metadata=state_metadata,
-            redis_client=redis_client,
             interactive=interactive,
         )
 

@@ -1,7 +1,6 @@
-import json
-
 """Unit tests for OAuthClient (oauth_client.py)."""
 
+import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx2

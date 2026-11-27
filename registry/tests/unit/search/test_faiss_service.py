@@ -21,9 +21,9 @@ sys.modules["sentence_transformers"] = MagicMock()
 sys.modules["sentence_transformers"].SentenceTransformer = mock_sentence_transformer
 
 # Now import after mocking
-import numpy as np
+import numpy as np  # noqa: E402
 
-from registry.services.search.embedded_service import EmbeddedFaissService
+from registry.services.search.embedded_service import EmbeddedFaissService  # noqa: E402
 
 
 @pytest.mark.unit

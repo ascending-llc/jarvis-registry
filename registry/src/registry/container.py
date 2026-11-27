@@ -10,6 +10,7 @@ import httpx2
 from beanie import PydanticObjectId
 from mcp.client.caching import InMemoryResponseCacheStore
 from redis import Redis
+from redis.asyncio import Redis as AsyncRedis
 
 from registry_pkgs.core import a2a_http
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
@@ -100,11 +101,14 @@ class RegistryContainer:
     ``app_factory.py``.
     """
 
-    def __init__(self, settings: Settings, *, db_client: DatabaseClient, redis_client: Redis):
+    def __init__(
+        self, settings: Settings, *, db_client: DatabaseClient, redis_client: AsyncRedis, sync_redis_client: Redis
+    ) -> None:
         """Store shared infra clients and expose lazily-built app-scoped services."""
         self.settings = settings
         self.db_client = db_client
         self.redis_client = redis_client
+        self.sync_redis_client = sync_redis_client
         self.directive_queue = DirectiveQueue()
         # Pod-wide lease owner, so a run's lease (and the job runners' leases) names the pod in logs.
         self.lease_owner = f"registry-{uuid4()}"
@@ -130,7 +134,7 @@ class RegistryContainer:
     def client_info_store(self) -> ClientInfoStore:
         """Redis cache of MCP clients' `initialize` params, for the stateless gateway."""
         return ClientInfoStore(
-            redis_client=self.redis_client,
+            redis_client=self.sync_redis_client,
             key_prefix=self.settings.redis_key_prefix,
             jwt_config=self.settings.jwt_token_config,
         )
@@ -223,7 +227,7 @@ class RegistryContainer:
     @cached_property
     def flow_state_manager(self) -> FlowStateManager:
         return FlowStateManager(
-            redis_client=self.redis_client,
+            redis_client=self.sync_redis_client,
             redis_key_prefix=self.settings.redis_key_prefix,
         )
 
@@ -231,7 +235,7 @@ class RegistryContainer:
     def oauth_client_store(self) -> OAuthClientStore:
         """Read DCR client metadata from auth-server's Redis namespace."""
         return OAuthClientStore(
-            redis_client=self.redis_client,
+            redis_client=self.sync_redis_client,
             key_prefix=self.settings.auth_server_redis_key_prefix,
             client_secret_hash_key=self.settings.secret_key,
         )
@@ -240,7 +244,7 @@ class RegistryContainer:
     def consent_store(self) -> ConsentStore:
         """Share auth-server's consent namespace for cross-service OAuth flows."""
         return ConsentStore(
-            redis_client=self.redis_client,
+            redis_client=self.sync_redis_client,
             key_prefix=self.settings.auth_server_redis_key_prefix,
         )
 
@@ -258,7 +262,7 @@ class RegistryContainer:
     @cached_property
     def pending_consent_store(self) -> PendingConsentStore:
         return PendingConsentStore(
-            redis_client=self.redis_client,
+            redis_client=self.sync_redis_client,
             key_prefix=self.settings.auth_server_redis_key_prefix,
         )
 
@@ -266,7 +270,7 @@ class RegistryContainer:
     def downstream_refresh_token_store(self) -> OAuthStateStore:
         """Persist registry-owned direct-connect refresh tokens under registry's Redis namespace."""
         return OAuthStateStore(
-            redis_client=self.redis_client,
+            redis_client=self.sync_redis_client,
             key_prefix=self.settings.redis_key_prefix,
             client_secret_hash_key=self.settings.secret_key,
         )
@@ -293,7 +297,7 @@ class RegistryContainer:
             registry_app_name=self.settings.registry_app_name,
             base_redirect_url=self.settings.registry_client_url,
             encryption_key=self.settings.encryption_key,
-            redis_client=self.redis_client,
+            redis_client=self.sync_redis_client,
             redis_key_prefix=self.settings.redis_key_prefix,
         )
 
@@ -387,7 +391,6 @@ class RegistryContainer:
             oauth_service=self.oauth_service,
             cfg=get_header_build_config(),
             scope_resolver=effective_scopes_from_context,
-            redis_client=self.redis_client,
             interactive=True,
         )
 
@@ -409,8 +412,6 @@ class RegistryContainer:
                 directive_queue=self.directive_queue,
                 a2a_httpx_client=self.a2a_httpx_client,
                 headers_provider=self.a2a_headers_provider,
-                redis_client=self.redis_client,
-                redis_key_prefix=self.settings.redis_key_prefix,
                 mcp_headers_provider=self.mcp_headers_provider,
             )
 

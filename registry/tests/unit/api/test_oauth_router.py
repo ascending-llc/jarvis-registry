@@ -151,7 +151,7 @@ async def client():
         server_service=mock_container.server_service,
         token_service=mock_container.token_service,
         mcp_service=mock_container.mcp_service,
-        redis_client=Mock(),
+        sync_redis_client=Mock(),
         oauth_state_store=mock_oauth_state_store,
     )
     yield TestClient(app)

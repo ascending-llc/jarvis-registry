@@ -29,6 +29,9 @@ spec:
       annotations:
         {{ include "jarvis-registry.reloaderAnnotation" . }}: "true"
     spec:
+      # The worker never calls the Kubernetes API, so keep its token out of a pod that runs untrusted content.
+      # IRSA (aws-iam-token) and Azure Workload Identity project their own tokens and are unaffected.
+      automountServiceAccountToken: false
       serviceAccountName: {{ include "jarvis-registry.serviceAccountName" . }}
       securityContext:
         runAsNonRoot: true

@@ -285,21 +285,17 @@ class TestBuildRegistry:
             pool_nodes,
             a2a_httpx_client=None,
             headers_provider=None,
-            redis_client=None,
-            redis_key_prefix=None,
             mcp_headers_provider=None,
         ):
             captured["nodes"] = nodes
             captured["pool_nodes"] = [n.name for n in pool_nodes]
             captured["auth_context"] = auth_context
-            captured["redis_key_prefix"] = redis_key_prefix
             captured["mcp_headers_provider"] = mcp_headers_provider
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
 
         r = _make_runner(
-            redis_key_prefix="test-registry",
             mcp_headers_provider=lambda *args, **kwargs: {},
         )
         await r._build_registry(definition, auth_context)
@@ -307,7 +303,6 @@ class TestBuildRegistry:
         assert [node.executor_key for node in captured["nodes"]] == ["mcp-tool"]
         assert captured["pool_nodes"] == ["pool-step"]
         assert captured["auth_context"] is auth_context
-        assert captured["redis_key_prefix"] == "test-registry"
         assert captured["mcp_headers_provider"] is r._mcp_headers_provider
 
     @pytest.mark.asyncio

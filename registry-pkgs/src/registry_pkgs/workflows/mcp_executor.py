@@ -85,8 +85,6 @@ def make_mcp_executor(
     llm: Model,
     auth_context: UserContextDict | None,
     jwt_config: JwtSigningConfig,
-    redis_client: Any | None,
-    redis_key_prefix: str,
     mcp_headers_provider: McpHeadersProvider | None,
 ) -> StepExecutor:
     """Wrap an MCP server as a workflow executor via a direct downstream call.
@@ -98,8 +96,6 @@ def make_mcp_executor(
                               manually-registered (OAuth/apiKey) servers.
         jwt_config:           JWT signing config used for AgentCore-federated
                               servers to self-sign a runtime JWT.
-        redis_client:         Optional Redis client for caching AgentCore JWTs.
-        redis_key_prefix:     Prefix for Redis cache keys.
         mcp_headers_provider: Async callable that builds authenticated headers
                               for manually-registered servers.
 
@@ -132,8 +128,7 @@ def make_mcp_executor(
                 access_config.jwt,
                 subject=jwt_config.registry_app_name,
                 signing=jwt_config,
-                cache_key=f"{redis_key_prefix}:agentcore_jwt:{mcp_server.id}",
-                redis_client=redis_client,
+                server_id=str(mcp_server.id),
             )
             # Relies on ambient workflow_run_id/node_id/attempt baggage that with_control
             # attached around this executor() call; no tool_name here (one call is a whole

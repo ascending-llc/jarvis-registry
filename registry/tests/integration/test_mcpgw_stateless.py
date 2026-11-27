@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx2
 import pytest
 from beanie import PydanticObjectId
+from fakeredis import FakeAsyncRedis, FakeRedis, FakeServer
 from fastapi import FastAPI
 from mcp import Client
 from mcp.client.caching import InMemoryResponseCacheStore
@@ -81,22 +82,6 @@ def _no_downstream_auth_headers(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(server_tools, "build_authenticated_headers", _passthrough)
 
 
-class _FakeRedis:
-    """Minimal Redis stand-in shared by every pod."""
-
-    def __init__(self) -> None:
-        self.store: dict[str, str] = {}
-
-    def set(self, key: str, value: str, ex: int | None = None) -> None:
-        self.store[key] = value
-
-    def get(self, key: str) -> str | None:
-        return self.store.get(key)
-
-    def delete(self, key: str) -> None:
-        self.store.pop(key, None)
-
-
 def _server_doc() -> SimpleNamespace:
     return SimpleNamespace(
         id=PydanticObjectId(SERVER_ID),
@@ -109,7 +94,7 @@ def _server_doc() -> SimpleNamespace:
 
 
 def _container_stub(
-    redis: _FakeRedis,
+    redis: FakeServer,
     *,
     has_consent: bool,
     downstream_transport: httpx2.AsyncBaseTransport | None = None,
@@ -124,15 +109,18 @@ def _container_stub(
     return SimpleNamespace(
         mcpgw_downstream_transport=downstream_transport or MagicMock(),
         mcpgw_downstream_response_cache=InMemoryResponseCacheStore(),
-        downstream_era_cache=DownstreamEraCache(redis, settings.redis_key_prefix),
+        downstream_era_cache=DownstreamEraCache(
+            FakeAsyncRedis(server=redis, decode_responses=True), settings.redis_key_prefix
+        ),
         a2a_client_registry=MagicMock(),
         server_service=server_service,
         mcp_server_repo=MagicMock(),
         a2a_agent_repo=MagicMock(),
         search_service=MagicMock(),
         oauth_service=MagicMock(),
-        client_info_store=ClientInfoStore(redis, settings.redis_key_prefix, settings.jwt_token_config),
-        redis_client=MagicMock(),
+        client_info_store=ClientInfoStore(
+            FakeRedis(server=redis, decode_responses=True), settings.redis_key_prefix, settings.jwt_token_config
+        ),
         acl_service=acl_service,
         consent_store=consent_store,
         pending_consent_store=MagicMock(),
@@ -216,7 +204,7 @@ def _tools_list() -> dict:
 
 
 def _initialize_on_a_then_call_on_b(auth_headers: dict[str, str], client_name: str, *, url_elicitation: bool) -> dict:
-    redis = _FakeRedis()
+    redis = FakeServer()
     with _pod_client(_container_stub(redis, has_consent=False)) as pod_a:
         init_msgs = _post(pod_a, _initialize(client_name, url_elicitation=url_elicitation), auth_headers)
     assert "result" in init_msgs[-1], "initialize SSE body was truncated/cancelled"
@@ -256,7 +244,7 @@ async def test_downstream_progress_notification_rides_post_sse_stream(
     monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", version == _MODERN_VERSION)
 
     async with sdk_endpoint(progress=True) as downstream:
-        container = _container_stub(_FakeRedis(), has_consent=True, downstream_transport=downstream)
+        container = _container_stub(FakeServer(), has_consent=True, downstream_transport=downstream)
         app = _make_pod(container)
         async with app.router.lifespan_context(app):
             async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://localhost") as pod:
@@ -285,7 +273,7 @@ async def test_downstream_progress_notification_rides_post_sse_stream(
 def test_tools_list_served_without_session_affinity(auth_headers):
     """Stateless: a request carrying no Mcp-Session-Id is served by a pod that never saw an initialize for it
     (what happens when a load balancer routes to a different pod)."""
-    with _pod_client(_container_stub(_FakeRedis(), has_consent=True)) as pod:
+    with _pod_client(_container_stub(FakeServer(), has_consent=True)) as pod:
         msgs = _post(pod, _tools_list(), auth_headers)
 
     assert "result" in msgs[-1], "tools/list SSE body was truncated/cancelled"
@@ -294,7 +282,7 @@ def test_tools_list_served_without_session_affinity(auth_headers):
 def test_stale_session_id_is_served_not_404(auth_headers):
     """A client reconnecting with a session id from a since-reaped pod must be served, not rejected."""
     headers = {**auth_headers, "Mcp-Session-Id": "stale-session-from-another-pod"}
-    with _pod_client(_container_stub(_FakeRedis(), has_consent=True)) as pod:
+    with _pod_client(_container_stub(FakeServer(), has_consent=True)) as pod:
         msgs = _post(pod, _tools_list(), headers)
 
     assert "result" in msgs[-1], "stale-session SSE body was truncated/cancelled"
@@ -305,7 +293,7 @@ def test_modern_protocol_header_rejected_when_gate_off(auth_headers, monkeypatch
     reaches the MCP app, so clients fall back to 2025-11-25."""
     monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", False)
     headers = {**auth_headers, "MCP-Protocol-Version": "2026-07-28"}
-    with _pod_client(_container_stub(_FakeRedis(), has_consent=True)) as pod:
+    with _pod_client(_container_stub(FakeServer(), has_consent=True)) as pod:
         resp = pod.post(_MCP_PATH, content=json.dumps(_tools_list()).encode(), headers=headers)
 
     assert resp.status_code == 400
@@ -318,7 +306,7 @@ def test_modern_protocol_header_rejected_when_gate_off(auth_headers, monkeypatch
 def test_handshake_protocol_header_passes_the_gate(auth_headers):
     """A handshake-era header is not gated; the request reaches the MCP app and is served."""
     headers = {**auth_headers, "MCP-Protocol-Version": "2025-11-25"}
-    with _pod_client(_container_stub(_FakeRedis(), has_consent=True)) as pod:
+    with _pod_client(_container_stub(FakeServer(), has_consent=True)) as pod:
         msgs = _post(pod, _tools_list(), headers)
 
     assert "result" in msgs[-1]
@@ -383,7 +371,7 @@ def test_modern_first_round_returns_input_required_golden_shape(
 ) -> None:
     """Golden wire assertions on the raw first response: a URL-capable 2026-07-28 client gets an
     `input_required` result in URL mode, with neither `elicitationId` nor `requestState` on the wire."""
-    redis = _FakeRedis()
+    redis = FakeServer()
     body = _modern_execute_tool(url_elicitation=True)
     if not include_client_info:
         body["params"]["_meta"].pop(CLIENT_INFO_META_KEY)
@@ -397,7 +385,7 @@ def test_modern_first_round_returns_input_required_golden_shape(
     assert "/consent/server?nonce=" in request["params"]["url"]
     assert "elicitationId" not in request["params"]
     assert "requestState" not in result
-    assert redis.store == {}
+    assert FakeRedis(server=redis).dbsize() == 0
 
 
 @pytest.mark.asyncio
@@ -440,7 +428,7 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
             outgoing.append(json.loads(await request.aread()))
 
     async with sdk_endpoint() as downstream:
-        redis = _FakeRedis()
+        redis = FakeServer()
         container = _container_stub(redis, has_consent=False, downstream_transport=downstream)
 
         async def answer(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
@@ -507,7 +495,11 @@ async def test_modern_sdk_drives_authorization_to_terminal_result(
         assert "declined or cancelled" in result.content[0].text
     else:
         assert "/consent/server?nonce=" in result.content[0].text
-    assert redis.store == ({f"{settings.redis_key_prefix}:mcp_era:{SERVER_ID}": _MODERN_VERSION} if executes else {})
+    async with FakeAsyncRedis(server=redis, decode_responses=True) as redis_client:
+        assert await redis_client.dbsize() == int(executes)
+        assert await redis_client.get(f"{settings.redis_key_prefix}:mcp_era:{SERVER_ID}") == (
+            _MODERN_VERSION if executes else None
+        )
 
 
 @pytest.mark.asyncio
@@ -539,7 +531,7 @@ async def test_modern_sdk_prompts_once_per_check_through_consent_then_oauth(
     monkeypatch.setattr(server_tools, "build_authenticated_headers", headers_or_reauth)
 
     async with sdk_endpoint() as downstream:
-        container = _container_stub(_FakeRedis(), has_consent=False, downstream_transport=downstream)
+        container = _container_stub(FakeServer(), has_consent=False, downstream_transport=downstream)
 
         async def answer(_ctx: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
             prompts.append(params.url)
@@ -588,7 +580,7 @@ async def test_modern_sdk_prompts_once_per_check_through_consent_then_oauth(
 
 def test_modern_no_url_capability_gets_fallback(auth_headers, _modern_gate_on):
     """A 2026-07-28 client that declares no `elicitation.url` gets the plain-text fallback, not input_required."""
-    with _pod_client(_container_stub(_FakeRedis(), has_consent=False)) as pod:
+    with _pod_client(_container_stub(FakeServer(), has_consent=False)) as pod:
         msg = _modern_post(pod, _modern_execute_tool(url_elicitation=False), _modern_headers(auth_headers))
 
     result = msg["result"]
@@ -600,7 +592,7 @@ def test_modern_no_url_capability_gets_fallback(auth_headers, _modern_gate_on):
 def test_modern_retry_accept_without_consent_returns_url_text(auth_headers, _modern_gate_on):
     """The retry re-runs the consent check (no request_state is trusted). Consent is still missing, so the
     second round returns the URL text rather than prompting again — the server never loops."""
-    container = _container_stub(_FakeRedis(), has_consent=False)
+    container = _container_stub(FakeServer(), has_consent=False)
     with _pod_client(container) as pod:
         first = _modern_post(pod, _modern_execute_tool(url_elicitation=True), _modern_headers(auth_headers))
         assert first["result"]["resultType"] == "input_required"
@@ -620,7 +612,7 @@ def test_modern_retry_accept_without_consent_returns_url_text(auth_headers, _mod
 
 async def test_modern_retry_accept_with_consent_reaches_downstream(auth_headers, _modern_gate_on):
     async with sdk_endpoint() as downstream:
-        container = _container_stub(_FakeRedis(), has_consent=False, downstream_transport=downstream)
+        container = _container_stub(FakeServer(), has_consent=False, downstream_transport=downstream)
         app = _make_pod(container)
         async with app.router.lifespan_context(app):
             async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://localhost") as pod:
@@ -644,7 +636,7 @@ def test_modern_request_rejected_when_gate_off(auth_headers, monkeypatch):
     client renegotiates 2025-11-25 (companion to the handshake-era -32042 path above)."""
     monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", False)
     body = _modern_execute_tool(url_elicitation=True)
-    with _pod_client(_container_stub(_FakeRedis(), has_consent=False)) as pod:
+    with _pod_client(_container_stub(FakeServer(), has_consent=False)) as pod:
         resp = pod.post(_MCP_PATH, content=json.dumps(body).encode(), headers=_modern_headers(auth_headers))
 
     assert resp.status_code == 400
@@ -702,7 +694,7 @@ async def test_agent_sdk_authorization_rounds(
     from registry.mcpgw.tools import agent as agent_tools
     from tests.unit.mcpgw.test_agent import _make_agent, _result_with_message
 
-    container = _container_stub(_FakeRedis(), has_consent=False)
+    container = _container_stub(FakeServer(), has_consent=False)
     container.consent_store.has_agent_consent.return_value = False
     container.a2a_client_registry.get_client = AsyncMock(return_value=MagicMock())
     container.acl_service.get_accessible_resource_ids.return_value = {SERVER_ID}
@@ -775,7 +767,7 @@ async def test_oauth_sdk_authorization_and_recovery(
             downstream.failure_method = "tools/list"
             downstream.fail_once = True
             downstream.challenge = 'Bearer resource_metadata="https://downstream.example/metadata"'
-        container = _container_stub(_FakeRedis(), has_consent=True, downstream_transport=downstream)
+        container = _container_stub(FakeServer(), has_consent=True, downstream_transport=downstream)
         target = _server_doc()
         target.mcp_auth_mode = server_tools.McpAuthMode.OAUTH
         target.config["requiresOAuth"] = True
@@ -829,7 +821,7 @@ async def test_sdk_auto_with_gate_off_negotiates_legacy_and_elicits(
     from mcp.shared.exceptions import MCPError
 
     monkeypatch.setattr(settings, "mcpgw_modern_protocol_enabled", False)
-    container = _container_stub(_FakeRedis(), has_consent=False)
+    container = _container_stub(FakeServer(), has_consent=False)
     outgoing: list[dict[str, Any]] = []
 
     async def answer(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
@@ -867,7 +859,7 @@ async def test_resource_and_prompt_public_tools_reach_sdk_downstream(
         arguments["resource_uri"] = "test://doc/42" if kind == "template" else "test://doc"
         method = "resources/read"
     async with sdk_endpoint(resource_action=resource_action, prompt_action=prompt_action) as downstream:
-        container = _container_stub(_FakeRedis(), has_consent=True, downstream_transport=downstream)
+        container = _container_stub(FakeServer(), has_consent=True, downstream_transport=downstream)
         app = _make_pod(container)
         async with app.router.lifespan_context(app):
             async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://localhost") as pod:

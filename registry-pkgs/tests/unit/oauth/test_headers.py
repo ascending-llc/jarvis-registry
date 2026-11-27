@@ -11,7 +11,6 @@ from registry_pkgs.oauth.headers import (
 
 _CFG = HeaderBuildConfig(
     registry_app_name="jarvis-registry",
-    redis_key_prefix="jarvis-registry",
     jwt_signing_config=SimpleNamespace(),
     encryption_key=None,
 )
@@ -24,12 +23,6 @@ async def _bch(*args, cfg=_CFG, **kwargs):
 
 class TestBuildCompleteHeaders:
     """Test suite for build_complete_headers_for_server function."""
-
-    @pytest.fixture(autouse=True)
-    def mock_sign_agentcore_jwt(self):
-        """Patch sign_agentcore_jwt so tests without explicit override don't need a real RSA private key."""
-        with patch("registry_pkgs.oauth.headers.sign_agentcore_jwt", return_value="mock-agentcore-jwt"):
-            yield
 
     @pytest.fixture
     def mock_oauth_server(self):
@@ -141,28 +134,14 @@ class TestBuildCompleteHeaders:
         jwt_signing_config,
     ):
         """AgentCore MCP proxy JWT derives iss/aud from the specific server config."""
-        from unittest.mock import patch
-
-        from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
         from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 
         cfg = HeaderBuildConfig(
             registry_app_name="jarvis-registry",
-            redis_key_prefix="test-registry",
             jwt_signing_config=jwt_signing_config,
             encryption_key=None,
         )
-        with (
-            patch("registry_pkgs.oauth.headers.decrypt_auth_fields", return_value=mock_agentcore_jwt_server.config),
-            patch("registry_pkgs.oauth.headers.sign_agentcore_jwt") as mock_sign,
-        ):
-            mock_sign.side_effect = lambda *args, **kwargs: mint_agentcore_runtime_jwt(
-                kwargs.get("runtime_jwt_config") or (args[0] if args else None),
-                subject=kwargs.get("signing", jwt_signing_config).registry_app_name,
-                signing=kwargs.get("signing", jwt_signing_config),
-                expires_in_seconds=3600,
-            )
-
+        with patch("registry_pkgs.oauth.headers.decrypt_auth_fields", return_value=mock_agentcore_jwt_server.config):
             headers = await _bch(Mock(), mock_agentcore_jwt_server, None, cfg=cfg)
 
         token = headers["Authorization"].split(" ", 1)[1]

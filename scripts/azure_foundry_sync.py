@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import AsyncExitStack
 
 from dotenv import load_dotenv
 
@@ -21,7 +22,12 @@ from registry.container import RegistryContainer
 from registry.core.config import settings
 from registry.core.vector_backend import resolve_vector_backend_config
 from registry_pkgs.database.mongodb import close_mongodb, init_mongodb
-from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
+from registry_pkgs.database.redis_client import (
+    close_async_redis_client,
+    close_redis_client,
+    create_async_redis_client,
+    create_redis_client,
+)
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import Federation
@@ -32,8 +38,6 @@ logging.basicConfig(
     format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
 )
 logger = logging.getLogger("azure-foundry-sync")
-
-load_dotenv()
 
 
 def _require_env(name: str) -> str:
@@ -60,7 +64,22 @@ async def _create_federation(crud, provider_config: dict) -> Federation:
     )
 
 
+async def _cleanup_federation(federation: Federation) -> None:
+    if os.environ.get("E2E_KEEP_FEDERATION") == "1":
+        return
+    _banner("CLEANUP — delete federation + agents (direct)")
+    try:
+        await A2AAgent.find({"federationRefId": federation.id}).delete()
+        fresh = await Federation.get(federation.id)
+        if fresh is not None:
+            await fresh.delete()
+        print(f"deleted federation {federation.id} + its agents")
+    except Exception as exc:
+        logger.warning("cleanup failed (leaving federation %s): %s", federation.id, exc)
+
+
 async def main() -> None:
+    load_dotenv()
     triggered_by = _require_env("TRIGGERED_BY_USER_ID")
     provider_config: dict = {
         "projectEndpoint": _require_env("FOUNDRY_PROJECT_ENDPOINT"),
@@ -72,13 +91,20 @@ async def main() -> None:
     if agent_name:
         provider_config["agentNames"] = [agent_name]
 
-    # ---- bootstrap exactly like registry/main.py:_startup_container ----
-    await init_mongodb(settings.mongo_config)
-    redis_client = create_redis_client(settings.redis_config)
-    db_client = create_database_client(await resolve_vector_backend_config(settings))
-    container = RegistryContainer(settings=settings, db_client=db_client, redis_client=redis_client)
-    federation: Federation | None = None
-    try:
+    async with AsyncExitStack() as resources:
+        resources.push_async_callback(close_mongodb)
+        await init_mongodb(settings.mongo_config)
+        redis_client = await create_async_redis_client(settings.redis_config)
+        resources.push_async_callback(close_async_redis_client, redis_client)
+        sync_redis_client = create_redis_client(settings.redis_config)
+        resources.callback(close_redis_client, sync_redis_client)
+        db_client = create_database_client(await resolve_vector_backend_config(settings))
+        resources.callback(db_client.close)
+        container = RegistryContainer(
+            settings=settings, db_client=db_client, redis_client=redis_client, sync_redis_client=sync_redis_client
+        )
+        resources.push_async_callback(container.shutdown)
+
         crud = container.federation_crud_service
         sync = container.federation_sync_service
 
@@ -93,6 +119,7 @@ async def main() -> None:
         # ---- 1. create federation (real crud: normalize + encrypt secret) ----
         _banner("STEP 1 — create_federation")
         federation = await _create_federation(crud, provider_config)
+        resources.push_async_callback(_cleanup_federation, federation)
         secret = (federation.providerConfig or {}).get("clientSecret", "")
         print(f"federation_id = {federation.id}")
         print(f"providerType  = {federation.providerType}")
@@ -130,22 +157,6 @@ async def main() -> None:
                 "\nnext step: keep this federation (E2E_KEEP_FEDERATION=1) and run "
                 "scripts/azure_foundry_execute.py (optionally AGENT_PATH=...) to invoke it."
             )
-
-    finally:
-        if federation is not None and os.environ.get("E2E_KEEP_FEDERATION") != "1":
-            _banner("CLEANUP — delete federation + agents (direct)")
-            try:
-                await A2AAgent.find({"federationRefId": federation.id}).delete()
-                fresh = await Federation.get(federation.id)
-                if fresh is not None:
-                    await fresh.delete()
-                print(f"deleted federation {federation.id} + its agents")
-            except Exception as exc:
-                logger.warning("cleanup failed (leaving federation %s): %s", federation.id, exc)
-        await container.shutdown()
-        close_redis_client(redis_client)
-        db_client.close()
-        await close_mongodb()
 
 
 if __name__ == "__main__":

@@ -5,12 +5,13 @@ format. These tests verify that both handlers reject non-ObjectId user_id values
 400 and a ``{"detail": ...}`` body before any further processing occurs.
 """
 
+import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
 from typing import Any, Literal
-from unittest.mock import AsyncMock, Mock, call
+from unittest.mock import ANY, AsyncMock, Mock, call
 from uuid import UUID
 
 import httpx2
@@ -33,11 +34,15 @@ from registry.api.proxy_routes import (
     managed_agent_card_well_known_alias,
     router,
 )
-from registry.constants import UrlElicitationInputKey
+from registry.constants import ProxyOutcome, UrlElicitationInputKey
 from registry.core.config import settings
 from registry.core.proxy_call import ProxyCall
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
-from registry_pkgs.core.exceptions import DownstreamAuthRejectedException, UrlElicitationRequiredException
+from registry_pkgs.core.exceptions import (
+    DownstreamAuthRejectedException,
+    InternalServerException,
+    UrlElicitationRequiredException,
+)
 from registry_pkgs.models.a2a_agent import NoSupportedTransportError
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, McpAuthMode
 from registry_pkgs.testing.federation_metadata import make_azure_foundry_metadata
@@ -241,7 +246,6 @@ async def test_post_proxy_rejects_invalid_user_id(user_id):
         server_service=Mock(),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
     )
     assert resp.status_code == 400
 
@@ -260,7 +264,6 @@ async def test_get_proxy_rejects_invalid_user_id(user_id):
         server_service=Mock(),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
     )
     assert resp.status_code == 400
 
@@ -289,7 +292,6 @@ async def test_post_proxy_does_not_reject_valid_object_id(monkeypatch):
         server_service=mock_server_service,
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
     )
     # ObjectId guard would produce {"detail": "...invalid user ID..."}.
     # Any other response (e.g. 404 for unknown server) means the guard passed.
@@ -312,7 +314,6 @@ async def test_post_proxy_acl_denied_returns_jsonrpc_error(monkeypatch):
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(denied=True),
     )
 
@@ -337,7 +338,6 @@ async def test_post_proxy_acl_denied_returns_jsonrpc_error_for_handshake(monkeyp
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(denied=True),
     )
 
@@ -362,7 +362,6 @@ async def test_post_proxy_acl_allowed_continues(monkeypatch):
         server_service=_server_service(_make_server(enabled=False)),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
     )
@@ -386,7 +385,6 @@ async def test_post_proxy_rejects_non_string_method(monkeypatch):
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
     )
@@ -416,7 +414,6 @@ async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeyp
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=consent_store,
         pending_store=pending_store,
@@ -459,7 +456,6 @@ async def test_post_proxy_without_server_consent_allows_handshake_methods(monkey
         server_service=_server_service(_make_server(enabled=False)),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=consent_store,
         pending_store=_PendingConsentStore(),
@@ -493,7 +489,6 @@ async def test_post_proxy_wrong_transport_returns_jsonrpc_error_for_handshake(mo
         server_service=_server_service(_make_server(transport="sse")),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -524,7 +519,6 @@ async def test_post_proxy_wrong_transport_returns_iserror_result_for_tools_call(
         server_service=_server_service(_make_server(transport="sse")),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -562,7 +556,6 @@ async def test_post_proxy_disabled_tool_refuses_tools_call_before_forwarding(mon
         server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -601,7 +594,6 @@ async def test_post_proxy_enabled_tool_still_forwards(monkeypatch):
         server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -629,7 +621,6 @@ async def test_post_proxy_disabled_tools_do_not_gate_handshake_methods(monkeypat
         server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(),
         pending_store=_PendingConsentStore(),
@@ -668,7 +659,6 @@ async def test_post_proxy_disabled_tool_refused_before_consent_gate(monkeypatch)
         server_service=_server_service(_make_server(disabled_tools=["delete_repo"])),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=consent_store,
         pending_store=pending_store,
@@ -705,7 +695,6 @@ async def test_post_proxy_headless_agent_bypasses_server_consent(monkeypatch):
         server_service=_server_service(_make_server(enabled=False)),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=consent_store,
         pending_store=pending_store,
@@ -733,7 +722,6 @@ async def test_post_proxy_headless_agent_still_enforces_acl(monkeypatch):
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(denied=True),
         consent_store=consent_store,
         pending_store=_PendingConsentStore(),
@@ -754,7 +742,6 @@ async def test_get_proxy_acl_denied_returns_403():
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(denied=True),
     )
 
@@ -772,7 +759,6 @@ async def test_get_proxy_acl_allowed_continues():
         server_service=_server_service(_make_server(enabled=False)),
         oauth_service=Mock(),
         proxy_client=Mock(),
-        redis_client=Mock(),
         acl_service=_acl_service(),
     )
 
@@ -929,7 +915,6 @@ async def _run_proxy_and_capture(monkeypatch, msg_body: dict, extra_headers=None
         server_service=_server_service(_make_server(enabled=True)),
         oauth_service=Mock(),
         proxy_client=proxy_client,
-        redis_client=Mock(),
         acl_service=_acl_service(),
         consent_store=_consent_store(has_server_consent=True),
     )
@@ -1072,7 +1057,6 @@ async def test_get_proxy_strips_client_trace_headers_and_creates_span(monkeypatc
         server_service=_server_service(_make_server(enabled=True)),
         oauth_service=Mock(),
         proxy_client=proxy_client,
-        redis_client=Mock(),
         acl_service=_acl_service(),
     )
 
@@ -1141,21 +1125,42 @@ _DOWNSTREAM_CHALLENGE = (
 )
 
 
-class _FakeDownstream:
-    """proxy_client.stream stand-in that answers each send with the next queued (status, headers)."""
+_SSE_EVENT = b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n'
 
-    def __init__(self, *statuses: int) -> None:
+
+class _FakeDownstream:
+    """proxy_client.stream stand-in that answers each send with the next queued (status, headers).
+
+    The body is buffered JSON, or an event stream when ``sse`` is set whose chunks come from
+    ``body`` (a callable returning a fresh async iterator). ``stream_error`` makes the send fail.
+    """
+
+    def __init__(
+        self,
+        *statuses: int,
+        sse: bool = False,
+        body: Callable[[], AsyncIterator[bytes]] | None = None,
+        stream_error: Exception | None = None,
+    ) -> None:
         self.statuses = list(statuses)
+        self.sse = sse
+        self.body = body
+        self.stream_error = stream_error
         self.sent_headers: list[dict[str, str]] = []
         self.closed = 0
 
     def stream(self, method, url, headers=None, content=None, timeout=None):
         self.sent_headers.append(dict(headers or {}))
+        if self.stream_error is not None:
+            raise self.stream_error
         status = self.statuses.pop(0)
         downstream = self
-        response_headers = {"content-type": "application/json"}
+        response_headers = {"content-type": "text/event-stream" if self.sse else "application/json"}
         if status == 401:
             response_headers["www-authenticate"] = _DOWNSTREAM_CHALLENGE
+
+        async def default_body() -> AsyncIterator[bytes]:
+            yield _SSE_EVENT
 
         class _Ctx:
             async def __aenter__(self):
@@ -1163,7 +1168,7 @@ class _FakeDownstream:
                     headers=httpx2.Headers(response_headers),
                     status_code=status,
                     aread=AsyncMock(return_value=b'{"jsonrpc":"2.0","id":1,"result":{}}'),
-                    aiter_bytes=lambda: iter(()),
+                    aiter_bytes=downstream.body or default_body,
                 )
 
             async def __aexit__(self, *args):
@@ -1182,6 +1187,11 @@ def _token_header_builder(monkeypatch, tokens: list[str]) -> None:
     monkeypatch.setattr(proxy_routes, "build_authenticated_headers", AsyncMock(side_effect=build))
 
 
+def _recorder() -> proxy_routes._ProxyRequestMetrics:
+    """A metrics recorder for code that is called directly instead of through a handler."""
+    return proxy_routes._ProxyRequestMetrics(server_name="github", http_method="POST", mcp_method="tools/call")
+
+
 async def _proxy(downstream, server, oauth_service, method: str = "tools/call"):
     return await proxy_routes.proxy_to_mcp_server(
         call=ProxyCall.from_message(1, method, {}, b"{}", None),
@@ -1191,7 +1201,7 @@ async def _proxy(downstream, server, oauth_service, method: str = "tools/call"):
         server=server,
         oauth_service=oauth_service,
         proxy_client=downstream,
-        redis_client=Mock(),
+        metrics=_recorder(),
     )
 
 
@@ -1348,6 +1358,7 @@ async def test_forward_without_event_stream_accept_rejects_by_method(method):
         target_url="https://example.com/mcp",
         proxy_client=downstream,
         headers={},
+        metrics=_recorder(),
     )
 
     body = json.loads(resp.body)
@@ -1376,7 +1387,7 @@ async def test_post_proxy_non_oauth_401_is_relayed(monkeypatch):
     oauth_service.recover_from_unauthorized.assert_not_awaited()
 
 
-async def _get(downstream, server, oauth_service):
+async def _get(downstream, server, oauth_service, *, acl=None, server_service=None, sse_accept=True):
     return await dynamic_mcp_get_proxy(
         request=Request(
             {
@@ -1386,7 +1397,7 @@ async def _get(downstream, server, oauth_service):
                 "server": ("testserver", 80),
                 "path": f"/proxy/server/{VALID_OBJECT_ID}/github",
                 "query_string": b"",
-                "headers": [(b"accept", b"text/event-stream")],
+                "headers": [(b"accept", b"text/event-stream" if sse_accept else b"application/json")],
                 "path_params": {"user_id": VALID_OBJECT_ID, "server_path": "github"},
             },
             receive=_proxy_receive(),
@@ -1394,11 +1405,10 @@ async def _get(downstream, server, oauth_service):
         user_id=VALID_OBJECT_ID,
         server_path="github",
         auth_context=_AUTH_CONTEXT,
-        server_service=_server_service(server),
+        server_service=server_service if server_service is not None else _server_service(server),
         oauth_service=oauth_service,
         proxy_client=downstream,
-        redis_client=Mock(),
-        acl_service=_acl_service(),
+        acl_service=acl if acl is not None else _acl_service(),
     )
 
 
@@ -1503,7 +1513,6 @@ async def _direct_run(
             server_service=_server_service(server or _make_server()),
             oauth_service=oauth,
             proxy_client=client,
-            redis_client=Mock(),
             acl_service=acl or _acl_service(),
             consent_store=store,
             pending_store=pending,
@@ -1884,7 +1893,12 @@ async def test_direct_downstream_input_result_passthrough_and_close(streaming: b
     call = ProxyCall.from_message(1, "tools/call", message, await request.body(), _MODERN)
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(downstream)) as client:
         response = await proxy_routes._forward_to_downstream(
-            call=call, request=request, target_url="https://example.com/mcp", proxy_client=client, headers={}
+            call=call,
+            request=request,
+            target_url="https://example.com/mcp",
+            proxy_client=client,
+            headers={},
+            metrics=_recorder(),
         )
         if streaming:
             assert not stream.closed
@@ -1996,6 +2010,7 @@ async def test_forward_mcp_uses_own_decoder_set(
         target_url="https://mcp.example.com",
         proxy_client=client,
         headers={},
+        metrics=_recorder(),
     )
 
     assert response.status_code == 200
@@ -2039,3 +2054,400 @@ async def test_get_proxy_strips_content_encoding_only_when_decoded(
     assert response.headers.get("content-encoding") == (None if can_decode else "gzip")
     assert b"".join([chunk async for chunk in response.body_iterator]) == body
     context.__aexit__.assert_awaited_once()
+
+
+# --- Direct proxy metrics ---
+
+
+class _Clock:
+    """Stand-in for ``perf_counter`` that moves only when a test moves it."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def recorded(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """The direct proxy's metric recorders as mocks: ``request``, ``tool_call``, ``server_request``."""
+    mocks = SimpleNamespace(request=Mock(), tool_call=Mock(), server_request=Mock())
+    monkeypatch.setattr(proxy_routes, "record_proxy_request", mocks.request)
+    monkeypatch.setattr(proxy_routes, "record_proxy_tool_call", mocks.tool_call)
+    monkeypatch.setattr(proxy_routes, "record_server_request", mocks.server_request)
+    return mocks
+
+
+def _rpc(method: str, tool: str | None = None) -> dict[str, Any]:
+    """A JSON-RPC request for ``method``, calling ``tool`` when one is given."""
+    message: dict[str, Any] = {"jsonrpc": "2.0", "id": 1, "method": method}
+    if tool is not None:
+        message["params"] = {"name": tool}
+    return message
+
+
+async def _post(
+    downstream,
+    message: dict[str, Any],
+    *,
+    request: Request | None = None,
+    server: SimpleNamespace | None = None,
+    server_service=None,
+    oauth_service: Mock | None = None,
+    consent: bool = True,
+    acl: Mock | None = None,
+) -> Response:
+    """Run the POST handler against a stand-in downstream server.
+
+    The message travels in the request body as it does in production. Only the downstream is a
+    stand-in (``proxy_client.stream``), so the handler's own recording code runs.
+    """
+    return await dynamic_mcp_post_proxy(
+        request=request if request is not None else _direct_request(message, version=None),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=server_service if server_service is not None else _server_service(server or _make_server()),
+        oauth_service=oauth_service if oauth_service is not None else Mock(recover_from_unauthorized=AsyncMock()),
+        proxy_client=downstream,
+        acl_service=acl if acl is not None else _acl_service(),
+        consent_store=_consent_store(has_server_consent=consent),
+        pending_store=_PendingConsentStore(),
+    )
+
+
+async def _drain(stream: AsyncIterator[bytes]) -> None:
+    async for _ in stream:
+        pass
+
+
+class TestPostProxyMetrics:
+    """What the direct proxy records for the POSTs it sends, and when."""
+
+    @pytest.fixture(autouse=True)
+    def downstream_authorization(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _token_header_builder(monkeypatch, ["t1"])
+
+    # The outcome is only known where the proxy talks to the server: it answers its own failures
+    # with HTTP 200 and a JSON-RPC error, the status a relayed response has as well.
+
+    @pytest.mark.parametrize(
+        ("status", "outcome"),
+        [(200, ProxyOutcome.SUCCESS), (404, ProxyOutcome.FAILURE), (503, ProxyOutcome.FAILURE)],
+    )
+    async def test_relayed_response_is_recorded_by_downstream_status(self, recorded, status, outcome):
+        response = await _post(_FakeDownstream(status), _rpc("tools/list"))
+
+        assert response.status_code == status
+        assert recorded.request.call_args.args == ("github", "POST", "tools/list", outcome, ANY)
+
+    @pytest.mark.parametrize(
+        "error",
+        [httpx2.TimeoutException("read timed out"), httpx2.ConnectError("connection refused"), RuntimeError("boom")],
+    )
+    async def test_failed_send_is_recorded_as_failure(self, recorded, error):
+        response = await _post(_FakeDownstream(stream_error=error), _rpc("tools/call", "format_disk"))
+
+        assert response.status_code == 200
+        assert json.loads(response.body)["error"]["code"] == -32603
+        assert recorded.request.call_args.args == ("github", "POST", "tools/call", ProxyOutcome.FAILURE, ANY)
+        assert recorded.tool_call.call_args.args == ("other", "github", ProxyOutcome.FAILURE)
+
+    async def test_missing_event_stream_accept_is_not_recorded(self, recorded):
+        request = _direct_request(_rpc("tools/call"), version=None)
+        request.scope["headers"] = [(name, value) for name, value in request.scope["headers"] if name != b"accept"]
+
+        response = await _post(
+            _FakeDownstream(200), _rpc("tools/call"), request=Request(request.scope, receive=request.receive)
+        )
+
+        assert json.loads(response.body)["result"]["isError"] is True
+        recorded.request.assert_not_called()
+        recorded.tool_call.assert_not_called()
+
+    @pytest.mark.parametrize("method", ["tools/call", "initialize"])
+    async def test_authorization_prompt_is_recorded_as_input_required(self, recorded, monkeypatch, method):
+        _token_header_builder(monkeypatch, [])  # no downstream token: the user has to log in first
+
+        response = await _post(_FakeDownstream(200), _rpc(method))
+
+        assert response.status_code == (401 if method == "initialize" else 200)
+        assert recorded.request.call_args.args[:4] == ("github", "POST", method, ProxyOutcome.INPUT_REQUIRED)
+
+    @pytest.mark.parametrize("method", ["tools/call", "initialize"])
+    async def test_rejected_downstream_authorization_is_recorded_as_failure(self, recorded, method):
+        oauth_service = Mock()
+
+        async def recover(*args, is_retry, **kwargs):
+            if is_retry:
+                raise DownstreamAuthRejectedException("github rejected a freshly issued access token")
+
+        oauth_service.recover_from_unauthorized = AsyncMock(side_effect=recover)
+        response = await _post(
+            _FakeDownstream(401, 401),
+            _rpc(method),
+            server=_make_server(auth_mode=McpAuthMode.OAUTH),
+            oauth_service=oauth_service,
+        )
+
+        # The rejection reaches the client: an isError result for a tool call, an error otherwise.
+        body = json.loads(response.body)
+        if method == "tools/call":
+            assert body["result"]["isError"] is True
+        else:
+            assert body["error"]["code"] == -32003
+        assert "rejected a freshly issued access token" in json.dumps(body)
+        assert recorded.request.call_args.args[:4] == ("github", "POST", method, ProxyOutcome.FAILURE)
+
+    @pytest.mark.parametrize("method", ["tools/call", "initialize"])
+    async def test_authorization_changed_mid_call_is_recorded_as_failure(self, recorded, method):
+        oauth_service = Mock(recover_from_unauthorized=AsyncMock(return_value=None))
+
+        response = await _post(
+            _FakeDownstream(401, 401),
+            _rpc(method),
+            server=_make_server(auth_mode=McpAuthMode.OAUTH),
+            oauth_service=oauth_service,
+        )
+
+        assert "changed during this call" in json.dumps(json.loads(response.body))
+        assert recorded.request.call_args.args[:4] == ("github", "POST", method, ProxyOutcome.FAILURE)
+
+    async def test_header_build_failure_is_recorded_as_failure(self, recorded, monkeypatch):
+        monkeypatch.setattr(
+            proxy_routes, "build_authenticated_headers", AsyncMock(side_effect=InternalServerException("boom"))
+        )
+
+        response = await _post(_FakeDownstream(200), _rpc("tools/call"))
+
+        assert json.loads(response.body)["error"]["code"] == -32603
+        assert recorded.request.call_args.args[:4] == ("github", "POST", "tools/call", ProxyOutcome.FAILURE)
+
+    # An SSE response has only been relayed once its body has been read.
+
+    async def test_sse_response_is_recorded_after_the_body_is_read(self, recorded, monkeypatch):
+        clock = _Clock()
+        monkeypatch.setattr(proxy_routes, "perf_counter", clock)
+
+        async def body() -> AsyncIterator[bytes]:
+            yield _SSE_EVENT
+            clock.advance(7.0)  # the server takes this long to produce the rest
+            yield _SSE_EVENT
+
+        response = await _post(_FakeDownstream(200, sse=True, body=body), _rpc("tools/call"))
+
+        # The headers are back, but how the call ends is still unknown.
+        recorded.request.assert_not_called()
+        assert len([chunk async for chunk in response.body_iterator]) == 2
+        assert recorded.request.call_args.args == ("github", "POST", "tools/call", ProxyOutcome.SUCCESS, 7.0)
+
+    async def test_sse_error_after_the_headers_is_recorded_as_failure(self, recorded):
+        async def body() -> AsyncIterator[bytes]:
+            yield _SSE_EVENT
+            raise httpx2.ReadError("connection reset")
+
+        response = await _post(_FakeDownstream(200, sse=True, body=body), _rpc("tools/call"))
+
+        recorded.request.assert_not_called()
+        with pytest.raises(httpx2.ReadError):
+            await _drain(response.body_iterator)
+        assert recorded.request.call_args.args[:4] == ("github", "POST", "tools/call", ProxyOutcome.FAILURE)
+
+    @pytest.mark.parametrize("disconnect", ["closed", "cancelled"])
+    async def test_client_disconnect_is_recorded_as_cancelled(self, recorded, disconnect):
+        waiting = asyncio.Event()
+
+        async def body() -> AsyncIterator[bytes]:
+            yield _SSE_EVENT
+            waiting.set()  # first chunk out; the proxy is back to waiting on the server
+            await asyncio.Event().wait()
+            yield _SSE_EVENT
+
+        response = await _post(_FakeDownstream(200, sse=True, body=body), _rpc("tools/call"))
+        if disconnect == "closed":  # the response body is dropped while the server has more to send
+            stream = response.body_iterator
+            assert await stream.__anext__() == _SSE_EVENT
+            await stream.aclose()
+        else:  # the request task is cancelled while it waits on the server
+            reader = asyncio.create_task(_drain(response.body_iterator))
+            await asyncio.wait_for(waiting.wait(), timeout=5)
+            reader.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await reader
+
+        assert recorded.request.call_args.args[:4] == ("github", "POST", "tools/call", ProxyOutcome.CANCELLED)
+
+    # tool_name is whatever the client sent, so only a tool the server has registered keeps its name.
+
+    @pytest.mark.parametrize(
+        ("tool_functions", "no_config", "called", "label"),
+        [
+            ({"delete_repo_mcp_github": {"mcpToolName": "delete_repo"}}, False, "delete_repo", "delete_repo"),
+            ({"echo": {}}, False, "echo", "echo"),
+            ({"echo": {"mcpToolName": "echo"}}, False, "format_disk", "other"),
+            ({}, False, "echo", "other"),
+            ({}, True, "echo", "other"),
+        ],
+        ids=["registered-name", "registered-key", "unknown-tool", "no-registered-tools", "no-config"],
+    )
+    def test_tool_label_is_the_name_only_for_registered_tools(self, tool_functions, no_config, called, label):
+        server = _make_server()
+        server.config["toolFunctions"] = tool_functions
+        if no_config:
+            server.config = None
+        call = ProxyCall.from_message(1, "tools/call", {"params": {"name": called}}, b"{}", None)
+
+        assert proxy_routes._registered_tool_name(call, server) == label
+
+    @pytest.mark.parametrize(("called", "label"), [("echo", "echo"), ("format_disk", "other")])
+    async def test_tool_call_metric_uses_the_registered_tool_label(self, recorded, called, label):
+        server = _make_server()
+        server.config["toolFunctions"] = {"echo_mcp_github": {"mcpToolName": "echo"}}
+
+        await _post(_FakeDownstream(200), _rpc("tools/call", called), server=server)
+
+        assert recorded.tool_call.call_args.args == (label, "github", ProxyOutcome.SUCCESS)
+
+    @pytest.mark.parametrize("message", [_rpc("tools/list"), _rpc("tools/call")], ids=["other-method", "no-tool-name"])
+    async def test_no_tool_call_is_recorded_without_a_called_tool(self, recorded, message):
+        await _post(_FakeDownstream(200), message)
+
+        recorded.request.assert_called_once()
+        recorded.tool_call.assert_not_called()
+
+    # mcp_method is client-supplied as well, so it is kept to the methods the MCP spec defines.
+
+    @pytest.mark.parametrize(
+        ("method", "label"),
+        [("tools/call", "tools/call"), ("initialize", "initialize"), ("resources/export", "other")],
+    )
+    async def test_mcp_method_label_is_the_spec_method_or_other(self, recorded, method, label):
+        await _post(_FakeDownstream(200), _rpc(method))
+
+        assert recorded.request.call_args.args[:3] == ("github", "POST", label)
+
+    # mcp_server_requests_total counts operations on a server, where the gateway counts them.
+
+    @pytest.mark.parametrize("method", ["tools/call", "resources/read", "prompts/get"])
+    async def test_operations_are_counted_as_proxy_server_requests(self, recorded, method):
+        await _post(_FakeDownstream(503), _rpc(method))
+
+        # Counted before the call, whatever its outcome.
+        recorded.server_request.assert_called_once_with("github", "proxy")
+
+    @pytest.mark.parametrize("method", ["initialize", "tools/list", "resources/list", "prompts/list"])
+    async def test_handshake_and_listing_are_not_counted_as_server_requests(self, recorded, method):
+        await _post(_FakeDownstream(200), _rpc(method))
+
+        recorded.server_request.assert_not_called()
+
+    @pytest.mark.parametrize("refusal", ["unknown-server", "acl", "no-consent", "disabled-server", "wrong-transport"])
+    async def test_refused_requests_are_not_recorded(self, recorded, refusal):
+        options = {
+            "unknown-server": {"server_service": _server_service(None)},
+            "acl": {"acl": _acl_service(denied=True)},
+            "no-consent": {"consent": False},
+            "disabled-server": {"server": _make_server(enabled=False)},
+            "wrong-transport": {"server": _make_server(transport="sse")},
+        }[refusal]
+        response = await _post(_FakeDownstream(200), _rpc("tools/call"), **options)
+
+        assert response.status_code == 200
+        recorded.server_request.assert_not_called()
+        recorded.request.assert_not_called()
+        recorded.tool_call.assert_not_called()
+
+
+class TestGetProxyMetrics:
+    """A GET stream is recorded when it opens, since it can then stay open for minutes."""
+
+    @pytest.fixture(autouse=True)
+    def downstream_authorization(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _token_header_builder(monkeypatch, ["t1"])
+
+    @pytest.mark.parametrize(
+        ("status", "outcome"),
+        [
+            (200, ProxyOutcome.SUCCESS),
+            (405, ProxyOutcome.SUCCESS),
+            (500, ProxyOutcome.FAILURE),
+            (503, ProxyOutcome.FAILURE),
+        ],
+    )
+    async def test_stream_open_is_recorded_by_downstream_status(self, recorded, status, outcome):
+        response = await _get(_FakeDownstream(status, sse=True), _make_server(), Mock())
+
+        assert response.status_code == status
+        assert recorded.request.call_args.args == ("github", "GET", "none", outcome, ANY)
+
+    @pytest.mark.parametrize("error", [httpx2.TimeoutException("connect timed out"), RuntimeError("boom")])
+    async def test_failed_stream_open_is_recorded_as_failure(self, recorded, error):
+        response = await _get(_FakeDownstream(stream_error=error), _make_server(), Mock())
+
+        assert response.status_code == 500
+        assert recorded.request.call_args.args[:4] == ("github", "GET", "none", ProxyOutcome.FAILURE)
+
+    @pytest.mark.parametrize("token", ["rejected", "expired"])
+    async def test_token_problem_is_recorded_as_input_required(self, recorded, monkeypatch, token):
+        oauth_service = Mock()
+        oauth_service.token_service.delete_access_token_if_matches = AsyncMock(return_value=True)
+        downstream = _FakeDownstream(401, sse=True)
+        if token == "expired":  # no downstream token: the user has to log in first
+            _token_header_builder(monkeypatch, [])
+            downstream = _FakeDownstream(200, sse=True)
+
+        response = await _get(downstream, _make_server(auth_mode=McpAuthMode.OAUTH), oauth_service)
+
+        assert response.status_code == 401
+        assert response.headers["content-type"].startswith("application/problem+json")
+        assert recorded.request.call_args.args[:4] == ("github", "GET", "none", ProxyOutcome.INPUT_REQUIRED)
+
+    async def test_header_build_failure_is_recorded_as_failure(self, recorded, monkeypatch):
+        monkeypatch.setattr(
+            proxy_routes, "build_authenticated_headers", AsyncMock(side_effect=InternalServerException("boom"))
+        )
+
+        response = await _get(_FakeDownstream(200, sse=True), _make_server(), Mock())
+
+        assert response.status_code == 500
+        assert recorded.request.call_args.args[:4] == ("github", "GET", "none", ProxyOutcome.FAILURE)
+
+    @pytest.mark.parametrize(
+        "refusal", ["unknown-path", "acl", "disabled-server", "wrong-transport", "missing-accept", "missing-url"]
+    )
+    async def test_refusals_before_forwarding_are_not_recorded(self, recorded, refusal):
+        server = _make_server()
+        options: dict[str, Any] = {}
+        status = 404
+        if refusal == "unknown-path":
+            options["server_service"] = SimpleNamespace(extract_server_path=AsyncMock(return_value=None))
+        elif refusal == "acl":
+            options["acl"] = _acl_service(denied=True)
+            status = 403
+        elif refusal == "disabled-server":
+            server = _make_server(enabled=False)
+        elif refusal == "wrong-transport":
+            server = _make_server(transport="sse")
+        elif refusal == "missing-accept":
+            options["sse_accept"] = False
+            status = 406
+        else:  # missing-url
+            del server.config["url"]
+            status = 500
+
+        response = await _get(_FakeDownstream(200, sse=True), server, Mock(), **options)
+
+        assert response.status_code == status
+        recorded.request.assert_not_called()
+        recorded.server_request.assert_not_called()
+
+    async def test_stream_open_is_not_a_server_request(self, recorded):
+        """Only an operation on a server is; a GET stream is the channel the server pushes on."""
+        await _get(_FakeDownstream(200, sse=True), _make_server(), Mock())
+
+        recorded.request.assert_called_once()
+        recorded.server_request.assert_not_called()

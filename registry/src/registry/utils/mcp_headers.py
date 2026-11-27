@@ -11,8 +11,6 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from redis import Redis
-
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.oauth.headers import HeaderBuildConfig
 from registry_pkgs.oauth.headers import build_authenticated_headers as _build_authenticated_headers
@@ -38,7 +36,6 @@ def get_header_build_config() -> HeaderBuildConfig:
     """
     return HeaderBuildConfig(
         registry_app_name=settings.registry_app_name,
-        redis_key_prefix=settings.redis_key_prefix,
         jwt_signing_config=settings.jwt_signing_config,
         encryption_key=settings.encryption_key,
     )
@@ -51,7 +48,6 @@ async def build_authenticated_headers(
     additional_headers: dict[str, str] | None = None,
     *,
     state_metadata: StateMetadata | None = None,
-    redis_client: Redis | None = None,
 ) -> dict[str, str]:
     """Build full gateway + auth headers for an authenticated MCP request.
 
@@ -66,7 +62,6 @@ async def build_authenticated_headers(
         cfg=get_header_build_config(),
         additional_headers=additional_headers,
         state_metadata=state_metadata,
-        redis_client=redis_client,
     )
 
 
@@ -76,7 +71,6 @@ async def build_complete_headers_for_server(
     user_id: str | None = None,
     *,
     state_metadata: StateMetadata | None = None,
-    redis_client: Redis | None = None,
     interactive: bool = True,
 ) -> dict[str, str]:
     """Build the OAuth/apiKey/AgentCore auth headers for a server, keyed by ``user_id``.
@@ -94,6 +88,5 @@ async def build_complete_headers_for_server(
         user_id,
         cfg=get_header_build_config(),
         state_metadata=state_metadata,
-        redis_client=redis_client,
         interactive=interactive,
     )

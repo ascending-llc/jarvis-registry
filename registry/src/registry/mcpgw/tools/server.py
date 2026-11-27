@@ -210,7 +210,6 @@ async def _call_with_oauth_recovery(
             auth_context=user_context,
             additional_headers=extra,
             state_metadata=state_metadata,
-            redis_client=lifespan.redis_client,
         )
         # 2a. Preserve W3C trace propagation when OAuth recovery changes the authorization header.
         return inject_trace_context(headers, context=ctx_baggage)
@@ -489,7 +488,7 @@ async def _execute_server_operation(
             return authorized
         server, user_context = authorized
         # 2. Count the authorized server request and resolve its configured endpoint.
-        record_server_request(server.serverName)
+        record_server_request(server.serverName, "gateway")
 
         target_url = get_target_url(server)
 

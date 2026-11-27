@@ -1,5 +1,3 @@
-from tests.fake_redis import FakeRedis
-
 """Unit tests for MCPOAuthService.
 
 Most tests run the real service against in-memory fakes of the three things it talks to: the
@@ -50,6 +48,7 @@ from registry_pkgs.oauth.schemas import (
     OAuthTokens,
 )
 from registry_pkgs.oauth.token_service import TokenService
+from tests.fake_redis import FakeRedis
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KEY = bytes.fromhex("00" * 16)

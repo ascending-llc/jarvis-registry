@@ -81,14 +81,16 @@ jarvis-registry.reloader/auto
 {{- define "jarvis-registry.databaseEnv" -}}
 {{- $fullname := include "jarvis-registry.fullname" . -}}
 {{- if .Values.registry.mongodb.enabled }}
-# $(MONGODB_ADMIN_PASSWORD) expands from envFrom (verified end-to-end in AS-2036).
-# Clear username/password vars so stale keys in the Secret don't override MONGO_URI.
+# Credentials go in separate vars; the app URL-escapes them into MONGO_URI (create_mongo_client).
 - name: MONGO_URI
-  value: {{ printf "mongodb://%s:$(MONGODB_ADMIN_PASSWORD)@%s-mongodb-0.%s-mongodb:27017/%s?replicaSet=rs0&authSource=admin" .Values.registry.mongodb.auth.username $fullname $fullname .Values.registry.mongodb.database | quote }}
+  value: {{ printf "mongodb://%s-mongodb-0.%s-mongodb:27017/%s?replicaSet=rs0&authSource=admin" $fullname $fullname .Values.registry.mongodb.database | quote }}
 - name: MONGODB_USERNAME
-  value: ""
+  value: {{ .Values.registry.mongodb.auth.username | quote }}
 - name: MONGODB_PASSWORD
-  value: ""
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.registry.env.targetSecretName }}
+      key: MONGODB_ADMIN_PASSWORD
 {{- end }}
 {{- if .Values.registry.redis.enabled }}
 - name: REDIS_URI

@@ -11,6 +11,7 @@ from opentelemetry import context as context_api
 from opentelemetry.sdk.trace import TracerProvider
 
 from registry_pkgs.core.config import JwtSigningConfig
+from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.telemetry.trace_propagation import (
     BAGGAGE_KEY_ATTEMPT,
@@ -72,17 +73,16 @@ class TestAgentCoreMcpExecutor:
         monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.MCPTools", fake_mcp_tools_cls)
         monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.Agent", lambda **kwargs: fake_agent_instance)
 
-        redis_client = MagicMock()
-        redis_client.get.return_value = b"cached-agentcore-token"
+        signer = MagicMock(return_value="test-token")
+        monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.sign_agentcore_jwt", signer)
         auth_context = {"user_id": "user-1", "client_id": "client-1"}
+        server = _mcp_server("agentcore-server", runtime_access={"mode": "jwt", "jwt": {"audiences": ["agentcore"]}})
 
         executor = make_mcp_executor(
-            _mcp_server("agentcore-server", runtime_access={"mode": "jwt", "jwt": {"audiences": ["agentcore"]}}),
+            server,
             llm=SimpleNamespace(),
             auth_context=auth_context,
             jwt_config=_jwt_config(),
-            redis_client=redis_client,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=None,
         )
 
@@ -94,13 +94,14 @@ class TestAgentCoreMcpExecutor:
         assert captured_tools_kwargs.get("refresh_connection") is False
         assert captured_tools_kwargs["server_params"].url == "https://agentcore-server.example.com/mcp"
 
-        # Calling header_provider directly should return the cached token.
         header_provider = captured_tools_kwargs["header_provider"]
         headers = header_provider()
-        assert headers == {"Authorization": "Bearer cached-agentcore-token"}
+        assert headers == {"Authorization": "Bearer test-token"}
+        signer.assert_called_once()
+        assert signer.call_args.kwargs["server_id"] == str(server.id)
 
     @pytest.mark.asyncio
-    async def test_header_provider_mints_and_caches_on_miss(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_header_provider_signs_the_runtime_jwt(self, monkeypatch: pytest.MonkeyPatch):
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -124,16 +125,11 @@ class TestAgentCoreMcpExecutor:
         monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.MCPTools", fake_mcp_tools_cls)
         monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.Agent", lambda **kwargs: fake_agent_instance)
 
-        redis_client = MagicMock()
-        redis_client.get.return_value = None
-
         executor = make_mcp_executor(
             _mcp_server("agentcore-server", runtime_access={"mode": "jwt", "jwt": {}}),
             llm=SimpleNamespace(),
             auth_context=None,
             jwt_config=jwt_config,
-            redis_client=redis_client,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=None,
         )
 
@@ -143,10 +139,9 @@ class TestAgentCoreMcpExecutor:
         headers = header_provider()
 
         assert headers["Authorization"].startswith("Bearer ")
-        redis_client.setex.assert_called_once()
-        _, ttl, token = redis_client.setex.call_args.args
-        assert ttl == 3540
-        assert token == headers["Authorization"].split(" ", 1)[1]
+        claims = decode_jwt_unverified(headers["Authorization"].removeprefix("Bearer "))
+        assert claims["sub"] == jwt_config.registry_app_name
+        assert claims["aud"] == jwt_config.jwt_audience
 
     @pytest.mark.asyncio
     async def test_header_provider_injects_trace_context(self, monkeypatch: pytest.MonkeyPatch):
@@ -161,16 +156,15 @@ class TestAgentCoreMcpExecutor:
         monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.MCPTools", fake_mcp_tools_cls)
         monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.Agent", lambda **kwargs: fake_agent_instance)
 
-        redis_client = MagicMock()
-        redis_client.get.return_value = b"cached-agentcore-token"
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.mcp_executor.sign_agentcore_jwt", lambda *args, **kwargs: "test-token"
+        )
 
         executor = make_mcp_executor(
             _mcp_server("agentcore-server", runtime_access={"mode": "jwt", "jwt": {"audiences": ["agentcore"]}}),
             llm=SimpleNamespace(),
             auth_context={"user_id": "user-1", "client_id": "client-1"},
             jwt_config=_jwt_config(),
-            redis_client=redis_client,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=None,
         )
 
@@ -184,7 +178,7 @@ class TestAgentCoreMcpExecutor:
             finally:
                 context_api.detach(token)
 
-        assert headers["Authorization"] == "Bearer cached-agentcore-token"
+        assert headers["Authorization"] == "Bearer test-token"
         assert "traceparent" in headers
         assert BAGGAGE_KEY_WORKFLOW_RUN_ID in headers["baggage"]
         assert "run-1" in headers["baggage"]
@@ -197,8 +191,6 @@ class TestAgentCoreMcpExecutor:
                 llm=SimpleNamespace(),
                 auth_context=None,
                 jwt_config=_jwt_config(),
-                redis_client=None,
-                redis_key_prefix="test-registry",
                 mcp_headers_provider=None,
             )
 
@@ -229,8 +221,6 @@ class TestManualMcpExecutor:
             llm=SimpleNamespace(),
             auth_context=auth_context,
             jwt_config=_jwt_config(),
-            redis_client=None,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=fake_headers_provider,
         )
 
@@ -265,8 +255,6 @@ class TestManualMcpExecutor:
             llm=SimpleNamespace(),
             auth_context={"user_id": "user-42"},
             jwt_config=_jwt_config(),
-            redis_client=None,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=fake_headers_provider,
         )
 
@@ -290,8 +278,6 @@ class TestManualMcpExecutor:
             llm=SimpleNamespace(),
             auth_context=None,
             jwt_config=_jwt_config(),
-            redis_client=None,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=lambda *args, **kwargs: {},
         )
 
@@ -312,8 +298,6 @@ class TestManualMcpExecutor:
             llm=SimpleNamespace(),
             auth_context=None,
             jwt_config=_jwt_config(),
-            redis_client=None,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=fake_headers_provider,
         )
 
@@ -329,8 +313,6 @@ class TestManualMcpExecutor:
             llm=SimpleNamespace(),
             auth_context={"user_id": "user-42"},
             jwt_config=_jwt_config(),
-            redis_client=None,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=None,
         )
 
@@ -353,8 +335,6 @@ class TestManualMcpExecutor:
             llm=SimpleNamespace(),
             auth_context={"user_id": "user-42"},
             jwt_config=_jwt_config(),
-            redis_client=None,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=fake_headers_provider,
         )
 
@@ -388,8 +368,6 @@ class TestManualMcpExecutor:
             llm=SimpleNamespace(),
             auth_context={"user_id": "user-42"},
             jwt_config=_jwt_config(),
-            redis_client=None,
-            redis_key_prefix="test-registry",
             mcp_headers_provider=fake_headers_provider,
         )
 

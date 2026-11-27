@@ -9,6 +9,15 @@ class ExecutionOutcome(StrEnum):
     INPUT_REQUIRED = "input_required"
 
 
+class ProxyOutcome(StrEnum):
+    """Bounded outcomes for a request the direct proxy sent to a downstream server."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    INPUT_REQUIRED = "input_required"
+    CANCELLED = "cancelled"
+
+
 MAX_RETURN_PATH_LENGTH = 2048
 OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
 OPENAPI_SESSION_COOKIE_SCHEME = "SessionCookie"
