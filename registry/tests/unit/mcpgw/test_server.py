@@ -1608,7 +1608,7 @@ async def test_shared_authorization_order_and_short_circuits(
     else:
         assert result is _OK
         downstream.assert_awaited_once()
-        count.assert_called_once_with(srv.serverName)
+        count.assert_called_once_with(srv.serverName, "gateway")
         lifespan.pending_consent_store.save.assert_not_called()
     if not isinstance(operation, ToolCall):
         srv.is_tool_disabled.assert_not_called()

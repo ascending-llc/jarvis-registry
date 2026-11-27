@@ -488,7 +488,7 @@ async def _execute_server_operation(
             return authorized
         server, user_context = authorized
         # 2. Count the authorized server request and resolve its configured endpoint.
-        record_server_request(server.serverName)
+        record_server_request(server.serverName, "gateway")
 
         target_url = get_target_url(server)
 
