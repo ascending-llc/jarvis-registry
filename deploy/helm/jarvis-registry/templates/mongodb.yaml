@@ -73,14 +73,37 @@ spec:
                   - sh
                   - -c
                   - |
-                    # Wait for the real replSet mongod and init rs0 once (safe on restarts).
-                    until mongosh --quiet \
-                      -u "$MONGO_INITDB_ROOT_USERNAME" \
-                      -p "$MONGO_INITDB_ROOT_PASSWORD" \
-                      --authenticationDatabase admin \
-                      --eval "try { if (rs.status().ok === 1) quit(0); } catch (e) { if (e.codeName === 'NotYetInitialized') { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '{{ $memberHost }}' }] }); quit(0); } } quit(1);" >/dev/null 2>&1; do
+                    # Initiate rs0 once. Hook output only shows in a FailedPostStartHook event, so also write to
+                    # mongod's stdout (kubectl logs); that needs mongod's uid, hence gosu (in the mongo image).
+                    log() {
+                      echo "mongodb-init: $*"
+                      gosu mongodb sh -c 'echo "$1" >/proc/1/fd/1' _ "mongodb-init: $*" 2>/dev/null || true
+                    }
+                    i=0
+                    while [ "$i" -lt 150 ]; do
+                      i=$((i + 1))
+                      # hello needs no auth. It reports isreplicaset only on a --replSet mongod with no config;
+                      # the first-boot temporary mongod (no --replSet) prints "none", so keep waiting.
+                      state=$(mongosh --quiet --eval "const h = db.hello(); print(h.setName ? 'initiated' : (h.isreplicaset ? 'uninitiated' : 'none'))" 2>/dev/null)
+                      case "$state" in
+                        initiated) exit 0 ;;
+                        uninitiated)
+                          # Only an uninitiated set needs credentials.
+                          if out=$(mongosh --quiet \
+                            -u "$MONGO_INITDB_ROOT_USERNAME" \
+                            -p "$MONGO_INITDB_ROOT_PASSWORD" \
+                            --authenticationDatabase admin \
+                            --eval "rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '{{ $memberHost }}' }] })" 2>&1); then
+                            log "initiated rs0"
+                            exit 0
+                          fi
+                          log "rs.initiate failed (attempt $i): $out"
+                          ;;
+                      esac
                       sleep 2
                     done
+                    log "gave up waiting to initiate rs0 after $i attempts"
+                    exit 1
           livenessProbe:
             exec:
               command:

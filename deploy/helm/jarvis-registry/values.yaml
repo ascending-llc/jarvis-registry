@@ -228,11 +228,17 @@ registry:
     # AKS Azure NPM or Cilium); elsewhere it's a no-op.
     networkPolicy:
       enabled: true
-      # Empty = target built-in MongoDB if enabled, else fall back to Chat's MongoDB pods.
-      # Set explicitly if your MongoDB uses other labels or lives outside the cluster.
+      # Where the worker's MongoDB lives, for the egress rule. Empty = the built-in MongoDB if enabled,
+      # else Chat's MongoDB pods (standalone StatefulSet app=mongodb and operator pods app=mongodb-svc).
+      # Set explicitly if your MongoDB carries other labels or lives outside the cluster (Atlas, DocumentDB —
+      # use an ipBlock peer). A selector that matches nothing crash-loops the worker where the CNI enforces
+      # policy. An empty list never renders an empty `to:`, which would allow 27017 to anywhere.
       mongodbEgressTo: []
       # Ranges we block on the HTTPS rule: in-cluster, VPC and the cloud metadata endpoint. What's left is
       # public HTTPS — Bedrock, Azure OpenAI, STS, Entra ID, api.osv.dev.
+      # Private endpoints are blocked too: if the VPC/VNet has AWS interface endpoints with private DNS
+      # (bedrock-runtime, sts) or Azure Private Endpoints for OpenAI/Entra, those hostnames resolve to
+      # private IPs and LLM calls / IRSA token exchange fail. Allow the endpoint subnets via extraEgress.
       blockedCidrs:
         - 10.0.0.0/8
         - 172.16.0.0/12
@@ -249,6 +255,8 @@ registry:
   #      registry.* there has no effect. On AWS the jarvis_registry release reads registry_values_file and
   #      installs registry_helm_chart_version — set both where the release is applied, chart >= 0.4.0 or this
   #      skillScan block won't exist. On Azure, enable it wherever that env's Registry release is installed.
+  #      Where the cluster enforces NetworkPolicy and LLM/STS traffic goes through private endpoints, add
+  #      those subnets to skillScan.networkPolicy.extraEgress first (see blockedCidrs).
   # Flipping it back off leaves queued jobs and existing results untouched; turning it on resumes them.
   # Each client's Bedrock quota is shared with Chat — lower concurrency before raising it.
 
@@ -299,8 +307,16 @@ registry:
       repository: mongo
     database: jarvis
     auth:
-      # Password (MONGODB_ADMIN_PASSWORD, must be URL-safe) and keyfile (MONGODB_KEYFILE)
-      # come from registry-env.
+      # Password (MONGODB_ADMIN_PASSWORD) and keyfile (MONGODB_KEYFILE) come from registry-env.
+      # The password is applied only on first boot (empty PVC). Changing MONGODB_ADMIN_PASSWORD in
+      # the Secret afterwards does not change the stored user's password. To rotate it:
+      #   1. With the current password, change it inside MongoDB:
+      #        kubectl exec <fullname>-mongodb-0 -- mongosh -u <username> -p '<current>' \
+      #          --authenticationDatabase admin \
+      #          --eval "db.getSiblingDB('admin').changeUserPassword('<username>', '<new>')"
+      #   2. Update MONGODB_ADMIN_PASSWORD in the source secret; External Secrets syncs it to registry-env.
+      #   3. The reloader restarts the Registry pods with the new password.
+      #   New connections fail between steps 1 and 3.
       username: registry
     resources:
       requests:
@@ -318,7 +334,7 @@ registry:
     enabled: true
     image:
       repository: redis
-      tag: latest
+      tag: "8.8.0"
     persistence:
       enabled: true
       storageClass: ""
