@@ -297,6 +297,8 @@ if grep -rnE '^[[:space:]]*provider "' --include='*.tf' --exclude-dir=.terraform
   exit 1
 fi
 terraform fmt -check -recursive deploy/
+# Install the plugins deploy/.tflint.hcl declares (AWS ruleset), as CI does.
+tflint --init --config="${POE_ROOT}/deploy/.tflint.hcl"
 for dir in \
   deploy/terraform/modules/registry-aws \
   deploy/terraform/modules/eks-cluster \

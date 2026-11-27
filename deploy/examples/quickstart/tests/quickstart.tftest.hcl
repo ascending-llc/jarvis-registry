@@ -93,8 +93,14 @@ run "quickstart_with_local_chart_path" {
     chart_path      = "../../helm/jarvis-registry"
     image_tag       = "asc0.5.21"
     app_secrets = {
-      AUTH_PROVIDER       = "entra"
-      ENTRA_CLIENT_SECRET = "SENTINEL_QUICKSTART_SECRET_CHECK"
+      AUTH_PROVIDER                              = "entra"
+      ENTRA_TENANT_ID                            = "00000000-0000-0000-0000-000000000000"
+      ENTRA_CLIENT_ID                            = "00000000-0000-0000-0000-000000000001"
+      ENTRA_CLIENT_SECRET                        = "SENTINEL_QUICKSTART_SECRET_CHECK"
+      JARVIS_REGISTRY_ADMIN_GROUP_OBJECT_ID      = "00000000-0000-0000-0000-00000000000a"
+      JARVIS_REGISTRY_POWER_USER_GROUP_OBJECT_ID = "00000000-0000-0000-0000-00000000000b"
+      JARVIS_REGISTRY_USER_GROUP_OBJECT_ID       = "00000000-0000-0000-0000-00000000000c"
+      JARVIS_REGISTRY_READ_ONLY_GROUP_OBJECT_ID  = "00000000-0000-0000-0000-00000000000d"
     }
   }
 

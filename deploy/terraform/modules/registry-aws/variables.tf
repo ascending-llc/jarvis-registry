@@ -109,9 +109,43 @@ variable "app_secrets" {
   sensitive   = true
   ephemeral   = true
 
+  # Presence checks only: format rules (UUIDs, distinct group IDs) stay in registry_pkgs so they
+  # can't drift. Every lookup is wrapped in try() because Terraform 1.11 does not short-circuit
+  # `||`. The secret is written once, so catching a missing key at plan time saves a hand edit
+  # in Secrets Manager after a failed install.
   validation {
-    condition     = !var.seed_secret || contains(["entra", "google"], lower(trimspace(try(var.app_secrets["AUTH_PROVIDER"], ""))))
+    condition     = !var.seed_secret || contains(["entra", "google"], lower(try(trimspace(var.app_secrets["AUTH_PROVIDER"]), "")))
     error_message = "When seed_secret is true, app_secrets must set AUTH_PROVIDER to \"entra\" or \"google\"."
+  }
+
+  # Entra is enabled when it is the primary provider or ENTRA_ENABLED is not "false" (blank or
+  # unset means true, as in auth-server). Then auth-server requires the credentials and all four
+  # scope-group bindings, including for AUTH_PROVIDER = "google" with both providers enabled.
+  validation {
+    condition = !var.seed_secret || !(
+      lower(try(trimspace(var.app_secrets["AUTH_PROVIDER"]), "")) == "entra" ||
+      lower(coalesce(try(trimspace(var.app_secrets["ENTRA_ENABLED"]), ""), "true")) != "false"
+      ) || alltrue([
+        for key in [
+          "ENTRA_TENANT_ID",
+          "ENTRA_CLIENT_ID",
+          "ENTRA_CLIENT_SECRET",
+          "JARVIS_REGISTRY_ADMIN_GROUP_OBJECT_ID",
+          "JARVIS_REGISTRY_POWER_USER_GROUP_OBJECT_ID",
+          "JARVIS_REGISTRY_USER_GROUP_OBJECT_ID",
+          "JARVIS_REGISTRY_READ_ONLY_GROUP_OBJECT_ID",
+        ] : try(trimspace(var.app_secrets[key]), "") != ""
+    ])
+    error_message = "When Entra is enabled (AUTH_PROVIDER = \"entra\", or ENTRA_ENABLED not \"false\"), app_secrets must set ENTRA_TENANT_ID, ENTRA_CLIENT_ID, ENTRA_CLIENT_SECRET and the four JARVIS_REGISTRY_*_GROUP_OBJECT_ID keys. For Google only, set ENTRA_ENABLED = \"false\"."
+  }
+
+  validation {
+    condition = !var.seed_secret || lower(try(trimspace(var.app_secrets["AUTH_PROVIDER"]), "")) != "google" || (
+      try(trimspace(var.app_secrets["GOOGLE_CLIENT_ID"]), "") != "" &&
+      try(trimspace(var.app_secrets["GOOGLE_CLIENT_SECRET"]), "") != "" &&
+      lower(try(trimspace(var.app_secrets["GOOGLE_ENABLED"]), "")) == "true"
+    )
+    error_message = "When AUTH_PROVIDER is \"google\", app_secrets must set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_ENABLED = \"true\"."
   }
 }
 

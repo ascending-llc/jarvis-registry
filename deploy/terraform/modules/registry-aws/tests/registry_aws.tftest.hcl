@@ -104,6 +104,82 @@ run "seed_secret_requires_auth_provider" {
   ]
 }
 
+run "seed_secret_entra_requires_credentials_and_groups" {
+  command = plan
+
+  variables {
+    seed_secret = true
+    app_secrets = {
+      AUTH_PROVIDER = "entra"
+    }
+  }
+
+  expect_failures = [
+    var.app_secrets,
+  ]
+}
+
+run "seed_secret_google_requires_google_enabled" {
+  command = plan
+
+  variables {
+    seed_secret = true
+    app_secrets = {
+      AUTH_PROVIDER        = "google"
+      ENTRA_ENABLED        = "false"
+      GOOGLE_CLIENT_ID     = "client.apps.googleusercontent.com"
+      GOOGLE_CLIENT_SECRET = "google-secret"
+    }
+  }
+
+  expect_failures = [
+    var.app_secrets,
+  ]
+}
+
+run "seed_secret_google_with_entra_left_enabled_requires_entra_keys" {
+  command = plan
+
+  variables {
+    seed_secret = true
+    app_secrets = {
+      AUTH_PROVIDER        = "google"
+      GOOGLE_ENABLED       = "true"
+      GOOGLE_CLIENT_ID     = "client.apps.googleusercontent.com"
+      GOOGLE_CLIENT_SECRET = "google-secret"
+    }
+  }
+
+  expect_failures = [
+    var.app_secrets,
+  ]
+}
+
+run "seed_secret_google_only_without_domain_sets_in_cluster_env" {
+  command = plan
+
+  variables {
+    seed_secret = true
+    app_secrets = {
+      AUTH_PROVIDER        = "google"
+      ENTRA_ENABLED        = "false"
+      GOOGLE_ENABLED       = "true"
+      GOOGLE_CLIENT_ID     = "client.apps.googleusercontent.com"
+      GOOGLE_CLIENT_SECRET = "google-secret"
+    }
+  }
+
+  assert {
+    condition     = yamldecode(helm_release.registry.values[0]).registry.extraEnv.AUTH_SERVER_URL == "http://auth-server:8888" && yamldecode(helm_release.registry.values[0]).registry.extraEnv.AUTH_SERVER_API_PREFIX == "/auth" && yamldecode(helm_release.registry.values[0]).registry.extraEnv.AWS_REGION == "us-east-1"
+    error_message = "Fresh installs without a domain must still set the in-cluster auth-server URL, API prefix and AWS region."
+  }
+
+  assert {
+    condition     = !contains(keys(yamldecode(helm_release.registry.values[0]).registry.extraEnv), "REGISTRY_URL") && !contains(keys(yamldecode(helm_release.registry.values[0]).registry.extraEnv), "AUTH_SERVER_EXTERNAL_URL")
+    error_message = "Public-host settings must only be rendered when domain is set."
+  }
+}
+
 run "create_databases_false_disables_all_three_databases" {
   command = plan
 
@@ -179,8 +255,14 @@ run "domain_without_alb_group_sets_certificate_and_no_group_name" {
     domain          = "registry.example.com"
     certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/11111111-1111-1111-1111-111111111111"
     app_secrets = {
-      AUTH_PROVIDER       = "entra"
-      ENTRA_CLIENT_SECRET = "SENTINEL_EPHEMERAL_SECRET_CHECK"
+      AUTH_PROVIDER                              = "entra"
+      ENTRA_TENANT_ID                            = "00000000-0000-0000-0000-000000000000"
+      ENTRA_CLIENT_ID                            = "00000000-0000-0000-0000-000000000001"
+      ENTRA_CLIENT_SECRET                        = "SENTINEL_EPHEMERAL_SECRET_CHECK"
+      JARVIS_REGISTRY_ADMIN_GROUP_OBJECT_ID      = "00000000-0000-0000-0000-00000000000a"
+      JARVIS_REGISTRY_POWER_USER_GROUP_OBJECT_ID = "00000000-0000-0000-0000-00000000000b"
+      JARVIS_REGISTRY_USER_GROUP_OBJECT_ID       = "00000000-0000-0000-0000-00000000000c"
+      JARVIS_REGISTRY_READ_ONLY_GROUP_OBJECT_ID  = "00000000-0000-0000-0000-00000000000d"
     }
   }
 

@@ -92,18 +92,25 @@ locals {
           }
         }
       } : {},
-      var.seed_secret && var.domain != "" ? {
-        extraEnv = {
-          AUTH_SERVER_URL          = "http://auth-server:8888"
-          AUTH_SERVER_EXTERNAL_URL = "https://${var.domain}"
-          AUTH_SERVER_API_PREFIX   = "/auth"
-          REGISTRY_URL             = "https://${var.domain}/gateway"
-          REGISTRY_CLIENT_URL      = "https://${var.domain}/gateway"
-          NGINX_BASE_PATH          = "/gateway"
-          MCPGW_ALLOWED_HOSTS      = "${var.domain},${var.domain}:*"
-          MCPGW_ALLOWED_ORIGINS    = "https://${var.domain},https://${var.domain}:*"
-          AWS_REGION               = local.region
-        }
+      var.seed_secret ? {
+        extraEnv = merge(
+          # In-cluster settings: needed whether or not an Ingress is managed. Without
+          # AUTH_SERVER_URL the backend's server-side calls fall back to localhost:8888.
+          {
+            AUTH_SERVER_URL        = "http://auth-server:8888"
+            AUTH_SERVER_API_PREFIX = "/auth"
+            AWS_REGION             = local.region
+          },
+          # Public-host settings: only meaningful when the Registry has a domain.
+          var.domain != "" ? {
+            AUTH_SERVER_EXTERNAL_URL = "https://${var.domain}"
+            REGISTRY_URL             = "https://${var.domain}/gateway"
+            REGISTRY_CLIENT_URL      = "https://${var.domain}/gateway"
+            NGINX_BASE_PATH          = "/gateway"
+            MCPGW_ALLOWED_HOSTS      = "${var.domain},${var.domain}:*"
+            MCPGW_ALLOWED_ORIGINS    = "https://${var.domain},https://${var.domain}:*"
+          } : {},
+        )
       } : {},
     )
   }
