@@ -42,6 +42,16 @@ def event_loop():
 
 
 @pytest.fixture(autouse=True)
+def _reset_sse_starlette_shutdown_flag() -> Generator[None, None, None]:
+    """sse-starlette's AppStatus.should_exit is process-global and sticky: once set, every
+    later EventSourceResponse closes immediately with no events. Keep one test from leaking it."""
+    from sse_starlette.sse import AppStatus
+
+    yield
+    AppStatus.should_exit = False
+
+
+@pytest.fixture(autouse=True)
 def mock_rbac_for_tests(monkeypatch):
     """Mock RBAC middleware to always allow requests in tests."""
     from registry.middleware import rbac

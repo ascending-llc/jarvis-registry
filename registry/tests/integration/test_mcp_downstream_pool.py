@@ -3,8 +3,8 @@
 import asyncio
 import json
 import socket
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from unittest.mock import patch
 
 import httpx2
@@ -21,6 +21,20 @@ from registry.core.mcp_downstream import DownstreamEraCache, ToolCall, call_down
 from registry.core.mcp_transport import MethodRoutedTransport
 
 pytestmark = pytest.mark.integration
+
+
+class _NoSignalServer(uvicorn.Server):
+    """In-process test server that leaves the process's signal handlers alone.
+
+    uvicorn's default binds SIGTERM to this server's handle_exit while serving. sse-starlette's
+    shutdown watcher finds the server through that handler and, once should_exit is set at
+    teardown, copies it into its process-global AppStatus.should_exit, which ends every later
+    SSE stream in the test session.
+    """
+
+    @contextmanager
+    def capture_signals(self) -> Iterator[None]:
+        yield
 
 
 @asynccontextmanager
@@ -54,7 +68,7 @@ async def _tcp_server(
 
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
-        server_task = uvicorn.Server(
+        server_task = _NoSignalServer(
             uvicorn.Config(
                 capture,
                 log_config=None,
