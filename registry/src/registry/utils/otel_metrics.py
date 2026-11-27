@@ -29,12 +29,12 @@ from typing import Literal
 from registry_pkgs.telemetry.metrics_client import create_metrics_client, load_metrics_config
 
 from ..constants import ExecutionOutcome, ProxyOutcome
-
-# Which side of Registry handled the request counted by mcp_server_requests_total.
-ServerRequestMode = Literal["gateway", "proxy"]
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Which side of Registry handled the request counted by mcp_server_requests_total.
+ServerRequestMode = Literal["gateway", "proxy"]
 
 
 # Load configuration and create service-specific metrics client
