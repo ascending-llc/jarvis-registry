@@ -1,0 +1,93 @@
+name: Terraform Modules CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/terraform/**'
+      - 'deploy/examples/**'
+      - 'deploy/.tflint.hcl'
+      - '.github/workflows/terraform-modules.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/terraform/**'
+      - 'deploy/examples/**'
+      - 'deploy/.tflint.hcl'
+      - '.github/workflows/terraform-modules.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: 1.11.4
+  TFLINT_VERSION: v0.66.0
+  HELM_VERSION: v3.17.3
+
+jobs:
+  validate-and-test:
+    name: "Terraform fmt, validate, tflint & test"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Set up TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Check no provider blocks in modules
+        run: |
+          if grep -rnE '^[[:space:]]*provider "' --include='*.tf' --exclude-dir=.terraform deploy/terraform/modules; then
+            echo "::error::Modules must not contain provider configuration blocks."
+            exit 1
+          fi
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive deploy/
+
+      - name: Init TFLint plugins
+        run: tflint --init --config="${GITHUB_WORKSPACE}/deploy/.tflint.hcl"
+
+      - name: Validate and lint modules and examples
+        run: |
+          for dir in \
+            deploy/terraform/modules/registry-aws \
+            deploy/terraform/modules/eks-cluster \
+            deploy/examples/bootstrap-state \
+            deploy/examples/quickstart \
+            deploy/examples/existing-cluster; do
+            echo "::group::validate + tflint (${dir})"
+            terraform -chdir="${dir}" init -backend=false -input=false
+            terraform -chdir="${dir}" validate
+            tflint --chdir="${dir}" --config="${GITHUB_WORKSPACE}/deploy/.tflint.hcl"
+            echo "::endgroup::"
+          done
+
+      - name: Lint cluster-defaults local Helm chart
+        run: helm lint deploy/terraform/modules/eks-cluster/charts/cluster-defaults
+
+      - name: Run Terraform module tests
+        run: |
+          for dir in \
+            deploy/terraform/modules/registry-aws \
+            deploy/terraform/modules/eks-cluster \
+            deploy/examples/quickstart; do
+            echo "::group::terraform test (${dir})"
+            terraform -chdir="${dir}" test
+            echo "::endgroup::"
+          done
