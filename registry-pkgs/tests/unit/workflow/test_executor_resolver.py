@@ -639,6 +639,7 @@ class TestA2APoolExecutorQueries:
             node_name="test-pool",
             pool_keys=["agent-a", "agent-b"],
             selector_llm=SimpleNamespace(),
+            executor_key=f"{POOL_KEY_PREFIX}test-pool",
             jwt_config=_jwt_config(),
         )
 
@@ -668,6 +669,7 @@ class TestA2APoolExecutorQueries:
             node_name="retry-pool",
             pool_keys=["agent-a"],
             selector_llm=SimpleNamespace(),
+            executor_key=f"{POOL_KEY_PREFIX}retry-pool",
             jwt_config=_jwt_config(),
         )
 
@@ -682,6 +684,92 @@ class TestA2APoolExecutorQueries:
         assert "status" not in args_str, f"status filter found in retry query: {captured_args}"
         assert "config.enabled" in args_str, f"config.enabled not in retry query: {captured_args}"
         assert captured_args[0] == {"path": "agent-a", "config.enabled": True}
+
+
+@pytest.mark.unit
+class TestA2APoolSelectorUsage:
+    """The selector's LLM run is recorded under the same executor_key as the pool's invocations."""
+
+    @pytest.mark.asyncio
+    async def test_records_the_selector_run_under_the_pool_key(self, monkeypatch: pytest.MonkeyPatch):
+        usage = SimpleNamespace(input_tokens=40, output_tokens=2)
+        selector_agent = SimpleNamespace(arun=AsyncMock(return_value=SimpleNamespace(content="agent-b", metrics=usage)))
+        selector_llm = SimpleNamespace(id="bedrock/override-model")
+        record_llm_usage = MagicMock()
+        monkeypatch.setattr(a2a_exec, "Agent", lambda **kwargs: selector_agent)
+        monkeypatch.setattr(a2a_exec, "record_llm_usage", record_llm_usage)
+        monkeypatch.setattr(
+            a2a_exec.A2AAgent,
+            "find",
+            lambda *args, **kwargs: SimpleNamespace(
+                to_list=AsyncMock(return_value=[_a2a_agent("agent-a"), _a2a_agent("agent-b")])
+            ),
+        )
+        call_a2a = AsyncMock(return_value=a2a_client.A2ACallResult())
+        monkeypatch.setattr(a2a_exec, "call_a2a", call_a2a)
+        executor = a2a_exec.make_a2a_pool_executor(
+            node_name="pool",
+            pool_keys=["agent-a", "agent-b"],
+            selector_llm=selector_llm,
+            executor_key=f"{POOL_KEY_PREFIX}p1",
+            jwt_config=_jwt_config(),
+        )
+
+        await executor(StepInput(input="hello"), {})
+
+        record_llm_usage.assert_called_once_with(
+            usage, agent_type="a2a_pool", executor_key=f"{POOL_KEY_PREFIX}p1", model=selector_llm
+        )
+        assert call_a2a.await_args.args[0].path == "agent-b"
+
+    @pytest.mark.asyncio
+    async def test_failed_usage_record_does_not_fail_the_step(self, monkeypatch: pytest.MonkeyPatch):
+        selector_agent = SimpleNamespace(
+            arun=AsyncMock(return_value=SimpleNamespace(content="agent-a", metrics=SimpleNamespace()))
+        )
+        monkeypatch.setattr(a2a_exec, "Agent", lambda **kwargs: selector_agent)
+        monkeypatch.setattr(a2a_exec, "record_llm_usage", MagicMock(side_effect=RuntimeError("metrics down")))
+        monkeypatch.setattr(
+            a2a_exec.A2AAgent,
+            "find",
+            lambda *args, **kwargs: SimpleNamespace(to_list=AsyncMock(return_value=[_a2a_agent("agent-a")])),
+        )
+        call_a2a = AsyncMock(return_value=a2a_client.A2ACallResult())
+        monkeypatch.setattr(a2a_exec, "call_a2a", call_a2a)
+        executor = a2a_exec.make_a2a_pool_executor(
+            node_name="pool",
+            pool_keys=["agent-a"],
+            selector_llm=SimpleNamespace(id="bedrock/override-model"),
+            executor_key=f"{POOL_KEY_PREFIX}p1",
+            jwt_config=_jwt_config(),
+        )
+
+        result = await executor(StepInput(input="hello"), {})
+
+        assert result.success is True
+        call_a2a.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retry_on_the_cached_agent_runs_no_selector(self, monkeypatch: pytest.MonkeyPatch):
+        selector_agent = SimpleNamespace(arun=AsyncMock())
+        record_llm_usage = MagicMock()
+        monkeypatch.setattr(a2a_exec, "Agent", lambda **kwargs: selector_agent)
+        monkeypatch.setattr(a2a_exec, "record_llm_usage", record_llm_usage)
+        monkeypatch.setattr(a2a_exec.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("agent-a")))
+        monkeypatch.setattr(a2a_exec, "call_a2a", AsyncMock(return_value=a2a_client.A2ACallResult()))
+        executor = a2a_exec.make_a2a_pool_executor(
+            node_name="pool",
+            pool_keys=["agent-a"],
+            selector_llm=SimpleNamespace(id="bedrock/override-model"),
+            executor_key=f"{POOL_KEY_PREFIX}p1",
+            jwt_config=_jwt_config(),
+        )
+
+        result = await executor(StepInput(input="hello"), {"a2a_target_pool": "agent-a"})
+
+        assert result.success is True
+        selector_agent.arun.assert_not_awaited()
+        record_llm_usage.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -802,3 +890,5 @@ async def test_build_executor_registry_caches_default_model_lookup_across_nodes(
     resolve_default.assert_awaited_once_with(encryption_key=b"key", azure_ad_token_provider=None)
     assert all(call.kwargs["llm"] is default_model for call in make_mcp.call_args_list)
     assert make_pool.call_args.kwargs["selector_llm"] is default_model
+    # The pool's usage metrics must carry the key its invocations are recorded under.
+    assert make_pool.call_args.kwargs["executor_key"] == f"{POOL_KEY_PREFIX}p1"

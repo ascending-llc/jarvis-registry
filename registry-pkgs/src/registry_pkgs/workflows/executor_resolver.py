@@ -221,6 +221,7 @@ async def build_executor_registry(
             node_name=node.name,
             pool_keys=node.a2a_pool,
             selector_llm=node_model,
+            executor_key=synthetic_key,
             jwt_config=jwt_config,
             httpx_client=a2a_httpx_client,
             headers_provider=headers_provider,

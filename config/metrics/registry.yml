@@ -75,6 +75,20 @@ counters:
     unit: "1"
     capture: true
 
+  # Workflow: LLM tokens the model provider reported for an executor's agent run
+  # (labels: agent_type = mcp | a2a_pool, executor_key, model, direction = input | output)
+  - name: workflow_llm_tokens_total
+    description: Total LLM tokens used by workflow executors
+    unit: "1"
+    capture: true
+
+  # Workflow: list price of those tokens in USD, left out for models LiteLLM has no price for
+  # (labels: agent_type, executor_key, model)
+  - name: workflow_llm_cost_usd_total
+    description: List price in USD of the LLM tokens used by workflow executors
+    unit: "1"
+    capture: true
+
   # Skill scan: per-tool runs (labels: tool, status, status_reason)
   - name: skill_scan_tool_runs_total
     description: Total skill-scan tool runs

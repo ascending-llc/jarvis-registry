@@ -375,3 +375,72 @@ class TestManualMcpExecutor:
             await executor(StepInput(input="hello", previous_step_content="ctx"), {})
 
         record_tool_calls.assert_called_once_with("oauth-server", [tool_execution])
+
+    @pytest.mark.asyncio
+    async def test_records_the_llm_usage_of_the_agent_run(self, monkeypatch: pytest.MonkeyPatch):
+        usage = SimpleNamespace(input_tokens=3000, output_tokens=150)
+        record_llm_usage = _patch_agent_and_metrics(monkeypatch, SimpleNamespace(content="done", metrics=usage))
+        llm = SimpleNamespace(id="openai/gpt-4o-mini")
+        executor = make_mcp_executor(
+            _mcp_server("oauth-server"),
+            llm=llm,
+            auth_context={"user_id": "user-42"},
+            jwt_config=_jwt_config(),
+            mcp_headers_provider=_bearer_headers,
+        )
+
+        await executor(StepInput(input="hello", previous_step_content="ctx"), {})
+
+        record_llm_usage.assert_called_once_with(usage, agent_type="mcp", executor_key="oauth-server", model=llm)
+
+    @pytest.mark.asyncio
+    async def test_records_llm_usage_before_raising_on_error_status(self, monkeypatch: pytest.MonkeyPatch):
+        # The model was reached, so its tokens were used even though the step fails.
+        usage = SimpleNamespace(input_tokens=7, output_tokens=1)
+        record_llm_usage = _patch_agent_and_metrics(
+            monkeypatch, SimpleNamespace(content="Unable to locate credentials", status="error", metrics=usage)
+        )
+        executor = make_mcp_executor(
+            _mcp_server("oauth-server"),
+            llm=SimpleNamespace(id="openai/gpt-4o-mini"),
+            auth_context={"user_id": "user-42"},
+            jwt_config=_jwt_config(),
+            mcp_headers_provider=_bearer_headers,
+        )
+
+        with pytest.raises(RuntimeError, match="Unable to locate credentials"):
+            await executor(StepInput(input="hello", previous_step_content="ctx"), {})
+
+        record_llm_usage.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_llm_usage_record_does_not_fail_the_step(self, monkeypatch: pytest.MonkeyPatch):
+        record_llm_usage = _patch_agent_and_metrics(monkeypatch, SimpleNamespace(content="done"))
+        record_llm_usage.side_effect = RuntimeError("metrics down")
+        executor = make_mcp_executor(
+            _mcp_server("oauth-server"),
+            llm=SimpleNamespace(id="openai/gpt-4o-mini"),
+            auth_context={"user_id": "user-42"},
+            jwt_config=_jwt_config(),
+            mcp_headers_provider=_bearer_headers,
+        )
+
+        output = await executor(StepInput(input="hello", previous_step_content="ctx"), {})
+
+        assert output.success is True
+        assert output.content == "done"
+
+
+async def _bearer_headers(server, auth_context):
+    return {"Authorization": "Bearer token"}
+
+
+def _patch_agent_and_metrics(monkeypatch: pytest.MonkeyPatch, agent_response: SimpleNamespace) -> MagicMock:
+    """Patch MCPTools, Agent and the usage recorder; a manual executor then needs nothing else."""
+    fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
+    fake_agent_instance = SimpleNamespace(arun=AsyncMock(return_value=agent_response))
+    monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.MCPTools", lambda *args, **kwargs: fake_mcp_tools)
+    monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.Agent", lambda **kwargs: fake_agent_instance)
+    record_llm_usage = MagicMock()
+    monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.record_llm_usage", record_llm_usage)
+    return record_llm_usage

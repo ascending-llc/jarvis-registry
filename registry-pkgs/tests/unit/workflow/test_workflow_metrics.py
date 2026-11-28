@@ -1,7 +1,8 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 from agno.workflow import StepInput
@@ -17,9 +18,11 @@ from registry_pkgs.telemetry import WORKFLOW_LATENCY_BUCKETS
 from registry_pkgs.telemetry import workflow_metrics as _wf_metrics_module
 from registry_pkgs.telemetry.metrics_client import create_metrics_client
 from registry_pkgs.telemetry.workflow_metrics import (
+    ModelPricing,
     initialize_workflow_metrics,
     metrics,
     record_agent_invocation,
+    record_llm_usage,
     record_tool_calls,
     record_workflow_run,
 )
@@ -264,6 +267,79 @@ def test_record_tool_calls_missing_duration(mock_hist, mock_ctr):
 
     mock_ctr.assert_called_once()
     mock_hist.assert_not_called()
+
+
+# --- record_llm_usage ---
+
+_LLM_ATTRS = {"agent_type": "mcp", "executor_key": "github-server", "model": "openai/gpt-4o-mini"}
+_POOL_LLM_ATTRS = {"agent_type": "a2a_pool", "executor_key": "__pool__p1", "model": "bedrock/new-model"}
+
+
+@patch.object(metrics, "record_counter")
+@patch.object(metrics, "record_histogram")
+def test_record_llm_usage_records_tokens_by_direction_and_their_list_price(mock_hist, mock_ctr):
+    usage = SimpleNamespace(input_tokens=3000, output_tokens=150)
+    model = SimpleNamespace(id="openai/gpt-4o-mini", pricing=ModelPricing(input=1.5e-07, output=6e-07))
+
+    record_llm_usage(usage, agent_type="mcp", executor_key="github-server", model=model)
+
+    assert mock_ctr.call_args_list == [
+        call("workflow_llm_tokens_total", 3000, {**_LLM_ATTRS, "direction": "input"}),
+        call("workflow_llm_tokens_total", 150, {**_LLM_ATTRS, "direction": "output"}),
+        call("workflow_llm_cost_usd_total", pytest.approx(0.00054), _LLM_ATTRS),
+    ]
+    mock_hist.assert_not_called()
+
+
+@patch.object(metrics, "record_counter")
+@patch.object(metrics, "record_histogram")
+def test_record_llm_usage_leaves_out_cost_for_an_unpriced_model(mock_hist, mock_ctr):
+    # A model LiteLLM has no price for still reports its tokens under the pool's own labels.
+    usage = SimpleNamespace(input_tokens=12, output_tokens=3)
+
+    record_llm_usage(
+        usage, agent_type="a2a_pool", executor_key="__pool__p1", model=SimpleNamespace(id="bedrock/new-model")
+    )
+
+    assert mock_ctr.call_args_list == [
+        call("workflow_llm_tokens_total", 12, _POOL_LLM_ATTRS | {"direction": "input"}),
+        call("workflow_llm_tokens_total", 3, _POOL_LLM_ATTRS | {"direction": "output"}),
+    ]
+
+
+@pytest.mark.parametrize("usage", [None, SimpleNamespace(), SimpleNamespace(input_tokens=0, output_tokens=0)])
+@patch.object(metrics, "record_counter")
+@patch.object(metrics, "record_histogram")
+def test_record_llm_usage_skips_a_run_that_used_no_tokens(mock_hist, mock_ctr, usage):
+    # A run whose model call failed reports no usage; there is nothing to add.
+    record_llm_usage(
+        usage, agent_type="mcp", executor_key="github-server", model=SimpleNamespace(id="openai/gpt-4o-mini")
+    )
+
+    mock_ctr.assert_not_called()
+    mock_hist.assert_not_called()
+
+
+@patch.object(metrics, "record_counter")
+@patch.object(metrics, "record_histogram")
+def test_record_llm_usage_marks_an_unknown_model(mock_hist, mock_ctr):
+    record_llm_usage(SimpleNamespace(input_tokens=1, output_tokens=1), agent_type="mcp", executor_key="k", model=None)
+
+    assert {c.args[2]["model"] for c in mock_ctr.call_args_list} == {"unknown"}
+
+
+def test_shipped_config_registers_the_llm_usage_counters():
+    # The worker only registers workflow_ definitions, so both the names and the prefix are load-bearing.
+    config_path = Path(__file__).resolve().parents[4] / "config" / "metrics" / "registry.yml"
+
+    original_metrics = _wf_metrics_module.metrics
+    try:
+        client = initialize_workflow_metrics(TelemetryConfig(), config_path=str(config_path))
+
+        assert {"workflow_llm_tokens_total", "workflow_llm_cost_usd_total"} <= set(client._counters)
+        assert all(name.startswith("workflow_") for name in client._counters)
+    finally:
+        _wf_metrics_module.metrics = original_metrics
 
 
 def test_initialize_workflow_metrics_registers_only_workflow_instruments(tmp_path):

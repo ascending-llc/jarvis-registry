@@ -14,6 +14,7 @@ from registry_pkgs.models.model_source import (
     ModelSource,
     OpenAIModelConfig,
 )
+from registry_pkgs.telemetry.workflow_metrics import ModelPricing
 from registry_pkgs.workflows import model_resolution
 from registry_pkgs.workflows.types import WorkflowConfigError
 
@@ -211,6 +212,88 @@ def test_build_agno_model_rejects_unknown_provider_config() -> None:
             encryption_key=b"unused",
             azure_ad_token_provider=None,
         )
+
+
+@pytest.mark.parametrize(
+    ("provider_config", "route", "priced_as"),
+    [
+        (
+            AwsBedrockModelConfig(
+                awsRegion="us-east-1",
+                modelIdOrArn="arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id",
+                baseModelId="amazon.nova-lite-v1:0",
+            ),
+            "bedrock/converse/arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-id",
+            "bedrock/amazon.nova-lite-v1:0",
+        ),
+        (
+            AzureOpenAIModelConfig(
+                endpoint="https://example.openai.azure.com",
+                deploymentName="chat",
+                baseModelId="gpt-4o",
+                apiVersion="2024-10-21",
+            ),
+            "azure/chat",
+            "azure/gpt-4o",
+        ),
+        (
+            AnthropicModelConfig(modelId="claude-sonnet-4-5", apiKeyEncrypted="encrypted"),
+            "anthropic/claude-sonnet-4-5",
+            "anthropic/claude-sonnet-4-5",
+        ),
+        (
+            OpenAIModelConfig(modelId="gpt-4.1", apiKeyEncrypted="encrypted"),
+            "openai/gpt-4.1",
+            "openai/gpt-4.1",
+        ),
+    ],
+    ids=["bedrock", "azure", "anthropic", "openai"],
+)
+def test_built_model_carries_the_price_of_the_canonical_model(
+    monkeypatch: pytest.MonkeyPatch, provider_config, route: str, priced_as: str
+) -> None:
+    # The model is called by its route, which a deployment name or profile ARN makes unpricable;
+    # the price is the canonical model's, the same lookup the Models page shows.
+    monkeypatch.setattr(model_resolution, "decrypt_value", lambda *_a, **_kw: "plain-key")
+    looked_up: list[str] = []
+
+    def fake_info(model: str):
+        looked_up.append(model)
+        return {"input_cost_per_token": 1.5e-07, "output_cost_per_token": 6e-07}
+
+    monkeypatch.setattr(model_resolution, "get_litellm_model_info", fake_info)
+
+    model = model_resolution.build_agno_model(
+        _source(provider_config), encryption_key=b"unused", azure_ad_token_provider=lambda: "t"
+    )
+
+    assert model.id == route
+    assert model.pricing == ModelPricing(input=1.5e-07, output=6e-07)
+    assert looked_up == [priced_as]
+
+
+@pytest.mark.parametrize(
+    "info",
+    [Exception("This model isn't mapped yet"), {"max_input_tokens": 128000}],
+    ids=["unmapped", "no-prices"],
+)
+def test_built_model_without_a_price_carries_none(monkeypatch: pytest.MonkeyPatch, info) -> None:
+    def fake_info(model: str):
+        if isinstance(info, Exception):
+            raise info
+        return info
+
+    monkeypatch.setattr(model_resolution, "get_litellm_model_info", fake_info)
+    monkeypatch.setattr(model_resolution, "decrypt_value", lambda *_a, **_kw: "plain-key")
+
+    model = model_resolution.build_agno_model(
+        _source(OpenAIModelConfig(modelId="new-model", apiKeyEncrypted="encrypted")),
+        encryption_key=b"unused",
+        azure_ad_token_provider=None,
+    )
+
+    assert model.id == "openai/new-model"
+    assert model.pricing is None
 
 
 def _bedrock_source_model() -> LiteLLM:
