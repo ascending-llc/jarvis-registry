@@ -16,7 +16,7 @@ from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.telemetry.trace_propagation import inject_trace_context
-from registry_pkgs.telemetry.workflow_metrics import record_tool_calls
+from registry_pkgs.telemetry.workflow_metrics import record_llm_usage, record_tool_calls
 from registry_pkgs.types import UserContextDict
 from registry_pkgs.workflows.helpers import build_prompt
 from registry_pkgs.workflows.types import WorkflowConfigError
@@ -52,6 +52,7 @@ async def _execute_mcp_agent(
     server: ExtendedMCPServer,
     mcp_tools: MCPTools,
     agent: Agent,
+    llm: Model,
     prompt: str,
     target_url: str,
 ) -> StepOutput:
@@ -68,6 +69,13 @@ async def _execute_mcp_agent(
                 record_tool_calls(server.serverName, response.tools)
             except Exception:
                 logger.exception("Failed to record tool call metrics for %r", server.serverName)
+        # Before the status check: a run that failed after reaching the model still used its tokens.
+        try:
+            record_llm_usage(
+                getattr(response, "metrics", None), agent_type="mcp", executor_key=server.serverName, model=llm
+            )
+        except Exception:
+            logger.exception("Failed to record LLM usage for %r", server.serverName)
 
         _raise_if_agent_failed(response)
 
@@ -154,6 +162,7 @@ def make_mcp_executor(
                 server=mcp_server,
                 mcp_tools=mcp_tools,
                 agent=agent,
+                llm=llm,
                 prompt=prompt,
                 target_url=target_url,
             )
@@ -189,6 +198,7 @@ def make_mcp_executor(
                 server=mcp_server,
                 mcp_tools=mcp_tools,
                 agent=agent,
+                llm=llm,
                 prompt=prompt,
                 target_url=target_url,
             )

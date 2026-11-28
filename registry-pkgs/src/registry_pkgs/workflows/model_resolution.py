@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import litellm
@@ -19,8 +20,10 @@ from registry_pkgs.models.model_source import (
     AwsBedrockModelConfig,
     AzureOpenAIModelConfig,
     ModelSource,
+    ModelSourceProviderConfig,
     OpenAIModelConfig,
 )
+from registry_pkgs.telemetry.workflow_metrics import ModelPricing
 from registry_pkgs.workflows.bedrock_ids import bedrock_litellm_model_id
 from registry_pkgs.workflows.types import WorkflowConfigError
 
@@ -39,13 +42,25 @@ def _bedrock_request_params(aws_region: str) -> dict[str, Any]:
     return {"aws_region_name": aws_region, "drop_params": True}
 
 
+@dataclass
+class PricedLiteLLM(LiteLLM):
+    """LiteLLM model that keeps the list price of its ModelSource's canonical model.
+
+    The route a model is called by is often not a key in LiteLLM's model map: an Azure deployment
+    name is arbitrary, and an inference profile ARN is not a model id. So the price is looked up
+    while the ModelSource is at hand, and the model carries it for the usage metrics.
+    """
+
+    pricing: ModelPricing | None = None
+
+
 def _litellm_model(
     model_id: str,
     request_params: dict[str, Any],
     *,
     api_base: str | None = None,
     api_key: str | None = None,
-) -> LiteLLM:
+) -> PricedLiteLLM:
     """Build an agno LiteLLM model that sends no sampling params.
 
     agno's ``LiteLLM`` defaults ``temperature=0.7`` and ``top_p=1.0`` and sends both on every request,
@@ -55,7 +70,7 @@ def _litellm_model(
     agno omits ``None`` params, so the provider's own defaults apply — as with agno's native
     ``AwsBedrock`` used before LiteLLM.
     """
-    return LiteLLM(
+    return PricedLiteLLM(
         id=model_id,
         api_base=api_base,
         api_key=api_key,
@@ -86,17 +101,46 @@ def get_litellm_model_info(model: str) -> dict[str, Any]:
     return litellm.get_model_info(model)
 
 
+def litellm_metadata_key(provider_config: ModelSourceProviderConfig) -> str:
+    """The id litellm.get_model_info() recognizes for this config's canonical model."""
+    if isinstance(provider_config, AwsBedrockModelConfig):
+        return f"bedrock/{provider_config.baseModelId}"
+    if isinstance(provider_config, AzureOpenAIModelConfig):
+        return f"azure/{provider_config.baseModelId}"
+    # First-party: prefix with the provider so the lookup matches the runtime model string and an
+    # OpenAI-compatible vendor serving e.g. a Claude id never picks up Anthropic metadata.
+    return f"{provider_config.providerType}/{provider_config.modelId}"
+
+
+def get_model_pricing(provider_config: ModelSourceProviderConfig) -> ModelPricing | None:
+    """The list price of the config's canonical model, or None when LiteLLM has no price for it."""
+    key = litellm_metadata_key(provider_config)
+    try:
+        info = get_litellm_model_info(key)
+    except Exception as exc:  # litellm raises a bare Exception for an unmapped model
+        logger.debug("No LiteLLM model metadata for %s: %s", key, exc)
+        return None
+    input_price = info.get("input_cost_per_token")
+    output_price = info.get("output_cost_per_token")
+    if input_price is None or output_price is None:
+        return None
+    return ModelPricing(input=input_price, output=output_price)
+
+
 def build_agno_model(
     model_source: ModelSource,
     *,
     encryption_key: bytes,
     azure_ad_token_provider: AzureAdTokenProvider | None,
 ) -> Model:
-    """Build the agno Model for one ModelSource. No client/connection is constructed here."""
+    """Build the agno Model for one ModelSource. No client/connection is constructed here.
+
+    The returned model carries the canonical model's list price in ``pricing``, for the usage metrics.
+    """
     config = model_source.providerConfig
     if isinstance(config, AwsBedrockModelConfig):
-        return _litellm_model(bedrock_litellm_model_id(config.modelIdOrArn), _bedrock_request_params(config.awsRegion))
-    if isinstance(config, AzureOpenAIModelConfig):
+        model = _litellm_model(bedrock_litellm_model_id(config.modelIdOrArn), _bedrock_request_params(config.awsRegion))
+    elif isinstance(config, AzureOpenAIModelConfig):
         request_params: dict[str, Any] = {"api_version": config.apiVersion}
         api_key: str | None = None
         if config.apiKeyEncrypted:
@@ -105,23 +149,26 @@ def build_agno_model(
             if azure_ad_token_provider is None:
                 raise RuntimeError("Azure Workload Identity model requires an app-scoped token provider")
             request_params["azure_ad_token_provider"] = azure_ad_token_provider
-        return _litellm_model(
+        model = _litellm_model(
             f"azure/{config.deploymentName}",
             request_params,
             api_base=config.endpoint,
             api_key=api_key,
         )
-    if isinstance(config, (AnthropicModelConfig, OpenAIModelConfig)):
+    elif isinstance(config, (AnthropicModelConfig, OpenAIModelConfig)):
         prefix = "anthropic" if isinstance(config, AnthropicModelConfig) else "openai"
         if not config.apiKeyEncrypted:
             raise RuntimeError(f"{prefix} model source is missing its required API key")
-        return _litellm_model(
+        model = _litellm_model(
             f"{prefix}/{config.modelId}",
             {},
             api_base=config.baseUrl,
             api_key=decrypt_value(config.apiKeyEncrypted, encryption_key=encryption_key),
         )
-    raise TypeError(f"Unsupported model source provider config: {type(config).__name__}")
+    else:
+        raise TypeError(f"Unsupported model source provider config: {type(config).__name__}")
+    model.pricing = get_model_pricing(config)
+    return model
 
 
 async def _require_chat_source(model_source_id: str | PydanticObjectId) -> ModelSource:

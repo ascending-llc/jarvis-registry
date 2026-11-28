@@ -307,6 +307,19 @@ Below are the standard metrics currently defined for the core services, includin
 | `mcp_prompt_get_duration_seconds` | Histogram | *Same as above* | Latency distribution of prompt retrievals. |
 | `mcp_proxy_request_duration_seconds` | Histogram | *Same as `mcp_proxy_requests_total`* | Latency distribution of direct proxy requests. For POST it lasts until the response is complete (for SSE, until the body has been read); for `http_method="GET"` it lasts until the server sends its response headers. |
 
+### Workflow Worker
+
+| Metric Name | Type | Labels | Description |
+|-------------|------|--------|-------------|
+| `workflow_agent_invocations_total` | Counter | `agent_type` (`mcp`, `a2a`, `a2a_pool` or `builtin`), `executor_key`, `status` (`success` or `failure`), `error_type` | Counts workflow executor invocations. |
+| `workflow_agent_call_seconds` | Histogram | *Same as above* | Latency distribution of workflow executor calls. |
+| `workflow_runs_total` | Counter | `workflow_name`, `status` | Counts finished workflow runs. |
+| `workflow_run_seconds` | Histogram | *Same as above* | Latency distribution of workflow runs. |
+| `workflow_tool_calls_total` | Counter | `executor_key`, `tool_name`, `status` (`success` or `error`) | Counts the MCP tool calls an executor's agent run made. |
+| `workflow_tool_call_seconds` | Histogram | *Same as above* | Latency distribution of those tool calls. |
+| `workflow_llm_tokens_total` | Counter | `agent_type` (`mcp` or `a2a_pool`), `executor_key`, `model`, `direction` (`input` or `output`) | LLM tokens the model provider reported for an executor's agent run, summed over the model calls of that run. `model` is the LiteLLM model string of the node's model source, such as `openai/gpt-4o-mini` or `azure/<deployment name>`. A run that reported no tokens is not counted. |
+| `workflow_llm_cost_usd_total` | Counter | `agent_type`, `executor_key`, `model` | List price in USD of the tokens counted by `workflow_llm_tokens_total`: input tokens times the input price plus output tokens times the output price, at the per-token prices LiteLLM lists for the model source's canonical model, the same prices the Models page shows. Left out for a model LiteLLM has no price for. Cache discounts are not applied. |
+
 ### Auth Server
 
 | Metric Name | Type | Labels | Description |

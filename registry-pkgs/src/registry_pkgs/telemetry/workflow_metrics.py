@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from registry_pkgs.core.config import TelemetryConfig
 from registry_pkgs.telemetry.metrics_client import OTelMetricsClient, create_metrics_client, load_metrics_config
@@ -10,6 +10,16 @@ from registry_pkgs.telemetry.metrics_client import OTelMetricsClient, create_met
 logger = logging.getLogger(__name__)
 
 metrics = create_metrics_client("workflow")
+
+
+class ModelPricing(NamedTuple):
+    """List price of one input and one output token, in USD."""
+
+    input: float
+    output: float
+
+    def cost_of(self, input_tokens: int, output_tokens: int) -> float:
+        return input_tokens * self.input + output_tokens * self.output
 
 
 class _ToolMetrics(Protocol):
@@ -94,3 +104,35 @@ def record_tool_calls(
             duration = getattr(tool_metrics, "duration", None)
             if duration is not None:
                 metrics.record_histogram("workflow_tool_call_seconds", duration, attrs)
+
+
+def record_llm_usage(
+    usage: Any,
+    *,
+    agent_type: str,
+    executor_key: str,
+    model: Any,
+) -> None:
+    """Record the tokens one agent run used, and what they cost at list price.
+
+    ``usage`` is agno's ``RunOutput.metrics``. ``model`` is the agno model the agent ran with;
+    its ``pricing`` is the price model_resolution attached to it, so the cost is left out for a
+    model LiteLLM has no price for. A run that reports no tokens, such as one whose model call
+    failed, is not recorded; a run that fails after using tokens still is.
+    """
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    if input_tokens + output_tokens == 0:
+        return
+
+    attrs = {
+        "agent_type": agent_type,
+        "executor_key": executor_key,
+        "model": getattr(model, "id", None) or "unknown",
+    }
+    metrics.record_counter("workflow_llm_tokens_total", input_tokens, {**attrs, "direction": "input"})
+    metrics.record_counter("workflow_llm_tokens_total", output_tokens, {**attrs, "direction": "output"})
+
+    pricing = getattr(model, "pricing", None)
+    if pricing is not None:
+        metrics.record_counter("workflow_llm_cost_usd_total", pricing.cost_of(input_tokens, output_tokens), attrs)

@@ -65,8 +65,9 @@ The platform captures performance and operational metrics from all services:
 - **Registry operations** — request counts and latency for list, search, create, update, and delete operations
 - **MCP activity** — tool discovery, tool execution, server requests, resource access, and prompt execution with latency percentiles (p50/p95/p99)
 - **Auth operations** — authentication requests, token validation, session management, and OAuth flow metrics
+- **Workflow usage** — executor invocations, tool calls and finished runs, and the LLM tokens each executor used with their list price
 
-These metrics power dashboards that show registry operations, MCP gateway traffic, and authentication activity.
+These metrics power dashboards that show registry operations, MCP gateway traffic, and authentication activity. The `workflow_*` metrics come from the workflow worker. `registry-pkgs/src/registry_pkgs/telemetry/README.md` lists every metric with its labels.
 
 ---
 

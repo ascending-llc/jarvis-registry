@@ -19,6 +19,7 @@ from agno.workflow.step import StepExecutor
 from registry_pkgs.core import a2a_http
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent
+from registry_pkgs.telemetry.workflow_metrics import record_llm_usage
 from registry_pkgs.workflows.a2a_client import (
     A2ACallResult,
     HeadersProvider,
@@ -326,6 +327,7 @@ def make_a2a_pool_executor(
     pool_keys: list[str],
     *,
     selector_llm: Model,
+    executor_key: str,
     jwt_config: JwtSigningConfig,
     httpx_client: a2a_http.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
@@ -341,6 +343,7 @@ def make_a2a_pool_executor(
         node_name:            Workflow node name — used for logging and cache keys.
         pool_keys:            Agent path segments (without leading ``/``) that form the pool.
         selector_llm:         Model used for LLM-based agent selection.
+        executor_key:         Key the pool is registered under, used as the label of its metrics.
         jwt_config:           JWT signing config (private key, issuer, kid, audience).
         httpx_client:         Optional shared httpx pool forwarded to ``call_a2a``.
                               When ``None``, ``call_a2a`` builds a fresh pool per
@@ -382,7 +385,13 @@ def make_a2a_pool_executor(
                     error="pool resolution failed: no enabled agents",
                 )
 
-            selected_agent = await _select_agent_with_llm(agents, task, selector_agent)
+            selected_agent = await _select_agent_with_llm(
+                agents,
+                task,
+                selector_agent,
+                selector_llm=selector_llm,
+                executor_key=executor_key,
+            )
             selected_path = selected_agent.path
             # Single key serves two purposes:
             # 1. Retry guard — skip LLM selection on retry, reuse the same agent.
@@ -416,6 +425,9 @@ async def _select_agent_with_llm(
     agents: list[A2AAgent],
     task_description: str,
     selector_agent: Agent,
+    *,
+    selector_llm: Model,
+    executor_key: str,
 ) -> A2AAgent:
     """Use an LLM to pick the best-fit agent from the pool."""
     summaries = [
@@ -433,6 +445,13 @@ async def _select_agent_with_llm(
     )
 
     result = await selector_agent.arun(prompt)
+    try:
+        record_llm_usage(
+            getattr(result, "metrics", None), agent_type="a2a_pool", executor_key=executor_key, model=selector_llm
+        )
+    except Exception:
+        logger.warning("Failed to record LLM usage for pool %r", executor_key, exc_info=True)
+
     chosen_path = (result.content or "").strip().lstrip("/")
 
     agent_by_path = {a.path: a for a in agents}
