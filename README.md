@@ -106,7 +106,7 @@ Cloud-native deployment guides are available for:
 
 We welcome contributions! Please read our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md) before submitting pull requests.
 
-For security vulnerabilities, contact [support@ascendingdc.com](mailto:support@ascendingdc.com) — do **not** open a public issue.
+For security vulnerabilities, see [SECURITY.md](SECURITY.md) — do **not** open a public issue.
 
 ---
 

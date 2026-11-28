@@ -60,7 +60,7 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 
 ## Security Issue Notifications
 
-If you discover a potential security issue in this project, please report it to [ASCENDING Inc Team](mailto:support@ascendingdc.com). Please do **not** create a public GitHub issue for security vulnerabilities.
+If you discover a potential security issue in this project, see [SECURITY.md](SECURITY.md) for how to report it. Please do **not** create a public GitHub issue for security vulnerabilities.
 
 
 ## Licensing

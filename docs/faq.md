@@ -164,4 +164,4 @@ docker compose logs registry | grep -i agent
 - **Bug Reports & Feature Requests**: [Open a GitHub Issue](https://github.com/ascending-llc/jarvis-registry/issues)
 - **Enterprise & Business Support**: [Contact ASCENDING Inc](https://ascendingdc.com/jarvis-ai/jarvis-registry/) or email [support@ascendingdc.com](mailto:support@ascendingdc.com)
 - **Contributing**: [Contributing Guide](CONTRIBUTING.md)
-- **Security Vulnerabilities**: Email [support@ascendingdc.com](mailto:support@ascendingdc.com) — do not open a public GitHub issue
+- **Security Vulnerabilities**: See [SECURITY.md](https://github.com/ascending-llc/jarvis-registry/security/policy) — do not open a public GitHub issue
